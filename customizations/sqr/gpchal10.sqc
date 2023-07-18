@@ -1,0 +1,724 @@
+!***********************************************************************
+! GPCHAL10.SQC:   Fetching SQC for Report                              *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!
+! Copyright (C) 1988, 2018, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!       $Release:  HR92                                                !
+!           $Bug:  27807408                                            !
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get-Data
+#Debug show '-> Get-Data'
+
+  if $Final_Per = 'Y'
+     do Get-Print-Emplids        ! Select Emplid's into AL103 as of the RunControl Criteria
+     do Update-Finalise-Data     ! To Update the Finalise Flag as of the RunControl Criteria
+     goto End_Get_Data           ! Exit the sqc no processing
+  end-if
+
+  if $Print_Opt = '0'            ! If Print Only Mode
+      do Get-Print-Emplids       ! Select Emplid's into AL103 as of the RunControl Criteria
+      goto End_Get_Data          ! Exit the sqc no processing
+  end-if
+
+  if $Rgen_Interface = 'Y'       ! Regenerate the interface Record
+      do Get-Print-Emplids       ! Select Emplid's into AL103 as of the RunControl Criteria
+      do Delete_Interface_Data   ! To delete data from Interface Record as of the RunControl Criteria
+  else
+      do Get-Interface-Emplids   ! To select Only Emplid's who have been recalculated.
+      do Delete_Interface_Data   ! To delete data from Interface Reord as of recalculated Emplids.
+  end-if
+
+  do Get-CalRunId-Calid
+  do Get-CalRunId
+
+  do Delete_AL102_Tmp
+  do Delete_Extra_Emplid         ! To keep Emplid's only who have data in AL101
+
+  let $end_time = datenow()
+  End_Get_Data:
+#Debug show '<- Get-Data' $SecurityClause
+end-procedure  Get-Data
+!**************************************************
+begin-procedure Delete_Extra_Emplid
+#Debug show '-> Delete_Extra_Emplid'
+
+
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHAL103_TMP WHERE NOT EXISTS (SELECT 'X' FROM PS_GPCHAL101_TMP B
+                                               WHERE PS_GPCHAL103_TMP.PROCESS_INSTANCE = B.PROCESS_INSTANCE
+                                               AND   PS_GPCHAL103_TMP.EMPLID           = B.EMPLID
+                                               AND   PS_GPCHAL103_TMP.EMPL_RCD         = B.EMPL_RCD)
+
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+#Debug show '<- Delete_Extra_Emplid  '
+End-procedure Delete_Extra_Emplid
+!**************************************************
+begin-procedure Delete_Extra_Emplid_ONL
+#Debug show '-> Delete_Extra_Emplid_ONL '  $Cal_Run_Id_Crit_PS ' , ' $PayEntity_Crit_PS
+
+
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHAL103_TMP WHERE NOT EXISTS (SELECT 'X' FROM PS_GPCH_RP_AL10ONL PS
+                                               WHERE PS_GPCHAL103_TMP.EMPLID    = PS.EMPLID
+                                               AND   PS_GPCHAL103_TMP.EMPL_RCD  = PS.EMPL_RCD
+                                               [$Cal_Run_Id_Crit_PS]
+                                               [$PayEntity_Crit_PS])
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+#Debug show '<- Delete_Extra_Emplid_ONL   '
+End-procedure Delete_Extra_Emplid_ONL
+!**************************************************
+begin-procedure Delete_Interface_Data
+#Debug show '-> Delete_Interface_Data' $Cal_Run_Id_Crit_BK ' , ' $PayEntity_Crit_BK
+
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHAL103_TMP WHERE EMPLID IN 
+(SELECT DISTINCT EMPLID FROM PS_GPCH_RP_AL10ONL 
+ WHERE GPCH_RC_FINAL_PR = 'Y'
+[$Cal_Run_Id_Crit_BK]
+[$PayEntity_Crit_BK])
+End-Sql
+
+! To remove from AL103 emplids whose payslip has been finalized.
+! As we do not want to regenerate finalized emplid.
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+Begin-Sql on-error=give_warning
+!FMB 20090818 DELETE FROM PS_GPCH_RP_AL10ONL WHERE EMPLID IN (SELECT DISTINCT EMPLID FROM PS_GPCHAL103_TMP)
+DELETE FROM PS_GPCH_RP_AL10ONL WHERE 
+exists (SELECT 'x' FROM PS_GPCHAL103_TMP a where a.EMPLID = PS_GPCH_RP_AL10ONL.EMPLID and a.EMPL_RCD = PS_GPCH_RP_AL10ONL.EMPL_RCD ) 
+AND GPCH_RC_FINAL_PR = 'N'
+[$Cal_Run_Id_Crit_BK]
+[$PayEntity_Crit_BK]
+End-Sql
+
+! To delete emplids from interface record as these emplids will be recalculated.
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCH_RP_AL10ONL WHERE 
+NOT EXISTS (SELECT 'X' FROM PS_GP_PYE_SEG_STAT  B
+                  WHERE B.EMPLID     = PS_GPCH_RP_AL10ONL.EMPLID
+                  AND   B.CAL_RUN_ID = PS_GPCH_RP_AL10ONL.CAL_RUN_ID
+                  AND   B.EMPL_RCD   = PS_GPCH_RP_AL10ONL.EMPL_RCD
+                  AND   B.GP_CALC_TS = PS_GPCH_RP_AL10ONL.GP_CALC_TS )
+AND GPCH_RC_FINAL_PR = 'N'
+[$Cal_Run_Id_Crit_BK]
+[$PayEntity_Crit_BK]
+End-Sql
+
+! To delete employee if the run was cancelled.
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+
+
+#Debug show '<- Delete_Interface_Data'
+End-procedure Delete_Interface_Data
+!**************************************************
+begin-procedure Update-Finalise-Data
+#Debug show '-> Update-Finalise-Data' $Cal_Run_Id_Crit_BK ' , ' $PayEntity_Crit_BK
+
+Begin-Sql on-error=give_warning
+UPDATE PS_GPCH_RP_AL10ONL SET GPCH_RC_FINAL_PR = 'Y'
+WHERE EMPLID IN (SELECT DISTINCT EMPLID FROM PS_GPCHAL103_TMP)
+[$Cal_Run_Id_Crit_BK]
+[$PayEntity_Crit_BK]
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+#Debug show '<- Update-Finalise-Data'
+End-procedure Update-Finalise-Data
+!**************************************************
+begin-procedure Get-Interface-Emplids
+#Debug show '-> Get-Interface-Emplids'  $Record_Security
+
+#debug show $Cal_Run_Id_Crit_PS
+#debug show $Emplid_Criteria_PS
+#debug show $PayEntity_Crit_PS
+#debug show $Paygroup_Crit_PS
+#debug show $Dept_Crit_PS
+#debug show $Location_Crit_PS
+#debug show $Company_Criteria_PS
+#debug show $Record_Security
+#debug show $Security_Where
+#debug show $SecurityClause
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHAL103_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GP_CALC_TS)
+SELECT DISTINCT [$prcs_process_instance],A.EMPLID,A.EMPL_RCD,A.GP_CALC_TS
+FROM   PS_GPCH_RP_0001 PS, PS_GP_PYE_SEG_STAT A [$Record_Security]
+WHERE  PS.EMPLID            = A.EMPLID
+AND    PS.CAL_RUN_ID        = A.CAL_RUN_ID
+AND    PS.EMPL_RCD          = A.EMPL_RCD
+AND    PS.GP_PAYGROUP       = A.GP_PAYGROUP
+AND    PS.CAL_ID            = A.CAL_ID
+{Where_Orig_Cal_Id_AL10}
+AND    PS.RSLT_SEG_NUM      = A.RSLT_SEG_NUM
+[$Security_Where]
+[$Security_Effdt1]
+AND    A.GP_CALC_TS         = (SELECT MAX(A1.GP_CALC_TS) FROM PS_GP_PYE_SEG_STAT A1
+                               WHERE  A1.EMPLID       = A.EMPLID
+                               AND    A1.CAL_RUN_ID   = A.CAL_RUN_ID
+                               AND    A1.EMPL_RCD     = A.EMPL_RCD)
+AND    NOT EXISTS (SELECT 'X' FROM PS_GPCH_RP_AL10ONL B
+                  WHERE B.EMPLID     = A.EMPLID
+                  AND   B.CAL_RUN_ID = A.CAL_RUN_ID
+                  AND   B.EMPL_RCD   = A.EMPL_RCD
+                  AND   B.GP_CALC_TS = A.GP_CALC_TS)
+[$Cal_Run_Id_Crit_PS]
+[$Emplid_Criteria_PS]
+[$PayEntity_Crit_PS]
+[$Paygroup_Crit_PS]
+[$Dept_Crit_PS]
+[$Location_Crit_PS]
+[$Company_Criteria_PS]
+[$SecurityClause]
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+#Debug show '<- Get-Interface-Emplids'
+End-procedure Get-Interface-Emplids
+!**************************************************
+begin-procedure Get-Print-Emplids
+#Debug show '-> Get-Print-Emplids'
+
+#debug show $Cal_Run_Id_Crit_PS
+#debug show $Emplid_Criteria_PS
+#debug show $PayEntity_Crit_PS
+#debug show $Paygroup_Crit_PS
+#debug show $Dept_Crit_PS
+#debug show $Location_Crit_PS
+#debug show $Company_Criteria_PS
+#debug show $Record_Security
+#debug show $Security_Where
+#debug show $SecurityClause
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHAL103_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GP_CALC_TS)
+SELECT DISTINCT [$prcs_process_instance],A.EMPLID,A.EMPL_RCD,A.GP_CALC_TS
+FROM   PS_GPCH_RP_0001 PS, PS_GP_PYE_SEG_STAT A [$Record_Security]
+WHERE  PS.EMPLID            = A.EMPLID
+AND    PS.CAL_RUN_ID        = A.CAL_RUN_ID
+AND    PS.EMPL_RCD          = A.EMPL_RCD
+AND    PS.GP_PAYGROUP       = A.GP_PAYGROUP
+AND    PS.CAL_ID            = A.CAL_ID
+{Where_Orig_Cal_Id_AL10}
+AND    PS.RSLT_SEG_NUM      = A.RSLT_SEG_NUM
+AND    A.GP_CALC_TS         = (SELECT MAX(A1.GP_CALC_TS) FROM PS_GP_PYE_SEG_STAT A1
+                               WHERE  A1.EMPLID       = A.EMPLID
+                               AND    A1.CAL_RUN_ID   = A.CAL_RUN_ID
+                               AND    A1.EMPL_RCD     = A.EMPL_RCD)
+[$Security_Where]
+[$Cal_Run_Id_Crit_PS]
+[$Emplid_Criteria_PS]
+[$PayEntity_Crit_PS]
+[$Paygroup_Crit_PS]
+[$Dept_Crit_PS]
+[$Location_Crit_PS]
+[$Company_Criteria_PS]
+[$Security_Effdt1]
+[$SecurityClause]
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+#Debug show '<- Get-Print-Emplids'
+End-procedure Get-Print-Emplids
+!**************************************************
+begin-procedure Get-CalRunId-Calid
+#Debug show '-> Get-CalRunId-Calid'
+
+begin-SELECT DISTINCT on-error=give_warning
+PR.CAL_RUN_ID  &PR.CAL_RUN_ID
+PR.CAL_ID      &PR.CAL_ID
+
+   let $CAL_RUN_ID = rtrim(&PR.CAL_RUN_ID,' ')
+   let $CAL_ID     = rtrim(&PR.CAL_ID,' ')
+   Do Append-Log ('Cal_Run_ID and Cal_id For Earning and Deductions', ' ')
+   Do Append-Log ($CAL_RUN_ID,$CAL_ID)
+   Do Get-Earn-Ded-Rslt    ! To Select the Current Rows.
+
+FROM PS_GP_CAL_RUN PRS,PS_GP_CAL_RUN_DTL PR
+WHERE PRS.CAL_RUN_ID = PR.CAL_RUN_ID
+AND   PR.PRD_BGN_DT >= $Rpt_Start_Dt
+AND   PR.PRD_END_DT <= $Rpt_End_Dt
+AND  (PRS.RUN_FINALIZED_IND='Y' OR PRS.RUN_OPEN_IND='Y')
+AND   PR.PAY_ENTITY  = $PR_Pay_Entity
+AND   PR.CALC_TYPE   = 'P'
+
+end-SELECT
+     Do Append-Log(' ',' ')
+     Do Append-Log('----------------------------- ' , '------------------------------' )
+#Debug show '<- Get-CalRunId-Calid'
+End-procedure Get-CalRunId-Calid
+!**************************************************
+begin-procedure Get-CalRunId
+#Debug show '-> Get-CalRunId'
+
+begin-SELECT DISTINCT on-error=give_warning
+
+TR.CAL_RUN_ID  &TR.CAL_RUN_ID
+
+     let $CAL_RUN_ID = rtrim(&TR.CAL_RUN_ID,' ')
+     Do Append-Log ('Cal_Run_id for Delta', ' ')
+     Do Append-Log (' ',$CAL_RUN_ID)
+
+     do Delete_AL102_Tmp
+
+     Do Get-Positive-Rows
+     Do Get-Negative-Rows
+     Do Get-Sum-Posi-Nega-Zero
+     Do Get-Sum-Posi-Nega
+
+FROM PS_GP_CAL_RUN TRS,PS_GP_CAL_RUN_DTL TR
+
+WHERE TRS.CAL_RUN_ID  = TR.CAL_RUN_ID
+AND   TR.PRD_BGN_DT >= $Rpt_Start_Dt
+AND   TR.PRD_END_DT <= $Rpt_End_Dt
+AND  (TRS.RUN_FINALIZED_IND='Y' OR TRS.RUN_OPEN_IND='Y')
+AND   TR.PAY_ENTITY  = $PR_Pay_Entity
+AND   TR.CALC_TYPE   = 'P'
+
+end-SELECT
+
+     Do Delete_Zero_Component !Delete Percent and Rate when other components are zero.
+     Do Append-Log(' ',' ')
+     Do Append-Log('----------------------------- ' , '------------------------------' )
+
+#Debug show '<- Get-CalRunId'
+End-procedure Get-CalRunId
+!**************************************************
+begin-procedure Delete_Zero_Component
+#Debug show '-> Delete_Zero_Component'
+
+Begin-Select on-error=give_warning
+AA.PIN_NUM
+FROM PS_GP_PIN AA
+WHERE AA.PIN_NM = 'CH_RP_0050'
+End-Select
+
+let  #del_pin = &AA.PIN_NUM
+
+
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHAL101_TMP
+WHERE CALC_RSLT_VAL  = 0.00
+and BASE_RSLT_VAL    = 0.00
+and UNIT_RSLT_VAL    = 0.00
+and PROCESS_INSTANCE = #prcs_process_instance
+and PIN_NUM          <> #del_pin
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+let $Dummy_char = '0'
+let $Null_Date = '''' || $AsOfToday || ''''
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHAL102_TMP(PROCESS_INSTANCE,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,RSLT_SEG_NUM,
+                             INSTANCE,PIN_NUM,SLICE_BGN_DT,SLICE_END_DT,PAY_ENTITY,PRD_END_DT,GPCH_AL_CPAY_ENDDT,
+                             CALC_RSLT_VAL,BASE_RSLT_VAL,RATE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL)
+SELECT DISTINCT PROCESS_INSTANCE,EMPLID,'CAL_RUN_ID',0,'PAYGROUP','CAL_ID',0,
+0,0,[$Null_Date],[$Null_Date],'PAY_ENTITY',[$Null_Date],[$Null_Date],0,0,0,0,0
+FROM PS_GPCHAL101_TMP
+WHERE PIN_NUM        = #del_pin
+and CALC_RSLT_VAL    = 0.00
+and PROCESS_INSTANCE = #prcs_process_instance
+and not exists (select 'x' from PS_GPCHAL101_TMP NET1
+                where PS_GPCHAL101_TMP.EMPLID           = NET1.EMPLID
+                and   PS_GPCHAL101_TMP.EMPL_RCD         = NET1.EMPL_RCD
+                and   PS_GPCHAL101_TMP.PROCESS_INSTANCE = NET1.PROCESS_INSTANCE
+                and   NET1.PIN_NUM                      <> #del_pin)
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHAL101_TMP
+WHERE PIN_NUM        = #del_pin
+and CALC_RSLT_VAL    = 0.00
+and PROCESS_INSTANCE = #prcs_process_instance
+and EMPLID IN (SELECT DISTINCT BB.EMPLID  FROM PS_GPCHAL102_TMP BB WHERE BB.PROCESS_INSTANCE = #prcs_process_instance)
+End-Sql
+
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '<- Delete_Zero_Component'
+End-procedure Delete_Zero_Component
+!*************************************************
+begin-procedure Get-Earn-Ded-Rslt
+#Debug show '-> Get-Earn-Ded-Rslt'
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHAL101_TMP(PROCESS_INSTANCE,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,RSLT_SEG_NUM,
+                             INSTANCE,PIN_NUM,SLICE_BGN_DT,SLICE_END_DT,PAY_ENTITY,PRD_END_DT,GPCH_AL_CPAY_ENDDT,
+                             CALC_RSLT_VAL,BASE_RSLT_VAL,RATE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL)
+#ifdef ORACLE
+SELECT /*+ INDEX(PS PS_GPCH_RP_0001)*/ 
+#else
+SELECT 
+#endif                             
+       EE.PROCESS_INSTANCE,SS.EMPLID,SS.CAL_RUN_ID,SS.EMPL_RCD,SS.GP_PAYGROUP,SS.CAL_ID,SS.RSLT_SEG_NUM,
+       SS.INSTANCE,SS.PIN_NUM,SS.SLICE_BGN_DT,SS.SLICE_END_DT,PS.PAY_ENTITY,PS.PRD_END_DT,PS.GPCH_AL_CPAY_ENDDT,
+       SS.CALC_RSLT_VAL,SS.BASE_RSLT_VAL,SS.RATE_RSLT_VAL,SS.UNIT_RSLT_VAL,SS.PCT_RSLT_VAL
+FROM   PS_GPCH_RP_0001 PS ,PS_GPCH_BL_PRINT D ,PS_GP_RSLT_ERN_DED SS, PS_GPCHAL103_TMP EE   [$Record_Security]
+WHERE  PS.EMPLID            = SS.EMPLID
+AND    PS.CAL_RUN_ID        = SS.CAL_RUN_ID
+AND    PS.EMPL_RCD          = SS.EMPL_RCD
+AND    PS.GP_PAYGROUP       = SS.GP_PAYGROUP
+AND    PS.CAL_ID            = SS.CAL_ID
+AND    PS.RSLT_SEG_NUM      = SS.RSLT_SEG_NUM
+AND    PS.EMPLID            = EE.EMPLID
+AND    PS.EMPL_RCD          = EE.EMPL_RCD
+AND    EE.PROCESS_INSTANCE  = #prcs_process_instance
+AND    SS.CAL_RUN_ID        = $CAL_RUN_ID
+AND    SS.CAL_ID            = $CAL_ID
+AND    D.PIN_NUM            = SS.PIN_NUM
+AND    D.GPCH_RC_REPORTNAME = $Ctl_Print
+AND    D.EFF_STATUS         = 'A'
+[$Security_Where]
+[$Security_Effdt1]
+[$SecurityClause]
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '<- Get-Earn-Ded-Rslt'
+end-procedure Get-Earn-Ded-Rslt
+
+!**************************************************
+begin-procedure Get-Positive-Rows
+#Debug show '<- Get-Positive-Rows' $CAL_RUN_ID
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHAL102_TMP(PROCESS_INSTANCE,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,RSLT_SEG_NUM,
+                             INSTANCE,PIN_NUM,SLICE_BGN_DT,SLICE_END_DT,PAY_ENTITY,PRD_END_DT,GPCH_AL_CPAY_ENDDT,
+                             CALC_RSLT_VAL,BASE_RSLT_VAL,RATE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL)
+#ifdef ORACLE
+Select /*+ INDEX(PS PS_GPCH_RP_0001)*/
+#else
+Select
+#endif                             
+[$prcs_process_instance],SS.EMPLID,SS.CAL_RUN_ID,SS.EMPL_RCD,SS.GP_PAYGROUP,SS.CAL_ID,SS.RSLT_SEG_NUM,
+SS.INSTANCE,SS.PIN_NUM,SS.SLICE_BGN_DT,SS.SLICE_END_DT,PS.PAY_ENTITY,PS.PRD_END_DT,PS.GPCH_AL_CPAY_ENDDT,
+SS.CALC_RSLT_VAL,SS.BASE_RSLT_VAL,SS.RATE_RSLT_VAL,SS.UNIT_RSLT_VAL,SS.PCT_RSLT_VAL
+FROM PS_GPCH_RP_0001 PS ,PS_GPCH_BL_PRINT D ,PS_GP_RSLT_ERN_DED SS ,PS_GP_RSLT_DELTA DL  [$Record_Security]
+WHERE  PS.EMPLID            = SS.EMPLID
+AND    PS.CAL_RUN_ID        = SS.CAL_RUN_ID
+AND    PS.EMPL_RCD          = SS.EMPL_RCD
+AND    PS.GP_PAYGROUP       = SS.GP_PAYGROUP
+AND    PS.CAL_ID            = SS.CAL_ID
+AND    PS.RSLT_SEG_NUM      = SS.RSLT_SEG_NUM
+AND    DL.EMPLID            = SS.EMPLID
+AND    DL.CAL_RUN_ID        = SS.CAL_RUN_ID
+AND    DL.EMPL_RCD          = SS.EMPL_RCD
+AND    DL.GP_PAYGROUP       = SS.GP_PAYGROUP
+AND    DL.CAL_ID            = SS.CAL_ID
+AND    DL.RSLT_SEG_NUM      = SS.RSLT_SEG_NUM
+AND    DL.PIN_NUM           = SS.PIN_NUM
+AND    DL.CAL_RUN_ID        = $CAL_RUN_ID
+AND    D.PIN_NUM            = SS.PIN_NUM
+AND    D.GPCH_RC_REPORTNAME = $Ctl_Print
+AND    D.EFF_STATUS         = 'A'
+AND    DL.FORWARD_IND       = 'N'
+[$Security_Where]
+[$Security_Effdt1]
+[$SecurityClause]
+End-Sql
+
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+#Debug show '-> Get-Positive-Rows'
+end-procedure Get-Positive-Rows
+!**************************************************
+begin-procedure Get-Negative-Rows
+#Debug show '<- Get-Negative-Rows'  $CAL_RUN_ID
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHAL102_TMP(PROCESS_INSTANCE,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,RSLT_SEG_NUM,
+                             INSTANCE,PIN_NUM,SLICE_BGN_DT,SLICE_END_DT,PAY_ENTITY,PRD_END_DT,GPCH_AL_CPAY_ENDDT,
+                             CALC_RSLT_VAL,BASE_RSLT_VAL,RATE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL)
+SELECT
+[$prcs_process_instance],SS.EMPLID,SS.CAL_RUN_ID,SS.EMPL_RCD,SS.GP_PAYGROUP,SS.CAL_ID,SS.RSLT_SEG_NUM,
+SS.INSTANCE,SS.PIN_NUM,SS.SLICE_BGN_DT,SS.SLICE_END_DT,PS.PAY_ENTITY,PS.PRD_END_DT,PS.GPCH_AL_CPAY_ENDDT,
+SS.CALC_RSLT_VAL * -1,SS.BASE_RSLT_VAL * -1,SS.RATE_RSLT_VAL ,SS.UNIT_RSLT_VAL * -1,SS.PCT_RSLT_VAL
+{Record_GP_Diff}   [$Record_Security]   !Record_GP_Diff Defined in gpchut12.sqc
+WHERE  PS.EMPLID            = SS.EMPLID
+AND    PS.CAL_RUN_ID        = SS.CAL_RUN_ID
+AND    PS.EMPL_RCD          = SS.EMPL_RCD
+AND    PS.GP_PAYGROUP       = SS.GP_PAYGROUP
+AND    PS.CAL_ID            = SS.CAL_ID
+AND    PS.RSLT_SEG_NUM      = SS.RSLT_SEG_NUM
+AND    A.EMPLID             = DL.EMPLID
+AND    A.CAL_RUN_ID         = DL.CAL_RUN_ID
+AND    A.EMPL_RCD           = DL.EMPL_RCD
+AND    A.GP_PAYGROUP        = DL.GP_PAYGROUP
+AND    A.CAL_ID             = DL.CAL_ID
+AND    DL.EMPLID            = SS.EMPLID
+AND    DL.EMPL_RCD          = SS.EMPL_RCD
+AND    DL.GP_PAYGROUP       = SS.GP_PAYGROUP
+AND    DL.CAL_ID            = SS.CAL_ID
+AND    DL.RSLT_SEG_NUM      = SS.RSLT_SEG_NUM
+AND    DL.PIN_NUM           = SS.PIN_NUM
+AND    DL.CAL_RUN_ID        = $CAL_RUN_ID
+AND    D.PIN_NUM            = SS.PIN_NUM
+AND    D.GPCH_RC_REPORTNAME = $Ctl_Print
+AND    D.EFF_STATUS         = 'A'
+{Record_GP_Diff_Where}
+AND    DL.FORWARD_IND       = 'N'
+[$Security_Where]
+[$Security_Effdt1]
+[$SecurityClause]
+End-SQL
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '-> Get-Negative-Rows'
+End-procedure Get-Negative-Rows
+!**************************************************
+begin-procedure Get-Sum-Posi-Nega-Zero
+#Debug show '<- Get-Sum-Posi-Nega-Zero'
+
+let #cnt = 0
+
+Begin-Select on-error=give_warning
+FF.EMPLID                 &FF1.EMPLID
+FF.EMPL_RCD               &FF1.EMPL_RCD
+FF.PIN_NUM                &FF1.PIN_NUM
+SUM(FF.CALC_RSLT_VAL)     &CALC_SUM
+SUM(FF.BASE_RSLT_VAL)     &BASE_SUM
+SUM(FF.UNIT_RSLT_VAL)     &UNIT_SUM
+FF.PCT_RSLT_VAL           &PCT_SUM
+FF.RATE_RSLT_VAL          &RATE_SUM
+
+    let #cnt = #cnt + 1
+    do Insert-Sum-Posi-Nega-Zero
+
+FROM PS_GPCHAL102_TMP FF
+WHERE FF.INSTANCE = 0
+AND   FF.PROCESS_INSTANCE = #prcs_process_instance
+GROUP BY FF.EMPLID,FF.EMPL_RCD,FF.PIN_NUM,FF.PCT_RSLT_VAL,FF.RATE_RSLT_VAL
+End-Select
+#Debug show '-> Get-Sum-Posi-Nega-Zero'
+end-procedure Get-Sum-Posi-Nega-Zero
+
+!**************************************************
+begin-procedure Insert-Sum-Posi-Nega-Zero
+#Debug show '-> Insert-Sum-Posi-Nega-Zero'
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHAL101_TMP (PROCESS_INSTANCE,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,RSLT_SEG_NUM,
+                              INSTANCE,PIN_NUM,PAY_ENTITY,CALC_RSLT_VAL,BASE_RSLT_VAL,RATE_RSLT_VAL,
+                              UNIT_RSLT_VAL,PCT_RSLT_VAL)
+                             VALUES
+                             (#prcs_process_instance,&FF1.EMPLID,'ZRETRO',&FF1.EMPL_RCD,'PAYGROUP','ZRETRO',
+                              #cnt,0,&FF1.PIN_NUM,'PAY_ENTITY',&CALC_SUM,&BASE_SUM,&RATE_SUM,&UNIT_SUM,
+                              &PCT_SUM )
+End-Sql
+
+#Debug show '<- Insert-Sum-Posi-Nega-Zero'
+end-procedure Insert-Sum-Posi-Nega-Zero
+!**************************************************
+begin-procedure Get-Sum-Posi-Nega
+#Debug show '<- Get-Sum-Posi-Nega'
+
+let #cnt = 0
+
+Begin-Select on-error=give_warning
+FF.EMPLID                 &FF.EMPLID
+FF.EMPL_RCD               &FF.EMPL_RCD
+FF.PIN_NUM                &FF.PIN_NUM
+FF.INSTANCE               &FF.INSTANCE
+FF.PRD_END_DT             &FF.PRD_END_DT
+SUM(FF.CALC_RSLT_VAL)     &FF.CALC_SUM
+SUM(FF.BASE_RSLT_VAL)     &FF.BASE_SUM
+SUM(FF.UNIT_RSLT_VAL)     &FF.UNIT_SUM
+FF.PCT_RSLT_VAL           &FF.PCT_SUM
+FF.RATE_RSLT_VAL          &FF.RATE_SUM
+
+    let #cnt = #cnt + 1
+    do Insert-Sum-Posi-Nega
+
+FROM PS_GPCHAL102_TMP FF
+WHERE FF.INSTANCE >= 1
+AND   FF.PROCESS_INSTANCE = #prcs_process_instance
+GROUP BY FF.EMPLID,FF.EMPL_RCD,FF.INSTANCE,FF.PIN_NUM,FF.PRD_END_DT,FF.PCT_RSLT_VAL,FF.RATE_RSLT_VAL
+End-Select
+#Debug show '-> Get-Sum-Posi-Nega'
+end-procedure Get-Sum-Posi-Nega
+
+!**************************************************
+begin-procedure Insert-Sum-Posi-Nega
+#Debug show '-> Insert-Sum-Posi-Nega'
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHAL101_TMP (PROCESS_INSTANCE,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,RSLT_SEG_NUM,
+                              INSTANCE,PIN_NUM,PAY_ENTITY,PRD_END_DT,CALC_RSLT_VAL,BASE_RSLT_VAL,
+                              RATE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL)
+                             VALUES
+                             (#prcs_process_instance,&FF.EMPLID,'ZRETRO',&FF.EMPL_RCD,'PAYGROUP','ZRETRO',
+                              #cnt, &FF.INSTANCE,&FF.PIN_NUM,'PAY_ENTITY',&FF.PRD_END_DT,&FF.CALC_SUM,
+                              &FF.BASE_SUM,&FF.RATE_SUM,&FF.UNIT_SUM,&FF.PCT_SUM )
+End-Sql
+
+#Debug show '<- Insert-Sum-Posi-Nega'
+end-procedure Insert-Sum-Posi-Nega
+!**************************************************
+begin-procedure Delete_AL101_Tmp
+#Debug show '<- Delete_AL101_Tmp'
+
+Begin-Sql on-error=give_warning
+
+  DELETE FROM PS_GPCHAL101_TMP WHERE PROCESS_INSTANCE = #prcs_process_instance
+
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '-> Delete_AL101_Tmp'
+end-procedure Delete_AL101_Tmp
+
+!**************************************************
+begin-procedure Delete_AL102_Tmp
+#Debug show '<- Delete_AL102_Tmp'
+
+Begin-Sql on-error=give_warning
+
+  DELETE FROM PS_GPCHAL102_TMP WHERE PROCESS_INSTANCE = #prcs_process_instance
+
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '-> Delete_AL102_Tmp'
+end-procedure Delete_AL102_Tmp
+
+!**************************************************
+begin-procedure Delete_AL103_Tmp
+#Debug show '<- Delete_AL103_Tmp'
+
+Begin-Sql on-error=give_warning
+
+  DELETE FROM PS_GPCHAL103_TMP WHERE PROCESS_INSTANCE = #prcs_process_instance
+
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '-> Delete_AL103_Tmp'
+end-procedure Delete_AL103_Tmp
+
+!**************************************************

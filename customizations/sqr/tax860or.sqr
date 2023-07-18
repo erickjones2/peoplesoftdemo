@@ -1,0 +1,968 @@
+!***********************************************************************
+!  TAX860OR:  Qtrly Wage List - OREGON - EFW2-1                        *
+!                                                                      *
+!             NOTE: "#IFDEF TAXTEST" in main SELECT is used for        *
+!                   testing this report against DEMO database          *
+!                                                                      *
+!                   This program does not report health insurance      *
+!                   availability or coverage codes.                    *
+!                                                                      *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  29559982                                            !
+!                                                                      *
+!***********************************************************************
+
+
+#include 'setenv.sqc' !Set environment
+#include 'setup31.sqc' !Printer and page-size initialization
+#include 'usarpt.sqc'  ! NID_COUNTRY defined
+
+begin-report
+  do Init-Report
+
+! These variables are used by rptsmmry.sqc
+  Let $Prnt_CoTxGrs = 'N'
+  Let $Prnt_CoExGrs = 'N'
+  do Process-Main
+
+  close 10
+
+  if $RecordWritten = 'Y'
+    display ''
+    display 'Upon successful conclusion of this program, the following'
+    display 'file will have been created:'
+    display ''
+    display '  TAX860OR  contains 512-character records in the EFW2 format'
+    display '            required for electronic submission of quarterly UI wages'
+    display '            to the Oregon Employment Division.'
+    display ''
+    display 'Follow instructions from the division for preparing and submitting'
+    display 'the file electronically.'
+    display ''
+  else
+    do Print-Summary-Data('NoData')
+  end-if
+
+  do Stdapi-Term
+
+end-report
+
+begin-procedure Init-Report
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Get-Calendar-Year-Id
+
+  do Stdapi-Init
+
+  move 'TAX860OR' to $ReportID
+  LET $NATIONAL_ID_NEG = ' ' 
+  MOVE 1 TO #Count_S
+  MOVE 1 TO #Count_R
+  let $ZeroNlGrsQTD = 'N'
+  do Initialization
+
+  move 'Oregon Quarterly UI Wage Report' to $ReportTitle
+  display ''
+  display 'Creating Electronic File for Oregon UI Wage Reporting'
+
+end-procedure
+
+begin-procedure Initialization
+#ifdef TAXTEST
+  move 'CA'              to $State
+  move 'CA'              to $InsertState
+#else
+  move 'OR'              to $State
+  move 'OR'              to $InsertState
+#endif
+  move '41'              to $StateNumCd
+
+  do Get-Tax-Reporting-Run-Controls
+  move &TX.Balance_Year to $RptYear 9999
+  move $PeriodEndDate    to $AsOfDate
+  let $ReportingPeriod = $QtrEndMonth || $RptYear
+
+  display ' '
+  display 'Processing balances for '   noline
+  display $RptQtrYr
+
+  move 512 to #RecordLength
+  add 2 to #RecordLength
+  let $Program = 'TAX860OR'
+
+  if $PRCS_Process_Instance = ''
+     do Prompts
+  else
+     do Select-Parameters
+     do Convert-Parameters
+  end-if
+  do Evaluate-File-Type
+  do Calculate-Diskette-Capacity
+  move 0 to #RecordCount
+  do Open-File
+
+  move &TX.Balance_Year to $QtrBeginDate xxxx
+  let #QtrBeginMonth = #QtrEndMonth - 2
+  move #QtrBeginMonth to $QtrBeginMonth 09
+
+  let $QtrBeginDate = $QtrBeginDate || '-' || $QtrBeginMonth || '-01'
+
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime($PeriodEndDate,$PeriodEndDate,{DEFYMD},'','')
+
+  do DTU-DayOfWeek#($QtrBeginDate,#QtrBeginWeekday)
+  if #QtrBeginWeekday <> 1
+    let #BegOffsetDays = #QtrBeginWeekday - 1
+    do DTU-Subtract-Days($QtrBeginDate,#BegOffsetDays,$EarnsBeginDate)
+  else
+    move $QtrBeginDate to $EarnsBeginDate
+  end-if
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime($EarnsBeginDate,$SlctEarnsBeginDate,{DEFYMD},'','native')
+
+  do DTU-DayOfWeek#($PeriodEndDate,#QtrEndWeekday)
+  if #QtrEndWeekday <> 7
+    let #EndOffsetDays = 7 - #QtrEndWeekday
+    do DTU-Add-Days($PeriodEndDate,#EndOffsetDays,$EarnsEndDate)
+  else
+    move $PeriodEndDate to $EarnsEndDate
+  end-if
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime($EarnsEndDate,$SlctEarnsEndDate,{DEFYMD},'','native')
+
+  create-array name=QtrWeeks size=1  field=WeekWorked:char:15
+  create-array name=QtrDays  size=10 field=PayGroup:char:1
+                                     field=WkSched:char:1
+                                     field=WeekDay:number:100
+                                     field=Week#:number:100
+                                     field=WorkDay:char:100
+                                     field=Wages:number:100
+  move 0 to #StateMinimum
+
+  move 1000000000.00 to #OverFileLimit
+  do Delete-Skip-File
+end-procedure
+
+begin-procedure Open-File
+
+if $FileType = 'D'
+   if #FileExtension <> 0
+      close 10
+   end-if
+   add 1 to #FileExtension
+   move 0 to #RecordCount
+   move #FileExtension to $FileExtension 099
+#ifdef OS400
+   let $FileExtension = '(D' || $FileExtension || ')'
+   let $FileID = '{IMPORTPREFIX}' || $ReportID || $FileExtension
+#else
+   let $FileID = '{IMPORTPREFIX}' || $ReportID || '.' || $FileExtension
+#endif
+
+   open $FileID as 10 for-writing record=512:fixed
+else
+   let $FileID = '{IMPORTPREFIX}' || $ReportID || '{IMPORTSUFFIX}'
+   open $FileID as 10 for-writing record=512:fixed
+end-if
+end-procedure
+
+begin-procedure Process-Main
+
+  show 'Balance ID:   '  $Calendar_Year_Id
+  show 'Balance Year: ' &TX.Balance_Year
+  show 'Balance Qtr:  ' &TX.Balance_Qtr
+
+begin-SELECT
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+end-SELECT
+
+begin-SELECT
+M.COMPANY
+M.FEDERAL_EIN
+M.DESCR
+M.ADDRESS1
+M.CITY
+M.STATE
+M.POSTAL
+
+  move &M.Company to $Company
+  move &M.Descr   to $CompanyName
+
+  move '' to $priorEmplID
+  do Read-Employee-Data
+  FROM  PS_COMPANY_TBL M
+WHERE M.EFF_STATUS = 'A'
+  AND M.TAX_REPORT_TYPE = '2'
+  AND M.EFFDT =
+  (SELECT MAX(EFFDT)
+     FROM PS_COMPANY_TBL
+     WHERE  COMPANY = M.COMPANY
+       AND  EFFDT  <= $AsOfDate)
+ORDER BY COMPANY
+end-SELECT
+  if #Count_F > 0
+    
+    !WRITE A LAST RS RECORD ONLY
+    !IF THE LAST WRITTEN RECORD DOES NOT CORRESPOND 
+    !TO A COMPANY WITH ONE EE ONLY
+    IF #EmployeesForComp > 2
+     MOVE $NlGrs_QTD_TMP TO #NlGrs_QTD_TMP
+     IF #NlGrs_QTD_TMP > 0
+        DO Write-RS-FROM-PREV
+     ELSE
+      DO SUBTRACT-EE-HOURS
+      MOVE  $NlGrs_QTD            TO    $NlGrs_QTD_TMP
+      MOVE  #NlGrs_QTD            TO    #NlGrs_QTD_TMP
+      MOVE  $StateEIN             TO    $StateEIN_TMP
+      MOVE  $TAX_QTD              TO    $TAX_QTD_TMP
+      MOVE  #TAX_QTD              TO    #TAX_QTD_TMP   
+     END-IF
+    END-IF
+  do Print-Summary-Data('FileTotal')
+  end-if
+
+  do delete-Skip-File
+end-procedure
+
+begin-procedure Read-Employee-Data
+ LET $NATIONAL_ID_PREV = 'TAX860OR'
+begin-SELECT
+C.COMPANY    () on-break print=never before=Before-Company
+                                     AFTER=AFTER-COMPANY
+C.EMPLID
+C.TAX_CLASS
+C.NLGRS_QTD
+C.TXGRS_QTD
+C.TAX_QTD
+D1.NATIONAL_ID
+PN.LAST_NAME
+PN.FIRST_NAME
+PN.MIDDLE_NAME
+
+   Do Get-Empl-Address (&C.Emplid,'HOME', $AddressFound)
+
+   let $ADDRESS1 = $GETADDR_Address1
+   let $CITY = $GETADDR_CITY
+   let $STATE_RES =$GETADDR_STATE
+   let $POSTAL = $GETADDR_POSTAL
+
+   MOVE &C.TAX_CLASS  TO $TAX_CLASS
+   LET $TAX_CLASS = LTRIM(RTRIM($TAX_CLASS, ' '), ' ')
+   
+   MOVE &D1.NATIONAL_ID TO $NATIONAL_ID_CURR
+   LET $NATIONAL_ID_CURR = LTRIM(RTRIM ($NATIONAL_ID_CURR, ' '), ' ')
+
+   IF $NATIONAL_ID_CURR <> $NATIONAL_ID_NEG
+      IF $TAX_CLASS = 'U'
+         IF &C.NlGrs_QTD <> 0 
+            if &C.NlGrs_QTD > 0 and &C.TxGrs_QTD >= 0 and
+               &C.NlGrs_QTD < #OverFileLimit and &C.TxGrs_QTD < #OverFileLimit
+                do Process-Employee
+            else
+                do Insert-Skip-Record
+            end-if
+         END-IF
+      ELSE !WITHHOLDING
+         IF &C.TAX_QTD  <> 0 
+            IF &C.TAX_QTD > 0 AND &C.TAX_QTD < #OverFileLimit
+               DO Process-Employee
+            ELSE
+               DO Insert-Skip-Record
+            END-IF
+         END-IF
+      END-IF
+   ELSE
+      MOVE ' '  TO $NATIONAL_ID_NEG
+   END-IF
+  
+
+FROM  PS_TAX_BALANCE C, PS_PERSON_NAME PN,  PS_PERS_NID D1
+WHERE C.COMPANY       = &M.Company
+  AND PN.EMPLID       = C.EMPLID
+  AND C.TAX_CLASS     IN ('U','H')
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+#ifdef TAXTEST
+  AND C.STATE         = 'CA'
+#else
+  AND C.STATE         = 'OR'
+#endif
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND C.EMPLID            = D1.EMPLID
+  AND D1.COUNTRY = {NID_Country}
+  AND D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+ORDER BY D1.NATIONAL_ID
+end-SELECT
+end-procedure
+
+begin-procedure Process-Employee
+  move &D1.NATIONAL_ID to $S123 xxx       !isolate first 3 digits
+  if $S123 = &Temp_SSN_Mask or RTRIM(&D1.NATIONAL_ID, ' ') = ''
+    move '000000000'   to $NATIONAL_ID
+  else
+    move &D1.NATIONAL_ID        to $NATIONAL_ID
+  end-if
+
+  MOVE '' TO $TAX_QTD
+  MOVE '' TO $NlGrs_QTD
+  IF $TAX_CLASS = 'U'
+     move &C.NlGrs_QTD to #NlGrs_QTD
+     add #NlGrs_QTD to #Co_NlGrs_QTD_TMP
+     multiply 100 times #NlGrs_QTD
+     do Format-Number(#NlGrs_QTD,  $NlGrs_QTD,  '09999999999')
+  ELSE
+     MOVE &C.TAX_QTD to #TAX_QTD
+     ADD #TAX_QTD to #Co_TAX_QTD_TMP
+     MULTIPLY 100 TIMES #TAX_QTD
+     DO Format-Number(#TAX_QTD, $TAX_QTD,  '09999999999')
+  END-IF
+  
+
+  move &C.EmplID to $EmplID
+
+#ifdef TAXTEST
+  move 'CA' to $State
+#endif
+
+  move 'PS_RC_TAX810OR D'  to $TAX810X1
+  move 'PS_RC_TAX810OR D1' to $TAX810X2
+  move 'PS_RC_TAX810OR D2' to $TAX810X3
+  move 'PS_RC_TAX810OR D3' to $TAX810X4
+
+
+
+  IF $EmplID <> $EmplID-Ant
+     do Get-Hours
+     if #Hours > 999
+        let $Hours = '999'
+     else
+        let #Hours = #Hours + .99
+        let #Hours = trunc (#Hours,0)
+        do Format-Number(#Hours, $Hours, '099')
+     end-if
+     ADD #Hours TO #TOT_HOURS
+     ADD #Hours TO #SUB_HOURS
+     
+     MOVE $EmplID TO $EmplID-Ant
+  END-IF
+  
+
+  do Write-S-Record
+  
+end-procedure
+
+begin-procedure Before-Company
+  LET #EmployeesForComp = 0
+  do Get-Company-Data
+  move 'OR' to $State
+  do Get-State-Tax-Data             !Employer ID
+
+#ifdef TAXTEST              !Reset so Getweeks will work
+!  move 'OR' to $State
+#endif
+
+  if RTRIM(&Employer_ID_SUT,' ') = ''
+    display '*** State Unemployment ID missing in Company State Tax Table ***'
+    display '*********************** Processing stopped *********************'
+    display 'Company  ' noline
+    display $Company
+    stop
+  end-if
+
+  let $StateEIN = RTRIM(&Employer_ID_SUT,' ')
+  while INSTR($StateEIN,'-',1) <> 0
+    let #loc = INSTR($StateEIN,'-',1)
+    let $StateEIN = SUBSTR($StateEIN, 1, #loc - 1) ||
+                    SUBSTR($StateEIN, #loc + 1, LENGTH($StateEIN) - #loc)
+  end-while
+
+  let $StateEIN = rpad($StateEIN,7,' ')
+  IF #Count_T > 0 
+     MOVE $NlGrs_QTD_TMP TO #NlGrs_QTD_TMP
+     IF #NlGrs_QTD_TMP > 0
+        DO Write-RS-FROM-PREV
+     ELSE
+      DO SUBTRACT-EE-HOURS
+      MOVE  $NlGrs_QTD            TO    $NlGrs_QTD_TMP
+      MOVE  #NlGrs_QTD            TO    #NlGrs_QTD_TMP
+      MOVE  $StateEIN             TO    $StateEIN_TMP
+      MOVE  $TAX_QTD              TO    $TAX_QTD_TMP
+      MOVE  #TAX_QTD              TO    #TAX_QTD_TMP 
+     END-IF
+     MOVE ' '          TO $NATIONAL_ID_CURR
+     MOVE 'TAX860OR'    TO $NATIONAL_ID_PREV
+     MOVE ' '          TO $NATIONAL_ID_NEG
+  END-IF
+  IF #Count_T < 0
+     MOVE 1 TO #Count_S
+     MOVE 1 TO #Count_R
+     MOVE 0 TO #Count_T
+  END-IF
+  IF $ZeroNlGrsQTD = 'Y'
+     MOVE 1 TO #Count_S
+     MOVE 1 TO #Count_R
+     MOVE 0 TO #Count_T
+  END-IF
+  let $ZeroNlGrsQTD = 'N'  
+  DO Company-NumRE-Totals
+  IF $Reportable-Records = 'Y'
+     DO Write-E-Record
+     LET $Reportable-Records = 'N'
+  END-IF
+     
+end-procedure
+
+begin-procedure After-Company
+! IF COMPANY HAS ONLY ONE EMPLOYEE
+! ONE EMPLOYEE CAN HAVE TWO ENTRIES
+
+  IF #EmployeesForComp < 3
+     MOVE $NlGrs_QTD_TMP TO #NlGrs_QTD_TMP
+     IF #NlGrs_QTD_TMP > 0
+        DO Write-RS-FROM-PREV
+     ELSE
+      DO SUBTRACT-EE-HOURS
+      MOVE  $NlGrs_QTD            TO    $NlGrs_QTD_TMP
+      MOVE  #NlGrs_QTD            TO    #NlGrs_QTD_TMP
+      MOVE  $StateEIN             TO    $StateEIN_TMP
+      MOVE  $TAX_QTD              TO    $TAX_QTD_TMP
+      MOVE  #TAX_QTD              TO    #TAX_QTD_TMP
+     END-IF
+     MOVE ' '          TO $NATIONAL_ID_CURR
+     MOVE 'TAX860OR'    TO $NATIONAL_ID_PREV
+     MOVE ' '          TO $NATIONAL_ID_NEG
+     MOVE -1           TO #Count_T
+!PROGRAM STARTS WITH 1 FOR THIS VARIABLES
+     LET #Count_S     = #Count_S - 1
+     LET #Count_R     = #Count_R - 1
+  END-IF
+  do Find-Skip-Count
+  if #Count_S > 0 or &SkipCount > 0
+    do Read-Skip-File
+    IF #Co_NlGrs_QTD_TMP > 0
+       MOVE #Co_NlGrs_QTD_TMP TO #Co_NlGrs_QTD
+    END-IF
+    IF #Co_TAX_QTD_TMP > 0
+       MOVE #Co_TAX_QTD_TMP   TO #Co_TAX_QTD
+    END-IF
+    IF $ZeroNlGrsQTD = 'Y'
+     LET #Count_S     = #Count_S - 1
+     LET #Count_R     = #Count_R - 1
+    END-IF    
+    MOVE #TAX_QTD_ACCURATE TO #Co_TAX_QTD
+    do Print-Summary-Data('CoTotal')
+
+    add #Co_NlGrs_QTD to #Tot_NlGrs_QTD
+    ADD #Co_TAX_QTD   TO #Tot_Tax_QTD
+    add #Count_S to #Count_F
+    add #Count_R to #Count_R_Total
+
+    move 0 to #Co_NlGrs_QTD
+    MOVE 0 TO #Co_TAX_QTD
+    move 0 to #SUB_HOURS
+    move 0 to #Count_S
+    move 0 to #Count_R
+    
+    MOVE 0 TO #Co_NlGrs_QTD_TMP
+    MOVE 0 TO #Co_TAX_QTD_TMP
+    
+    new-page
+    
+  end-if
+  
+end-procedure
+
+
+BEGIN-PROCEDURE Company-NumRE-Totals
+begin-SELECT
+H.COMPANY
+#ifdef DB2ALL
+DECIMAL(SUM(H.TAX_QTD),11,2)  &H.TAX_QTD
+#else
+SUM(H.TAX_QTD)                &H.TAX_QTD
+#endif
+COUNT(*)                      &NumOfReportable
+
+    If &NumOfReportable > 0
+       LET  $Reportable-Records = 'Y'
+       let  #TAX_QTD_ACCURATE = &H.TAX_QTD
+       !MOVE #TAX_QTD_ACCURATE TO #Co_TAX_QTD
+    End-If
+       
+FROM PS_TAX_BALANCE H
+WHERE 
+H.COMPANY = &M.Company
+AND H.BALANCE_ID = $Calendar_Year_Id
+AND H.BALANCE_YEAR = &TX.Balance_Year
+AND H.BALANCE_QTR = &TX.Balance_Qtr
+AND H.STATE = 'OR'
+AND H.TAX_CLASS = 'H'
+AND H.EMPLID IN (
+          SELECT U.EMPLID
+            FROM PS_TAX_BALANCE U
+           WHERE U.COMPANY = H.COMPANY 
+             AND U.BALANCE_ID = H.BALANCE_ID
+             AND U.BALANCE_YEAR = H.BALANCE_YEAR
+             AND U.BALANCE_QTR = H.BALANCE_QTR
+             AND U.BALANCE_PERIOD  = (SELECT MAX(BALANCE_PERIOD)
+                                        FROM PS_TAX_BALANCE
+                                       WHERE EMPLID  = H.EMPLID
+                                         AND COMPANY = H.COMPANY
+                                         AND  BALANCE_ID    = H.BALANCE_ID
+                                         AND  BALANCE_YEAR  = H.BALANCE_YEAR
+                                         AND  BALANCE_QTR   = H.BALANCE_QTR
+                                         AND  STATE         = H.STATE
+                                         AND  LOCALITY      = H.LOCALITY
+                                         AND  TAX_CLASS     = 'U')
+             AND U.STATE = H.STATE
+             AND U.TAX_CLASS = 'U'
+             AND U.NLGRS_QTD > 0
+                    )                     
+AND H.BALANCE_PERIOD  = (SELECT MAX(BALANCE_PERIOD)
+                                        FROM PS_TAX_BALANCE
+                                       WHERE EMPLID  = H.EMPLID
+                                         AND COMPANY = H.COMPANY
+                                         AND  BALANCE_ID    = H.BALANCE_ID
+                                         AND  BALANCE_YEAR  = H.BALANCE_YEAR
+                                         AND  BALANCE_QTR   = H.BALANCE_QTR
+                                         AND  STATE         = H.STATE
+                                         AND  LOCALITY      = H.LOCALITY
+                                         AND  TAX_CLASS     = H.TAX_CLASS)
+GROUP BY COMPANY
+END-SELECT
+END-PROCEDURE
+
+begin-procedure Write-E-Record
+  move &M.Descr        to $ErName
+  move &M.ADDRESS1     to $ErAddress1
+  move &M.CITY         to $City
+  move &M.STATE        to $StateCd
+  move &M.POSTAL       to $Zip
+
+  move $Zip to $ZipExtsn ~~~~~~xxxx
+  If instr($Zip,'-',6) = 0
+  and $ZipExtsn <> '    '
+    let $Zip = substr($Zip,1,5) || '-' || substr($Zip,6,4)
+  End-if
+  move $Zip to $ZipExtsn ~~~~~~xxxx
+
+  uppercase $ErName
+  uppercase $ErAddress1
+  uppercase $City
+  uppercase $StateCd
+
+  if $FileType = 'D'
+    if #RecordCount >= #MaxRecordsPerDiskette
+      do Open-File
+    end-if
+  end-if
+
+  write 10 from 'RE':2    ! 2
+                 $Sp:37   ! 3 - 39
+             $ErName:57   ! 40 - 96
+                 $Sp:22   ! 97 - 118
+         $ErAddress1:22   ! 119 - 140
+               $City:22   ! 141 - 162
+            $StateCd:2    ! 163 - 164
+                $Zip:5    ! 165 - 169
+           $ZipExtsn:4    ! 170 - 173
+                 $Sp:339  ! 174 - 512
+
+  add 1 to #RecordCount
+  move 'Y' to $RecordWritten
+end-procedure
+
+begin-procedure Write-S-Record
+
+  move &PN.LAST_NAME      to $LastName
+  move &PN.FIRST_NAME     to $FirstName
+  move &PN.MIDDLE_NAME    to $MiddleName
+  move $ADDRESS1        to $EEAddress1
+  move $CITY            to $EECity
+  move $STATE_RES       to $EEStateCd
+  move $POSTAL          to $Zip
+  MOVE  &C.EMPLID         TO $EMPLID
+  
+
+  move $Zip to $ZipExtsn ~~~~~~xxxx
+  If instr($Zip,'-',6) = 0
+  and $ZipExtsn <> '    '
+    let $Zip = substr($Zip,1,5) || '-' || substr($Zip,6,4)
+  End-if
+  move $Zip to $ZipExtsn ~~~~~~xxxx
+
+  uppercase $LastName
+  uppercase $FirstName
+  uppercase $MiddleName
+  uppercase $EEAddress1
+  uppercase $EECity
+
+  
+  IF $NATIONAL_ID_CURR = $NATIONAL_ID_PREV OR
+     $NATIONAL_ID_PREV = 'TAX860OR'
+     
+     MOVE  $StateNumCd           TO    $StateNumCd_TMP
+     MOVE  $NATIONAL_ID          TO    $NATIONAL_ID_TMP
+     MOVE  $FirstName            TO    $FirstName_TMP
+     MOVE  $MiddleName           TO    $MiddleName_TMP
+     MOVE  $LastName             TO    $LastName_TMP
+     MOVE  $EEAddress1           TO    $EEAddress1_TMP
+     MOVE  $EECity               TO    $EECity_TMP
+     MOVE  $EEStateCd            TO    $EEStateCd_TMP
+     MOVE  $Zip                  TO    $Zip_TMP
+     MOVE  $ZipExtsn             TO    $ZipExtsn_TMP
+     MOVE  $ReportingPeriod      TO    $ReportingPeriod_TMP
+     MOVE  $StateEIN             TO    $StateEIN_TMP
+     MOVE  $EMPLID               TO    $EMPLID_TMP
+     MOVE  $Company              TO    $COMPANY_TMP
+     MOVE  $Hours                TO    $Hours_TMP
+     
+     IF $TAX_CLASS = 'U'
+        MOVE  $NlGrs_QTD         TO    $NlGrs_QTD_TMP
+     ELSE
+        MOVE  $TAX_QTD           TO    $TAX_QTD_TMP
+     END-IF
+     
+     MOVE '' to $NlGrs_QTD
+     MOVE '' TO $TAX_QTD
+     move 0  to #NlGrs_QTD
+     MOVE 0  TO #TAX_QTD
+     let $ZeroNlGrsQTD = 'N'
+     ADD  1  TO #EmployeesForComp
+     
+  ELSE
+
+     move $NlGrs_QTD_TMP to #NlGrs_QTD_TMP
+     IF #NlGrs_QTD_TMP > 0
+        DO Write-RS-FROM-PREV
+     ELSE
+        DO SUBTRACT-EE-HOURS
+        MOVE  $NlGrs_QTD            TO    $NlGrs_QTD_TMP
+        MOVE  #NlGrs_QTD            TO    #NlGrs_QTD_TMP
+        MOVE  $StateEIN             TO    $StateEIN_TMP
+        MOVE  $TAX_QTD              TO    $TAX_QTD_TMP
+        MOVE  #TAX_QTD              TO    #TAX_QTD_TMP
+        let $ZeroNlGrsQTD = 'Y'
+     END-IF
+     
+  END-IF
+  MOVE $NATIONAL_ID_CURR      TO $NATIONAL_ID_PREV
+  MOVE ' '                    TO $NATIONAL_ID_NEG
+end-procedure
+
+
+Begin-Procedure Write-RS-FROM-PREV
+     IF $NATIONAL_ID_NEG = ' ' 
+        if $FileType = 'D'
+           if #RecordCount >= #MaxRecordsPerDiskette
+              do Open-File
+           end-if
+        end-if
+   
+        LET $NlGrs_QTD_TMP = LTRIM(RTRIM($NlGrs_QTD_TMP, ' '), ' ')
+        IF $NlGrs_QTD_TMP = ''
+           MOVE '00000000000' TO $NlGrs_QTD_TMP
+        END-IF
+   
+        LET $TAX_QTD_TMP = LTRIM(RTRIM($TAX_QTD_TMP, ' '), ' ')
+        IF $TAX_QTD_TMP = ''
+           MOVE '00000000000' TO $TAX_QTD_TMP
+        END-IF
+        
+
+        
+        write 10 from 'RS':2          ! 1 - 2
+               $StateNumCd_TMP:2    ! 3 - 4
+                       $Sp:5        ! 5 - 9
+              $NATIONAL_ID_TMP:9    ! 10 - 18
+                $FirstName_TMP:15   ! 19 - 33
+               $MiddleName_TMP:15   ! 34 - 48
+                 $LastName_TMP:20   ! 49 - 68
+                       $Sp:26       ! 69 - 94
+               $EEAddress1_TMP:22   ! 95 - 116
+                   $EECity_TMP:22   ! 117 - 138
+                $EEStateCd_TMP:2    ! 139 - 140
+                      $Zip_TMP:5    ! 141 - 145
+                 $ZipExtsn_TMP:4    ! 146 - 149
+                       $Sp:47       ! 150 - 196
+          $ReportingPeriod_TMP:6    ! 197 - 202
+                $NlGrs_QTD_TMP:11   ! 203 - 213
+                       $Sp:34       ! 214 - 247
+                 $StateEIN_TMP:7    ! 248 - 254
+                       $Sp:32       ! 255 - 286
+                $TAX_QTD_TMP:11     ! 287 - 297
+                       $Sp:40       ! 298-337
+                  $Hours_TMP:3      ! 338 - 340
+                       $Sp:172      ! 341 - 512
+   
+        add 1 to #RecordCount
+        add 1 to #Count_S
+        add 1 to #Count_T
+        add 1 to #Count_R
+        
+     ELSE
+        MOVE 0 TO #Co_NlGrs_QTD_TMP
+        MOVE 0 TO #Co_TAX_QTD_TMP
+        
+        IF $TAX_CLASS = 'U'
+           move &C.NlGrs_QTD TO #Co_NlGrs_QTD_TMP
+        ELSE
+           MOVE &C.TAX_QTD   TO #Co_TAX_QTD_TMP
+        END-IF
+           
+     END-IF
+     
+     MOVE '' to $NlGrs_QTD_TMP
+     MOVE '' TO $TAX_QTD_TMP
+     move 0  to #NlGrs_QTD_TMP
+     MOVE 0  TO #TAX_QTD_TMP
+     
+     MOVE  $StateNumCd           TO    $StateNumCd_TMP
+     MOVE  $NATIONAL_ID          TO    $NATIONAL_ID_TMP
+     MOVE  $FirstName            TO    $FirstName_TMP
+     MOVE  $MiddleName           TO    $MiddleName_TMP
+     MOVE  $LastName             TO    $LastName_TMP
+     MOVE  $EEAddress1           TO    $EEAddress1_TMP
+     MOVE  $EECity               TO    $EECity_TMP
+     MOVE  $EEStateCd            TO    $EEStateCd_TMP
+     MOVE  $Zip                  TO    $Zip_TMP
+     MOVE  $ZipExtsn             TO    $ZipExtsn_TMP
+     MOVE  $ReportingPeriod      TO    $ReportingPeriod_TMP
+     MOVE  $NlGrs_QTD            TO    $NlGrs_QTD_TMP
+     MOVE  #NlGrs_QTD            TO    #NlGrs_QTD_TMP
+     MOVE  $StateEIN             TO    $StateEIN_TMP
+     MOVE  $TAX_QTD              TO    $TAX_QTD_TMP
+     MOVE  #TAX_QTD              TO    #TAX_QTD_TMP
+     MOVE  $EMPLID               TO    $EMPLID_TMP
+     MOVE  $Company              TO    $COMPANY_TMP
+     MOVE  $Hours                TO    $Hours_TMP
+     
+End-Procedure
+
+
+begin-procedure SUBTRACT-EE-HOURS
+
+
+   MOVE $EMPLID      TO $EMPLID_AUX
+   MOVE $EMPLID_TMP  TO $EMPLID
+   MOVE $COMPANY     TO $COMPANY_AUX
+   MOVE $COMPANY_TMP TO $COMPANY
+   MOVE 0            TO #Hours
+   do Get-Hours
+   MOVE $EMPLID_AUX  TO $EMPLID
+   MOVE $COMPANY_AUX TO $Company       
+
+   if #Hours > 999
+      let $Hours = '999'
+   else
+      let #Hours = #Hours + .99
+      let #Hours = trunc (#Hours,0)
+   end-if
+
+   LET #TOT_HOURS = #TOT_HOURS - #HOURS
+   LET #SUB_HOURS = #SUB_HOURS - #HOURS
+end-procedure
+
+begin-procedure Insert-Skip-Record
+
+  move &C.Txgrs_QTD  to $Err_Txgrs_QTD 09999999999.99
+  move &C.Nlgrs_QTD  to $Err_Nlgrs_QTD 09999999999.99
+  MOVE &C.TAX_QTD    TO $Err_Tax_QTD   09999999999.99
+
+  MOVE $NATIONAL_ID_CURR TO $NATIONAL_ID_NEG
+  
+  let $err-statement1 = 'TAX860OR, Insert-Error - INSERT-SKIP-RECORD'
+  let $err-statement2 = 'Key Values: TABLE PS_R_TAX860OR' ||
+                        ', STATE ' || $InsertState ||
+                        ', COMPANY ' || $Company ||
+                        ', NATIONAL_ID ' || &D1.National_ID ||
+                        ', EMPLID ' || &C.Emplid ||
+                        ', TXGRS_QTD ' || $Err_Txgrs_QTD ||
+                        ', NLGRS_QTD ' || $Err_Nlgrs_QTD  ||
+                        ', TAX_QTD '   || $Err_TAX_QTD
+                        
+
+begin-SQL on-error=Error-Display
+  INSERT INTO PS_R_TAX860OR
+        (STATE,
+         COMPANY,
+         NATIONAL_ID,
+         EMPLID,
+         TXGRS_QTD,
+         NLGRS_QTD,
+         TAX_QTD)
+ VALUES ($InsertState,
+         $Company,
+         &D1.National_ID,
+         &C.EmplID,
+         &C.Txgrs_QTD,
+         &C.Nlgrs_QTD,
+         &C.TAX_QTD)
+end-SQL
+end-procedure
+
+
+begin-procedure Delete-Skip-File
+
+begin-SQL On-Error=Ignore
+  DELETE FROM PS_R_TAX860OR
+end-SQL
+end-procedure
+
+begin-procedure Ignore
+end-procedure
+
+begin-procedure Read-Skip-File
+
+begin-SELECT
+PYR.EMPLID
+PYR.TXGRS_QTD
+PYR.NLGRS_QTD
+PYR.TAX_QTD
+
+  let $R_Emplid    = &PYR.Emplid
+  let #R_TXGRS_QTD = &PYR.TXGRS_QTD
+  let #R_NLGRS_QTD = &PYR.NLGRS_QTD
+  LET #R_TAX_QTD   = &PYR.TAX_QTD
+    
+  if &PYR.NlGrs_QTD >= #OverFileLimit OR
+     &PYR.TAX_QTD >= #OverFileLimit
+     do Print-Summary-Data('BigFirst')
+  else
+     IF &PYR.NLGRS_QTD < 0 OR
+        &PYR.TAX_QTD < 0
+           do Print-Summary-Data('NegSecond')
+     END-IF
+  end-if
+
+FROM  PS_R_TAX860OR PYR
+WHERE PYR.STATE       = $InsertState
+  AND PYR.COMPANY     = $Company
+ORDER BY PYR.NLGRS_QTD desc, PYR.NATIONAL_ID
+end-SELECT
+end-procedure
+
+
+begin-procedure Find-Skip-Count
+begin-SELECT
+
+COUNT(*)  &SkipCount
+
+FROM  PS_R_TAX860OR PYR1
+WHERE PYR1.STATE             = $InsertState
+  AND PYR1.COMPANY           = $Company
+end-SELECT
+end-procedure
+
+
+begin-procedure Prompts
+
+  while $FileType = ''
+    input $FileType 'Cartridge or diskette file? (C, D or Q to quit)'
+    uppercase $FileType
+    if INSTR('DCQ',$FileType,1) = 0
+      display ' '
+      display '***** Enter D, C or Q *****'
+      display ' '
+      move '' to $FileType
+    end-if
+  end-while
+end-procedure
+
+begin-procedure Convert-Parameters
+
+  move 'X' to $FileType
+  move '0' to $DisketteType
+end-procedure
+
+begin-procedure Evaluate-File-Type
+
+  evaluate $FileType
+    when = 'Q'
+      stop
+
+    when = 'D'
+      if $Prcs_Process_Instance = ''
+         do Get-Diskette-Format
+      end-if
+      move &TX.Recording_Cd to $Recording_Cd
+      break
+
+    when = 'T'
+      move &TX.Tape_Density      to $Density
+      move &TX.Recording_Cd      to $Recording_Cd
+      move 'SL'                  to $Tape_Label
+      move &TX.Computer_Mfr      to $Computer_Mfr
+      move 'MT'                  to $FilingType
+      move '09'                  to $Tracks
+      break
+
+    when = 'C'
+      move &TX.Recording_Cd      to $Recording_Cd
+      move 'SL'                  to $Tape_Label
+      move &TX.Computer_Mfr      to $Computer_Mfr
+      move 'MC'                  to $FilingType
+
+  end-evaluate
+end-procedure
+
+
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'getstdta.sqc'  !Get-State-Tax-Data procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'getfrmat.sqc'  !Get-Diskette-Format procedure
+#Include 'rptsmmry.sqc'  !Print-Summary-Data procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'gethours.sqc'  !Get-Hours procedure
+#Include 'datemath.sqc'  !Date math procedures
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id
+
+#Include 'txrnctl1.sqc'  !Get-Tax-Reporting-Panel-Data procedure
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'stderror.sqc'  !Routine for error display
+#Include 'getaddr.sqc'   !Get Person Current Address

@@ -1,0 +1,776 @@
+!***********************************************************************
+! GPAUPY15                                                             *
+!                                                                      *
+!                                                                      *
+!   This software and related documentation are provided under a       *
+!   license agreement containing restrictions on use and               *
+!   disclosure and are protected by intellectual property              *
+!   laws. Except as expressly permitted in your license agreement      *
+!   or allowed by law, you may not use, copy, reproduce,               *
+!   translate, broadcast, modify, license, transmit, distribute,       *
+!   exhibit, perform, publish or display any part, in any form or      *
+!   by any means. Reverse engineering, disassembly, or                 *
+!   decompilation of this software, unless required by law for         *
+!   interoperability, is prohibited.                                   *
+!   The information contained herein is subject to change without      *
+!   notice and is not warranted to be error-free. If you find any      *
+!   errors, please report them to us in writing.                       *
+!                                                                      *
+!   Copyright (C) 1988, 2013, Oracle and/or its affiliates.            *
+!   All Rights Reserved.                                               *
+!----------------------------------------------------------------------
+!                                                                      *
+!                                                                      *
+!                                                                      
+!          $Date:  2013/01/18:03:18:36                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  102                                                 !
+!***********************************************************************
+!                                                                      *
+!  Program Name : GPAUPY15.SQR                                         *
+!  Description: Program to generate the BAS Information report for GPAU*
+!                                                                      *
+!***********************************************************************
+! Modification History                                                 *
+! Dated      Author  ICE                    Changes                                 *
+! 06/01/04  EC       638592000         Fix problems with date formats, *
+!                                                    total records and pay entity header *
+!**************************************************************************
+#include 'setenv.sqc'   !Set environment
+#include 'setup32.sqc'  !page layout and printer definition
+#include 'number.sqc'   !Routines to format numbers
+#include 'datetime.sqc' !Routines for date and time formatting
+#include 'prcsapi.sqc'  !Replaces stdapi.sqc
+
+begin-report
+
+        do Init-Processing
+        do Select-Parameters
+        do Process-Main
+        do Reset                        ! called from reset1.sqc
+        do Update-Prcs-Run-Status
+        do Delete-RunControl
+end-report
+
+!***********************************************************************
+! Init-Processing                                                      *
+! Called By:    begin-report                                           *
+! Calls:        Init-Datetime           - datetime.sqc                 *
+!               Get-Current-Datetime    - prcsapi.sqc (curdttim.sqc)   *
+!               Define-Prcs-Vars        - prcsapi.sqc (prcsdef.sqc)    *
+!               Get-Run-Control-Parms   - prcsapi.sqc                  *
+!               Init-Report                                            *
+!               Init-Number             - number.sqc                   *
+!               Get-Language-Codes      - prcslng.sqc                  *
+! Description:  Standard PeopleSoft initialization processing.         *
+!***********************************************************************
+
+begin-procedure Init-Processing
+        do Init-Datetime
+        do Get-Current-Datetime
+        do Define-Prcs-Vars
+        do Get-Run-Control-Parms
+        do Init-Report
+        do Init-Number
+        do Get-Language-Codes
+end-procedure ! Init-Processing
+
+!***********************************************************************
+! Init-Report                                                          *
+! Called By:    Init-Processing                                        *
+! Calls:        Init_Report_Translation    - sqrtrans.sqc              *
+!               Append_Report_Translation  - sqrtrans.sqc              *
+!               Get_Field_Information                                  *
+! Description:  Initializes variables, defines values for variables    *
+!               used in report header & throughout report.  Performs   *
+!               Strings Table translation.  #Defines variables for     *
+!               use throughout report in printing columns.             *
+!***********************************************************************
+
+begin-procedure Init-Report
+
+!*** Print column definitions.  Some fields are lined up vertically with
+!***   other fields on the report.  The first occurence of a column
+!***   location is defined.  After that, fields that occur in the same
+!***   column use the first field's column definition.  Field labels end
+!***   in _lbl.  Other column definitions are for the field values.
+    #define Col_Pay_Ent_lbl         2
+    #define Col_Emplid14_Lbl        2
+    #define Col_Empl_Rec14_Lbl      20
+    #define Col_Name14_Lbl          40
+    #define Col_Gross-lbl           80
+    #define Col_Gross-Val           75
+    #define Col_Amt_W_lbl           100
+    #define Col_Amt_W_Val           95
+    #define Col_Amt_No_ABN_lbl      130
+    #define Col_Amt_No_ABN_Val      125
+
+!*** Translations procedures & Strings Table retrievals.
+
+    do Init_Report_Translation ($ReportID, $curr_language_cd)
+
+    do Append_Report_Translation ('GPAUPY11')
+
+    do Get_Field_Information ('GPAUPY11', 'GPAUPY15_TITLE', $GPAUPY15_Title,     #DW)
+    do Get_Field_Information ('GPAUPY11', 'CURRENCY',       $Currency_lbl,       #DW)
+    do Get_Field_Information ('GPAUPY11', 'PAY_ENT',        $Pay_Ent_lbl,        #DW)
+    do Get_Field_Information ('GPAUPY11', 'EMPLID',         $Emplid_lbl,         #DW)
+    do Get_Field_Information ('GPAUPY11', 'REC_NUM',        $Rec_Num_lbl,        #DW)
+    do Get_Field_Information ('GPAUPY11', 'EMP_NM',         $Emp_Nm_lbl,         #DW)
+    do Get_Field_Information ('GPAUPY11', 'TOTALS',         $Totals_lbl,         #DW)
+    do Get_Field_Information ('GPAUPY11', 'GROSS_EARNINGS', $Gross_Earn_lbl,     #DW)
+    do Get_Field_Information ('GPAUPY11', 'AMT_WITHHELD',   $Amt_Withheld_lbl,   #DW)
+    do Get_Field_Information ('GPAUPY11', 'AMT_NO_ABN',     $Amt_no_ABN_lbl,     #DW)
+!*** Report variables.
+
+    let $ReportID              = 'GPAUPY15'          ! Printed in header
+    let $ReportDate_X            = $AsOfToday          ! Printed in header
+    let $ReportTime            = $AsOfNow            ! Printed in header
+    let $Report_Language       = $curr_language_cd   ! curr_language_cd resolved in prcslng.sqc
+    let #Maxlines              = 55                  ! # rows on a page, used for page breaking
+    let $Current_Emplid        = $Last_Emplid        ! Used for page breaking
+    let $Page_Break_Indicator  = 'Reset'             ! Used for page breaking
+    let $Rpt_Hdr_FirstTimeThru = 'True'              ! Used for page breaking
+    let #Tot_Gross             = 0
+    let #Tot_Withheld          = 0
+    let #Tot_No_ABN            = 0
+    let $Rpt_Hdr_FirstTimeThru  = 'True'
+
+
+! Dates:   All of Europe uses date format DD/MM/YYYY
+!          The US uses date format of MM/DD/YYYY
+! Numbers: The U.S. and the U.K. use NN,NNN.NN
+!          The rest of Europe uses NN.NNN,NN
+
+
+    if $curr_language_cd      = 'ENG'
+        let $ReportDateType   = '1'             ! resolved in datetime.sqc
+    else
+        let $ReportDateType   = '0'
+    end-if
+
+    if $curr_language_cd = 'ENG' or $curr_language_cd = 'INE'
+        let $ReportSDecimal   = '.'
+        let $ReportSThousand  = ','
+    else
+        let $ReportSDecimal   = ','             ! resolved in number.sqc
+        let $ReportSThousand  = '.'             ! resolved in number.sqc
+    end-if
+
+!*** Initialize date formatting.
+    let $Date_Init = '1900-01-01 00:00:00.000'
+        #ifdef ORACLE
+            let $Date_Init = '01-NOV-00'
+        #endif
+
+end-procedure ! Init-Report
+
+begin-heading 4
+if #rows_selected
+
+#include 'gpauhdg5.sqc'                  ! copied/modified from stdhdgtr.sqc
+#ifdef debugy
+        show 'BEGIN-HEADING'
+#end-if
+
+end-if
+end-heading
+
+!***********************************************************************
+! Get-Header-Descriptions                                              *
+! Called By:    Process-Main                                           *
+! Calls:        Get-Payentity                                          *
+! Description:  Retrieves descriptions for information to print in     *
+!               the report header.                .                    *
+!***********************************************************************
+
+begin-procedure Get-Header-Descriptions
+
+
+!***********************************************************************
+! Get-PR-Status                                                        *
+! Called By:    begin-report                                           *
+! Calls:        none                                                   *
+! Description:  Retrieves calc status to print in report header.       *
+!***********************************************************************
+BEGIN-SELECT
+CALRUN.RUN_FINALIZED_IND    &CALRUN.RUN_FINALIZED_IND
+    let $Finalized_Ind      = &CALRUN.RUN_FINALIZED_IND
+    if $Finalized_Ind  = 'Y'
+        let $Calc_Stat_HDG = $Calc_Stat_Final
+    else
+        let $Calc_Stat_HDG = $Calc_Stat_Open
+    end-if
+
+    FROM PS_GP_CAL_RUN CALRUN
+    WHERE CALRUN.CAL_RUN_ID = $Cal_Run_ID
+
+END-SELECT
+
+!*** Retrieve Cal Run ID description.  Trim to fit report.  Retrieve
+!***   related language entry if necessary.
+
+BEGIN-SELECT
+
+CALRUN.DESCR     &CALRUN.DESCR
+    let $Cal_Run_Id_Descr = &CALRUN.DESCR
+
+!***   Trim description to fit the space available on the report page.
+    if length($Cal_Run_Id_Descr) > 30
+        let $Cal_Run_Id_Descr = substr($Cal_Run_Id_Descr,1,30)
+    end-if
+    FROM PS_GP_CAL_RUN CALRUN
+    WHERE CAL_RUN_ID = $Cal_Run_Id
+END-SELECT
+
+
+!*** Retrieve Pay Entity description.  Trim to fit report.  Retrieve
+!***   related language entry if necessary.
+BEGIN-SELECT
+PYENTAU.GPAU_REGISTERED_NM     &PYENTAU.GPAU_REGISTERED_NM
+    let $Pay_Entity_Descr = &PYENTAU.GPAU_REGISTERED_NM
+!***   Trim description to fit the space available on the report page.
+!***   if length($Pay_Entity_Descr) > 30
+!***    let $Pay_Entity_Descr = substr($Pay_Entity_Descr,1,30)
+!***   end-if
+    FROM PS_GP_PYENT_SGPAU PYENTAU
+    WHERE PAY_ENTITY = $Pay_Entity
+END-SELECT
+
+end-procedure ! Get-Header-Descriptions
+
+!***********************************************************************
+! Process-Main                                                         *
+! Called By:    Process-Main                                           *
+! Calls:        Format-DateTime                                        *
+!               Get-Rslt-Ern-Ded                                       *
+!               Get-Rslt-Accum                                         *
+! Description:  Retrieves segment information to be printed in page    *
+!               header.                                                *
+!***********************************************************************
+
+begin-procedure Process-Main
+!*** Set dynamic sort based on run control value. is resolved in GPRNCTL1.SQC
+    let $Order_By_Clause = 'ORDER BY PRCSTAT.PAY_ENTITY, SEGSTAT.EMPLID, SEGSTAT.EMPL_RCD'
+
+    let #rows_selected = 0
+    let $ErnDed_FirstTimethru = 'Y'
+
+    let #Emp_Gross_Earnings          = 0
+    let #Emp_Amt_Withheld            = 0
+    let #Emp_Amt_No_ABN              = 0
+    let #Tot_Emp_Amt_Withheld        = 0
+    let #Tot_Emp_Amt_No_ABN          = 0
+    let #Tot_Gross_Earnings          = 0
+    let #Tot_Amt_Withheld            = 0
+    let #Tot_Amt_No_ABN              = 0
+    let #Tot_records                 = 0
+
+    do Get_TAX_PIN_NUM
+
+BEGIN-SELECT
+
+PRCSTAT.PYE_PRC_IND         &PRCSTAT.PYE_PRC_IND
+PRCSTAT.SEL_STAT            &PRCSTAT.SEL_STAT
+PRCSTAT.SEL_ACTION          &PRCSTAT.SEL_ACTION
+PRCSTAT.CURRENCY_CD         &PRCSTAT.CURRENCY_CD
+PRCSTAT.PRD_BGN_DT          &PRCSTAT.PRD_BGN_DT
+PRCSTAT.PRD_END_DT          &PRCSTAT.PRD_END_DT
+PRCSTAT.PAY_ENTITY          &PRCSTAT.PAY_ENTITY
+PRCSTAT.CAL_PRD_ID          &PRCSTAT.CAL_PRD_ID
+PERSDATA.NAME               &PERSDATA.NAME
+SEGSTAT.EMPLID              &SEGSTAT.EMPLID
+SEGSTAT.CAL_RUN_ID          &SEGSTAT.CAL_RUN_ID
+SEGSTAT.CAL_ID              &SEGSTAT.CAL_ID
+SEGSTAT.EMPL_RCD            &SEGSTAT.EMPL_RCD
+SEGSTAT.CALC_ACTION         &SEGSTAT.CALC_ACTION
+SEGSTAT.PYE_CALC_STAT       &SEGSTAT.PYE_CALC_STAT
+SEGSTAT.SEG_BGN_DT          &SEGSTAT.SEG_BGN_DT
+SEGSTAT.SEG_END_DT          &SEGSTAT.SEG_END_DT
+SEGSTAT.SEG_STATUS          &SEGSTAT.SEG_STATUS
+SEGSTAT.CUR_RT_TYPE         &SEGSTAT.CUR_RT_TYPE
+SEGSTAT.PIN_GROSS_VAL       &SEGSTAT.PIN_GROSS_VAL
+SEGSTAT.PIN_NET_VAL         &SEGSTAT.PIN_NET_VAL
+SEGSTAT.GP_PAYGROUP         &SEGSTAT.GP_PAYGROUP
+SEGSTAT.RSLT_SEG_NUM        &SEGSTAT.RSLT_SEG_NUM
+SEGSTAT.PIN_GROSS_NUM       &SEGSTAT.PIN_GROSS_NUM   !GROSS ACCUMULATOR
+SEGSTAT.PIN_NET_NUM         &SEGSTAT.PIN_NET_NUM     !NET ACCUMULATOR
+
+    add 1 to #rows_selected
+
+!***********************************************************************
+! Read-Translate-Table reads in a field name and value, and returns    *
+!   $XlatShortName and XlatLongName from XLATTABLE.                    *
+!***********************************************************************
+
+    let $FieldName = 'SEG_STATUS'
+    let $FieldValue = &SEGSTAT.SEG_STATUS
+
+    do Read-Translate-Table
+
+
+!***********************************************************************
+! Format-Number formats numbers.  The format is controlled by          *
+!   $ReportSDecimal and $ReportSThousand which are conditionally set   *
+!   earlier in the report.                                             *
+!***********************************************************************
+
+    let #GrossIn = &SEGSTAT.PIN_GROSS_VAL
+    do Format-Number(#GrossIn, $GrossOut, '999,999,999,999.99')
+
+    let #NetIn = &SEGSTAT.PIN_NET_VAL
+    do Format-Number(#NetIn, $NetOut, '999,999,999,999.99')
+
+
+    let $Pay_Entity         = &PRCSTAT.PAY_ENTITY
+    let $Cal_Run_ID         = &SEGSTAT.CAL_RUN_ID
+    let $Currency_Value     = &PRCSTAT.CURRENCY_CD
+    let #Empl_Rec           = &SEGSTAT.EMPL_RCD
+    let $Emplid             = &SEGSTAT.EMPLID
+    let $Gross              = $GrossOut
+    let $Net                = $NetOut
+    let $Name               = &PERSDATA.NAME
+   if #rows_selected > 1
+      if $Last_Pay_Entity  <> $Pay_Entity
+         if $Rpt_summary = 'N'
+            do Print-Tot-line
+            do Get-Header-Descriptions
+            let #Tot_records                 = 0
+            let $Page_Break_Indicator = 'Empl_Change'
+            new-page
+            let $Page_Break_Indicator = 'Reset'
+            let $ErnDed_FirstTimethru = 'Y'
+            if $ErnDed_FirstTimethru = 'Y'
+               do Print-Pay-Entity-Header
+               let $ErnDed_FirstTimethru = 'N'
+            end-if
+         else
+
+            do Print-PYENT-Report-Line
+!***        for summary report the following Emp_ totals is used to summarise for a Pay Entity:
+            let #Emp_Gross_Earnings = 0
+            let #Emp_Amt_Withheld   = 0
+            let #Emp_Amt_No_ABN     = 0
+            let #Emp_Tax_deducted   = 0
+            let  $ABN_IND = ' '
+            let #Tot_records                 = 0
+            let $Page_Break_Indicator = 'Empl_Change'
+            new-page
+            let $Page_Break_Indicator = 'Reset'
+            let $ErnDed_FirstTimethru = 'Y'
+         end-if
+      else
+         if $Rpt_summary = 'N'
+            if $Last_Emplid      <>  $Emplid
+               do Print-Report_Line
+               let #Emp_Gross_Earnings = 0
+               let #Emp_Amt_Withheld   = 0
+               let #Emp_Amt_No_ABN     = 0
+               let #Emp_Tax_deducted   = 0               
+            end-if
+         end-if
+      end-if
+   else
+         do Get-Header-Descriptions
+   end-if
+
+
+    let $Seg_FirstTimeThru          = 'N'
+
+!*** Keep track of previous segment information for purposes of writing
+!***   out headers.  This info is used in GPAUHDG1.SQC
+    let $Last_Pay_Entity             = $Pay_Entity
+    let $Last_Pay_Entity_Descr       = $Pay_Entity_Descr
+    let $Last_Currency_Value         = $Currency_Value
+    let $Last_Emplid                 = $Emplid
+!    let $Last_Empl_Rec               = edit(#Empl_Rec,'999')
+!    let $Last_Seg_Num                = edit(&SEGSTAT.RSLT_SEG_NUM,'9999')
+    let #Last_Empl_Rec               = &SEGSTAT.EMPL_RCD
+    let #Last_Seg_Num                = &SEGSTAT.RSLT_SEG_NUM
+    let #Last_Ver_Num                = #Ver_Num
+    let #Last_Rev_Num                = #Rev_Num
+    let $Last_Gross                  = $Gross
+    let $Last_Net                    = $Net
+    let $Last_Gross                  = $Gross
+    let $Last_Net                    = $Net
+    let $Last_Name                   = $Name
+    let $Last_Pay_Entity_Descr       = $Pay_Entity_Descr
+    let $Last_Seg_Begin              = &SEGSTAT.SEG_BGN_DT
+    let $Last_Seg_End                = &SEGSTAT.SEG_END_DT
+    let $Last_Cal_ID                 = &SEGSTAT.CAL_ID
+    let $Last_Cal_Run_ID             = &SEGSTAT.CAL_RUN_ID
+    let $Last_Paygroup               = &SEGSTAT.GP_PAYGROUP
+
+    let #Emp_Gross_Earnings          = #Emp_Gross_Earnings +  #GrossIn
+    let #Tot_Gross_Earnings          = #Tot_Gross_Earnings +  #GrossIn
+
+    do Get-ABN-Quote
+
+    do Get-Amounts-Withheld
+
+    FROM PS_GP_PYE_PRC_STAT     PRCSTAT,
+         PS_PERSON_NAME         PERSDATA,
+         PS_GP_CALENDAR         GPCAL1,
+         PS_GP_RUN_TYPE         GPRUNTYPE1,
+         PS_GP_PYE_SEG_STAT     SEGSTAT
+
+    WHERE
+      [$Begin_End_Date_Clause]
+      [$PayEntity_Select_Clause]
+      AND SEGSTAT.CALC_ACTION   = 'C'
+      AND SEGSTAT.PYE_CALC_STAT IN ('50', '70', '55', '60', '65', '75')
+      AND SEGSTAT.EMPLID        = PRCSTAT.EMPLID
+      AND SEGSTAT.CAL_RUN_ID    = PRCSTAT.CAL_RUN_ID
+      AND SEGSTAT.EMPL_RCD      = PRCSTAT.EMPL_RCD
+      AND SEGSTAT.GP_PAYGROUP   = PRCSTAT.GP_PAYGROUP
+      AND SEGSTAT.CAL_ID        = PRCSTAT.CAL_ID
+
+      AND PRCSTAT.RSLT_VER_NUM  = (SELECT MAX(RSLT_VER_NUM) FROM PS_GP_PYE_PRC_STAT
+                                    WHERE EMPLID      = SEGSTAT.EMPLID
+                                      AND CAL_RUN_ID  = SEGSTAT.CAL_RUN_ID
+                                      AND EMPL_RCD    = SEGSTAT.EMPL_RCD
+                                      AND GP_PAYGROUP = SEGSTAT.GP_PAYGROUP
+                                     AND CAL_ID      = SEGSTAT.CAL_ID)
+      AND PRCSTAT.RSLT_REV_NUM  = 1
+      AND PRCSTAT.PYE_PRC_IND   = 'N'
+      AND PRCSTAT.SEL_STAT      = 'A'
+      AND PRCSTAT.SEL_ACTION    = 'C'
+      AND SEGSTAT.EMPLID        = PERSDATA.EMPLID
+      AND SEGSTAT.RSLT_SEG_NUM  > 0
+      AND SEGSTAT.GP_PAYGROUP   = GPCAL1.GP_PAYGROUP
+      AND SEGSTAT.CAL_ID        = GPCAL1.CAL_ID
+      AND GPCAL1.RUN_TYPE       = GPRUNTYPE1.RUN_TYPE
+      AND GPRUNTYPE1.CALC_TYPE  = 'P'
+      [$Order_By_Clause]
+
+END-SELECT
+   if $Rpt_summary = 'Y'
+      do Print-PYENT-Report-Line
+   else
+      do Print-Report_Line
+   end-if
+
+   do Print-Tot-line
+   if not #rows_selected
+      let $Page_Break_Indicator = 'Empl_Change'
+      #include 'gpauhdg5.sqc'
+      let $noDataMsg = '>>> No Data Found, Calendar Group ID: ' || $Cal_Run_ID
+      print $noDataMsg   (+5,10)
+   end-if
+
+end-procedure ! Process-Main
+
+
+
+!***********************************************************************
+! Get-ABN-Quote                                                        *
+! Called By:    Main                                                   *
+! Calls:        ABN indicator in GPAU_EE_TAX_DTL                       *
+! Description:  Retrieves ABN to determine tax withheld ABN or not     *
+!***********************************************************************
+
+begin-procedure Get-ABN-Quote
+    let $CNTRCTR_YN = ' ' 
+    let $ABN_IND    = ' '
+BEGIN-SELECT
+TAXDTL.GPAU_CNTRCTR_YN   &TAXDTL.CNTRCTR_YN
+TAXDTL.GPAU_ABN          &TAXDTL.ABN_IND
+    let $CNTRCTR_YN = &TAXDTL.CNTRCTR_YN
+    let $ABN_IND    = &TAXDTL.ABN_IND
+
+    FROM PS_GPAU_EE_TAX_DTL    TAXDTL
+
+    WHERE TAXDTL.EMPLID        = $Last_Emplid
+      AND TAXDTL.PAY_ENTITY    = $Last_Pay_Entity
+      AND TAXDTL.EFFDT         >= (select max(H.EFFDT) from PS_GPAU_EE_TAX_DTL  H
+                                     where H.EMPLID    = TAXDTL.EMPLID
+                                     and H.PAY_ENTITY  = TAXDTL.PAY_ENTITY 
+                                     and H.EFFDT       <= $Last_Seg_End)
+ 
+END-SELECT
+
+end-procedure  ! Get-ABN-Quote
+
+
+!***********************************************************************
+! Get-Amounts-Withheld                                                 *
+! Called By:    Main                                                   *
+! Calls:        Read GP_PIN to get PIN_NUM;                            *
+!               Read-Rslt-Accum                                        *
+! Description:  Retrieves accumulators tax amount                      *
+!***********************************************************************
+
+begin-procedure Get-Amounts-Withheld
+  
+
+BEGIN-SELECT
+ACCUM2.CALC_VAL   &ACCUM2.CALC_VAL
+    let #Tax_deducted =  &ACCUM2.CALC_VAL
+
+    if $CNTRCTR_YN = 'Y' and ltrim(rtrim($ABN_IND,' '),' ') <> ''
+       let #Emp_Amt_Withheld = #Emp_Amt_Withheld + #Tax_deducted
+       let #Tot_Amt_Withheld = #Tot_Amt_Withheld + #Tax_deducted
+       let #Tot_Emp_Amt_Withheld = #Tot_Emp_Amt_Withheld  +  #Tax_deducted
+    else
+       let #Emp_Amt_No_ABN   = #Emp_Amt_No_ABN + #Tax_deducted
+       let #Tot_Amt_No_ABN   = #Tot_Amt_No_ABN + #Tax_deducted
+       let #Tot_Emp_Amt_No_ABN   = #Tot_Emp_Amt_No_ABN +  #Tax_deducted
+    end-if
+
+
+    FROM PS_GP_RSLT_ACUM ACCUM2
+
+    WHERE ACCUM2.EMPLID        = $Last_Emplid
+      AND ACCUM2.CAL_RUN_ID    = $Last_Cal_Run_ID
+      AND ACCUM2.EMPL_RCD      = #Last_Empl_Rec
+      AND ACCUM2.EMPL_RCD_ACUM = #Last_Empl_Rec
+      AND ACCUM2.GP_PAYGROUP   = $Last_Paygroup
+      AND ACCUM2.CAL_ID        = $Last_Cal_ID
+      AND ACCUM2.RSLT_SEG_NUM  = #Last_Seg_Num
+!      AND ACCUM2.SLICE_BGN_DT =  $Last_Seg_Begin
+      AND ACCUM2.SLICE_END_DT  =  $Last_Seg_End
+      AND ACCUM2.PIN_NUM       =  #Tax_Pin_Num
+
+END-SELECT
+
+end-procedure  !Get-Amounts-Withheld
+
+
+!***********************************************************************
+! Get_TAX_PIN_NUM                                                      *
+! Called By:    Main                                                   *
+! Calls:        Read GP_PIN to get PIN_NUM;                            *
+! Description:  Retrieves accumulators tax pin num                     *
+!***********************************************************************
+
+begin-procedure Get_TAX_PIN_NUM
+
+BEGIN-SELECT
+
+GPPIN.PIN_NUM  &GPPIN.PIN_NUM
+
+     let #Tax_Pin_Num   = &GPPIN.PIN_NUM
+!** The Tax is store in PIN_CODE 'AUS TAX AUS' for Australia - Hard code using PIN_CODE since it is not changed, PIN_NUM
+!   and PIN_NM can be changed overtime:
+  FROM PS_GP_PIN  GPPIN
+  WHERE GPPIN.PIN_CODE = 'AUS TAX AUS'
+END-SELECT
+
+
+end-procedure  !Get_TAX_PIN_NUM
+
+!***********************************************************************
+! Print-Report_Line                                                    *
+! Called By:                                                           *
+! Calls:        Print-Empl-Header                                      *
+! Description:  Prints body of Empl info, Gross amt and ABN info       *
+!***********************************************************************
+
+begin-procedure Print-Report_Line
+!     DISPLAY  'Print-Report_Line '
+!*** Make sure that a single row of retrieved information, which prints   *
+!***   as two lines on the report, is not split so that the first line is *
+!***   on one page and the second line is on the other.  If this is the   *
+!***   case, start a new page so that both lines print on the new page.   *
+
+    add 1 to #Tot_records
+    if #current-line + 4 > #Maxlines
+        new-page
+        let $ErnDed_FirstTimethru = 'Y'
+    end-if
+    if  $ErnDed_FirstTimethru = 'Y'
+        do Print-Pay-Entity-Header
+    end-if
+    if  $ErnDed_FirstTimethru = 'Y'
+        do Print-Empl-Header
+    end-if
+
+    let  $ErnDed_FirstTimethru = 'N'
+
+
+    print $Last_Emplid       (+1,{Col_Emplid14_Lbl})
+    print #Last_Empl_Rec     (,{Col_Empl_Rec14_Lbl})  edit 99999999
+    print $Last_Name         (,{Col_Name14_Lbl})
+    if #Emp_Gross_Earnings <> 0
+       print #Emp_Gross_Earnings   (,{Col_Gross-Val}) edit 999,999,999,999.99
+    end-if
+
+    if #Emp_Amt_Withheld   <> 0
+       print #Emp_Amt_Withheld     (,{Col_Amt_W_Val}) edit 999,999,999,999.99
+    end-if
+
+    if #Emp_Amt_No_ABN    <> 0
+        print #Emp_Amt_No_ABN      (,{Col_Amt_No_ABN_Val}) edit 999,999,999,999.99
+    end-if
+end-procedure ! Print-Report_Line
+
+
+!***********************************************************************
+! Print-PYENT-Report-Line                                              *
+! Called By:    Main                                                   *
+! Calls:        Print-PYENT-Header                                     *
+! Description:  Prints body of Pay ENtity info, Gross amt and ABN info *
+!***********************************************************************
+
+begin-procedure Print-PYENT-Report-Line
+!     DISPLAY  'Print-PYENT-Report-Line
+    if #current-line + 4 > #Maxlines
+        new-page
+        let $ErnDed_FirstTimethru = 'Y'
+    end-if
+    if  $ErnDed_FirstTimethru = 'Y'
+        do Print-Pay-Ent-Header-Sum
+    end-if
+
+    let  $ErnDed_FirstTimethru = 'N'
+    print $Last_Pay_Entity       (+1,{Col_Emplid14_Lbl})
+    print $Last_Pay_Entity_Descr (,{Col_Name14_Lbl}) wrap 30 8
+    if #Emp_Gross_Earnings <> 0
+       print #Emp_Gross_Earnings   (,{Col_Gross-Val}) edit 999,999,999,999.99
+    end-if
+
+    if #Tot_Emp_Amt_Withheld   <> 0
+       print #Tot_Emp_Amt_Withheld     (,{Col_Amt_W_Val}) edit 999,999,999,999.99
+    end-if
+
+    if #Tot_Emp_Amt_No_ABN    <> 0
+        print #Tot_Emp_Amt_No_ABN      (,{Col_Amt_No_ABN_Val}) edit 999,999,999,999.99
+    end-if
+end-procedure ! Print-PYENT-Report-Line
+
+
+!***********************************************************************
+! Print-Tot-line                                                       *
+! Called By:    Main                                                   *
+! Calls:                                                               *
+! Description:  Print-Tot-line                                         *
+!***********************************************************************
+
+begin-procedure Print-Tot-line
+!    DISPLAY ' Print-Tot-line'
+    if #current-line + 2 > #Maxlines
+        new-page
+        let $ErnDed_FirstTimethru = 'Y'
+    end-if
+    if  $ErnDed_FirstTimethru = 'Y'
+        do Print-Pay-Entity-Header
+    end-if
+    if  $ErnDed_FirstTimethru = 'Y'
+        do Print-Empl-Header
+    end-if
+
+    let  $ErnDed_FirstTimethru = 'N'
+
+    graphic (, 2, 180) horz-line
+    print $Totals_lbl        (+2,{Col_Emplid14_Lbl})
+    if $Rpt_summary = 'N'
+       print #Tot_records       (,{Col_Empl_Rec14_Lbl}) edit 99999999
+    end-if
+    if #Tot_Gross_Earnings <> 0
+       print #Tot_Gross_Earnings   (,{Col_Gross-Val}) edit 999,999,999,999.99
+    end-if
+
+    if #Tot_Amt_Withheld   <> 0
+       print #Tot_Amt_Withheld     (,{Col_Amt_W_Val}) edit 999,999,999,999.99
+    end-if
+
+    if #Tot_Amt_No_ABN    <> 0
+        print #Tot_Amt_No_ABN      (,{Col_Amt_No_ABN_Val}) edit 999,999,999,999.99
+    end-if
+end-procedure ! Print-Tot-line
+
+
+
+!***********************************************************************
+! Print-Empl-Header                                                    *
+! Called By:                                                           *
+! Calls:        none                                                   *
+! Description:  Print-Empl-Header.                                     *
+!***********************************************************************
+begin-procedure Print-Empl-Header
+
+    print $Emplid_lbl              (+2,{Col_Emplid14_Lbl})
+    print $Rec_Num_lbl             (,  {Col_Empl_Rec14_Lbl})
+    print $Emp_Nm_lbl              (,  {Col_Name14_Lbl})
+    print $Gross_Earn_lbl          (,  {Col_Gross-lbl})
+    print $Amt_Withheld_lbl        (,  {Col_Amt_W_lbl})
+    print $Amt_no_ABN_lbl          (,  {Col_Amt_No_ABN_lbl})
+    graphic (, 2, 180) horz-line
+    position (+1)
+end-procedure ! Print-Empl-Header
+
+
+!***********************************************************************
+! Print-Pay-Entity-Header                                              *
+! Called By:    Print-Report_line                                      *
+! Calls:        none                                                   *
+! Description:  Prints Pay-Entity-Header                               *
+!***********************************************************************
+begin-procedure Print-Pay-Entity-Header
+           graphic (+1, 1, 180) box 4
+           print $Pay_Ent_lbl                (,2)
+           print $Last_Pay_Entity            (,+3)
+           print $Last_Pay_Entity_Descr      (,+5) wrap 60 4
+
+end-procedure !  Print-Cal-ID-Header
+
+
+!***********************************************************************
+! Print-Pay-Ent-Header-Sum                                             *
+! Called By:                                                           *
+! Calls:        none                                                   *
+! Description:  Print-Empl-Header.                                     *
+!***********************************************************************
+begin-procedure Print-Pay-Ent-Header-Sum
+
+    print $Pay_Ent_lbl             (+2,{Col_Emplid14_Lbl})
+    print $Gross_Earn_lbl          (,  {Col_Gross-lbl})
+    print $Amt_Withheld_lbl        (,  {Col_Amt_W_lbl})
+    print $Amt_no_ABN_lbl          (,  {Col_Amt_No_ABN_lbl})
+    graphic (, 2, 180) horz-line
+    position (+1)
+end-procedure ! Print-Pay-Ent-Header-Sum
+
+!***********************************************************************
+! Delete-RunControl                                                    *
+! Called By:    begin-report                                           *
+! Calls:        none                                                   *
+! Description:  Delete run control when report comes to successful     *
+!                   end.                                               *
+!***********************************************************************
+
+begin-procedure Delete-RunControl
+begin-SQL
+DELETE FROM PS_GPAU_RC_REPORTS
+    WHERE OPRID         = $Oprid
+        AND RUN_CNTL_ID = $Run_Cntl_ID;
+        #ifdef ORACLE
+           COMMIT;
+        #endif
+
+
+DELETE FROM PS_GPAU_RC_PYENT
+    WHERE OPRID         = $Oprid
+        AND RUN_CNTL_ID = $Run_Cntl_ID;
+        #ifdef ORACLE
+           COMMIT;
+        #endif
+
+
+end-SQL
+
+end-procedure ! Delete-RunControl
+
+
+
+!***********************************************************************
+! SQCS included in the report                                          *
+!***********************************************************************
+
+#include 'gpaurcl5.sqc'     ! Get run control parameter values, specific to this report
+#include 'datemath.sqc'     ! Date conversion procedures
+#include 'sqrtrans.sqc'     ! Translate SQR strings to given language
+!#include 'prcsapi.sqc'      ! Replaces stdapi.sqc
+#include 'prcslng.sqc'      ! Replaces getrplng.sqc
+#include 'readxlat.sqc'     ! Procedure to read values from xlattable
+#include 'reset1.sqc'        ! Reset printer procedure

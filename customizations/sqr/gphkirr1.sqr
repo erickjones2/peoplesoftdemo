@@ -1,0 +1,2819 @@
+!***********************************************************************
+!  GPHK0001:  IR56B                                                    *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2017, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!                                                                      !
+!       $Release:  HR92                                                !
+!           $Bug:  25996997                                            !
+!                                                                      *
+!***********************************************************************
+!ICE #      Issue / Resolution                                           !
+!---------  -------------------------------------------------------------!
+!66309001   Changes in Layout, New rows added, Processing Overseas Amt   !
+!18/4/02    Processing by Tax Reference Number & Mult currency processing!
+!                                                                        !
+!           The SQR has been modified to allow multi currency processing !
+!           Also processing is done by tax reference number.             !
+!           The layout has also been changed                             !
+!693026000  The SQR has been modified for formatting issues.             !
+!                                                                        !
+!681383000  Report should print creation date instead of print date.     !
+!14/06/04   SQR modified to use CREATION_DT from GPSG_IR56_TBL record    !
+!            to print Creation date on the IR reports.                   !
+!1618509000 The SQR has been modified so that the employees get sorted in!
+!           correct order in the control list
+!*********************************************************************** !
+#include 'setenv.sqc'    !Set environment
+    
+#define PAGEWIDTH  180
+begin-setup
+#include 'setupdb.sqc'
+    
+    page-size 80 295
+
+  declare printer
+        type          = HPLASERJET
+        orientation   = portrait
+        chars-inch    = 28.0
+        top-margin    = 1.12
+        left-margin   = 1.0
+        font          = 5
+        point-size    = 12
+        lines-inch    = 5.0
+    
+
+End-Setup
+
+
+!********************************************************************
+! Procedure :   Report
+!********************************************************************
+begin-report
+  Let $ReportHead   = 'INLAND REVENUE DEPARTMENT'
+  Let $ReportTitle  = 'EMPLOYER''S RETURN OF REMUNERATION AND PENSIONS'
+  Let $ReportType   = 'E'
+
+  Do Stdapi-Init
+  Do Init-DateTime
+  Do Get-Current-DateTime
+  Do Get-RC-Parm
+ 
+  Let $ER_FileNumber  = ''
+  Let $ER_Signatory   = ''
+  Let $ER_Designation = ''
+
+  Do Get-TaxRef-Details
+
+  if $IR56BType ='2'
+     Do Select-Empl-Ctrl-List
+  else
+     Do Check-EE-RC-List
+     if #EEList
+        Do Process-EE-In-List
+     else
+        Do Process-Dynamic-List
+     End-if
+  End-if
+  Do Delete-RC-Parms
+  Do Stdapi-Term
+
+end-report
+!
+!********************************************************************
+! Procedure :   Get-RC-Parm
+!********************************************************************
+Begin-Procedure Get-RC-Parm
+Begin-SELECT
+GPHK_TAX_REF_NUM
+GPHK_TAX_YEAR
+GPHK_REPRINT_YN
+GPHK_IR56B_TYPE
+PRINT_DATE
+GPHK_TXYR_EDT
+GPHK_TXYR_BDT
+GPHK_56B_MANUAL_YN
+CURRENCY_CD
+
+      Let $TaxRefNum = &GPHK_TAX_REF_NUM
+      Let #TaxYear   = &GPHK_TAX_YEAR
+      Let $RePrintYN = &GPHK_REPRINT_YN
+      Let $IR56BType = &GPHK_IR56B_TYPE
+      Let $Print_Dt  = &PRINT_DATE
+      Let $Tax_Yr_March = &GPHK_TXYR_EDT
+      Let $Manual56B = &GPHK_56B_MANUAL_YN
+      Let $CurrencyCd = &CURRENCY_CD
+
+! Added to set date to necessary format.
+
+     ! Do Format-DateTime($PrintDate, $PrintDate, {DEFDATE},'','')
+
+      Do Convert-To-DTU-Date(&GPHK_TXYR_EDT,$TaxYrEDT_DTU)
+      Do dtu-Parse-Date($TaxYrEDT_DTU,#D_YR,#D_MN,#D_DY)
+      Let $TXYR_Day = edit(#D_DY,'99')
+      Let $TXYR_YR  = edit(#D_YR,'9999')
+
+      Let #Check_Month = #D_MN
+
+      Do Get-Month-Name
+
+      Let $PrnTxYrDt = $TXYR_Day || $Month_Print || $TXYR_YR
+
+      Do Convert-To-DTU-Date(&GPHK_TXYR_BDT,$TaxYrBDT_DTU)
+      Do dtu-Parse-Date($TaxYrBDT_DTU,#BD_YR,#BD_MN,#BD_DY)
+      Let $TXYR_BDay = edit(#BD_DY,'99')
+      Let $TXYR_BYR  = edit(#BD_YR,'9999')
+
+      Let #Check_Month = #BD_MN
+
+      Do Get-Month-Name
+
+      Let $PrnTxYrBDt = $TXYR_BDay || $Month_Print || $TXYR_BYR
+
+      If $RePrintYN = 'Y'
+         Let $WhereClause = ' AND PM.GPHK_ISSUE_STATUS IN (''1'',''2'')'
+      Else
+         Let $WhereClause = ' AND PM.GPHK_ISSUE_STATUS = ''2'''
+      End-if
+
+      Let $ManualClause = ''
+      Let $ManualClause1 = ''
+
+      If $Manual56B = 'Y'
+         Let $ManualClause  = ' AND A1.GPHK_SHEET_NUM > 900000 '
+         Let $ManualClause1 = ' AND A.GPHK_SHEET_NUM > 900000 '
+      End-if
+
+      Let $CurrencyClause = ''
+      Let $CurrencyClause1 = ''
+      if rtrim($CurrencyCd,' ') <> ''
+         Let $CurrencyClause = ' AND AMT.CURRENCY_CD = ' || '''' || $CurrencyCd || ''''
+         Let $CurrencyClause1 = ' AND AMT1.CURRENCY_CD = ' || '''' || $CurrencyCd || ''''
+         Let $CurrLbl = '(' || $CurrencyCd || ')'
+         Let $CurrLbl1 = 'Amount (' || $CurrencyCd || ')'
+      else
+         Let $CurrLbl1 = 'Amount (HK$)'
+      End-if
+
+     FROM PS_GPHK_I56_RUNCTL
+    WHERE OPRID       = $PRCS_OPRID
+      AND RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+End-SELECT
+End-Procedure   !Get-RC-Parm
+
+
+!
+!********************************************************************
+! Procedure :   Currency-Conversion
+!********************************************************************
+
+
+Begin-Procedure Currency-Conversion
+let #Rate_multiplier = 0
+if ltrim(rtrim($TempCurrencycode, ' '),' ')<>'' AND #TempCurrency <> 0
+Begin-SELECT
+A1.RATE_MULT
+  Let #Rate_multiplier = &A1.RATE_MULT
+FROM PS_RT_RATE_TBL A1
+WHERE RT_TYPE= (SELECT RT_TYPE FROM PS_GPHK_EXCHG_TBL A2
+                WHERE GPHK_TAX_YEAR = (SELECT MAX(A2.GPHK_TAX_YEAR)
+                                       FROM PS_GPHK_EXCHG_TBL A2
+                                       WHERE A2.GPHK_TAX_YEAR <= #TaxYear))
+AND FROM_CUR = $TempCurrencycode
+AND TO_CUR = 'HKD'
+AND EFFDT <= (SELECT EFFDT_FROM FROM PS_GPHK_EXCHG_TBL A3
+             WHERE GPHK_TAX_YEAR = (SELECT MAX(A3.GPHK_TAX_YEAR)
+                                    FROM PS_GPHK_EXCHG_TBL A3
+                                    WHERE A3.GPHK_TAX_YEAR <= #TaxYear))
+End-SELECT
+end-if
+  let #TempCurrency = #OvseasAmt * #Rate_multiplier
+  let #TempCurrency = Trunc(#TempCurrency, 0)
+
+End-Procedure
+
+
+!
+!********************************************************************
+! Procedure :   Currency-Conversion-ER
+!********************************************************************
+
+Begin-Procedure Currency-Conversion-ER
+let #Rate_multiplier = 0
+if ltrim(rtrim($TempCurrencycode1, ' '),' ')<>'' AND #TempCurrency1 <> 0
+Begin-SELECT
+B1.RATE_MULT
+  Let #Rate_multiplier = &B1.RATE_MULT
+FROM PS_RT_RATE_TBL B1
+WHERE RT_TYPE= (SELECT RT_TYPE FROM PS_GPHK_EXCHG_TBL B2
+                WHERE GPHK_TAX_YEAR = (SELECT MAX(B2.GPHK_TAX_YEAR)
+                                       FROM PS_GPHK_EXCHG_TBL B2
+                                       WHERE B2.GPHK_TAX_YEAR <= #TaxYear))
+AND FROM_CUR = $TempCurrencycode1
+AND TO_CUR = 'HKD'
+AND EFFDT <= (SELECT EFFDT_FROM FROM PS_GPHK_EXCHG_TBL B3
+             WHERE GPHK_TAX_YEAR = (SELECT MAX(B3.GPHK_TAX_YEAR)
+                                    FROM PS_GPHK_EXCHG_TBL B3
+                                    WHERE B3.GPHK_TAX_YEAR <= #TaxYear))
+End-SELECT
+end-if
+
+  let #TempCurrency1 = #EmplrPdAmt * #Rate_multiplier
+  let #TempCurrency1 = Trunc(#TempCurrency1, 0)
+End-Procedure
+
+!
+!********************************************************************
+! Procedure :   Get-Month-Name
+!********************************************************************
+Begin-Procedure Get-Month-Name
+      Let $Month_Print = ''
+      Evaluate #Check_Month
+         When = 1
+               Let $Month_Print = ' January '
+               break
+         When = 2
+               Let $Month_Print = ' February '
+               break
+         When = 3
+               Let $Month_Print = ' March '
+               break
+         When = 4
+               Let $Month_Print = ' April '
+               break
+         When = 5
+               Let $Month_Print = ' May '
+               break
+         When = 6
+               Let $Month_Print = ' June '
+               break
+         When = 7
+               Let $Month_Print = ' July '
+               break
+         When = 8
+               Let $Month_Print = ' August '
+               break
+         When = 9
+               Let $Month_Print = ' September '
+               break
+         When = 10
+               Let $Month_Print = ' October '
+               break
+         When = 11
+               Let $Month_Print = ' November '
+               break
+         When = 12
+               Let $Month_Print = ' December '
+               break
+      End-Evaluate
+End-Procedure   !Get-Month-Name
+!
+!********************************************************************
+! Procedure :   Check-EE-RC-List
+!********************************************************************
+Begin-Procedure Check-EE-RC-List
+  Let #EEList = 0
+Begin-SELECT
+CHK.EMPLID
+       Let #EEList = 1
+     FROM PS_GPHK_I56_EE_RC CHK
+    WHERE CHK.OPRID       = $PRCS_OPRID
+      AND CHK.RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+End-SELECT
+End-Procedure   Check-EE-RC-List
+!
+!********************************************************************
+! Procedure :   Process-EE-In-List
+!********************************************************************
+Begin-Procedure Process-EE-In-List
+Begin-SELECT
+A1.EMPLID          &PEL_Emplid
+A1.GPHK_SHEET_NUM  &PEL_SheetNum
+A1.GPHK_SERIAL_NUM &PEL_SerialNum
+
+     Let $Emplid    = &PEL_Emplid
+     Let #SerialNum = &PEL_SerialNum
+
+     if rtrim($CurrencyCd,' ') <> ''
+        Do Check-Currency-Payment
+        if $PaidInSelected = 'Y'   ! Process Employee if the selected currency has been used to pay the employee.
+           Do Process-Main
+        end-if
+     else
+        Do Process-Main
+     end-if
+
+  FROM PS_GPHK_I56_EE_RC CHK, PS_GPHK_IR56_TBL A1
+    WHERE CHK.OPRID           = $PRCS_OPRID
+      AND CHK.RUN_CNTL_ID     = $PRCS_RUN_CNTL_ID
+      AND CHK.EMPLID          = A1.EMPLID
+      AND A1.GPHK_REPORT_TYPE = $ReportType
+      AND A1.GPHK_TAX_YEAR    = #TaxYear
+      AND A1.GPHK_TAX_REF_NUM = $TaxRefNum
+      AND A1.GPHK_SERIAL_NUM  = (SELECT MAX(A11.GPHK_SERIAL_NUM) FROM PS_GPHK_IR56_TBL A11
+                                   WHERE A11.GPHK_REPORT_TYPE = A1.GPHK_REPORT_TYPE
+                                     AND A11.GPHK_TAX_YEAR    = A1.GPHK_TAX_YEAR
+                                     AND A11.GPHK_TAX_REF_NUM = A1.GPHK_TAX_REF_NUM
+                                     AND A11.EMPLID           = A1.EMPLID
+                                )
+      [$ManualClause]   ! Manual Clause for processing all > 900000 sheet numbers only.
+ ORDER BY A1.GPHK_SHEET_NUM
+End-SELECT
+End-Procedure   Process-EE-In-List
+!
+!********************************************************************
+! Procedure :   Process-Dynamic-List
+!********************************************************************
+Begin-Procedure Process-Dynamic-List
+Begin-SELECT
+A.EMPLID          &PDL_Emplid
+A.GPHK_SHEET_NUM  &PDL_SheetNum
+A.GPHK_SERIAL_NUM &PDL_SerialNum
+
+     let $Emplid    = &PDL_Emplid
+     Let #SerialNum = &PDL_SerialNum
+
+     if rtrim($CurrencyCd,' ') <> ''
+        Do Check-Currency-Payment
+        if $PaidInSelected = 'Y'   ! Process Employee if the selected currency has been used to pay the employee.
+            Do Process-Main
+        end-if
+     else
+        Do Process-Main
+     end-if
+
+   FROM PS_GPHK_IR56_TBL A
+    WHERE A.GPHK_REPORT_TYPE = $ReportType
+      AND A.GPHK_TAX_YEAR    = #TaxYear
+      AND A.GPHK_TAX_REF_NUM = $TaxRefNum
+      AND A.GPHK_SERIAL_NUM  = (SELECT MAX(A1.GPHK_SERIAL_NUM) FROM PS_GPHK_IR56_TBL A1
+                                   WHERE A1.GPHK_REPORT_TYPE = A.GPHK_REPORT_TYPE
+                                     AND A1.GPHK_TAX_YEAR    = A.GPHK_TAX_YEAR
+                                     AND A1.GPHK_TAX_REF_NUM = A.GPHK_TAX_REF_NUM
+                                     AND A1.EMPLID           = A.EMPLID
+                               )
+      [$ManualClause1]   ! Manual Clause for processing all > 900000 sheet numbers only.
+ ORDER BY A.GPHK_SHEET_NUM
+End-SELECT
+End-Procedure   Process-Dynamic-List
+!
+!********************************************************************
+! Procedure :   Delete-RC-Parms
+!********************************************************************
+Begin-Procedure Delete-RC-Parms
+begin-SQL
+DELETE FROM PS_GPHK_I56_RUNCTL
+    WHERE OPRID         = $PRCS_OPRID
+        AND RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+End-SQL
+begin-SQL
+DELETE FROM PS_GPHK_I56_EE_RC
+    WHERE OPRID         = $PRCS_OPRID
+        AND RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+End-SQL
+End-Procedure   Delete-RC-Parms
+!
+!********************************************************************
+! Procedure :   Process-Main
+!********************************************************************
+Begin-Procedure Process-Main
+Begin-SELECT
+PM.GPHK_PRD_BGN_DT
+PM.GPHK_PRD_END_DT
+PM.GPHK_SHEET_NUM
+PM.GPHK_IR56_REMARKS
+PM.GPHK_OVSEAS_AMT
+PM.GPHK_WITHHELD_AMT
+PM.GPHK_EMPLR_PD_AMT
+PM.GPHK_STPD_BDT
+PM.GPHK_STPD_EDT
+PM.GPHK_IR56_STATUS
+PM.GPHK_OVS_CNC_CD
+PM.NATIONAL_ID_TYPE
+PM.NATIONAL_ID
+PM.PASSPORT_NBR
+PM.CREATION_DT
+PM.CURRENCY_CD
+PM.CURRENCY_CD_ER
+
+    Do Init-Prn-Var
+
+    Let $PrintDate    = &PM.CREATION_DT
+    Let $PrdBeginDt   = &PM.GPHK_PRD_BGN_DT
+    Let $PrdEndDt     = &PM.GPHK_PRD_END_DT
+    Let #SheetNumber  = &PM.GPHK_SHEET_NUM
+    Let $IR56_Remarks = &PM.GPHK_IR56_REMARKS
+    Let #OvseasAmt    = &PM.GPHK_OVSEAS_AMT
+    Let #WithheldAmt  = &PM.GPHK_WITHHELD_AMT
+    Let #EmplrPdAmt   = &PM.GPHK_EMPLR_PD_AMT
+    Let $CopyVersion  = &PM.GPHK_IR56_STATUS
+    Let $OvseasCode   = &PM.GPHK_OVS_CNC_CD
+    Let $EE_PassPort  = &PM.PASSPORT_NBR
+    Let $EE_ID_No     = &PM.NATIONAL_ID
+
+    Let $CurrencyCode1 = &PM.CURRENCY_CD
+    Let $CurrencyCode4 = &PM.CURRENCY_CD_ER
+
+    let #TempCurrency = #OvseasAmt
+    let #TempCurrency1 = #EmplrPdAmt
+    let $TempCurrencycode = $CurrencyCode1
+    let $TempCurrencycode1 = $CurrencyCode4
+    Do Currency-Conversion
+    Do Currency-Conversion-ER
+    Let #OvseasAmt    = Trunc(#OvseasAmt,0)
+! Setting the date to the necessary print format
+
+     Do Format-DateTime($PrintDate, $PrintDate, {DEFDATE},'','')
+     Do Format-DateTime($PrdBeginDt,$PrdBeginDt, {DEFDATE},'','')
+     Do Format-DateTime($PrdEndDt,$PrdEndDt, {DEFDATE},'','')
+
+    if rtrim(&PM.GPHK_STPD_BDT,' ') = ''
+       Let $V08_PrdBeginDt = $PrdBeginDt
+    else
+       Let $V08_PrdBeginDt = &PM.GPHK_STPD_BDT
+       Do Format-DateTime($V08_PrdBeginDt,$V08_PrdBeginDt, {DEFDATE},'','')
+    end-if
+    if rtrim(&PM.GPHK_STPD_EDT,' ') = ''
+       Let $V08_PrdEndDt = $PrdEndDt
+    else
+       Let $V08_PrdEndDt = &PM.GPHK_STPD_EDT
+       Do Format-DateTime($V08_PrdEndDt,$V08_PrdEndDt, {DEFDATE},'','')
+    end-if
+
+    if rtrim($OvseasCode,' ') <> ''
+       Do Get-Overseas-Concern
+    end-if
+
+    Do Get-EE-Details
+    Do Get-EE-Quarter-Count
+    !Do Get-EE-Quarters
+    Do Get-EE-Quarters_A
+    Do Retrieve-EE-Amounts
+    Do Print-Document
+    Do Update-Issue-Status
+
+    FROM PS_GPHK_IR56_TBL PM
+    WHERE PM.EMPLID           = $Emplid
+      AND PM.GPHK_SERIAL_NUM  = #SerialNum
+      AND PM.GPHK_REPORT_TYPE = $ReportType
+      AND PM.GPHK_TAX_YEAR    = #TaxYear
+      AND PM.GPHK_TAX_REF_NUM = $TaxRefNum
+[$WhereClause]
+End-SELECT
+End-Procedure   Process-Main
+!
+!********************************************************************
+! Procedure :   Get-Overseas-Concern
+!********************************************************************
+Begin-Procedure Get-Overseas-Concern
+Begin-SELECT
+OS.GPHK_OVSEAS_ADR        &OvseasAdr
+OS.GPHK_OVSEAS_CMPNY      &OvseasCmpny
+
+    Let $OvseasAdr   = &OvseasAdr
+    Let $OvseasCmpny = &OvseasCmpny
+
+    FROM PS_GPHK_OVS_CNCRN OS
+   WHERE OS.GPHK_OVS_CNC_CD = $OvseasCode
+End-SELECT
+End-Procedure   Get-Overseas-Concern
+!
+!********************************************************************
+! Procedure :   Init-Prn-Var
+!********************************************************************
+Begin-Procedure Init-Prn-Var
+    Let $PrdBeginDt   = ''
+    Let $PrdEndDt     = ''
+    Let #SheetNumber  =  0
+
+    Let $EE_ID_No                = ''
+    Let $EE_Tax_No               = ''
+    Let $EE_SurName              = ''
+    Let $EE_Maiden_SurName       = ''
+    Let $EE_Full_Name            = ''
+    Let $EE_Name_AC              = ''
+    Let $EE_PassPort             = ''
+    Let $EE_PP_Cntry_Issue       = ''
+    Let $EE_Sex                  = ''
+    Let $EE_MarStatus            = ''
+    Let $EE_SpouseName           = ''
+    Let $EE_Spouse_PP_No         = ''
+    Let $EE_Spouse_ID_No         = ''
+    Let $EE_Spouse_PP_CntryIssue = ''
+    Let $EE_Resid_Address        = ''
+    Let $EE_Corr_Address         = ''
+    Let $EE_Job_Descr            = ''
+    Let $EE_Job_FP_Time          = ''
+    Let $EE_JobCode              = ''
+    Let $EE_PT_Employer          = ''
+
+    Let #TotalWages        = 0
+    Let #TotalLeavePay     = 0
+    Let #TotalDirectorFee  = 0
+    Let #TotalCommission   = 0
+    Let #TotalBonus        = 0
+    Let #TotalBP_TA_Graty  = 0
+    Let #TotalRetireScheme = 0
+    Let #TotalEducBenefit  = 0
+    Let #TotalShareOptSch  = 0
+    Let #TotalAllowance1   = 0
+    Let #TotalAllowance2   = 0
+    Let #TotalAllowance3   = 0
+
+    Let $AllowanceDescr1   = ''
+    Let $AllowanceDescr2   = ''
+    Let $AllowanceDescr3   = ''
+
+    Let #TotalPensions     = 0
+
+    Let $IR56_Remarks      = ''
+    Let $OvseasCmpny       = ''
+    Let #OvseasAmt         = 0
+    Let $OvseasAdr         = ''
+    Let #WithheldAmt       = 0
+    Let #EmplrPdAmt        = 0
+
+    Let $Qtrs_1_Address    = ''
+    Let $Qtrs_1_Nature     = ''
+    Let $Qtrs_1_Prd_Begin  = ''
+    Let $Qtrs_1_Prd_End    = ''
+    Let #Amt_Qtrs_1_ER2LL  = 0
+    Let #Amt_Qtrs_1_EE2LL  = 0
+    Let #Amt_Qtrs_1_ER2EE  = 0
+    Let #Amt_Qtrs_1_EE2ER  = 0
+
+    Let $Qtrs_2_Address    = ''
+    Let $Qtrs_2_Nature     = ''
+    Let $Qtrs_2_Prd_Begin  = ''
+    Let $Qtrs_2_Prd_End    = ''
+    Let #Amt_Qtrs_2_ER2LL  = 0
+    Let #Amt_Qtrs_2_EE2LL  = 0
+    Let #Amt_Qtrs_2_ER2EE  = 0
+    Let #Amt_Qtrs_2_EE2ER  = 0
+
+End-Procedure   Init-Print-Variables
+!
+!********************************************************************
+! Procedure :   Get-EE-Personal-Data
+!********************************************************************
+Begin-Procedure Get-EE-Personal-Data
+Begin-SELECT
+PDA.SEX           &SexType
+PDA.MAR_STATUS    &MarStatusType
+
+    Let $EE_Sex       = &SexType
+    Let $EE_MarStatus = &MarStatusType
+
+    if $EE_Sex = 'F' and $EE_MarStatus ='M'
+       Do Get-EE-Maiden-Name
+    End-if
+
+    FROM PS_PERS_DATA_EFFDT PDA
+   WHERE PDA.EMPLID = $Emplid
+   AND PDA.EFFDT = (
+     SELECT MAX(PDA1.EFFDT)
+     FROM PS_PERS_DATA_EFFDT PDA1
+     WHERE PDA1.EMPLID = PDA.EMPLID
+     AND PDA1.EFFDT <= $Tax_Yr_March)
+End-SELECT
+End-Procedure   Get-EE-Personal-Data
+!
+!********************************************************************
+! Procedure :   Get-EE-Names
+!********************************************************************
+Begin-Procedure Get-EE-Names
+Begin-SELECT
+NM.NAME
+NM.FIRST_NAME
+NM.MIDDLE_NAME
+NM.LAST_NAME
+NM.PREF_FIRST_NAME
+NM.NAME_AC
+    Let $EE_SurName   = RTRIM(&NM.LAST_NAME,' ')
+    Let $EE_SurName   = translate($EE_SurName,' ','-')
+   ! Let $EE_Full_Name = rtrim(&NM.FIRST_NAME,' ') || ' ' || rtrim(&NM.MIDDLE_NAME,' ')
+     Let $EE_Full_Name = rtrim(&NM.MIDDLE_NAME,' ') || ' ' || rtrim(&NM.FIRST_NAME,' ')
+    Let $EE_Name_AC   = &NM.NAME_AC
+    !let $Name         = $EE_SurName || ',' || $EE_Full_Name
+    let $Name         = $EE_SurName || ' ' || $EE_Full_Name
+    let $Name         = substr($Name,1,30)
+   FROM PS_NAMES NM
+  WHERE NM.EMPLID = $Emplid
+    AND NM.NAME_TYPE = 'PRI'
+End-SELECT
+End-Procedure Get-EE-Names
+!
+!********************************************************************
+! Procedure :   Get-EE-Maiden-Name
+!********************************************************************
+Begin-Procedure Get-EE-Maiden-Name
+Begin-SELECT
+MLN.LAST_NAME
+    Let $EE_Maiden_SurName   = RTRIM(&MLN.LAST_NAME,' ')
+    Let $EE_Maiden_SurName   = translate($EE_Maiden_SurName,' ','-')
+
+   FROM PS_NAMES MLN
+  WHERE MLN.EMPLID = $Emplid
+    AND MLN.NAME_TYPE = 'MDN'
+End-SELECT
+End-Procedure   Get-EE-Maiden-Name
+!
+!********************************************************************
+! Procedure :   Get-EE-ID
+!********************************************************************
+Begin-Procedure Get-EE-ID
+     Let $EE_ID_No = ''
+Begin-SELECT
+EID.NATIONAL_ID
+     Let $EE_ID_No = rtrim(&EID.NATIONAL_ID,' ')
+
+   FROM PS_GPHK_EE_NID_VW EID
+  WHERE EID.EMPLID = $Emplid
+End-SELECT
+End-Procedure   Get-EE-ID
+!
+!********************************************************************
+! Procedure :   Get-Spouse-ID
+!********************************************************************
+Begin-Procedure Get-Spouse-ID
+Begin-SELECT
+ESID.NATIONAL_ID
+    Let $EE_Spouse_ID_No = rtrim(&ESID.NATIONAL_ID,' ')
+
+   FROM PS_GPHK_SPS_NID_VW ESID
+  WHERE ESID.EMPLID = $Emplid
+End-SELECT
+End-Procedure   Get-Spouse-ID
+!
+!********************************************************************
+! Procedure :   Get-EE-Tax-File-No
+!********************************************************************
+Begin-Procedure Get-EE-Tax-File-No
+Begin-SELECT
+ETD.NATIONAL_ID
+    Let $EE_Tax_No    = rtrim(&ETD.NATIONAL_ID,' ')
+
+   FROM PS_PERS_NID ETD
+  WHERE ETD.EMPLID = $Emplid
+   AND  ETD.NATIONAL_ID_TYPE ='TAX_NO'
+End-SELECT
+End-Procedure   Get-EE-Tax-File-No
+!
+!********************************************************************
+! Procedure :   Get-EE-PassPort-Detail
+!********************************************************************
+Begin-Procedure Get-EE-PassPort-Detail
+Begin-SELECT
+EPD.PASSPORT_NBR
+EPD.COUNTRY_PASSPORT
+    Let $EE_PassPort       = &EPD.PASSPORT_NBR
+    Let $EE_PP_Cntry_Issue = &EPD.COUNTRY_PASSPORT
+
+   FROM PS_GPHK_EE_PP_VW EPD
+  WHERE EPD.EMPLID = $Emplid
+    AND EPD.PASSPORT_NBR = $EE_PassPort
+End-SELECT
+End-Procedure   Get-EE-PassPort-Detail
+!
+!********************************************************************
+! Procedure :   Get-EE-Spouse-Detail
+!********************************************************************
+Begin-Procedure Get-EE-Spouse-Detail
+Begin-SELECT
+ESN.NAME
+    Let $EE_SpouseName = &ESN.NAME
+
+   FROM PS_GPHK_EE_SPS_VW ESN,
+        PS_PERS_DATA_EFFDT ESNA
+  WHERE ESN.EMPLID = $Emplid
+    AND ESN.EMPLID = ESNA.EMPLID
+    AND ESNA.MAR_STATUS = 'M'
+End-SELECT
+End-Procedure   Get-EE-Spouse-Detail
+!
+!********************************************************************
+! Procedure :   Get-Spouse-PassPort-Detail
+!********************************************************************
+Begin-Procedure Get-Spouse-PassPort-Detail
+Begin-SELECT
+ESPD.PASSPORT_NBR
+ESPD.COUNTRY_PASSPORT
+    Let $EE_Spouse_PP_No         = &ESPD.PASSPORT_NBR
+    Let $EE_Spouse_PP_CntryIssue = &ESPD.COUNTRY_PASSPORT
+   FROM PS_GPHK_EESP_PP_VW ESPD,
+        PS_PERS_DATA_EFFDT ESPDA
+  WHERE ESPD.EMPLID = $Emplid
+    AND ESPD.EMPLID = ESPDA.EMPLID
+    AND ESPDA.MAR_STATUS = 'M'
+End-SELECT
+End-Procedure   Get-Spouse-PassPort-Detail
+!
+!********************************************************************
+! Procedure :   Part-Time-ER-Name
+!********************************************************************
+Begin-Procedure Part-Time-ER-Name
+Begin-SELECT
+PTER.EMPLOYER
+
+    Let $EE_PT_Employer = &PTER.EMPLOYER
+
+   FROM PS_GPHK_PT_ER_DTL PTER
+  WHERE PTER.EMPLID = $Emplid
+End-SELECT
+End-Procedure   Part-Time-ER-Name
+!
+!********************************************************************
+! Procedure :   EE-Job-Detail
+!********************************************************************
+Begin-Procedure EE-Job-Detail
+Begin-SELECT
+JOB.JOBCODE
+JOB.FULL_PART_TIME
+JOB.SETID_JOBCODE
+
+    Let $EE_Job_FP_Time = &JOB.FULL_PART_TIME
+    Let $EE_JobCode     = &JOB.JOBCODE
+    Let $Job_Setid      = &JOB.SETID_JOBCODE
+
+    Do  EE-Job-Description
+
+
+   FROM PS_JOB JOB
+    WHERE JOB.EMPLID = $Emplid
+    AND JOB.JOB_INDICATOR = 'P'
+    AND JOB.EFFDT = (SELECT MAX(JOB1.EFFDT) FROM PS_JOB JOB1
+                        WHERE JOB1.EMPLID = JOB.EMPLID
+                          AND JOB1.EFFDT <= &PM.GPHK_PRD_END_DT
+                    )
+End-SELECT
+End-Procedure   EE-Job-Detail
+!
+!********************************************************************
+! Procedure :   EE-Job-Description
+!********************************************************************
+Begin-Procedure EE-Job-Description
+Begin-SELECT
+JBD.DESCR
+
+    Let $EE_Job_Descr = &JBD.DESCR
+
+    FROM PS_JOBCODE_TBL JBD
+       WHERE JBD.JOBCODE = $EE_JObCode
+         AND JBD.SETID = $Job_Setid
+         AND JBD.EFFDT = (SELECT MAX(JBD1.EFFDT) FROM PS_JOBCODE_TBL JBD1
+                             WHERE JBD1.JOBCODE = JBD.JOBCODE
+                               AND JBD1.SETID   = JBD.SETID
+                               AND JBD1.EFFDT  <= &PM.GPHK_PRD_END_DT
+                         )
+End-SELECT
+End-Procedure   EE-Job-Description
+
+
+
+!********************************************************************
+! Procedure :   Select-Empl-Ctrl-List
+
+!********************************************************************
+
+Begin-procedure Select-Empl-Ctrl-List
+   LET #EmplCount = 0
+   Let #LC = 0
+   let #PageNo = 0
+
+Do Print-Control-List-Heading
+
+Begin-SELECT
+
+PM3.EMPLID
+PM3.GPHK_SHEET_NUM
+PM3.GPHK_TAX_YEAR
+PM3.GPHK_TAX_REF_NUM
+PM3.GPHK_SERIAL_NUM &SerialNo
+
+
+    Let #SerialNum     = &SerialNo
+    Let $Emplid1       = &PM3.EMPLID
+
+
+     Do Print-Control-List
+
+From PS_GPHK_IR56_TBL PM3
+WHERE PM3.GPHK_REPORT_TYPE = $ReportType
+AND PM3.GPHK_TAX_YEAR = #TaxYear
+AND PM3.GPHK_TAX_REF_NUM = $TaxRefNum
+AND PM3.GPHK_SERIAL_NUM = (SELECT MAX(IN_IR56.GPHK_SERIAL_NUM) FROM PS_GPHK_IR56_TBL IN_IR56
+                                   WHERE IN_IR56.GPHK_REPORT_TYPE = PM3.GPHK_REPORT_TYPE
+                                     AND IN_IR56.GPHK_TAX_YEAR    = PM3.GPHK_TAX_YEAR
+                                     AND IN_IR56.GPHK_TAX_REF_NUM = PM3.GPHK_TAX_REF_NUM
+                                     AND IN_IR56.EMPLID           = PM3.EMPLID
+                                )
+ORDER BY PM3.GPHK_SHEET_NUM
+
+
+End-SELECT
+Do Print-Control-List-Footer
+End-Procedure Select-Empl-Ctrl-List
+
+
+
+
+!
+!********************************************************************
+! Procedure :   Print-Control-List-Heading
+!********************************************************************
+Begin-procedure Print-Control-List-Heading
+
+    if #PageNo > 0
+       Let #LC = 65
+       print 'Signature' (#LC,140)
+       print '_____________________________' (#LC,165)
+       Let #LC = #LC + 1
+       print 'Name' (#LC,140)
+       print '_____________________________' (#LC,165)
+       Print $ER_Signatory                               (#LC,165)
+       Let #LC = #LC + 1
+       print 'Designation' (#LC,140)
+       print '_____________________________' (#LC,165)
+       Print $ER_Designation                             (#LC,165)
+       Let #LC = #LC + 1
+       print 'Date'        (#LC,140)
+       Print $Print_Dt                                   (#LC,165)  edit 'DD/MM/YYYY'
+       print '_____________________________' (#LC,165)
+       page-number  (#LC,5)  'Page '
+       last-page    (#LC,23)  ' of      ' '.'
+       NEW-PAGE
+    End-if
+
+    Let #LC = 1
+    Let #LC = #LC + 1
+    print 'File No.'     (#LC,1)
+    print $ER_FileNumber (#LC,17)
+    Print $EntityName (#LC,87)
+    Let #LC = #LC + 1
+    Let $PrintStr = 'List of Employees with IR56Bs Prepared via Self-developed Software for the Year from ' || $PrnTxYrBDT || ' To ' || $PrnTxYrDt
+    print $PrintStr      (#LC,10)
+    Let #LC = #LC + 2
+    print 'Sheet No.'    (#LC,1) underline
+    print 'Name'         (#LC,25) underline
+    print 'HKIC No.'     (#LC,103) underline
+    print 'Total Income Per IR56B, Item 11' (#LC,135) underline
+    Let #LC = #LC + 1
+    if rtrim($CurrencyCd,' ') <> ''
+       Print $CurrLbl       (#LC,162)
+    else
+       print '(HK$)'        (#LC,162)
+    end-if
+    Let #LC = 7
+    Let #PageNo =  #PageNo + 1
+
+End-Procedure Print-Control-List-Heading
+
+
+!********************************************************************
+! Procedure :   Print-Control-List-Footer
+!********************************************************************
+
+Begin-procedure Print-Control-List-Footer
+
+If #PageNo > 0
+       Let #LC = 62
+       Print 'Grand Total of Income Per List    : ' (#LC,5)
+       graphic (#LC,86,45) box 1 5
+       Let $TotalAmt = edit(#TotalAmt, '999,999,999')
+       Let $TotalAmt = ltrim($TotalAmt,' ')
+       Let $TotalAmt = '$' || $TotalAmt 
+       Print $TotalAmt (#LC,95) 
+       Let #LC = #LC + 2
+       Print 'Total Number of Employees Per List : ' (#LC,5)
+       graphic (#LC,86,45) box 1 5
+       Print #EmplCount (#LC,95) edit '999999'
+
+       Let #LC = #LC + 1
+       print 'Signature' (#LC,140)
+       print '_____________________________' (#LC,165)
+       Let #LC = #LC + 1
+       print 'Name' (#LC,140)
+       print '_____________________________' (#LC,165)
+       Print $ER_Signatory                               (#LC,165)
+       Let #LC = #LC + 1
+       print 'Designation' (#LC,140)
+       print '_____________________________' (#LC,165)
+       Print $ER_Designation                             (#LC,165)
+       Let #LC = #LC + 1
+       print 'Date'        (#LC,140)
+       Print $Print_Dt                                  (#LC,165) edit 'DD/MM/YYYY'
+       print '_____________________________' (#LC,165)
+       page-number  (#LC,5)  'Page '
+       last-page    (#LC,23)  ' of      ' '.'
+
+    End-if
+
+End-Procedure   Print-Control-List-Footer
+
+
+!
+!********************************************************************
+! Procedure :   Print-Control-List
+!********************************************************************
+Begin-procedure Print-Control-List
+
+
+Begin-SELECT
+PM1.GPHK_SHEET_NUM
+PM1.EMPLID
+PM1.GPHK_OVSEAS_AMT
+PM1.GPHK_EMPLR_PD_AMT
+PM1.GPHK_SERIAL_NUM
+PM1.CURRENCY_CD
+PM1.CURRENCY_CD_ER
+
+    if #LC = 62
+       do Print-Control-List-Heading
+    end-if
+    Let #SheetNumber  = &PM1.GPHK_SHEET_NUM
+    Let $Emplid       = &PM1.EMPLID
+    LET #OvseasAmt = &PM1.GPHK_OVSEAS_AMT
+    Let #EmplrPdAmt   = &PM1.GPHK_EMPLR_PD_AMT
+    let $CurrencyCode2 = &PM1.CURRENCY_CD
+    let $CurrencyCode3 = &PM1.CURRENCY_CD_ER
+    let #TempCurrency1 = #EmplrPdAmt
+    LET #TempCurrency = #OvseasAmt
+    let $TempCurrencycode = $CurrencyCode2
+    let $TempCurrencycode1 = $CurrencyCode3
+    do Currency-Conversion
+    Do Currency-Conversion-ER
+
+
+    Do Get-EE-Names
+    Do Get-EE-ID
+    Let #EmplCount = #EmplCount + 1
+
+    Do Retrieve-EE-Amounts
+
+    print #SheetNumber      (#LC,2)  edit '000009'
+    let $Name = upper($Name)
+    print $Name             (#LC,23)
+    if rtrim($EE_ID_No,' ') <> ''
+       Let $EE_ID_No = translate($EE_ID_No, ' ','')
+       Let #EEIDLen  = length($EE_ID_No)
+       if #EEIDLen < 9
+          Let $EE_ID_No = lpad($EE_ID_No,9,' ')
+       end-if
+       Print $EE_ID_No      (#LC,100) edit 'XXXXXXXX(X)'
+    end-if
+
+    Print #Tamt  (#LC,149) edit '999,999,999'
+    Let #TotalAmt = #TotalAmt + #Tamt
+    Let #LC = #LC + 1
+
+    FROM PS_GPHK_IR56_TBL PM1
+    WHERE PM1.GPHK_REPORT_TYPE = $ReportType
+      AND PM1.GPHK_TAX_YEAR    = #TaxYear
+      AND PM1.GPHK_TAX_REF_NUM = $TaxRefNum
+      !AND PM1.GPHK_IR56_STATUS = 'O'
+      AND PM1.GPHK_ISSUE_STATUS <> '0'
+      AND PM1.GPHK_SHEET_NUM < 900000
+       AND PM1.GPHK_SERIAL_NUM = #SerialNum
+      AND PM1.EMPLID = $Emplid1
+ ORDER BY PM1.GPHK_SHEET_NUM
+End-SELECT
+
+End-Procedure   Print-Control-List
+!
+!********************************************************************
+! Procedure :   Print-Document
+!********************************************************************
+Begin-procedure Print-Document
+
+   Let #CR  = 1
+   Let #PC  = 1
+   Let #PC1 = 5
+   Let #PC2 = 9
+   Let #PC3 = 10
+
+   Let #StCol = 280
+   Let #TermCol = 260
+
+
+   Let #Headlen = length($ReportHead)
+   Let #CC = {PAGEWIDTH}/2 - (#Headlen / 2)
+
+   if $CopyVersion = 'R'
+      do Get-Previous-Sheet-Detail
+   end-if
+
+   if $CopyVersion = 'R'
+      print 'REPLACEMENT-PREVIOUS FORM SUBMITTED ON ' (#Cr,#PC) BOLD
+      Print $PreviousSubmissionDt (#Cr,+80) BOLD
+   end-if
+
+   if $CopyVersion = 'O'
+      Do Check-Sent-Flag
+      if #SentFlag > 0
+         print 'SUPPLEMENTARY' (#Cr,#PC) BOLD
+      end-if
+   end-if
+   Let #PCCol = #TermCol - 10
+   !Print 'Appendix A' (#CR,#PCCol) underline
+
+   Let #Cr = #Cr + 1
+   Let #CC = #CC + 19
+   Print $ReportHead (#Cr,#CC) BOLD
+
+   Let #Cr = #Cr + 1
+   Let #Headlen = length($ReportTitle)
+   Let #CC = {PAGEWIDTH}/2 - (#Headlen / 2)
+   !Let #CC = #CC - 10
+
+   Print $ReportTitle                (#Cr,#CC) BOLD
+
+   Let $ReportTitle1 = 'FOR THE YEAR FROM ' || $PrnTxYrBDT || ' TO ' || $PrnTxYrDt
+
+   Let #Headlen = length($ReportTitle1)
+   Let #CC = {PAGEWIDTH}/2 - (#Headlen / 2)
+   Let #Cr = #Cr + 1
+   Let #CC = #CC + 9
+   Print $ReportTitle1                (#Cr,#CC) BOLD
+   Print $PrnDate                     (#Cr,65)
+
+   Let #Cr = #Cr + 2
+   !print '    Employee''s tax file no. in Inland Revenue Department: '   (#Cr,#PC)
+   !if rtrim($EE_Tax_No,' ') <> ''
+   !   Print $EE_Tax_No                             (#Cr,105) edit 'XXX-XXXXXXXXX'
+   !end-if
+
+   Let #PCCol = #TermCol - 45
+   Print 'Sheet No:'                            (#Cr,#PCCol)
+   Let #PCCol = #TermCol - 10
+   move #SheetNumber to $Sheet
+   Let #PCCol = #StCol - 37                         !*************** Right Allign column number = 260
+   Print #SheetNumber                           (#Cr,#PCCol) BOLD point-size  = 17 edit '999,999,999' 
+   Print '****'                                 (#Cr,#StCol) BOLD point-size    = 17
+
+   Let #Cr = #Cr + 1
+   print '1.  Employer''s File No.: '            (#Cr,#PC)
+   Let #PCCol = #PCCol - 8
+   !print $ER_FileNumber                         (#Cr,#PCCol)
+   print $ER_FileNumber                         (#Cr,55)
+   Let #PCCol = #PCCol + 8
+   Let #Cr = #Cr + 1
+   print ' Name of Employer:'                  (#Cr,#PC1)
+   Let $EntityName = upper($EntityName)
+   Print $EntityName                          (#Cr,55)
+
+   Let #Cr = #Cr + 1
+   print '2.  Surname of Employee or Pensioner:' (#Cr,#PC)
+   if rtrim($EE_Maiden_SurName,' ') <> ''
+      Let $Prn_SurName = rtrim($EE_Maiden_SurName,' ')
+   else
+      Let $Prn_SurName = rtrim($EE_SurName,' ')
+   end-if
+   
+   Let $Prn_SurName = upper($Prn_SurName)
+   
+ 
+   !*********************RIGHT JUSTIFICATION*********************
+   Let $Rev_Surname = ''
+   Let #surlenght = length($Prn_SurName ) + 1
+   Let #counter = #surlenght - 1
+   Let $temp = ''
+   Let #rightjustcol = 276
+   Let #allign = 0
+   Let $first = 'Y'
+   
+   GRAPHIC () FONT 5 17 0 22
+   While(#counter > 0)
+   Let $temp = substr( $Prn_SurName,#counter,1)   !*****getting one character from the end
+   Let #allign = 0
+   
+   
+   
+        If($temp = 'I' or $temp = 'J'  or $temp = ',' )
+    
+          Let #allign = -3 !SMALL
+        
+          if $first = 'Y' 
+            let #rightjustcol = #rightjustcol - 4
+            Print $temp (#Cr,#rightjustcol )  BOLD
+          else
+            Print $temp (#Cr, -4)  BOLD
+          end-if
+        End-If
+    
+        If($temp = 'M' or $temp = 'W' ) !BIG
+        Let #allign = -5        
+          if $first = 'Y' 
+            let #rightjustcol = #rightjustcol - 6
+            Print $temp (#Cr,#rightjustcol )  BOLD
+          else
+            if($prev = 'I' or $prev = 'J')
+            Print $temp (#Cr, -7)  BOLD 
+            else
+            Print $temp (#Cr, -6)  BOLD
+            end-if
+          end-if
+        End-If
+        
+        If($temp = 'H' or $temp = 'G' OR $TEMP = 'O' ) !BIG
+        Let #allign = -5        
+          if $first = 'Y' 
+            let #rightjustcol = #rightjustcol - 5
+            Print $temp (#Cr,#rightjustcol )  BOLD
+          else
+            !if($prev = 'I' or $prev = 'J')
+            Print $temp (#Cr, -6)  BOLD 
+            !else
+            !Print $temp (#Cr, -6)  BOLD
+            !end-if
+          end-if
+        End-If
+    
+        If($temp = 'B' or $temp = 'E' or $temp = 'F' or $temp = 'K' or $temp = 'L' or $temp = 'P' or $temp = 'R' or $temp ='S' or $temp ='T' or $temp ='X' or $temp ='Y' or $temp = 'Z' ) !LESS THAN EXACT FIT
+          Let #allign = -3
+          if $first = 'Y' 
+            let #rightjustcol = #rightjustcol - 5
+            Print $temp (#Cr,#rightjustcol )  BOLD
+          else 
+           ! if($prev = 'I' or $prev = 'J')
+           ! Print $temp (#Cr, -4)  BOLD 
+            !else
+            Print $temp (#Cr, -5)  BOLD
+            !End-If
+          end-if
+        
+        END-IF
+        
+        if #allign = 0
+            if $first = 'Y' 
+                let #rightjustcol = #rightjustcol - 5
+                Print $temp (#Cr,#rightjustcol )  BOLD
+            else 
+                if($prev = 'I' or $prev = 'J' )
+                Print $temp (#Cr, -6)  BOLD 
+                else
+                Print $temp (#Cr, -5)  BOLD
+                End-If
+            end-if
+        end-if
+    
+        Let $prev  = $temp
+    
+    !Let #rightjustcol = #rightjustcol - #allign
+    
+    !Let $temp = ' '|| $temp
+    
+    
+   Let $first = 'N'    
+   
+   Let #counter = #counter - 1
+   Let $temp = ''
+  
+   End-While
+   
+   !Put back the graphics
+     GRAPHIC () FONT 5 12 0 28
+    !********************************************************* 
+    
+    
+    Print '****'                                 (#Cr,#StCol) point-size  = 17  BOLD
+    
+    
+   Let #Cr = #Cr + 1
+   print ' Given name in Full:'                  (#Cr,#PC1)
+   let $EE_Full_Name = upper($EE_Full_Name)
+   Print $EE_Full_Name                           (#Cr,55)
+
+   Let #Cr = #Cr + 1
+   print ' Full name in Chinese:'                 (#Cr,#PC1)
+   let $EE_Name_AC = upper($EE_Name_AC)
+   Print $EE_Name_AC                             (#Cr,55)
+
+   Let #Cr = #Cr + 1
+   print '3.  (a) H.K. Identity Card Number:'    (#Cr,#PC)
+
+   Let #PCCol = #TermCol - 16
+
+   if rtrim($EE_ID_No,' ') <> ''
+      Let $EE_ID_No = translate($EE_ID_No, ' ','')
+
+      Let $EE_ID_No = rtrim($EE_ID_No,' ')
+
+      Let #EEIDLen = length($EE_ID_No)
+      if #EEIDLen < 9
+         Let $EE_ID_No = lpad($EE_ID_No,9,' ')
+      end-if
+      If(#EEIDLen = 8)
+      Let #PCCol = #StCol - 2 - #EEIDLen - 26
+      else 
+      Let #PCCol = #StCol - 5 - #EEIDLen - 26
+      End-If
+      Print $EE_ID_No                               (#Cr,#PCCol) BOLD point-size    = 17 edit 'XXXXXXXX(X)'
+      Print '****'                                  (#Cr,#StCol) BOLD point-size    = 17
+   end-if
+
+   Let #Cr = #Cr + 1
+   print ' (b) Passport Number and place of issue (if Employee has no H.K. Identity Card):' (#Cr,#PC1)
+
+   if rtrim($EE_ID_No,' ') = ''
+    if rtrim($EE_Passport,' ') <> ''
+     Let $CountryCode = $EE_PP_Cntry_Issue
+     Do Get-Country-Name
+
+     Let $PrintValue = rtrim($EE_PassPort,' ') || ' - ' || $CountryName
+     Print $PrintValue                             (#Cr,105)
+    end-if
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '4.  Sex (M=Male, F=Female):'            (#Cr,#PC)
+   Let #PCCol = #TermCol - 1
+
+   Let #PCCol = #StCol - 8
+   move $EE_Sex to #EE_Sex
+   if $EE_Sex = 'F'
+     Let #PCCol = #PCCol + 1
+     Print $EE_Sex                                 (#Cr,#PCCol) BOLD point-size    = 17
+   else 
+     Let #PCCol = #PCCol - 1
+     Print $EE_Sex                                 (#Cr,#PCCol) BOLD point-size    = 17
+   end-if
+   
+   Print '****'                                  (#Cr,#StCol) BOLD point-size    = 17
+   Let #PCCol = #PCCol + 1
+   Let #Cr = #Cr + 1
+   print '5.  Marital status (1=Single/Widowed/Divorced/Living Apart, 2=Married):' (#Cr,#PC)
+  
+   Let #PCCol = #StCol - 36 
+   if $EE_MarStatus = 'S' or $EE_MarStatus = 'W' or $EE_MarStatus = 'D' or $EE_MarStatus = 'P'
+      or $EE_MarStatus = 'E' or $EE_MarStatus = 'U'
+      Print '1'                                  (#Cr,#PCCol) BOLD point-size    = 17 edit '999,999,999'
+   else
+      Print '2'                                  (#Cr,#PCCol) BOLD point-size    = 17 edit '999,999,999'
+   end-if
+
+   Print '****'                                  (#Cr,#StCol) BOLD point-size    = 17
+
+   Let #Cr = #Cr + 1
+   print '6.  (a) If married, full name of spouse:'   (#Cr,#PC)
+   let $EE_SpouseName = upper($EE_SpouseName)
+   Print $EE_SpouseName                               (#Cr,80)
+
+   Let #Cr = #Cr + 1
+   print ' (b) Spouse''s H.K. Identity Card Number:'  (#Cr,#PC1)
+   if rtrim($EE_Spouse_ID_No,' ') <> ''
+      Let #EEIDLen = length($EE_Spouse_ID_No)
+      if #EEIDLen < 9
+         Let $EE_Spouse_ID_No = lpad($EE_Spouse_ID_No,9,' ')
+         Print $EE_Spouse_ID_No                            (#Cr,140) edit 'XXXXXXXX(X)'
+      else
+         Print $EE_Spouse_ID_No                            (#Cr,140) edit 'XXXXXXXX(X)'
+      end-if
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '   / Passport Number and place of issue (if known):' (#Cr,#PC2)
+
+   if $EE_Spouse_ID_No = '' and ($EE_MarStatus = 'M' or $EE_MarStatus = 'C')
+     Let $CountryCode = $EE_Spouse_PP_CntryIssue
+     Do Get-Country-Name
+
+     Let $PrintValue = rtrim($EE_Spouse_PP_No,' ') || ' - ' || $CountryName
+     Print $PrintValue                                 (#Cr,140)
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '7.  Residential address:'                   (#Cr,#PC)
+!   Print $EE_Resid_Address                            (#Cr,40)
+   Let $ADDR_PRINT_STR = ''
+   Let $ADDR_REM_STR = $EE_Resid_Address
+   Let #addr_col_pos = 55
+   Let #MaxNoCharInLn = 85
+   do print-addr-mult-lines
+
+
+
+   print '8.  Postal Address (if different from 7 above):'                (#Cr,#PC)
+
+   if rtrim($EE_Corr_Address,' ') <> ''
+      let $ADDR_PRINT_STR = ''
+      let $ADDR_REM_STR = $EE_Corr_Address
+      let #addr_col_pos = 100
+      let #MaxNoCharInLn = 40
+      do print-addr-mult-lines
+   else
+      Print 'Same as above'                              (#Cr,100)
+      Let #Cr = #Cr + 1
+   end-if
+
+
+   print '9.  (a) Capacity in which employed:'        (#Cr,#PC)
+   let $EE_Job_DesCr = upper($EE_Job_DesCr)
+   Print $EE_Job_DesCr                                (#Cr,75)
+
+   Let #Cr = #Cr + 1
+   print ' (b) If part time, the name of his/her principal employer (if known):'   (#Cr,#PC1)
+   Print $EE_PT_Employer                                               (#Cr,140)
+
+   Let #Cr = #Cr + 1
+
+   let $Particulars = '10. Period of employment for the year from ' || $PrnTxYrBDT || ' to ' || $PrnTxYrDt ||':'
+   print $Particulars (#Cr,#PC)
+
+   Let #PCCol = #TermCol - 51
+
+   let $temp = $PrdBeginDt
+   do Convert-date
+   let $PrdBeginDt = $temp
+   Print $PrdBeginDt                                 (#Cr,#PCCol) BOLD point-size    = 17 !edit 'DD/MM/YYYY'
+   Let #PCCol = #TermCol - 20
+   Print ' to '                                      (#Cr,#PCCol)     
+   let $temp = $PrdEndDt
+   do Convert-date
+   let $PrdEndDt = $temp
+   Let #PCCol = #TermCol - 13
+   Print $PrdEndDt                                   (#Cr,#PCCol) BOLD point-size    = 17 !edit 'DD/MM/YYYY'
+   Print '****'                                      (#Cr,#StCol) BOLD point-size    = 17
+
+   Let #Cr = #Cr + 1
+   print '11.' (#Cr,#PC)
+   let $Particulars = 'Particulars of income accruing for the year from ' || $PrnTxYrBDT || ' to ' || $PrnTxYrDt
+   let #ll = #PC+7
+   print $Particulars (#Cr,#ll) underline
+   let #Cr = #Cr + 1
+   print 'Particulars'         (#Cr,55) underline
+   let $Periodlbl = 'Period'
+   Let #PCCol = #TermCol - 70
+   print $Periodlbl (#Cr,#PCCol) underline
+
+   Let #PCCol = #TermCol - 23
+   if $CurrLbl1 = 'Amount (HKD)'
+      let $CurrLbl1 = 'Amount (HK$)'
+   end-if
+   print $CurrLbl1                  (#Cr,258) underline
+   let #Cr = #Cr + 1
+   print 'EXCLUDE CENTS'            (#Cr,254) underline
+
+   Let #BDtPos  = 175
+   Let #DashPos = 197
+   Let #EDtPos  = 199
+   !Let #AmtPos  = #TermCol - 12
+
+
+   Let #Cr = #Cr + 1
+   print '(a) Salary/Wages'          (#Cr,#PC1)
+   if #TotalWages <> 0
+      let $temp=$V01_PrdBeginDt
+      do Convert-date
+      let $V01_PrdBeginDt=$temp
+      Print $V01_PrdBeginDt          (#Cr,#BDtPos)
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V01_PrdEndDt
+      do Convert-date
+      let $V01_PrdEndDt = $temp
+      Print $V01_PrdEndDt            (#Cr,#EDtPos)
+      let $tempamt = #TotalWages
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalWages = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalWages              (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '(b) Leave Pay'             (#Cr,#PC1)
+   if #TotalLeavePay <> 0
+      let $temp=$V02_PrdBeginDt
+      do Convert-date
+      let $V02_PrdBeginDt=$temp
+      Print $V02_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos) 
+      let $temp=$V02_PrdEndDt
+      do Convert-date
+      let $V02_PrdEndDt = $temp
+      Print $V02_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalLeavePay
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalLeavePay = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalLeavePay           (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '(c) Director''s Fee'      (#Cr,#PC1)
+   if #TotalDirectorFee <> 0
+      let $temp=$V03_PrdBeginDt
+      do Convert-date
+      let $V03_PrdBeginDt=$temp
+      Print $V03_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V03_PrdEndDt
+      do Convert-date
+      let $V03_PrdEndDt = $temp
+      Print $V03_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalDirectorFee
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalDirectorFee = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalDirectorFee        (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '(d) Commission/Fees'       (#Cr,#PC1)
+   if #TotalCommission <> 0
+      let $temp=$V04_PrdBeginDt
+      do Convert-date
+      let $V04_PrdBeginDt=$temp
+      Print $V04_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V04_PrdEndDt
+      do Convert-date
+      let $V04_PrdEndDt = $temp
+      Print $V04_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalCommission
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalCommission = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalCommission         (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '(e) Bonus'                 (#Cr,#PC1)
+   if #TotalBonus <> 0
+      let $temp=$V05_PrdBeginDt
+      do Convert-date
+      let $V05_PrdBeginDt=$temp
+      Print $V05_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V05_PrdEndDt
+      do Convert-date
+      let $V05_PrdEndDt = $temp
+      Print $V05_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalBonus
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalBonus = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalBonus              (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '(f) Back Pay, Payment in lieu of Notice, Terminal Awards or Gratuities'       (#Cr,#PC1)
+   if #TotalBP_TA_Graty <> 0
+      let $temp=$V06_PrdBeginDt
+      do Convert-date
+      let $V06_PrdBeginDt=$temp
+      Print $V06_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V06_PrdEndDt
+      do Convert-date
+      let $V06_PrdEndDt = $temp
+      Print $V06_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalBP_TA_Graty
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalBP_TA_Graty = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalBP_TA_Graty        (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '(g) Certain Payments from Retirement Schemes' (#Cr,#PC1)
+   if #TotalRetireScheme <> 0
+      let $temp=$V07_PrdBeginDt
+      do Convert-date
+      let $V07_PrdBeginDt=$temp
+      Print $V07_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V07_PrdEndDt
+      do Convert-date
+      let $V07_PrdEndDt = $temp
+      Print $V07_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalRetireScheme
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalRetireScheme = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalRetireScheme       (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '(h) Salaries Tax Paid by Employer'           (#Cr,#PC1)
+   if #EmplrPdAmt <> 0
+      let $temp=$V08_PrdBeginDt
+      do Convert-date
+      let $V08_PrdBeginDt=$temp
+      Print $V08_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V08_PrdEndDt
+      do Convert-date
+      let $V08_PrdEndDt = $temp
+      Print $V08_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TempCurrency1
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TempCurrency1 = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TempCurrency1              (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '(i) Education Benefits'                      (#Cr,#PC1)
+   if #TotalEducBenefit <> 0
+      let $temp=$V09_PrdBeginDt
+      do Convert-date
+      let $V09_PrdBeginDt=$temp
+      Print $V09_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V09_PrdEndDt
+      do Convert-date
+      let $V09_PrdEndDt = $temp
+      Print $V09_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalEducBenefit
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalEducBenefit = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalEducBenefit        (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '(j) Gain realized under Share Option Scheme' (#Cr,#PC1)
+   if #TotalShareOptSch <> 0
+      let $temp=$V10_PrdBeginDt
+      do Convert-date
+      let $V10_PrdBeginDt=$temp
+      Print $V10_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V10_PrdEndDt
+      do Convert-date
+      let $V10_PrdEndDt = $temp
+      Print $V10_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalShareOptSch
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalShareOptSch = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalShareOptSch        (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '(k) Any other Rewards, Allowances or Perquisites' (#Cr,#PC1)
+
+   Let #Cr = #Cr + 1
+   print ' Nature:'       (#Cr,#PC2)
+   if #TotalAllowance1 <> 0
+      let $temp=$V11_PrdBeginDt
+      do Convert-date
+      let $V11_PrdBeginDt=$temp
+      Print $AllowanceDesCr1         (#Cr,25)
+      Print $V11_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V11_PrdEndDt
+      do Convert-date
+      let $V11_PrdEndDt = $temp
+      Print $V11_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalAllowance1
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalAllowance1 = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalAllowance1         (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print ' Nature:'       (#Cr,#PC2)
+   if #TotalAllowance2 <> 0
+      let $temp=$V12_PrdBeginDt
+      do Convert-date
+      let $V12_PrdBeginDt=$temp
+      Print $AllowanceDesCr2         (#Cr,25)
+      Print $V12_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V12_PrdEndDt
+      do Convert-date
+      let $V12_PrdEndDt = $temp
+      Print $V12_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalAllowance2
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalAllowance2 = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalAllowance2         (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print ' Nature:'       (#Cr,#PC2)
+   if #TotalAllowance3 <> 0
+      let $temp=$V13_PrdBeginDt
+      do Convert-date
+      let $V13_PrdBeginDt=$temp
+      Print $AllowanceDesCr3         (#Cr,25)
+      Print $V13_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V13_PrdEndDt
+      do Convert-date
+      let $V13_PrdEndDt = $temp
+      Print $V13_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalAllowance3
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 -#fieldlength
+      let #TotalAllowance3 = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalAllowance3         (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '(l) Pensions' (#Cr,#PC1)
+   if #TotalPensions <> 0
+      let $temp=$V14_PrdBeginDt
+      do Convert-date
+      let $V14_PrdBeginDt=$temp
+      Print $V14_PrdBeginDt          (#Cr,#BDtPos) !edit 'DD/MM/YYYY'
+      Print '-'                      (#Cr,#DashPos)
+      let $temp=$V14_PrdEndDt
+      do Convert-date
+      let $V14_PrdEndDt = $temp
+      Print $V14_PrdEndDt            (#Cr,#EDtPos) !edit 'DD/MM/YYYY'
+      let $tempamt = #TotalPensions
+      let $tempamt = rtrim($tempamt,'0')
+      let #fieldlength = length($tempamt)
+      let #AmtPos = #Termcol - 14 - #fieldlength
+      let #TotalPensions = $tempamt
+      let #AmtPos = #StCol - 3 - 23
+      Print #TotalPensions           (#Cr,#AmtPos) edit '999,999,999'
+   end-if
+  
+   !Do Get-EE-Quarters
+
+   Let #Cr = #Cr + 1
+   Let #PCCol1 = #PCCol - 15
+   Let #PCCol = #TermCol - 20
+   Print 'Total:'                    (#Cr,#PCCol1) 
+   !Let #PCCol = #TermCol - 20
+   let $tempamt = #Tamt
+   let $tempamt = rtrim($tempamt,'0')
+   let #fieldlength = length($tempamt) * 1.2
+   let #AmtPos = #Termcol - 7 - 9
+   let #Tamt = $tempamt
+   Print #Tamt                       (#Cr,#AmtPos) BOLD point-size    = 17 edit '999,999,999'
+   Print '****'                      (#Cr,#StCol) BOLD point-size    = 17
+
+   Let #Cr = #Cr + 1
+   print '12. Particulars of Place of Residence provided:(0=Not provided, 1=Provided) ' (#Cr, #PC)
+   if #QtrCount > 0
+      !Let #PCCol = #TermCol
+      Let #PCCol = #StCol - 36
+      Print '1'                      (#Cr,#PCCol) BOLD point-size    = 17 edit '999,999,999'
+      Print '****'                   (#Cr,#StCol) BOLD point-size    = 17
+   else
+      !Let #PCCol = #TermCol
+      Let #PCCol = #StCol -36
+      Print '0'                      (#Cr,#PCCol) BOLD point-size    = 17 edit '999,999,999'
+      Print '****'                   (#Cr,#StCol) BOLD point-size    = 17
+
+   End-if
+
+   Let #Cr = #Cr + 1
+
+   Do Get-EE-Quarters
+   if #TotalQtrPrinted = 0
+      Let #BAlphaChar = 97
+      Let #BSeq = 1
+      Do Qtr-Blank-Label
+
+      Let #BAlphaChar = 98
+      Let #BSeq = 2
+      Do Qtr-Blank-Label
+   end-if
+
+   if #TotalQtrPrinted = 1
+      Let #BAlphaChar = 98
+      Let #BSeq = 2
+      Do Qtr-Blank-Label
+   end-if
+
+   print '13. Whether the employee was wholly or partly paid either in Hong Kong or elsewhere' (#Cr,#PC)
+   Let #Cr = #Cr + 1
+   print '     by a non-Hong Kong company: (0=No, 1=Yes)' (#Cr,#PC)
+   !print '   concern either in Hong Kong or overseas (0=No, 1=Yes)' (#Cr,#PC1)
+
+   !Let #PCCol = #TermCol - 1
+   Let #PCCol = #StCol - 6
+   if #TempCurrency >0
+      Print '1'                               (#Cr,#PCCol) BOLD point-size    = 17
+   End-if
+   if #TempCurrency =0
+      Print '0'                               (#Cr,#PCCol) BOLD point-size    = 17
+   End-if
+   if #TempCurrency <0
+      Let #PCCol = #PCCol - 25
+      Print 'Unknown'                         (#Cr,#PCCol) BOLD point-size    = 17
+   End-if
+ 
+   Print '****'                               (#Cr,#StCol) BOLD point-size    = 17
+
+   Let #Cr = #Cr + 1
+
+   print '  If yes, please state:' (#Cr,#PC1)
+   Let #Cr = #Cr + 1
+
+   print '  Name of the non-Hong Kong company:' (#Cr,#PC1)
+   Print $OvseasCmpny                (#Cr,70)
+
+   Let #Cr = #Cr + 1
+   print '  Address:'                  (#Cr,#PC1)
+   Print $OvseasAdr                  (#Cr,40)
+
+   Let #Cr = #Cr + 1
+   print '  Amount (if known)(This amount must also be included in Item 11):'                   (#Cr,#PC1)
+
+   if #TempCurrency >0
+      Print 'HK$'              (#Cr,140)
+      Print #TempCurrency                  (#Cr,150) edit '999,999,999'
+
+   end-if
+
+   Let #Cr = #Cr + 1
+   print '14. Remarks:'              (#Cr,#PC)
+   Print $IR56_Remarks               (#Cr,40)
+
+   Do Print-Page-Bottom-Dtl
+   new-page
+
+End-Procedure
+!
+!********************************************************************
+! Procedure :    Check-Sent-Flag
+!********************************************************************
+Begin-procedure  Check-Sent-Flag
+Begin-SELECT
+Count(*)    &SentFlag
+
+      Let #SentFlag = &SentFlag
+    FROM PS_GPHK_IR56_TBL SF
+    WHERE SF.GPHK_REPORT_TYPE = 'E'
+      AND SF.GPHK_TAX_YEAR    = #TaxYear
+      AND SF.GPHK_TAX_REF_NUM = $TaxRefNum
+      AND SF.EMPLID           = $Emplid
+      AND SF.GPHK_IR56_STATUS = 'O'
+      AND SF.GPHK_ISSUE_STATUS <> '0'
+      AND SF.GPHK_EF_SENT_FLG = 'S'
+End-SELECT
+End-Procedure   Check-Sent-Flag
+!
+!********************************************************************
+! Procedure :   Check-Currency-Payment
+!********************************************************************
+Begin-procedure Check-Currency-Payment
+   Let $PaidInSelected = 'N'
+Begin-SELECT
+OS.CURRENCY_CD
+
+    Let $PaidInSelected = 'Y'
+
+    FROM PS_GPHK_IR56_DTL OS
+    WHERE OS.GPHK_REPORT_TYPE = $ReportType
+      AND OS.GPHK_TAX_YEAR    = #TaxYear
+      AND OS.GPHK_TAX_REF_NUM = $TaxRefNum
+      AND OS.EMPLID           = $Emplid
+      AND OS.CURRENCY_CD      = $CurrencyCd
+      AND OS.GPHK_SERIAL_NUM  = #SerialNum
+End-SELECT
+End-Procedure   Check-Currency-Payment
+!
+!********************************************************************
+! Procedure :   Address-Details
+!********************************************************************
+Begin-Procedure Address-Details
+  Let $EE_Address = ''
+Begin-SELECT
+ADR.ADDRESS1
+ADR.ADDRESS2
+ADR.ADDRESS3
+ADR.ADDRESS4
+ADR.COUNTY
+ADR.STATE
+ADR.CITY
+ADR.POSTAL
+ADR.COUNTRY
+
+    Let $SrchCountry = &ADR.COUNTRY
+
+       if &ADR.Country = 'HKG'
+
+
+            If RTRIM(&ADR.ADDRESS1,' ') <> ''
+
+
+            Let $ADDRESS1 = RTrim(&ADR.ADDRESS1,' ')
+            let #len = length($ADDRESS1)
+            Let $str1 = (substr($ADDRESS1, #len, 1))
+            If   $str1 != ','
+                Let $EE_Address =  RTrim(&ADR.ADDRESS1,' ') || ','
+            Else
+               Let $EE_Address = RTrim(&ADR.ADDRESS1,' ')
+            END-If
+         End-If
+
+
+
+         If RTRIM(&ADR.ADDRESS2,' ') <> ''
+
+            Let $ADDRESS2 = RTrim(&ADR.ADDRESS2,' ')
+            let #len = length($ADDRESS2)
+            Let $str2 = (substr($ADDRESS2, #len, 1))
+
+            If   $str2 != ','
+                Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.ADDRESS2,' ')|| ','
+            Else
+               Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.ADDRESS2,' ')
+            END-If
+         End-If
+
+         If RTRIM(&ADR.ADDRESS3,' ') <> ''
+         Let $ADDRESS3 = RTrim(&ADR.ADDRESS3,' ')
+         let #len = length($ADDRESS3)
+         Let $str3 = (substr($ADDRESS3, #len, 1))
+         If   $str3 != ','
+            Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.ADDRESS3,' ') ||','
+            Else
+               Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.ADDRESS3,' ')
+            End-if
+         End-If
+
+         Let $StateCode = &ADR.STATE
+
+         Let $StateDescr = ''
+         Do Get-State-Descr
+
+         If RTRIM(&ADR.CITY,' ') <> ''
+            Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.CITY,' ')
+            Let $EE_Address =$EE_Address ||','|| ' ' || $StateDescr
+         ELSE
+            Let $EE_Address =$EE_Address || ' ' || $StateDescr
+         End-If
+
+
+
+    Else
+
+         If RTRIM(&ADR.ADDRESS1,' ') <> ''
+            Let $ADDRESS1 = RTrim(&ADR.ADDRESS1,' ')
+            let #len = length($ADDRESS1)
+                Let $str1 = (substr($ADDRESS1, #len, 1))
+                If   $str1 != ','
+                Let $EE_Address =  RTrim(&ADR.ADDRESS1,' ') || ','
+            Else
+               Let $EE_Address = RTrim(&ADR.ADDRESS1,' ')
+            END-If
+         End-If
+
+         If RTRIM(&ADR.ADDRESS2,' ') <> ''
+            Let $ADDRESS2 = RTrim(&ADR.ADDRESS2,' ')
+            let #len = length($ADDRESS2)
+            Let $str2 = (substr($ADDRESS2, #len, 1))
+
+            If $str2 != ','
+                Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.ADDRESS2,' ') ||','
+            Else
+               Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.ADDRESS2,' ')
+            END-If
+         End-If
+         If RTRIM(&ADR.ADDRESS3,' ') <> ''
+            Let $ADDRESS3 = RTrim(&ADR.ADDRESS3,' ')
+         let #len = length($ADDRESS3)
+         Let $str3 = (substr($ADDRESS3, #len, 1))
+         If   $str3 != ','
+            Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.ADDRESS3,' ') ||','
+            Else
+               Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.ADDRESS3,' ')
+            End-if
+         End-If
+
+         If RTRIM(&ADR.ADDRESS4,' ') <> ''
+            Let $ADDRESS4 = RTrim(&ADR.ADDRESS4,' ')
+         let #len = length($ADDRESS4)
+         Let $str4 = (substr($ADDRESS4, #len, 1))
+         If   $str4 != ','
+            Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.ADDRESS4,' ') ||','
+            Else
+               Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.ADDRESS4,' ')
+            End-if
+         End-If
+
+
+         Let $StateCode = &ADR.STATE
+
+         Let $StateDescr = ''
+         Do Get-State-Descr
+
+         Let $EE_Address =$EE_Address || ' ' || $StateDescr || ','
+
+         Let $CountryCode = ''
+         Let $CountryCode = &ADR.COUNTRY
+         Do Get-Country-Name
+         If RTRIM(&ADR.CITY,' ') <> ''
+            Let $EE_Address = $EE_Address || ' ' || RTrim(&ADR.CITY,' ')|| ','
+         End-If
+
+
+         If RTRIM(&ADR.POSTAL,' ') <> ''
+            Let $EE_Address = $EE_Address ||' ' || RTrim(&ADR.POSTAL,' ') ||','
+         End-If
+
+         Let $EE_Address = $EE_Address || ' ' || rtrim($CountryName,' ')
+    End-If
+
+    FROM PS_ADDRESSES ADR
+   WHERE ADR.EMPLID = $Emplid
+     AND ADR.ADDRESS_TYPE = $AddressType
+End-SELECT
+End-Procedure   Address-Details
+!
+!********************************************************************
+! Procedure :   Get-State-Descr
+!********************************************************************
+Begin-Procedure Get-State-Descr
+Begin-SELECT
+SCD.DESCR
+   LET $StateDescr = rtrim(&SCD.DESCR,' ')
+    FROM PS_STATE_NAMES_TBL SCD
+  WHERE SCD.STATE   = $StateCode
+   AND  SCD.COUNTRY = $SrchCountry
+End-SELECT
+End-Procedure  Get-State-Descr
+!
+!********************************************************************
+! Procedure :   Get-TaxRef-Details
+!********************************************************************
+Begin-procedure Get-TaxRef-Details
+Begin-SELECT
+PED.DESCR50
+PED.GPHK_DESIGNATION
+PED.GPHK_EMPLR_REF_NUM
+PED.GPHK_SIGNATORY
+
+    Let $EntityName     = &PED.DESCR50
+    Let $ER_FileNumber  = &PED.GPHK_EMPLR_REF_NUM
+    Let $ER_Designation = &PED.GPHK_DESIGNATION
+    Let $ER_Signer      = &PED.GPHK_SIGNATORY
+
+    Let $ER_FileNumber  = rtrim($ER_FileNumber,' ')
+
+    if rtrim(&PED.GPHK_SIGNATORY,' ') <> ''
+       Do Get-Signatory-Name
+    End-if
+
+    FROM PS_GPHK_TAXREF_TBL PED
+     WHERE PED.GPHK_TAX_REF_NUM = $TaxRefNum
+      AND PED.EFFDT = (SELECT MAX(PED1.EFFDT) FROM PS_GPHK_TAXREF_TBL PED1
+                           WHERE PED1.GPHK_TAX_REF_NUM = PED.GPHK_TAX_REF_NUM
+                             AND PED1.EFFDT <= $Tax_Yr_March
+                      )
+End-SELECT
+End-Procedure   Get-TaxRef-Details
+!
+
+!********************************************************************
+! Procedure :   Get-EE-Quarters_A
+!********************************************************************
+Begin-Procedure Get-EE-Quarters_A
+Begin-SELECT
+QADR2.ADDRESS1
+QADR2.ADDRESS2
+QADR2.ADDRESS3
+QADR2.CITY
+QADR2.COUNTRY
+QADR2.STATE
+QADR2.GPHK_QTR_DESC
+QADR2.GPHK_QTR_BGN_DT
+QADR2.GPHK_QTR_END_DT
+QADR2.GPHK_QTR_ER2L_AMT
+QADR2.GPHK_QTR_EE2L_AMT
+QADR2.GPHK_QTR_ER2EE_AMT
+QADR2.GPHK_QTR_EE2ER_AMT
+
+    Let #Amt_Qtrs_1_ER2LL  = &QADR2.GPHK_QTR_ER2L_AMT
+    Let #Amt_Qtrs_1_EE2LL  = &QADR2.GPHK_QTR_EE2L_AMT
+    Let #Amt_Qtrs_1_ER2EE  = &QADR2.GPHK_QTR_ER2EE_AMT
+    Let #Amt_Qtrs_1_EE2ER  = &QADR2.GPHK_QTR_EE2ER_AMT
+
+    if #Amt_Qtrs_1_ER2LL <> 0
+       let #Amt_Qtrs_1_ER2LL = Trunc(#Amt_Qtrs_1_ER2LL,0)
+    end-if
+
+    FROM PS_GPHK_IR56_QTR QADR2
+   WHERE QADR2.EMPLID           = $Emplid
+     AND QADR2.GPHK_REPORT_TYPE = $ReportType
+     AND QADR2.GPHK_TAX_REF_NUM = $TaxRefNum
+     AND QADR2.GPHK_TAX_YEAR    = #TaxYear
+     AND QADR2.GPHK_SERIAL_NUM  = #SerialNum
+End-SELECT
+End-Procedure   Get-EE-Quarters_A
+
+!********************************************************************
+! Procedure :   Get-EE-Quarters
+!********************************************************************
+Begin-Procedure Get-EE-Quarters
+   Let #Seq = 1
+   let #AlphaChar = 97
+   Let #TotalQtrPrinted = 0
+Begin-SELECT
+QADR.ADDRESS1
+QADR.ADDRESS2
+QADR.ADDRESS3
+QADR.CITY
+QADR.COUNTRY
+QADR.STATE
+QADR.GPHK_QTR_DESC
+QADR.GPHK_QTR_BGN_DT
+QADR.GPHK_QTR_END_DT
+QADR.GPHK_QTR_ER2L_TOT
+QADR.GPHK_QTR_EE2L_TOT
+QADR.GPHK_QTR_ER2EE_TOT
+QADR.GPHK_QTR_EE2ER_TOT
+
+    Let $SrchCountry = &QADR.COUNTRY
+    Let $StateCode = &QADR.STATE
+
+    Let $StateDescr = ''
+    Do Get-State-Descr
+
+    Let $Qtrs_1_Address = rtrim(&QADR.ADDRESS1,' ')
+    if rtrim(&QADR.ADDRESS2,' ') <> ''
+       Let $Qtrs_1_Address =$Qtrs_1_Address || ' ' || rtrim(&QADR.ADDRESS2,' ')
+    End-if
+    if rtrim(&QADR.ADDRESS3,' ') <> ''
+       Let $Qtrs_1_Address =$Qtrs_1_Address || ' ' || rtrim(&QADR.ADDRESS3,' ')
+    End-if
+    if rtrim(&QADR.CITY,' ') <> ''
+       Let $Qtrs_1_Address =$Qtrs_1_Address || ' ' || rtrim(&QADR.CITY,' ')
+    End-if
+    Let $Qtrs_1_Address =$Qtrs_1_Address || ' ' || $StateDescr
+
+    Let $Qtrs_1_Nature     = &QADR.GPHK_QTR_DESC
+    Let $Qtrs_1_Prd_Begin  = &QADR.GPHK_QTR_BGN_DT
+    Let $Qtrs_1_Prd_End    = &QADR.GPHK_QTR_END_DT
+    Let #Amt_Qtrs_1_ER2LL  = &QADR.GPHK_QTR_ER2L_TOT
+    Let #Amt_Qtrs_1_EE2LL  = &QADR.GPHK_QTR_EE2L_TOT
+    Let #Amt_Qtrs_1_ER2EE  = &QADR.GPHK_QTR_ER2EE_TOT
+    Let #Amt_Qtrs_1_EE2ER  = &QADR.GPHK_QTR_EE2ER_TOT
+
+    
+
+    if rtrim($Qtrs_1_Prd_Begin,' ') <> ''
+       Do Format-DateTime($Qtrs_1_Prd_Begin, $Qtrs_1_Prd_Begin, {DEFDATE},'','')
+    end-if
+
+    if rtrim($Qtrs_1_Prd_End,' ') <> ''
+       Do Format-DateTime($Qtrs_1_Prd_End, $Qtrs_1_Prd_End, {DEFDATE},'','')
+    end-if
+
+    Let $AlphaChar = chr(#AlphaChar)
+    Let $SeqStr = to_char(#Seq)
+    Let $SeqStr = rtrim($SeqStr,' ')
+    Let $SeqStr = ltrim($SeqStr,' ')
+
+    Let $QtrHdrLine = ' (' || $AlphaChar || ') Address ' || $SeqStr||':'
+
+    print $QtrHdrLine (#Cr,#PC1)
+!   print '(a) Quarters 1 Address:'            (#Cr,#PC1)
+
+!    Print $Qtrs_1_Address                      (#Cr,32)
+    Let $ADDR_PRINT_STR = ''
+    Let $ADDR_REM_STR = $Qtrs_1_Address
+    Let #addr_col_pos = 40
+    Let #MaxNoCharInLn = 110
+    do print-addr-mult-lines
+
+
+!    Let #Cr = #Cr + 1
+    print 'Nature:'           (#Cr,34)
+    Print $Qtrs_1_Nature      (#Cr,50)
+
+    print 'Period provided:'  (#Cr,130)
+
+    if rtrim($Qtrs_1_Prd_Begin,' ') <> ''
+       let $temp = $Qtrs_1_Prd_Begin
+       do Convert-date
+       let $Qtrs_1_Prd_Begin = $temp
+       Print $Qtrs_1_Prd_Begin                 (#Cr,165) !edit 'DD/MM/YYYY'
+       Print ' - '                             (#Cr,187)
+    end-if
+
+    if rtrim($Qtrs_1_Prd_End,' ') <> ''
+       let $temp = $Qtrs_1_Prd_End
+       do Convert-date
+       let $Qtrs_1_Prd_End = $temp
+       Print $Qtrs_1_Prd_End                   (#Cr,191) !edit 'DD/MM/YYYY'
+    end-if
+
+    Let #Cr = #Cr + 1
+    print 'Rent paid to landlord by employer:' (#Cr,34)
+    print 'HK$'                                (#Cr,170)
+
+    if #Amt_Qtrs_1_ER2LL <> 0
+       let #Amt_Qtrs_1_ER2LL = Trunc(#Amt_Qtrs_1_ER2LL,0)
+       Print #Amt_Qtrs_1_ER2LL                    (#Cr,175) edit '999,999,999'
+    end-if
+
+    Let #Cr = #Cr + 1
+    print 'Rent paid to landlord by employee:' (#Cr,34)
+    print 'HK$'                                (#Cr,170)
+    if #Amt_Qtrs_1_EE2LL <> 0
+       let #Amt_Qtrs_1_EE2LL = trunc(#Amt_Qtrs_1_EE2LL,0)
+       Print #Amt_Qtrs_1_EE2LL                    (#Cr,175) edit '999,999,999'
+    end-if
+
+    Let #Cr = #Cr + 1
+    print 'Rent refunded to employee by employer:'         (#Cr,34)
+    print 'HK$'                                (#Cr,170)
+
+    if #Amt_Qtrs_1_ER2EE <> 0
+       let #Amt_Qtrs_1_ER2EE = trunc(#Amt_Qtrs_1_ER2EE,0)
+       Print #Amt_Qtrs_1_ER2EE                    (#Cr,175) edit '999,999,999'
+    end-if
+
+    Let #Cr = #Cr + 1
+    print 'Rent paid to employer by employee:' (#Cr,34)
+    print 'HK$'                                (#Cr,170)
+
+    if #Amt_Qtrs_1_EE2ER <> 0
+       let #Amt_Qtrs_1_EE2ER = trunc(#Amt_Qtrs_1_EE2ER,0)
+       Print #Amt_Qtrs_1_EE2ER                    (#Cr,175) edit '999,999,999'
+    end-if
+
+    Let #Cr = #Cr + 1
+
+    Let #Seq = #Seq + 1
+    Let #TotalQtrPrinted = #TotalQtrPrinted + 1
+    Let #AlphaChar = #AlphaChar + 1
+
+    if #Cr > 54
+       Do Print-Page-Bottom-Dtl
+       New-page
+       Let #Cr = 1
+    End-if
+
+    FROM PS_GPHK_IR56_QTR QADR
+   WHERE QADR.EMPLID           = $Emplid
+     AND QADR.GPHK_REPORT_TYPE = $ReportType
+     AND QADR.GPHK_TAX_REF_NUM = $TaxRefNum
+     AND QADR.GPHK_TAX_YEAR    = #TaxYear
+     AND QADR.GPHK_SERIAL_NUM  = #SerialNum
+End-SELECT
+End-Procedure   Get-EE-Quarters
+!
+!********************************************************************
+! Procedure :   Get-EE-Details
+!********************************************************************
+Begin-procedure Get-EE-Details
+
+   Do Get-EE-Personal-Data
+   Do Get-EE-Names
+!   Do Get-EE-ID
+   Do EE-Job-Detail
+   Do Get-EE-Tax-File-No
+
+   Let $AddressType = 'MAIL'
+   Do Address-Details
+   Let $EE_Corr_Address = $EE_Address
+
+   Let $AddressType = 'HOME'
+   Do Address-Details
+   Let $EE_Resid_Address = $EE_Address
+
+   Do Get-EE-PassPort-Detail
+   if $EE_MarStatus = 'M'
+      Do Get-EE-Spouse-Detail
+      Do Get-Spouse-ID
+      Do Get-Spouse-PassPort-Detail
+   End-if
+   Do Part-Time-ER-Name
+
+End-Procedure   Get-EE-Details
+!
+!***********************************************************************
+! Procedure:    Update-Issue-Status
+!***********************************************************************
+begin-procedure Update-Issue-Status
+begin-SQL
+UPDATE PS_GPHK_IR56_TBL
+  SET GPHK_ISSUE_STATUS = '1'
+   WHERE EMPLID           = $Emplid
+     AND GPHK_REPORT_TYPE = $ReportType
+     AND GPHK_TAX_YEAR    = #TaxYear
+     AND GPHK_TAX_REF_NUM = $TaxRefNum
+     AND GPHK_SERIAL_NUM  = #SerialNum
+end-SQL
+end-procedure   Update-Issue-Status
+!
+!***********************************************************************
+! Procedure:    Retrieve-EE-Amounts
+!***********************************************************************
+begin-procedure Retrieve-EE-Amounts
+
+   Let $ElemType = '01'
+   Do Get-EE-Amounts
+
+   if rtrim($CurrencyCd,' ') <> ''
+      Let #TotalWages = #CalcAmt + #AdjstAmt
+   else
+      Let #TotalWages = #HKDPaidAmt
+   End-if
+
+   Let #TotalWages = Trunc(#TotalWages,0)
+!Legislation change if Overseas amount has been paid, it must be added to the Salary / Wages
+!If Overseas amount is < 0 it is considered to be an unknown amount, therefore should not be added to wages.
+
+      if #OvseasAmt > 0
+         Let #TotalWages = #TotalWages + #TempCurrency
+      End-if
+
+
+   LET $V01_PrdBeginDt = $AmtBeginDt
+   LET $V01_PrdEndDt   = $AmtEndDt
+
+   Let $ElemType = '02'
+   Do Get-EE-Amounts
+   if rtrim($CurrencyCd,' ') <> ''
+      Let #TotalLeavePay = #CalcAmt + #AdjstAmt
+   else
+      Let #TotalLeavePay = #HKDPaidAmt
+   End-if
+
+   Let #TotalLeavePay  = Trunc(#TotalLeavePay,0)
+   LET $V02_PrdBeginDt = $AmtBeginDt
+   LET $V02_PrdEndDt   = $AmtEndDt
+
+   Let $ElemType = '03'
+   Do Get-EE-Amounts
+   if rtrim($CurrencyCd,' ') <> ''
+      Let #TotalDirectorFee = #CalcAmt + #AdjstAmt
+   else
+      Let #TotalDirectorFee = #HKDPaidAmt
+   End-if
+
+   Let #TotalDirectorFee = Trunc(#TotalDirectorFee,0)
+   LET $V03_PrdBeginDt   = $AmtBeginDt
+   LET $V03_PrdEndDt     = $AmtEndDt
+
+   Let $ElemType = '04'
+   Do Get-EE-Amounts
+   if rtrim($CurrencyCd,' ') <> ''
+      Let #TotalCommission = #CalcAmt + #AdjstAmt
+   else
+      Let #TotalCommission = #HKDPaidAmt
+   End-if
+
+   Let #TotalCommission = Trunc(#TotalCommission,0)
+   LET $V04_PrdBeginDt  = $AmtBeginDt
+   LET $V04_PrdEndDt    = $AmtEndDt
+
+   Let $ElemType = '05'
+   Do Get-EE-Amounts
+   if rtrim($CurrencyCd,' ') <> ''
+      Let #TotalBonus = #CalcAmt + #AdjstAmt
+   else
+      Let #TotalBonus = #HKDPaidAmt
+   End-if
+
+   Let #TotalBonus     = Trunc(#TotalBonus,0)
+   LET $V05_PrdBeginDt = $AmtBeginDt
+   LET $V05_PrdEndDt   = $AmtEndDt
+
+   Let $ElemType = '06'
+   Do Get-EE-Amounts
+   if rtrim($CurrencyCd,' ') <> ''
+      Let #TotalBP_TA_Graty = #CalcAmt + #AdjstAmt
+   else
+      Let #TotalBP_TA_Graty = #HKDPaidAmt
+   End-if
+
+   Let #TotalBP_TA_Graty = Trunc(#TotalBP_TA_Graty,0)
+   LET $V06_PrdBeginDt   = $AmtBeginDt
+   LET $V06_PrdEndDt     = $AmtEndDt
+
+   Let $ElemType = '07'
+   Do Get-EE-Amounts
+   if rtrim($CurrencyCd,' ') <> ''
+      Let #TotalRetireScheme = #CalcAmt + #AdjstAmt
+   else
+      Let #TotalRetireScheme = #HKDPaidAmt
+   End-if
+
+   Let #TotalRetireScheme = Trunc(#TotalRetireScheme,0)
+   LET $V07_PrdBeginDt    = $AmtBeginDt
+   LET $V07_PrdEndDt      = $AmtEndDt
+
+   Let $ElemType = '08'
+   Do Get-EE-Amounts
+   if rtrim($CurrencyCd,' ') <> ''
+      Let #TotalEducBenefit = #CalcAmt + #AdjstAmt
+   else
+      Let #TotalEducBenefit = #HKDPaidAmt
+   End-if
+
+   Let #TotalEducBenefit = Trunc(#TotalEducBenefit,0)
+   LET $V09_PrdBeginDt   = $AmtBeginDt
+   LET $V09_PrdEndDt     = $AmtEndDt
+
+   Let $ElemType = '09'
+   Do Get-EE-Amounts
+   if rtrim($CurrencyCd,' ') <> ''
+      Let #TotalShareOptSch = #CalcAmt + #AdjstAmt
+   else
+      Let #TotalShareOptSch = #HKDPaidAmt
+   End-if
+
+   Let #TotalShareOptSch = Trunc(#TotalShareOptSch,0)
+   LET $V10_PrdBeginDt   = $AmtBeginDt
+   LET $V10_PrdEndDt     = $AmtEndDt
+
+   Let $ElemType = '10'
+   Do Get-EE-Allowance-Amt
+
+   Let $ElemType = '11'
+   Do Get-EE-Amounts
+   if rtrim($CurrencyCd,' ') <> ''
+      Let #TotalPensions = #CalcAmt + #AdjstAmt
+   else
+      Let #TotalPensions = #HKDPaidAmt
+   End-if
+
+   Let #TotalPensions  = Trunc(#TotalPensions,0)
+   LET $V14_PrdBeginDt = $AmtBeginDt
+   LET $V14_PrdEndDt   = $AmtEndDt
+
+  Let #TAmt = #TotalWages + #TotalLeavePay + #TotalDirectorFee + #TotalBonus + #TotalBP_TA_Graty + #TotalRetireScheme + #TempCurrency1
+  Let #TAmt = #TAmt + #TotalCommission
+  Let #TAmt = #TAmt + #TotalEducBenefit + #TotalShareOptSch + #TotalPensions + #TotalAllowance1 + #TotalAllowance2 + #TotalAllowance3
+End-Procedure   Retrieve-EE-Amounts
+!
+!***********************************************************************
+! Procedure:    Get-EE-Amounts
+!***********************************************************************
+begin-procedure Get-EE-Amounts
+   Let #OCalcAmt    = 0
+   Let #OAdjstAmt   = 0
+   Let #CalcAmt    = 0
+   Let #AdjstAmt   = 0
+   Let #AllwncCnt  = 0
+   Let #Allwnc3Cnt = 0
+   LET $AmtBeginDt = ''
+   LET $AmtEndDt   = ''
+   Let #HKDPaidAmt = 0
+
+Begin-SELECT
+AMT.GPHK_MTRY_VALUE    &OCalcAmt
+AMT.GPHK_MTRY_ADJST    &OAdjAmt
+AMT.GPHK_CALC_RSLT_VAL &NetAmt
+AMT.GPHK_PRD_BGN_DT    &BeginDt
+AMT.GPHK_PRD_END_DT    &EndDt
+
+       if rtrim($CurrencyCd,' ') <> ''
+          Let #OCalcAmt  = #OCalcAmt  + &OCalcAmt
+          Let #OAdjstAmt = #OAdjstAmt + &OAdjAmt
+       else
+          Let #HKDPaidAmt = #HKDPaidAmt + &NetAmt
+       End-if
+
+       if rtrim(&BeginDT,' ')  <> ''
+          LET $AmtBeginDt = &BeginDt
+          Do Format-DateTime(&BeginDt, $AmtBeginDt, {DEFDATE},'','')
+       end-if
+
+       if rtrim(&EndDT,' ')  <> ''
+          LET $AmtEndDt   = &EndDt
+          Do Format-DateTime(&EndDt, $AmtEndDt, {DEFDATE},'','')
+       end-if
+
+    FROM PS_GPHK_IR56_DTL AMT
+     WHERE AMT.EMPLID = $Emplid
+       AND AMT.GPHK_REPORT_TYPE = $ReportType
+       AND AMT.GPHK_TAX_YEAR    = #TaxYear
+       AND AMT.GPHK_TAX_REF_NUM = $TaxRefNum
+       AND AMT.GPHK_REPORT_ELM  = $ElemType
+       AND AMT.GPHK_SERIAL_NUM  = #SerialNum
+       [$CurrencyClause]
+End-SELECT
+       if rtrim($AmtBeginDT,' ')  = ''
+          LET $AmtBeginDt = $prdbegindt
+       end-if
+       if rtrim($AmdEndDT,' ')    = ''
+          LET $AmtEndDt   = $prdEnddt
+       end-if
+
+       if #OCalcAmt > 0
+          let #CalcAmt = trunc(#OCalcAmt,0)
+       end-if
+
+       if #OAdjstAmt <> 0
+          let #AdjstAmt = trunc(#OAdjstAmt,0)
+       end-if
+
+       if #HKDPaidAmt > 0
+          Let #HKDPaidAmt = trunc(#HKDPaidAmt,0)
+       end-if
+
+End-Procedure   Get-EE-Amounts
+!
+!***********************************************************************
+! Procedure:    Get-EE-Allowance-Amt
+!***********************************************************************
+begin-procedure Get-EE-Allowance-Amt
+   Let #TotalAllowance1   = 0
+   Let #TotalAllowance2   = 0
+   Let #TotalAllowance3   = 0
+
+   Let #CalcAmt1    = 0
+   Let #AdjstAmt1   = 0
+   Let #AllwncCnt   = 1
+   Let #Allwnc3Cnt  = 0
+
+Begin-SELECT
+AMT1.PIN_NUM            &PinNum
+AMT1.GPHK_MTRY_VALUE    &CalcAmt1
+AMT1.GPHK_MTRY_ADJST    &AdjAmt1
+AMT1.GPHK_PRD_BGN_DT    &BeginDt1
+AMT1.GPHK_PRD_END_DT    &EndDt1
+AMT1.GPHK_CALC_RSLT_VAL &NetAmt1
+
+
+      Let #CalcAmt1   = &CalcAmt1
+      Let #AdjstAmt1  = &AdjAmt1
+      Let #PinNum     = &PinNum
+      Let #HKDPaidAmt = &NetAmt1
+
+      Do Get-Pin-Name
+
+      Evaluate #AllwncCnt
+        When = 1
+               if rtrim($CurrencyCd,' ') <> ''
+                  Let #TotalAllowance1   = #CalcAmt1 + #AdjstAmt1
+               else
+                  Let #TotalAllowance1   = #HKDPaidAmt
+               End-if
+
+               Let #TotalAllowance1   = Trunc(#TotalAllowance1,0)
+               Let $AllowanceDescr1   = $ElementDescr
+
+               if rtrim(&BeginDT1,' ')  <> ''
+                  Let $V11_PrdBeginDt    = &BeginDt1
+                  Do Format-DateTime(&BeginDt1, $V11_PrdBeginDt, {DEFDATE},'','')
+               end-if
+               if rtrim(&EndDT1,' ')  <> ''
+                  Let $V11_PrdEndDt      = &EndDt1
+                  Do Format-DateTime(&EndDt1, $V11_PrdEndDt, {DEFDATE},'','')
+               end-if
+
+               if rtrim($V11_PrdBeginDt,' ')  = ''
+                  LET $V11_PrdBeginDt = $prdbegindt
+               end-if
+               if rtrim($V11_PrdEndDt,' ')    = ''
+                  LET $V11_PrdEndDt   = $prdEnddt
+               end-if
+
+               break
+
+        When = 2
+               if rtrim($CurrencyCd,' ') <> ''
+                  Let #TotalAllowance2   = #CalcAmt1 + #AdjstAmt1
+               else
+                  Let #TotalAllowance2   = #HKDPaidAmt
+               End-if
+
+               Let #TotalAllowance2   = Trunc(#TotalAllowance2,0)
+               Let $AllowanceDescr2   = $ElementDescr
+
+               if rtrim(&BeginDT1,' ')  <> ''
+                  Let $V12_PrdBeginDt    = &BeginDt1
+                  Do Format-DateTime(&BeginDt1, $V12_PrdBeginDt, {DEFDATE},'','')
+               end-if
+               if rtrim(&EndDT1,' ')  <> ''
+                  Let $V12_PrdEndDt      = &EndDt1
+                  Do Format-DateTime(&EndDt1, $V12_PrdEndDt, {DEFDATE},'','')
+               end-if
+
+               if rtrim($V12_PrdBeginDt,' ')  = ''
+                  LET $V12_PrdBeginDt = $prdbegindt
+               end-if
+               if rtrim($V12_PrdEndDt,' ')    = ''
+                  LET $V12_PrdEndDt   = $prdEnddt
+               end-if
+
+               break
+        When-other
+               if rtrim($CurrencyCd,' ') <> ''
+                  Let #TotalAllowance3   = #TotalAllowance3 + #CalcAmt1 + #AdjstAmt1
+               else
+                  Let #TotalAllowance3   = #TotalAllowance3 + #HKDPaidAmt
+               End-if
+
+               Let #TotalAllowance3   = Trunc(#TotalAllowance3,0)
+               if rtrim(&BeginDT1,' ')  <> ''
+                  Let $V13_PrdBeginDt    = &BeginDt1
+                  Do Format-DateTime(&BeginDt1, $V13_PrdBeginDt, {DEFDATE},'','')
+               end-if
+               if rtrim(&EndDT1,' ')  <> ''
+                  Let $V13_PrdEndDt      = &EndDt1
+                  Do Format-DateTime(&EndDt1, $V13_PrdEndDt, {DEFDATE},'','')
+               end-if
+
+               if rtrim($V13_PrdBeginDt,' ')  = ''
+                  LET $V13_PrdBeginDt = $prdbegindt
+               end-if
+               if rtrim($V13_PrdEndDt,' ')    = ''
+                  LET $V13_PrdEndDt   = $prdEnddt
+               end-if
+
+               if #Allwnc3Cnt = 0
+                  Let #Allwnc3Cnt = 1
+                  Let $AllowanceDescr3   = $ElementDescr
+               else
+                  Let $AllowanceDescr3   = 'Other Allowances'
+               end-if
+       End-Evaluate
+
+      Let #AllwncCnt = #AllwncCnt + 1
+    FROM PS_GPHK_IR56_DTL AMT1
+     WHERE AMT1.EMPLID = $Emplid
+       AND AMT1.GPHK_REPORT_TYPE = $ReportType
+       AND AMT1.GPHK_TAX_YEAR    = #TaxYear
+       AND AMT1.GPHK_TAX_REF_NUM = $TaxRefNum
+       AND AMT1.GPHK_REPORT_ELM  = $ElemType
+       AND AMT1.GPHK_SERIAL_NUM  = #SerialNum
+       [$CurrencyClause1]
+End-SELECT
+End-Procedure   Get-EE-Allowance-Amt
+!
+!***********************************************************************
+! Procedure:    Get-Pin-Name
+!***********************************************************************
+begin-procedure Get-Pin-Name
+  Let $ElementDescr = ''
+Begin-SELECT
+PIN.DESCR
+    Let $ElementDescr = &PIN.DESCR
+
+    FROM PS_GP_PIN PIN
+  WHERE PIN.PIN_NUM    = #PinNum
+
+End-SELECT
+End-Procedure   Get-Pin-Name
+!
+!***********************************************************************
+! Procedure: Get-Country-Name
+!***********************************************************************
+begin-Procedure Get-Country-Name
+  Let $CountryName = ''
+begin-SELECT
+CO.DESCR     &CountryName
+
+     Move &CountryName to $CountryName
+
+   FROM PS_COUNTRY_TBL CO
+  WHERE CO.COUNTRY = $CountryCode
+end-SELECT
+end-Procedure   Get-Country-Name
+!
+!********************************************************************
+! Procedure :   Get-Previous-Sheet-Num
+!********************************************************************
+Begin-procedure Get-Previous-Sheet-Detail
+   Let $PreviousSubmissionDt = ''
+Begin-SELECT
+OSP.CREATION_DT
+
+   Let $PreviousSubmissionDt = &OSP.CREATION_DT
+   Do Format-DateTime($PreviousSubmissionDt, $PreviousSubmissionDt, {DEFDATE},'','')
+
+
+    FROM PS_GPHK_IR56_TBL OSP
+    WHERE OSP.GPHK_REPORT_TYPE = $ReportType
+      AND OSP.GPHK_TAX_YEAR    = #TaxYear
+      AND OSP.GPHK_TAX_REF_NUM = $TaxRefNum
+      AND OSP.EMPLID           = $Emplid
+      AND OSP.GPHK_SERIAL_NUM  = (SELECT MAX(OSP2.GPHK_SERIAL_NUM) FROM PS_GPHK_IR56_TBL OSP2
+                                   WHERE OSP2.GPHK_REPORT_TYPE = OSP.GPHK_REPORT_TYPE
+                                     AND OSP2.GPHK_TAX_YEAR    = OSP.GPHK_TAX_YEAR
+                                     AND OSP2.GPHK_TAX_REF_NUM = OSP.GPHK_TAX_REF_NUM
+                                     AND OSP2.EMPLID           = OSP.EMPLID
+                                     AND OSP2.GPHK_SERIAL_NUM  < #SerialNum)
+End-SELECT
+End-Procedure   Get-Previous-Sheet-Detail
+!
+!***********************************************************************
+! Procedure: Get-Signatory-Name
+!***********************************************************************
+Begin-Procedure Get-Signatory-Name
+Begin-SELECT
+GSN.NAME
+
+    Let $ER_Signatory   = &GSN.NAME
+
+   FROM PS_NAMES GSN
+    WHERE GSN.EMPLID = $ER_Signer
+      AND GSN.NAME_TYPE = 'PRI'
+End-SELECT
+End-Procedure Get-Signatory-Name
+!
+!***********************************************************************
+! Procedure: Print-Page-Bottom-Dtl
+!***********************************************************************
+Begin-Procedure Print-Page-Bottom-Dtl
+   Let #Cr= 70
+
+
+   print 'Signature:'                 (#Cr,90)
+   print '___________________________'            (#Cr,120)
+
+   print 'Designation:'              (+1,90)
+   let $ER_Designation = rtrim($ER_Designation, ' ')
+  
+   print '___________________________'(,120)
+   Print $ER_Designation             (,120) WRAP 20 2
+   print 'Date:'                     (+1,90)
+   print 'Employer''s official chop' (,#PC1)
+   print '___________________________'(,120)
+   let $temp = $PrintDate
+   do Convert-date
+   let $PrintDate = $temp
+   Print $PrintDate                  (,120)
+   !print 'Empl ID: '                 (+1,130)
+   !print $Emplid                     (,160)
+
+   print 'IR56B' (76,#PC)
+   Graphic (68,200,95) BOX 12 0 0
+   Print 'FOR OFFICIAL USE'   (80,225)  point-size = 14
+   Graphic (80,200,95) BOX 1 0 0
+
+End-Procedure Print-Page-Bottom-Dtl
+!
+!***********************************************************************
+! Procedure: Qtr-Blank-Label
+!***********************************************************************
+Begin-Procedure Qtr-Blank-Label
+
+    Let $BAlphaChar = chr(#BAlphaChar)
+    Let $SeqStr = to_char(#BSeq)
+    Let $SeqStr = rtrim($SeqStr,' ')
+    Let $SeqStr = ltrim($SeqStr,' ')
+
+    Let $QtrHdrLine = '(' || $BAlphaChar || ') Address ' || $SeqStr||':'
+
+    print $QtrHdrLine (#Cr,#PC1)
+
+!    print '(a) Quarters 1 Address:'            (#Cr,#PC1)
+    Let #Cr = #Cr + 1
+    print 'Nature:'                            (#Cr,34)
+    print 'Period provided:'  (#Cr,130)
+
+    Let #Cr = #Cr + 1
+    print 'Rent paid to landlord by employer:' (#Cr,34)
+    print 'HK$'                                (#Cr,170)
+
+    Let #Cr = #Cr + 1
+    print 'Rent paid to landlord by employee:' (#Cr,34)
+    print 'HK$'                                (#Cr,170)
+
+    Let #Cr = #Cr + 1
+    print 'Rent refunded to employee by employer:'         (#Cr,34)
+    print 'HK$'                                (#Cr,170)
+
+    Let #Cr = #Cr + 1
+    print 'Rent paid to employer by employee:' (#Cr,34)
+    print 'HK$'                                (#Cr,170)
+    Let #Cr = #Cr + 1
+
+End-Procedure
+!
+!********************************************************************
+! Procedure :   Get-EE-Quarter-Count
+!********************************************************************
+Begin-Procedure Get-EE-Quarter-Count
+   Let #QtrCount = 0
+Begin-SELECT
+QCNT.GPHK_QTR_NUM
+
+   Let #QtrCount = &QCNT.GPHK_QTR_NUM
+
+    FROM PS_GPHK_IR56_QTR QCNT
+   WHERE QCNT.EMPLID           = $Emplid
+     AND QCNT.GPHK_REPORT_TYPE = $ReportType
+     AND QCNT.GPHK_TAX_REF_NUM = $TaxRefNum
+     AND QCNT.GPHK_TAX_YEAR    = #TaxYear
+     AND QCNT.GPHK_SERIAL_NUM  = (SELECT MAX(QCNT1.GPHK_SERIAL_NUM) FROM PS_GPHK_IR56_TBL QCNT1
+                                   WHERE QCNT1.GPHK_REPORT_TYPE = QCNT.GPHK_REPORT_TYPE
+                                     AND QCNT1.GPHK_TAX_YEAR    = QCNT.GPHK_TAX_YEAR
+                                     AND QCNT1.GPHK_TAX_REF_NUM = QCNT.GPHK_TAX_REF_NUM
+                                     AND QCNT1.EMPLID           = QCNT.EMPLID
+                                )
+End-SELECT
+End-Procedure   Get-EE-Quarter-Count
+!
+!********************************************************************
+! Procedure :   print-addr-mult-lines
+!********************************************************************
+begin-procedure print-addr-mult-lines
+   let #CurrCharPosn = 0
+   while 1
+       ! Find the character position <= #MaxNoCharInLn that completes a word (use a space character to mark end of word)
+       if length($ADDR_REM_STR) > #MaxNoCharInLn
+          let #WrapLineAt = #MaxNoCharInLn
+          let #CurrCharPosn = #MaxNoCharInLn
+          while #CurrCharPosn >= 1
+             if substr($ADDR_REM_STR , #CurrCharPosn , 1) = ' '
+                let #WrapLineAt = #CurrCharPosn
+                break
+             end-if
+             let #CurrCharPosn = #CurrCharPosn  - 1
+          end-while
+          let $ADDR_PRINT_STR = substr($ADDR_REM_STR , 1 , #WrapLineAt )
+          let $ADDR_PRINT_STR = ltrim(rtrim($ADDR_PRINT_STR,' '),' ')
+       else
+          let $ADDR_PRINT_STR = $ADDR_REM_STR
+       end-if
+       let $ADDR_PRINT_STR=$ADDR_PRINT_STR
+       Print $ADDR_PRINT_STR                            (#Cr,#addr_col_pos)
+       Let #Cr = #Cr + 1
+       if length($ADDR_REM_STR) > #MaxNoCharInLn
+          let $ADDR_REM_STR = substr($ADDR_REM_STR , #WrapLineAt + 1 , length($ADDR_REM_STR) - #WrapLineAt)
+       else
+          break
+       end-if
+   end-while
+End-procedure
+
+!*********************************************************************
+!Procedure : Convert-date
+!*********************************************************************
+begin-procedure Convert-date
+let $dd=''
+let $mm=''
+let $yyyy=''
+let $mm=substr($temp,1,2)
+let $dd=substr($temp,4,2)
+let $yyyy=substr($temp,7,10)
+let $temp=''
+let $temp=$dd||'/'||$mm||'/'||$yyyy
+end-procedure
+
+!*********************************************************************
+!Procedure : Convert-date
+!*********************************************************************
+begin-procedure Convert-date1
+let $dd=''
+let $mm=''
+let $yyyy=''
+let $mm=substr($temp,1,2)
+let $dd=substr($temp,4,2)
+let $yyyy=substr($temp,7,10)
+let $temp=''
+let $temp=$dd||$mm||$yyyy
+end-procedure
+
+
+!
+#include 'number.sqc'   ! routines for formatting numbers.
+#include 'datetime.sqc' ! routines for formatting dates and times.
+#include 'stdapi.sqc'   ! routines for process scheduler manipulation.
+#include 'curdttim.sqc' ! get-current-datetime procedure
+#include 'datemath.sqc' ! function for date-calculation
+!

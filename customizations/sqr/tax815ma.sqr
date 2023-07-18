@@ -1,0 +1,1037 @@
+!***********************************************************************
+!  TAX815MA:  Qtrly Wage List - Massachusetts                          *
+!                                                                      *
+!             NOTE: "#IFDEF TAXTEST" in main SELECT is used for        *
+!                   testing this report against DEMO database          *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                *
+!           $Bug:  30839299                                            *
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+#include 'setup31.sqc' !Printer and page-size initialization
+#include 'usarpt.sqc'  ! NID_COUNTRY defined
+
+begin-report
+
+  do Init-Report
+
+! These variables are used by rptsmmry.sqc
+  MOVE 'TAX815MA' TO  $Program
+
+  do Process-Main
+
+  close 10
+
+  if #Count_F > 0
+    display 'Upon successful conclusion of this program, the following'
+    display 'file will have been created:'
+    display ''
+    display '  TAX815MA  contains quarterly report data for Massachusetts Paid Family & Medical'
+    display '            Leave for electronic submission to the State of Massachusetts.'
+    display ''
+    display 'Follow the instructions from the department for preparing'
+    display 'and submitting the file electronically.'
+  else
+    do Print-Summary-Data('NoData')
+  end-if
+  
+  do Stdapi-Term
+  
+end-report
+
+
+begin-procedure Init-Report
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Get-Calendar-Year-Id
+  do Stdapi-Init
+  do Initialization
+  move 'TAX815MA' to $ReportID
+
+  move 'Massachusetts Paid Leave Report ' to $ReportTitle
+  display ''
+  display 'Creating Electronic file for Massachusetts Paid Leave Reporting'
+
+end-procedure
+
+begin-procedure Initialization
+
+  #ifdef TAXTEST
+    move 'CA'              to $State
+  #else
+    move 'MA'              to $State
+  #endif
+
+  do Get-Tax-Reporting-Run-Controls
+  move &TX.Balance_Year to $RptYear 9999
+  move &TX.Balance_Qtr  to $RptQuarter 9
+  move $RptYear          to $CalendarYr
+  move $RptYear          to $RptYear ~~xx  
+  move $PeriodEndDate    to $AsOfDate
+
+  do Format-DateTime($PeriodEndDate, $WorkDt, {DEFMDY}, '', '')  
+  let $TxPeriodEndDate =  Substr($WorkDt, 1, 2) || Substr($WorkDt, 4, 2)
+            || Substr($WorkDt, 7, 4)
+                     
+  display ' '
+  display 'Processing balances for '   noline
+  display $RptQtrYr
+
+  move 280 to #RecordLength
+
+  do Select-Parameters
+
+  move 1   to #Seq_Num
+  move 'Y' to $ProcessHeader
+
+  move '1' to $Year4
+  move '' to $DDelimiter
+  do Format-DateTime($AsOfToday,$CreationDate,{DEFMDY},'','')
+
+  do Open-File
+  
+end-procedure
+
+
+begin-procedure Process-Main
+
+begin-SELECT
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+end-SELECT
+
+  move &TX.Company       to $Company  !TX.Company is the Transmitter
+  if RTRIM($Company,' ') = ''
+    display '*** Company field blank on Tax Run Control Record ***'
+  end-if
+  do Get-Company-Data                 !Transmitter identifying data
+  
+  move $CompanyName    to $TransmitterName
+  move &CT.Federal_EIN to $FedEIN 099999999
+  let $FedEIN = lpad($FedEIN,9,'0')
+  move $CompnyAdd1     to $TransmitterAddress
+  move $CompnyCity        to $TransmitterCity
+  let $TransmitterState = rtrim(&CT.State, ' ')
+  move &CT.Postal      to $Zip
+  move '000000'        to $MediaAuthNbr 099999
+  move $Zip            to $ZipExtsn ~~~~~~xxxx
+  if instr($Zip,'-',6) = 0
+  and $ZipExtsn <> '    '
+    let $Zip = substr($Zip,1,5) || '-' || substr($Zip,6,4)
+  end-if
+  move $Zip            to $ZipExtsn ~~~~~xxxxx
+
+  uppercase $TransmitterName
+  uppercase $TransmitterAddress
+  uppercase $TransmitterCity
+  
+begin-SELECT
+B.COMPANY
+B.DESCR
+B.FEDERAL_EIN
+B.ADDRESS1
+B.CITY
+B.STATE
+B.POSTAL
+B.COUNTRY
+
+  move &B.Company to $Company
+  move &B.Descr   to $CompanyName
+  
+  do Read-Employee-Data
+
+FROM  PS_COMPANY_TBL B
+WHERE B.EFF_STATUS = 'A'
+  AND B.TAX_REPORT_TYPE = '2'
+  AND B.EFFDT =
+  (SELECT MAX(EFFDT)
+     FROM PS_COMPANY_TBL
+     WHERE  COMPANY = B.COMPANY
+       AND  EFFDT  <= $AsOfDate)
+ORDER BY COMPANY
+end-SELECT
+  if #Count_F > 0
+    divide 100 into #Tot_NlGrs_QTD
+    divide 100 into #Tot_Tax_QTD
+    do Print-Summary-Data('FileTotal815')
+  end-if
+  
+end-procedure
+
+
+begin-procedure Read-Employee-Data
+  
+begin-SELECT
+C.COMPANY    () on-break level=1 print=never before=Before-Company
+                                      AFTER=After-Company
+C.EMPLID     () on-break level=2 print=never before=Before-EMPL
+                                      AFTER=After-EMPL
+C.BALANCE_PERIOD
+C.TAX_CLASS
+C.NLGRS_YTD 
+C.NLGRS_QTD
+C.TXGRS_QTD
+C.TAX_QTD
+D.LAST_NAME
+D.FIRST_NAME
+D.MIDDLE_NAME
+D1.NATIONAL_ID
+
+  MOVE &C.EMPLID  TO $EMPLID_AMT
+  MOVE &C.COMPANY TO $COMPANY_AMT
+  MOVE &C.BALANCE_PERIOD TO #BALANCE_PERIOD_AMT
+  
+  if &C.NlGrs_QTD < 0 or &C.TxGrs_QTD < 0 or &C.NlGrs_YTD < 0
+     MOVE &C.NLGRS_YTD     to #NlGrs_YTD  
+     do Print-Summary-Data('NegWage')
+     move 0 to #NlGrs_QTD
+     move 0 to #TXGrs_QTD
+     move 0 to #NlGrs_YTD
+  else
+     MOVE &C.NLGRS_QTD to #NlGrs_QTD
+     MOVE &C.TXGRS_QTD to #TXGrs_QTD
+     MOVE &C.NLGRS_YTD to #NlGrs_YTD
+  end-if
+  
+FROM  PS_TAX_BALANCE C, PS_PERSON_NAME D, PS_PERS_NID D1
+WHERE C.COMPANY       = &B.Company
+  AND D.EMPLID        = C.EMPLID
+  AND C.TAX_CLASS     = 'I'
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+  #ifdef TAXTEST
+    AND C.STATE         = 'CA'
+  #else
+    AND C.STATE         = 'MA'
+  #endif
+
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND (C.NLGRS_QTD <> 0 OR C.TXGRS_QTD <> 0)
+  AND D.EMPLID            = D1.EMPLID
+  AND D1.COUNTRY = {NID_Country}
+  AND D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+ORDER BY D1.NATIONAL_ID, C.BALANCE_PERIOD
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Before-Company
+
+  do Get-Company-Data
+  do Get-State-Tax-Data             !Employer ID
+
+  MOVE &PFML_ACCOUNT_ID  to  $PFML_ACCOUNT_ID
+  LET $PFML_ACCOUNT_ID = RTRIM($PFML_ACCOUNT_ID,' ')
+
+  IF $PFML_ACCOUNT_ID = '' 
+    DISPLAY ' '
+    DISPLAY '*** WARNING: PFML Account Number field on Company State Tax Table is blank. ***'
+    DISPLAY 'The file will report the Federal Employer ID Number (FEIN) instead of the ' NOLINE
+    DISPLAY 'PFML Account Number for Company: ' NOLINE
+    DISPLAY $Company NOLINE
+    DISPLAY ' '
+  ELSE
+!---SEARCH FOR INVALID CHARACTERS IN PFML ACCOUNT ID
+    LET $Valid_Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    MOVE 0   TO #Invalid
+     
+    MOVE $PFML_ACCOUNT_ID      TO $PFML_ACCOUNT_ID_AUX
+    LET $PFML_ACCOUNT_ID_AUX = RTRIM($PFML_ACCOUNT_ID_AUX,' ')
+    LET $Invalid_Chars = Translate($PFML_ACCOUNT_ID_AUX, $Valid_Chars, '')
+    LET #Invalid = length($Invalid_Chars)
+     
+    IF #Invalid
+       DISPLAY ' '
+       display '*** WARNING: PFML Account Number field on Company State Tax Table has special characters. ***'
+       DISPLAY 'Only alphanumeric characters should be entered in this field.'
+       DISPLAY 'Verify the PFML Account Number for Company: '  NOLINE
+       DISPLAY $COMPANY NOLINE
+       DISPLAY ', before submitting the file.' 
+       DISPLAY ' '
+       MOVE 0   TO #Invalid
+    END-IF
+
+!---CHECK FOR LENGTH OF PFML ACCOUNT ID 
+    let #Length = LENGTH(RTRIM($PFML_ACCOUNT_ID,' '))
+    
+    IF #Length < 14
+       DISPLAY ' '
+       display '*** WARNING: PFML Account Number field on Company State Tax Table is less than 14 characters in length. ***'
+       DISPLAY 'PFML Account Number should be 14 characters in length.'
+       DISPLAY 'Verify the PFML Account Number for Company: '  NOLINE
+       DISPLAY $COMPANY NOLINE
+       DISPLAY ', before submitting the file.' 
+       DISPLAY ' '
+    END-IF
+    
+  end-if  
+    
+  do Format-Number(&PNA_MLI_EE_PCT,  $PNA_MLI_EE_PCT,  '099')
+  
+  do Format-Number(&PNA_FLI_EE_PCT,  $PNA_FLI_EE_PCT,  '099')
+  
+  move 'N' to                   $CONTRB_DUE_ENTERED
+     
+  let $Company_Selected = 'N'
+  Do Company-Run-Control
+ 
+  if $ProcessHeader = 'Y'
+     do Write-Header-Record
+  end-if 
+  
+  do Get-FLI-MLI-Wages
+  
+  do Write-Return-Record
+
+end-procedure
+
+begin-procedure Company-Run-Control
+
+begin-SELECT
+RC_TAX815MA.COMPANY
+RC_TAX815MA.CNTRB_DUE
+
+  let $Company_Selected  = 'Y'
+  
+  move &RC_TAX815MA.CNTRB_DUE    to #TOT_CONTRB_DUE_IN
+
+FROM  PS_RC_TAX815MA RC_TAX815MA
+WHERE RC_TAX815MA.OPRID              = $Prcs_OprID
+AND   RC_TAX815MA.RUN_CNTL_ID        = $Prcs_Run_Cntl_ID
+AND   RC_TAX815MA.COMPANY            = $Company
+end-select
+
+end-procedure
+
+
+begin-procedure After-Company
+
+  add #Co_NlGrs_QTD to #Tot_NlGrs_QTD
+  add #TOT_FLI_EE   to #Tot_TotFLIEE
+  add #TOT_FLI_ER   to #Tot_TotFLIER
+  add #TOT_MLI_EE   to #Tot_TotMLIEE
+  add #TOT_MLI_ER   to #Tot_TotMLIER
+  add #TOT_MLI_FLI  to #Tot_TotMLIFLI 
+ 
+  divide 100 into #Co_NlGrs_QTD
+
+  do Print-Summary-Data('CoAmt815')
+
+  add #Count_S to #Count_F
+  move 0 to #Co_NlGrs_QTD
+  move 0 to #TOT_FLI_EE
+  move 0 to #TOT_FLI_ER
+  move 0 to #TOT_MLI_EE
+  move 0 to #TOT_MLI_ER
+  move 0 to #TOT_MLIFLI
+  move 0 to #TOT_CONTRB_DUE_IN
+  move 0 to #Count_S
+  new-page
+
+end-procedure
+
+
+begin-procedure Before-EMPL
+
+  move &D1.NATIONAL_ID to $S123 xxx       !isolate first 3 digits
+  if $S123 = &Temp_SSN_Mask or RTRIM(&D1.NATIONAL_ID, ' ') = ''
+    move 'I        '   to $NATIONAL_ID
+  else
+    move &D1.NATIONAL_ID        to $NATIONAL_ID
+  end-if
+  
+ move &D.Last_Name             to $LAST_NAME   
+ 
+!---SEARCH AND REMOVE SPECIAL CHARS FROM LAST NAME
+     move ''  to $In_String
+     move $LAST_NAME to $In_String
+     do Convert-Special-Chars
+     let $LAST_NAME =  ''
+     let $LAST_NAME =  $Name_Clean
+     let $LAST_NAME = rtrim($LAST_NAME,' ')
+     
+  move &D.First_Name            to $First_Name
+
+!---SEARCH AND REMOVE SPECIAL CHARS FROM FIRST NAME
+     move ''  to $In_String
+     move $First_Name to $In_String
+     do Convert-Special-Chars
+     let $First_Name =  ''
+     let $First_Name =  $Name_Clean
+     let $First_Name = rtrim($First_Name,' ')
+
+ 
+  uppercase $Last_Name
+  uppercase $First_Name
+  
+
+  move &C.EmplID to $EmplID
+  move 0 to #TotTxGrs_QTD
+  move 0 to #NlGrs_QTD
+  move 0 to #TxGrs_QTD
+
+end-procedure
+
+
+begin-procedure Convert-Special-Chars
+
+   move 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'        to $Alphabet
+   
+!  let $AccentY  =  'âäàåáãæÄÅÀÁÂÃÄÅÆçÇÐéêëèÉÈÊËïîìíÌÍÎÏñÑôöòÖóõÒÓÔÕüûùÜúÙÚÛÿýÝŸ'
+   let $AccentN  =  'AAAAAAAAAAAAAAAACCDEEEEEEEEIIIIIIIINNOOOOOOOOOOUUUUUUUUYYYY'
+   let $AccentY  =   unicode('U+00E2') ||  unicode('U+00E4') ||  unicode('U+00E0') ||
+                     unicode('U+00E1') ||  unicode('U+00E5') ||  unicode('U+00E3') ||
+                     unicode('U+00E6') ||  unicode('U+00C4') ||  unicode('U+00C5') ||
+                     unicode('U+00C0') ||  unicode('U+00C1') ||  unicode('U+00C2') ||
+                     unicode('U+00C3') ||  unicode('U+00C4') ||  unicode('U+00C5') ||
+                     unicode('U+00C6') ||  unicode('U+00E7') ||  unicode('U+00C7') ||
+                     unicode('U+00D0') ||  unicode('U+00E9') ||  unicode('U+00EA') ||
+                     unicode('U+00EB') ||  unicode('U+00E8') ||  unicode('U+00C9') ||
+                     unicode('U+00C8') ||  unicode('U+00CA') ||  unicode('U+00CB') ||
+                     unicode('U+00EF') ||  unicode('U+00EE') ||  unicode('U+00EC') ||
+                     unicode('U+00ED') ||  unicode('U+00CC') ||  unicode('U+00CD') ||
+                     unicode('U+00CE') ||  unicode('U+00CF') ||
+                     unicode('U+00F1') ||  unicode('U+00D1') ||
+                     unicode('U+00F4') ||  unicode('U+00F6') || unicode('U+00F2') ||
+                     unicode('U+00D6') ||  unicode('U+00F3') || unicode('U+00F5') ||
+                     unicode('U+00D2') ||  unicode('U+00D3') || unicode('U+00D4') ||
+                     unicode('U+00D5') ||  unicode('U+00FC') || unicode('U+00FB') ||
+                     unicode('U+00F9') ||  unicode('U+00DC') || unicode('U+00FA') ||
+                     unicode('U+00D9') ||  unicode('U+00DA') || unicode('U+00DB') ||
+                     unicode('U+00FF') ||  unicode('U+00FD') || unicode('U+00DD') ||
+                     unicode('U+0178')
+
+   let #I = 1
+   let $Name_clean = ''
+   let #In_Len = Length(Rtrim($In_String, ' '))
+
+   while #I <= #In_Len
+     let $Char = Substr($In_String, #I, 1)
+     let $Upper_Char = Upper($Char)
+     let #Loc = Instr($Alphabet,$Upper_Char,1)
+     if #Loc > 0
+       let $Name_clean = $Name_clean || $Upper_Char
+     else
+       let #Loc = Instr($AccentY,$Char,1)
+       if #Loc > 0
+         let $Name_clean = $Name_clean || Substr($AccentN,#Loc,1)
+       end-if
+     end-if
+     add 1 To #I
+   end-while
+ 
+end-procedure
+
+
+begin-procedure After-EMPL
+
+  DO GET-EE-UI-AMOUNT
+  DO VALIDATE-SAME-AMOUNTS-FLI-MLI
+  IF $ProcessEE = 'Y'
+     DO FORMAT-AMOUNTS
+     DO Write-Wage-Record
+  END-IF
+
+end-procedure
+
+
+BEGIN-PROCEDURE GET-EE-UI-AMOUNT
+   LET #UI_NLGRS_QTD = 0
+   LET #UI_NLGRS_YTD = 0
+   
+BEGIN-SELECT
+
+UI.NLGRS_QTD &UI_NLGRS_QTD
+UI.NLGRS_YTD &UI_NLGRS_YTD
+
+   MOVE &UI_NLGRS_QTD   TO #UI_NLGRS_QTD
+   MOVE &UI_NLGRS_YTD   TO #UI_NLGRS_YTD
+   
+
+FROM PS_TAX_BALANCE UI
+WHERE 
+       UI.EMPLID = $EMPLID_AMT
+   AND UI.COMPANY = $COMPANY_AMT
+   AND UI.BALANCE_ID = $Calendar_Year_Id
+   AND UI.BALANCE_YEAR = &TX.Balance_Year
+   AND UI.BALANCE_QTR =  &TX.Balance_Qtr
+   AND UI.BALANCE_PERIOD = #BALANCE_PERIOD_AMT  
+   #ifdef TAXTEST
+   AND UI.STATE         = 'CA'
+   #else
+   AND UI.STATE         = 'MA'
+  #endif
+   AND UI.LOCALITY = ' '
+   AND UI.TAX_CLASS  = 'U'
+END-SELECT 
+
+END-PROCEDURE
+
+BEGIN-PROCEDURE VALIDATE-SAME-AMOUNTS-FLI-MLI
+
+  MOVE 'Y' TO $ProcessEE
+  
+BEGIN-SELECT
+
+MAX(TB1.NLGRS_QTD) &MAX_NLGRS_QTD
+MIN(TB1.NLGRS_QTD) &MIN_NLGRS_QTD
+ 
+MAX(TB1.NLGRS_YTD) &MAX_NLGRS_YTD
+MIN(TB1.NLGRS_YTD) &MIN_NLGRS_YTD
+ 
+MAX(TB1.TXGRS_QTD) &MAX_TXGRS_QTD
+MIN(TB1.TXGRS_QTD) &MIN_TXGRS_QTD  
+   
+  
+   IF (&MAX_NLGRS_QTD <> &MIN_NLGRS_QTD) AND &MAX_NLGRS_QTD > 0
+      DISPLAY ' '
+      DISPLAY '*** Warning: Employee ID ' NOLINE
+      DISPLAY $EMPLID_AMT NOLINE 
+      DISPLAY ' is included in the file; however, ' NOLINE
+      DISPLAY 'the QTD no limit grosses for state ' NOLINE 
+      DISPLAY 'FLI-EE, FLI-ER, MLI-EE, MLI-ER' NOLINE 
+      DISPLAY ' are not the same amounts.' 
+      DISPLAY 'The file will report the highest QTD no limit gross.'
+      DISPLAY 'Review the tax balances of the employee ' NOLINE 
+      DISPLAY 'to ensure they are accurate.'
+      DISPLAY 'If corrections are needed, correct the balances ' NOLINE
+      DISPLAY 'with the online Balance Adjustment pages and rerun the file.'
+      DISPLAY ' '
+      MOVE &MAX_NLGRS_QTD TO #NlGRS_QTD
+   END-IF
+   
+   IF (&MAX_NLGRS_QTD < 0)
+      MOVE 'N' TO $ProcessEE
+   END-IF
+   
+   
+   IF (&MAX_NLGRS_YTD <> &MIN_NLGRS_YTD) AND &MAX_NLGRS_YTD > 0
+      DISPLAY ' '
+      DISPLAY '*** Warning: Employee ID ' NOLINE
+      DISPLAY $EMPLID_AMT NOLINE 
+      DISPLAY ' is included in the file; however, ' NOLINE
+      DISPLAY 'the YTD no limit grosses for state ' NOLINE 
+      DISPLAY 'FLI-EE, FLI-ER, MLI-EE, MLI-ER' NOLINE 
+      DISPLAY ' are not the same amounts.' 
+      DISPLAY 'The file will report the highest YTD no limit gross.'
+      DISPLAY 'Review the tax balances of the employee ' NOLINE 
+      DISPLAY 'to ensure they are accurate.'
+      DISPLAY 'If corrections are needed, correct the balances ' NOLINE
+      DISPLAY 'with the online Balance Adjustment pages and rerun the file.'
+      DISPLAY ' '
+      MOVE &MAX_NLGRS_YTD TO #NlGRS_YTD
+   END-IF
+   
+   IF (&MAX_NLGRS_YTD < 0)
+      MOVE 'N' TO $ProcessEE
+   END-IF
+   
+   MOVE 'OK' TO $WRN-LBL
+   IF (#UI_NLGRS_YTD <> 0 AND &MAX_NLGRS_YTD > 0)
+      IF (&MAX_NLGRS_YTD = #UI_NLGRS_YTD) AND (&MIN_NLGRS_YTD = #UI_NLGRS_YTD)
+         MOVE 'OK' TO $WRN-LBL
+      ELSE
+         MOVE 'YTD' TO $WRN-LBL
+         DO UNEMPLOYMENT-MESSAGE
+      END-IF
+   END-IF
+   
+   
+   IF (&MAX_TXGRS_QTD <> &MIN_TXGRS_QTD) AND &MAX_TXGRS_QTD > 0
+      DISPLAY ' '
+      DISPLAY '*** Warning: Employee ID ' NOLINE
+      DISPLAY $EMPLID_AMT NOLINE 
+      DISPLAY ' is included in the file; however, '  NOLINE
+      DISPLAY 'the QTD taxable grosses for state ' NOLINE 
+      DISPLAY 'FLI-EE, FLI-ER, MLI-EE, MLI-ER' NOLINE 
+      DISPLAY ' are not the same amounts.' 
+      DISPLAY 'The file will report the highest QTD taxable gross.'
+      DISPLAY 'Review the tax balances of the employee ' NOLINE 
+      DISPLAY 'to ensure they are accurate.'
+      DISPLAY 'If corrections are needed, correct the balances ' NOLINE
+      DISPLAY 'with the online Balance Adjustment pages and rerun the file.'
+      DISPLAY ' '
+      MOVE &MAX_TXGRS_QTD TO #TXGRS_QTD
+   END-IF
+   
+   IF (&MAX_TXGRS_QTD < 0)
+      MOVE 'N' TO $ProcessEE
+   END-IF 
+      
+
+FROM PS_TAX_BALANCE TB1
+WHERE 
+       TB1.EMPLID = $EMPLID_AMT
+   AND TB1.COMPANY = $COMPANY_AMT
+   AND TB1.BALANCE_ID = $Calendar_Year_Id
+   AND TB1.BALANCE_YEAR = &TX.Balance_Year
+   AND TB1.BALANCE_QTR =  &TX.Balance_Qtr
+   AND TB1.BALANCE_PERIOD = #BALANCE_PERIOD_AMT !&C.BALANCE_PERIOD
+   #ifdef TAXTEST
+   AND TB1.STATE         = 'CA'
+   #else
+   AND TB1.STATE         = 'MA'
+  #endif
+   AND TB1.TAX_CLASS  IN ('2','3','4','I')
+END-SELECT
+
+END-PROCEDURE
+
+
+BEGIN-PROCEDURE UNEMPLOYMENT-MESSAGE
+   IF $WRN-LBL <> 'OK'
+     DISPLAY '*** Warning: Employee ID ' NOLINE 
+     DISPLAY $EMPLID_AMT NOLINE
+     DISPLAY ' is included in the file; ' NOLINE
+     DISPLAY 'however, the ' NOLINE
+     DISPLAY $WRN-LBL NOLINE 
+     DISPLAY ' no limit gross for state UI is not the same amount as the ' NOLINE
+     DISPLAY $WRN-LBL NOLINE
+     DISPLAY ' no limit gross for state ' NOLINE
+     DISPLAY 'FLI-EE, FLI-ER, MLI-EE, MLI-ER'
+     DISPLAY 'Review the tax balances of the employee ' NOLINE 
+     DISPLAY 'to ensure they are accurate.'
+     DISPLAY 'If corrections are needed, correct the balances ' NOLINE
+     DISPLAY 'with the online Balance Adjustment pages and rerun the file.'
+     DISPLAY ' '
+  END-IF
+END-PROCEDURE
+
+BEGIN-PROCEDURE FORMAT-AMOUNTS
+  
+  multiply 100 times #NlGrs_QTD
+  do Format-Number(#NlGrs_QTD,  $NlGrs_QTD,  '0999999999')
+  add #NlGrs_QTD to #Co_NlGrs_QTD
+  
+  multiply 100 times #NlGrs_YTD
+  do Format-Number(#NlGrs_YTD,  $NlGrs_YTD,  '0999999999')
+  
+  multiply 100 times #TXGrs_QTD
+  do Format-Number(#TXGrs_QTD,  $TXGrs_QTD,  '0999999999')
+  
+END-PROCEDURE
+
+
+begin-procedure Get-FLI-MLI-Wages
+
+! Employee Count and Total Wages
+begin-SELECT
+COUNT(DISTINCT C.EMPLID)        &EMPL_CNT
+
+#ifdef DB2ALL
+DECIMAL(SUM(C.TXGRS_QTD),15,3)  &TOT_TXBL_WGS
+#else
+SUM(C.TXGRS_QTD)                &TOT_TXBL_WGS
+#endif
+
+  move &EMPL_CNT             to $EMPL_CNT  0999999999
+  
+  let #TOT_TXBL_WGS = &TOT_TXBL_WGS
+  multiply 100 times #TOT_TXBL_WGS
+  do Format-Number(#TOT_TXBL_WGS,  $TOT_TXBL_WGS,  '099999999999')
+     
+FROM  PS_TAX_BALANCE C
+WHERE C.COMPANY       = &B.Company
+  AND C.TAX_CLASS     = 'I'
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+  #ifdef TAXTEST
+    AND C.STATE         = 'CA'
+  #else
+    AND C.STATE         = 'MA'
+  #endif
+
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND (C.NLGRS_QTD <> 0 OR C.TXGRS_QTD <> 0)
+  AND C.NLGRS_QTD >= 0
+  AND C.NLGRS_YTD >= 0
+  AND C.TXGRS_QTD >= 0
+
+end-SELECT 
+
+!Total FLI EE
+begin-SELECT
+
+#ifdef DB2ALL
+DECIMAL(SUM(C.TAX_QTD),15,3)    &TOT_FLI_EE
+#else
+SUM(C.TAX_QTD)                  &TOT_FLI_EE
+#endif
+
+  let #TOT_FLI_EE = &TOT_FLI_EE
+     
+FROM  PS_TAX_BALANCE C
+WHERE C.COMPANY       = &B.Company
+  AND C.TAX_CLASS     = 'I'
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+  #ifdef TAXTEST
+    AND C.STATE         = 'CA'
+  #else
+    AND C.STATE         = 'MA'
+  #endif
+
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND (C.NLGRS_QTD <> 0 OR C.TXGRS_QTD <> 0)
+  AND C.NLGRS_QTD >= 0
+  AND C.NLGRS_YTD >= 0
+  AND C.TXGRS_QTD >= 0
+
+end-SELECT
+
+!Total FLI ER
+begin-SELECT
+
+#ifdef DB2ALL
+DECIMAL(SUM(C.TAX_QTD),15,3)    &TOT_FLI_ER
+#else
+SUM(C.TAX_QTD)                  &TOT_FLI_ER
+#endif
+
+  let #TOT_FLI_ER = &TOT_FLI_ER
+     
+FROM  PS_TAX_BALANCE C
+WHERE C.COMPANY       = &B.Company
+  AND C.TAX_CLASS     = '4'
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+  #ifdef TAXTEST
+    AND C.STATE         = 'CA'
+  #else
+    AND C.STATE         = 'MA'
+  #endif
+
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND (C.NLGRS_QTD <> 0 OR C.TXGRS_QTD <> 0)
+  AND C.NLGRS_QTD >= 0
+  AND C.NLGRS_YTD >= 0
+  AND C.TXGRS_QTD >= 0
+
+end-SELECT
+
+!Total MLI EE
+begin-SELECT
+
+#ifdef DB2ALL
+DECIMAL(SUM(C.TAX_QTD),15,3)    &TOT_MLI_EE
+#else
+SUM(C.TAX_QTD)                  &TOT_MLI_EE
+#endif
+
+  let #TOT_MLI_EE = &TOT_MLI_EE
+     
+FROM  PS_TAX_BALANCE C
+WHERE C.COMPANY       = &B.Company
+  AND C.TAX_CLASS     = '3'
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+  #ifdef TAXTEST
+    AND C.STATE         = 'CA'
+  #else
+    AND C.STATE         = 'MA'
+  #endif
+
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND (C.NLGRS_QTD <> 0 OR C.TXGRS_QTD <> 0)
+  AND C.NLGRS_QTD >= 0
+  AND C.NLGRS_YTD >= 0
+  AND C.TXGRS_QTD >= 0
+
+end-SELECT
+
+!Total MLI ER
+begin-SELECT
+
+#ifdef DB2ALL
+DECIMAL(SUM(C.TAX_QTD),15,3)    &TOT_MLI_ER
+#else
+SUM(C.TAX_QTD)                  &TOT_MLI_ER
+#endif
+
+  let #TOT_MLI_ER = &TOT_MLI_ER
+     
+FROM  PS_TAX_BALANCE C
+WHERE C.COMPANY       = &B.Company
+  AND C.TAX_CLASS     = '2'
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+  #ifdef TAXTEST
+    AND C.STATE         = 'CA'
+  #else
+    AND C.STATE         = 'MA'
+  #endif
+
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND (C.NLGRS_QTD <> 0 OR C.TXGRS_QTD <> 0)
+  AND C.NLGRS_QTD >= 0
+  AND C.NLGRS_YTD >= 0
+  AND C.TXGRS_QTD >= 0
+
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Write-Header-Record
+
+begin-SELECT
+COUNT(DISTINCT C.COMPANY)     &RETCNT
+
+  move &RETCNT               to $RETCNT    099999
+    
+FROM  PS_TAX_BALANCE C, PS_PERSON_NAME D, PS_PERS_NID D1
+WHERE D.EMPLID        = C.EMPLID
+  AND C.TAX_CLASS     IN ('I','2','3','4')
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+  #ifdef TAXTEST
+    AND C.STATE         = 'CA'
+  #else
+    AND C.STATE         = 'MA'
+  #endif
+
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND (C.NLGRS_QTD <> 0 OR C.TXGRS_QTD <> 0)
+  AND D.EMPLID            = D1.EMPLID
+  AND D1.COUNTRY = {NID_Country}
+  AND D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+end-SELECT
+
+  write 10 from 'MAPFML':6   !1-6
+                 $RETCNT:6   !7-12
+                 $FedEIN:9   !13-21
+        $TransmitterName:30  !22-51
+     $TransmitterAddress:30  !52-81
+        $TransmitterCity:30  !82-111
+       $TransmitterState:2   !112-113
+                    $Zip:5   !114-118
+               $ZipExtsn:5   !119-123
+                     $Sp:157 !124-280
+
+  add 1 to #RecordCount
+  move 'N' to $ProcessHeader
+  
+end-procedure
+
+
+begin-procedure Write-Return-Record
+
+  move &B.Federal_EIN  to $FedEIN 099999999
+  let $FedEIN = lpad($FedEIN,9,'0')
+  move &B.Descr        to $ErName
+
+  uppercase $ErName
+
+  move 'N'          to $Amended
+  move '0000000000' to $IND_CNTR_CNT
+  move 'N'          to $PAYMENT_REC 
+  
+  move #Seq_Num          to $Seq_Num  099999
+  
+  let #TOT_MLI_FLI = #TOT_FLI_EE + #TOT_FLI_ER + #TOT_MLI_EE + #TOT_MLI_ER
+  let #TOT_CONTRB_DUE = #TOT_MLI_FLI
+  
+  if $Company_Selected = 'Y'
+      move #TOT_CONTRB_DUE_IN       to #TOT_MLI_FLI
+      if #TOT_CONTRB_DUE_IN <> #TOT_CONTRB_DUE
+         DISPLAY ' '
+         DISPLAY '*** Warning: Override Contributions Due amount' NOLINE
+         DISPLAY ' does not match Calculated Contributions Due amount ' NOLINE
+         DISPLAY 'for Company: ' NOLINE
+         DISPLAY  $COMPANY 
+         DISPLAY 'The file will report Override Contribution Due ' NOLINE
+         DISPLAY  #TOT_CONTRB_DUE_IN
+         DISPLAY 'Calculated Contributions Due is ' NOLINE
+         DISPLAY  #TOT_CONTRB_DUE
+         DISPLAY 'Review the tax balances of the employee ' NOLINE 
+         DISPLAY 'to ensure they are accurate.'
+         DISPLAY 'If corrections are needed, correct the balances ' NOLINE
+         DISPLAY 'with the online Balance Adjustment pages and rerun the file.'
+         DISPLAY ' '
+      end-if     
+      move #TOT_CONTRB_DUE_IN       to #TOT_CONTRB_DUE
+  end-if
+
+  multiply 100 times #TOT_CONTRB_DUE
+  do Format-Number(#TOT_CONTRB_DUE,  $TOT_CONTRB_DUE,  '099999999999')  
+  
+  move '000000000000'       to $PAYMENT_AMT  
+    
+  write 10 from 'R':1    !1-1
+           $Seq_Num:6    !2-7        
+   $TxPeriodEndDate:8    !8-15
+            $FedEIN:9    !16-24
+            $ErName:30   !25-54
+           $Amended:1    !55-55
+          $EMPL_CNT:10   !56-65
+      $IND_CNTR_CNT:10   !66-75
+      $TOT_TXBL_WGS:12   !76-87
+    $TOT_CONTRB_DUE:12   !88-99
+       $PAYMENT_REC:1    !100-100
+                $Sp:59   !101-159
+       $PAYMENT_AMT:12   !160-171
+                $Sp:8    !172-179      
+   $PFML_ACCOUNT_ID:14   !180-193
+                $Sp:87   !194-280
+ 
+  add 1 to #Seq_Num
+  move 0 to #Count_S
+  add 1 to #RecordCount
+  
+end-procedure
+
+
+begin-procedure Write-Wage-Record
+
+  move 'N'               to $Ind_Cntr
+  move 'N'               to $Opt_In
+  
+  write 10 from 'W':1    !1-1
+       $NATIONAL_ID:9    !2-10
+        $First_Name:30   !11-40
+         $Last_Name:30   !41-70
+          $Ind_Cntr:1    !71-71
+            $Opt_In:1    !72-72
+         $NlGrs_YTD:10   !73-82
+         $NlGrs_QTD:10   !83-92
+         $TXGrs_QTD:10   !93-102
+    $PNA_MLI_EE_PCT:3    !103-105
+    $PNA_FLI_EE_PCT:3    !106-108
+                $Sp:172  !109-280
+
+  add 1 to #RecordCount
+  add 1 to #Count_S
+  
+end-procedure
+
+
+begin-procedure Open-File
+
+  open '{IMPORTPREFIX}TAX815MA{IMPORTSUFFIX}' as 10 for-writing record=280:fixed
+
+end-procedure
+
+
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'getstdta.sqc'  !Get-State-Tax-Data procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'rptsmmry.sqc'  !Print-Summary-Data procedure
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'txrnctl1.sqc'  !Get-Run-Control procedure
+#Include 'datemath.sqc'  !Date math procedures

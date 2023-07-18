@@ -1,0 +1,4684 @@
+!****************************************
+!  CNTPAY01 Additional Pay Maintenance  *
+!****************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  27640287                                            !
+!                                                                      *
+!***********************************************************************
+! This program is specific to HRMS for Public Sector.                  *
+!***********************************************************************
+
+#include 'setenv.sqc'     !Set environment
+#Include 'setup31.sqc'    !Printer and page-size initialization
+!****************************************************************************
+begin-report
+
+  do Housekeeping
+  do Mainline
+  do Wrapup
+
+end-report
+
+!****************************************************************************
+! Housekeeping                                                              *
+!****************************************************************************
+begin-procedure Housekeeping
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Stdapi-Init
+
+  let $Run_Flag = 'Run_ID'
+
+  if $Prcs_Process_Instance = ''
+      do Prompts
+  else
+      do Select-Parameters
+      do Get-Values
+  end-if
+
+  do Assign-Select-Cond
+  do Create-Array
+
+  move 'CNTPAY01' to $ReportID
+  move 'Create Contract Projected Payment Details' to $ReportTitle
+  show $ReportID ' - ' $ReportTitle
+  display ' '
+
+end-procedure
+
+!****************************************************************************
+! Prompts                                                                   *
+!****************************************************************************
+begin-procedure Prompts
+
+  input $RUN_ID 'Input RUN_ID (Enter blank for Company, Paygroup, Pay_End_Dt processing)'
+  uppercase $RUN_ID
+
+  if $RUN_ID = ''
+
+      let $Run_Flag = 'CPP'
+
+      input $COMPANY 'Input Company'
+      uppercase $Company
+
+      input $Paygroup 'Input Paygroup'
+      uppercase $Paygroup
+
+      input $Pay_End_Dt 'Input Pay_End_Dt' type=date
+      uppercase $Pay_End_Dt
+
+  end-if
+
+  let $RunCtl_SepChk = 'N'
+  let $RunCtl_SelAllEmpl = 'N'
+
+end-procedure
+
+!****************************************************************************
+! Get-Values                                                                *
+!****************************************************************************
+begin-procedure Get-Values
+
+  if $RC_PAYINIT.RUN_ID = ''
+      let $Run_Flag = 'CPP'
+      let $Company = $RC_PAYINIT.COMPANY
+      let $Paygroup = $RC_PAYINIT.PAYGROUP
+      let $Pay_End_Dt = $RC_PAYINIT.Pay_End_Dt
+  else
+      let $Run_ID = $RC_PAYINIT.RUN_ID
+  end-if
+
+  let $RunCtl_SepChk = $RC_PAYINIT.SEPCHK_FLAG
+  let $RunCtl_SelAllEmpl = $RC_PAYINIT.SELECT_EMPLOYEE
+
+end-procedure
+
+!****************************************************************************
+! Assign-Select-Cond                                                        *
+!****************************************************************************
+begin-procedure Assign-Select-Cond
+
+  if $Run_Flag = 'CPP'
+
+      let $Cond = 'PAY_CAL.COMPANY = '''|| $Company ||
+                  ''' AND PAY_CAL.PAYGROUP = '''|| $Paygroup ||
+                  ''' AND PAY_CAL.PAY_END_DT = '''|| $Pay_End_Dt||''''
+  else
+
+      let $Cond = 'PAY_CAL.RUN_ID = '''|| $RUN_ID || ''''
+  end-if
+
+  if $RunCtl_SelAllEmpl = 'N'
+      let $ReCalc_CNTLIS1 = 'AND CNTLIS1.HP_RECALC_CONTRACT = ''Y'''
+      let $ReCalc_CNTLIS2 = 'AND CNTLIS2.HP_RECALC_CONTRACT = ''Y'''
+      let $ReCalc_CNTLIS  = 'AND CNTLIS.HP_RECALC_CONTRACT = ''Y'''
+  else
+      let $ReCalc_CNTLIS1 = ''
+      let $ReCalc_CNTLIS2 = ''
+      let $ReCalc_CNTLIS  = ''
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Create-Array                                                              *
+!****************************************************************************
+begin-procedure Create-Array
+
+  let #MaxWrk = 60
+
+  Create-array name=WrkArray  Size = 60
+       field=WrkPayBegDt:Char
+       field=WrkPayEndDt:Char
+       field=WrkCMPPayBegDt:Char
+       field=WrkCMPPayEndDt:Char
+       field=WrkConfInd:Char
+       field=WrkPPRatio:Number:5
+       field=WrkRemainPPRatio:Number:5
+       field=WrkAmt:Number:5
+       field=WrkRetroAmt:Number:5
+       field=WrkActualDay:Number
+       field=WrkActualAmt:Number
+       field=WrkLOADay:Number
+       field=WrkLOAAmt:Number
+
+  Create-array name=TotalArray Size=3
+       field=TotalRatio:Number
+       field=TotalRemainRatio:Number
+       field=TotalLOARatio:Number
+       field=TotalLOARemRatio:Number
+       field=TotalAmt:Number
+       field=TotalWorkDays:Number
+       field=TotalActWrk:Number
+
+  let #MaxJob = 60
+
+  Create-array name=JobArray  Size = 60
+       field=JobEffdt:Char
+       field=JobEffseq:Number
+       field=FutureDate:Char
+       field=JobAction:Char
+       field=JobCompany:Char
+       field=JobPaygroup:Char
+       field=JobHolSchd:Char
+       field=JobCompRt:Number
+       field=JobChangeAmt:Number
+       field=JobChgDelta:Number
+       field=JobProrateOptn:Char
+       field=JobLumpSumPay:Char
+       field=JobFreqType:Char
+       field=JobContBeginDt:Char
+       field=JobContEndDt:Char
+       field=JobPymtBeginDt:Char
+       field=JobPymtEndDt:Char
+       field=JobMthFreqID:Char
+       field=JobDailyHrs:Number
+       field=JobPaymentTerm:Char
+       field=JobActualStrDt:Char
+       field=JobContTermDt:Char
+       field=JobSchSchd:Char
+       field=JobUseHolSchd:Char
+       field=JobWorkDays:Number
+       field=JobMthFactor:Number
+       field=InsContParm:Char
+       field=RateChange:Char
+       field=ContParmSeq:Number
+       field=JobAnnlRt:Number
+       field=JobMthRt:Number
+       field=JobDailyRt:Number
+       field=JobHrlyRt:Number
+       field=ContractAmt:Number
+       field=DailyRtDiff:Number
+       field=PNE_RetroAmt:Number
+       field=CRG_RetroAmt:Number
+       field=ENP_RetroAmt:Number
+       field=ActualWrk:Number
+       field=JobRemainDays:Number
+       field=PNECarryOver:Number
+       field=CRGCarryOver:Number
+       field=ENPCarryOver:Number
+       field=WrkCarryOver:Number
+       field=LOACarryOver:Number
+       field=SysCreateInd:Char
+
+  Create-array name=RateArray  Size = 60
+       field=RateBegDt:Char
+       field=RateEndDt:Char
+       field=DailyRt:Number
+
+  Create-array name=InProgress Size = 10
+       field=IP_ContractSeq:Number
+       field=IP_PrdEndDate:Char
+       field=IP_SepChk:Number
+       field=IP_ActualDay:Number
+       field=IP_PNEAmt:Number
+       field=IP_CRGAmt:Number
+       field=IP_ENPAmt:Number
+       field=IP_WrkAmt:Number
+       field=IP_LOAAmt:Number
+       field=IP_Compare:Char
+
+end-procedure
+
+!****************************************************************************
+! Initialize-Array                                                          *
+!****************************************************************************
+begin-procedure Initialize-Array
+
+  let #wrk_idx = 0
+
+  while #wrk_idx < #MaxWrk
+      put ' ' ' ' ' ' ' ' 'N' 0 0 0 0 into WrkArray(#wrk_idx)
+           WrkPayBegDt WrkPayEndDt WrkCMPPayBegDt WrkCMPPayEndDt WrkConfInd WrkActualDay WrkActualAmt
+           WrkLOADay WrkLOAAmt
+      let #i = 0
+      while #i < 5
+           put 0 0 0 0 into WrkArray(#wrk_idx)
+                WrkPPRatio (#i) WrkRemainPPRatio (#i) WrkAmt (#i) WrkRetroAmt (#i)
+          add 1 to #i
+      end-while
+      add 1 to #wrk_idx
+  end-while
+
+  let #wrk_idx = 0
+  while #wrk_idx < 3
+      put 0 0 0 0 0 0 0
+      into TotalArray(#wrk_idx) TotalRatio TotalRemainRatio TotalLOARatio TotalLOARemRatio
+           TotalAmt TotalWorkDays TotalActWrk
+      add 1 to #wrk_idx
+  end-while
+
+  let #job_idx = 0
+  while #job_idx < #MaxJob
+      put ' '   0  ' ' ' ' ' ' ' ' ' ' 0 0 0 ' ' ' ' ' '
+          ' ' ' '  ' ' ' ' ' ' 0 ' ' ' ' ' ' ' ' ' ' 0 0
+          ' ' ' ' 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 'N'
+      into JobArray (#job_idx)
+           JobEffdt JobEffseq FutureDate JobAction JobCompany JobPaygroup JobHolSchd
+           JobCompRt JobChangeAmt JobChgDelta JobProrateOptn JobLumpSumPay JobFreqType
+           JobContBeginDt JobContEndDt JobPymtBeginDt JobPymtEndDt JobMthFreqID JobDailyHrs JobPaymentTerm
+           JobActualStrDt JobContTermDt JobSchSchd JobUseHolSchd JobWorkDays JobMthFactor
+           InsContParm RateChange ContParmSeq JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt DailyRtDiff
+           PNE_RetroAmt CRG_RetroAmt ENP_RetroAmt ActualWrk JobRemainDays
+           PNECarryOver CRGCarryOver ENPCarryOver WrkCarryOver LOACarryOver SysCreateInd
+
+      add 1 to #job_idx
+  end-while
+
+  let #ip_idx = 0
+  while #ip_idx < 10
+      put 0 ' ' 0 0 0 0 0 0 0 ' '
+      into InProgress (#ip_idx) IP_ContractSeq IP_PrdEndDate IP_SepChk IP_ActualDay IP_PNEAmt IP_CRGAmt
+           IP_ENPAmt IP_WrkAmt IP_LOAAmt IP_Compare
+
+      add 1 to #ip_idx
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Mainline                                                                  *
+!****************************************************************************
+begin-procedure Mainline
+
+  let $Indent = ''
+
+  if $Run_Flag = 'Run_ID'
+
+      let $Processing = 'Run_ID: ' || $Run_ID
+      do Start-Processing
+  end-if
+
+begin-select
+PAY_CAL.COMPANY
+PAY_CAL.PAYGROUP
+PAY_GRP.EFF_STATUS
+PAY_GRP.WORK_SCHEDULE
+PAY_GRP.HOLIDAY_SCHEDULE
+PAY_CAL.PAY_BEGIN_DT
+PAY_CAL.PAY_END_DT
+PAY_CAL.PAY_CONFIRM_START
+FRQ_TBL1.FREQUENCY_TYPE
+
+  let $PD_Eff_Status     = &PAY_GRP.EFF_STATUS
+  let $PD_Company        = &PAY_CAL.COMPANY
+  let $PD_Paygroup       = &PAY_CAL.PAYGROUP
+  let $PD_Pay_Freq       = &FRQ_TBL1.FREQUENCY_TYPE
+  let $PD_Work_Schedule  = &PAY_GRP.WORK_SCHEDULE
+  let $PD_Holiday_Schd   = &PAY_GRP.HOLIDAY_SCHEDULE
+  let $CP_Pay_Begin_Dt   = &PAY_CAL.PAY_BEGIN_DT
+  let $CP_Pay_End_Dt     = &PAY_CAL.PAY_END_DT
+
+  if &PAY_CAL.PAY_CONFIRM_START = 'N'
+
+      if &PAY_GRP.EFF_STATUS = 'A'
+
+          do Format-DateTime($CP_Pay_Begin_Dt, $CMP_CP_Pay_Begin_Dt, {DEFCMP},'','')
+          do Format-DateTime($CP_Pay_End_Dt, $CMP_CP_Pay_End_Dt, {DEFCMP},'','')
+
+          do Validate-Previous-Pay-Calendar
+
+          if $Valid_Previous_Pay_Calendar = 'Y'
+              do Process-Paygroup
+          end-if
+      end-if
+  else
+      display ' '
+      display '   Pay Calendar: ' noline
+      display $PD_Company         noline
+      display ', '                noline
+      display $PD_Paygroup        noline
+      display ', '                noline
+      display $CP_Pay_End_Dt      noline
+      display ' not processed'
+      display '   Confirm has been started for this calendar'
+  end-if
+
+FROM PS_PAY_CALENDAR PAY_CAL, PS_PAYGROUP_TBL PAY_GRP,
+     PS_FREQUENCY_TBL FRQ_TBL1
+WHERE [$Cond]
+  AND PAY_CAL.PAY_OFF_CYCLE_CAL = 'N'
+  AND PAY_CAL.COMPANY  = PAY_GRP.COMPANY
+  AND PAY_CAL.PAYGROUP = PAY_GRP.PAYGROUP
+  AND PAY_GRP.EFFDT    = (SELECT MAX(PAY_GRP2.EFFDT)
+                            FROM PS_PAYGROUP_TBL PAY_GRP2
+                           WHERE PAY_GRP2.COMPANY  = PAY_GRP.COMPANY
+                             AND PAY_GRP2.PAYGROUP = PAY_GRP.PAYGROUP
+                             AND PAY_GRP2.EFFDT   <= PAY_CAL.PAY_END_DT)
+  AND PAY_GRP.PAY_FREQUENCY   = FRQ_TBL1.FREQUENCY_ID
+  AND FRQ_TBL1.EFF_STATUS     = 'A'
+  AND FRQ_TBL1.EFFDT          = (SELECT MAX(FRQ_TBL11.EFFDT)
+                                   FROM PS_FREQUENCY_TBL FRQ_TBL11
+                                  WHERE FRQ_TBL11.FREQUENCY_ID   = FRQ_TBL1.FREQUENCY_ID
+                                    AND FRQ_TBL11.EFFDT         <= PAY_GRP.EFFDT)
+ORDER BY PAY_CAL.COMPANY,PAY_CAL.PAYGROUP, PAY_CAL.PAY_END_DT
+end-select
+
+  let $Indent = ''
+
+  if $Run_Flag = 'Run_ID'
+
+      let $Processing = 'Run_ID: ' || $Run_ID
+      do Finish-Processing
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Process-Paygroup                                                          *
+!****************************************************************************
+begin-procedure Process-Paygroup
+
+  let #EEs_Processed = 0
+  let #EEs_in_Error  = 0
+  let $Msg           = ''
+  let $Msg2          = ''
+  let $Msg3          = ''
+  let $Msg4          = ''
+  let $Msg5          = ''
+
+  let $Indent = '   '
+  let $Processing = 'Company: ' ||$PD_Company || ', Paygroup: '||$PD_Paygroup
+  do Start-Processing
+
+  do Verify-Paygroup1
+  do Verify-Paygroup2
+
+  if $Skip_Paygroup = 'N'
+
+      do Process-Contract-Employees
+
+      display ' '
+      display '      Employees Processed: ' noline
+      move #EEs_Processed to $EEs_Processed 999999
+      display $EEs_Processed
+
+      display '      Employees in Error : ' noline
+      move #EEs_in_Error to $EEs_in_Error 999999
+      display $EEs_in_Error
+
+      let $Indent = '   '
+      let $Processing = 'Company: ' ||$PD_Company || ', Paygroup: '||$PD_Paygroup
+      do Finish-Processing
+  else
+      display ' '
+      let $Processing = '   Company: ' ||$PD_Company || ', Paygroup: '||$PD_Paygroup ||' not processed'
+      display $Processing
+      display $Msg
+      display $Msg2
+      display $Msg3
+      display $Msg4
+      display $Msg5
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Verify-Paygroup1                                                          *
+!****************************************************************************
+begin-procedure Verify-Paygroup1
+
+  let $Skip_Paygroup = 'N'
+  let $Exceed_Max = 'N'
+
+begin-select
+CONT1.EMPLID
+CONT1.EMPL_RCD
+CONT1.PAYMENT_END_DT
+
+  if $Exceed_Max = 'N'
+      let $Skip_Paygroup = 'Y'
+      let $Exceed_Max = 'Y'
+      let $Msg = '   Pay Calendar does not extend out to cover contract payment '||
+                 'end date of '||&CONT1.PAYMENT_END_DT
+  end-if
+
+FROM PS_JOB JOB1, PS_CONTRACT CONT1, PS_FREQUENCY_TBL FRQ_TBL2, PS_HP_CNTRACT_LIST CNTLIS1
+WHERE JOB1.COMPANY        = $PD_Company
+  AND JOB1.PAYGROUP       = $PD_Paygroup
+  AND JOB1.EMPLID         = CONT1.EMPLID
+  AND JOB1.EMPL_RCD       = CONT1.EMPL_RCD
+  AND JOB1.EFFDT  = (SELECT MAX(JOB11.EFFDT)
+                       FROM PS_JOB JOB11
+                      WHERE JOB11.EMPLID         = JOB1.EMPLID
+                        AND JOB11.EMPL_RCD       = JOB1.EMPL_RCD
+                        AND JOB11.EFFDT         <= $CP_Pay_End_Dt)
+  AND JOB1.EFFSEQ = (SELECT MAX(JOB12.EFFSEQ)
+                       FROM PS_JOB JOB12
+                      WHERE JOB12.EMPLID         = JOB1.EMPLID
+                        AND JOB12.EMPL_RCD       = JOB1.EMPL_RCD
+                        AND JOB12.EFFDT          = JOB1.EFFDT)
+  AND CONT1.EMPLID = CNTLIS1.EMPLID
+  AND CONT1.EMPL_RCD = CNTLIS1.EMPL_RCD
+  AND CONT1.HP_CONTRACT_NUM = CNTLIS1.HP_CONTRACT_NUM
+  AND CNTLIS1.HP_CONTRACT_STATUS = 'A'
+  [$ReCalc_CNTLIS1]
+  AND CONT1.EFFDT <= $CP_Pay_End_Dt
+  AND CONT1.PAYMENT_BEGIN_DT <= $CP_Pay_End_Dt
+  AND CONT1.PAYMENT_END_DT   >= $CP_Pay_Begin_Dt
+  AND CONT1.PAYMENT_END_DT   > (SELECT MAX(CAL1.PAY_END_DT)
+                                  FROM PS_PAY_CALENDAR CAL1
+                                 WHERE CAL1.COMPANY  = $PD_Company
+                                   AND CAL1.PAYGROUP = $PD_Paygroup
+                                   AND CAL1.PAY_OFF_CYCLE_CAL = 'N')
+  AND JOB1.COMP_FREQUENCY       = FRQ_TBL2.FREQUENCY_ID
+  AND FRQ_TBL2.EFF_STATUS       = 'A'
+  AND FRQ_TBL2.FREQUENCY_TYPE   = 'C'
+  AND FRQ_TBL2.EFFDT            = (SELECT MAX(FRQ_TBL21.EFFDT)
+                                     FROM PS_FREQUENCY_TBL FRQ_TBL21
+                                    WHERE FRQ_TBL21.FREQUENCY_ID   = FRQ_TBL2.FREQUENCY_ID
+                                      AND FRQ_TBL21.EFFDT         <= JOB1.EFFDT)
+ORDER BY CONT1.PAYMENT_END_DT DESC
+end-select
+
+end-procedure
+
+!****************************************************************************
+! Verify-Paygroup2                                                          *
+!****************************************************************************
+begin-procedure Verify-Paygroup2
+
+  let $Exceed_Min = 'N'
+
+begin-select
+CONT2.EMPLID
+CONT2.EMPL_RCD
+CONT2.PAYMENT_BEGIN_DT
+
+  if $Exceed_Min = 'N'
+      let $Skip_Paygroup = 'Y'
+      let $Exceed_Min = 'Y'
+      let $Msg2 = '   Pay Calendar does not begin before  '||&CONT2.PAYMENT_BEGIN_DT
+  end-if
+
+FROM PS_JOB JOB2, PS_CONTRACT CONT2, PS_FREQUENCY_TBL FRQ_TBL4, PS_HP_CNTRACT_LIST CNTLIS2
+WHERE JOB2.COMPANY        = $PD_Company
+  AND JOB2.PAYGROUP       = $PD_Paygroup
+  AND JOB2.EMPLID         = CONT2.EMPLID
+  AND JOB2.EMPL_RCD       = CONT2.EMPL_RCD
+  AND JOB2.EFFDT  = (SELECT MAX(JOB21.EFFDT)
+                       FROM PS_JOB JOB21
+                      WHERE JOB21.EMPLID         = JOB2.EMPLID
+                        AND JOB21.EMPL_RCD       = JOB2.EMPL_RCD
+                        AND JOB21.EFFDT         <= $CP_Pay_End_Dt)
+  AND JOB2.EFFSEQ = (SELECT MAX(JOB22.EFFSEQ)
+                       FROM PS_JOB JOB22
+                      WHERE JOB22.EMPLID         = JOB2.EMPLID
+                        AND JOB22.EMPL_RCD       = JOB2.EMPL_RCD
+                         AND JOB22.EFFDT          = JOB2.EFFDT)
+  AND CONT2.EMPLID = CNTLIS2.EMPLID
+  AND CONT2.EMPL_RCD = CNTLIS2.EMPL_RCD
+  AND CONT2.HP_CONTRACT_NUM = CNTLIS2.HP_CONTRACT_NUM
+  AND CNTLIS2.HP_CONTRACT_STATUS = 'A'
+  [$ReCalc_CNTLIS2]
+  AND CONT2.EFFDT <= $CP_Pay_End_Dt
+  AND CONT2.PAYMENT_BEGIN_DT <= $CP_Pay_End_Dt
+  AND CONT2.PAYMENT_END_DT   >= $CP_Pay_Begin_Dt
+  AND CONT2.PAYMENT_BEGIN_DT  < (SELECT MIN(CAL2.PAY_BEGIN_DT)
+                                   FROM PS_PAY_CALENDAR CAL2
+                                  WHERE CAL2.COMPANY  = $PD_Company
+                                    AND CAL2.PAYGROUP = $PD_Paygroup
+                                    AND CAL2.PAY_OFF_CYCLE_CAL = 'N')
+  AND JOB2.COMP_FREQUENCY        = FRQ_TBL4.FREQUENCY_ID
+  AND FRQ_TBL4.EFF_STATUS       = 'A'
+  AND FRQ_TBL4.FREQUENCY_TYPE   = 'C'
+  AND FRQ_TBL4.EFFDT            = (SELECT MAX(FRQ_TBL41.EFFDT)
+                                     FROM PS_FREQUENCY_TBL FRQ_TBL41
+                                    WHERE FRQ_TBL41.FREQUENCY_ID   = FRQ_TBL4.FREQUENCY_ID
+                                      AND FRQ_TBL41.EFFDT         <= JOB2.EFFDT)
+ORDER BY CONT2.PAYMENT_BEGIN_DT ASC
+end-select
+
+end-procedure
+
+!****************************************************************************
+! Process-Contract-Employees                                                *
+!****************************************************************************
+begin-procedure Process-Contract-Employees
+
+  let $last_EmplID = ' '
+  let $last_EmplRcd = 0
+  let $last_ContractNum = 0
+
+begin-select
+CONTA.EMPLID
+CONTA.EMPL_RCD
+CONTA.HP_CONTRACT_NUM
+JOBA.EFFDT
+CONTA.EFFDT
+CONTA.CONTRACT_BEGIN_DT
+CONTA.CONTRACT_END_DT
+CONTA.PAYMENT_BEGIN_DT
+CONTA.PAYMENT_END_DT
+CONTA.PAYMENT_TERM
+CONTA.PAY_PERIOD_HRS
+CONTA.HP_PRORATE_HRS
+CONTA.ASSIGN_HRS_TO_FLG
+CONTA.HP_CONTRACT_START
+CONTA.CONTRACT_TERM_DT
+CONTA.HP_LAST_PAYMENT_DT
+CONTA.HP_WORKDAYS
+CONTA.HP_USE_HOL_SCHD
+CONTA.HP_SCHOOL_SCHEDULE
+CONTA.HP_CNT_CAL_OPT
+CONTA.HP_DAILY_HRS
+
+  if &CONTA.EMPLID <> $last_EmplID
+     or &CONTA.EMPL_RCD  <> #last_EmplRcd
+     or &CONTA.HP_CONTRACT_NUM <> #last_ContractNum
+
+      let $last_EmplID       = &CONTA.EMPLID
+      let #last_EmplRcd      = &CONTA.EMPL_RCD
+      let #last_ContractNum  = &CONTA.HP_CONTRACT_NUM
+
+      add 1 to #EEs_Processed
+
+      let $Emplid            = &CONTA.EMPLID
+      let #EmplRcd           = &CONTA.EMPL_RCD
+      let #ContractNum       = &CONTA.HP_CONTRACT_NUM
+      let $ContractEffdt     = &CONTA.EFFDT
+      let $ContractBeginDt   = &CONTA.CONTRACT_BEGIN_DT
+      let $ContractEndDt     = &CONTA.CONTRACT_END_DT
+      let $PaymentBeginDt    = &CONTA.PAYMENT_BEGIN_DT
+      let $PaymentEndDt      = &CONTA.PAYMENT_END_DT
+      let $PaymentTerm       = &CONTA.PAYMENT_TERM
+      let #PayPeriodHrs      = &CONTA.PAY_PERIOD_HRS
+      let $ProrateHrs        = &CONTA.HP_PRORATE_HRS
+      let $AssignHrsToFlg    = &CONTA.ASSIGN_HRS_TO_FLG
+      let $ContractStart     = &CONTA.HP_CONTRACT_START
+      let $ContractTermDt    = &CONTA.CONTRACT_TERM_DT
+      let $LastPaymentDt     = rtrim(&CONTA.HP_LAST_PAYMENT_DT, ' ')
+      let #ContractWorkDays  = &CONTA.HP_WORKDAYS
+      let $UseHolSchd        = &CONTA.HP_USE_HOL_SCHD
+      let $SchoolSchedule    = rtrim(&CONTA.HP_SCHOOL_SCHEDULE, ' ')
+      let $ContractCalOptn   = &CONTA.HP_CNT_CAL_OPT
+      let #DailyHrs          = &CONTA.HP_DAILY_HRS
+      let $TermDtChanged     = 'N'
+
+      move #EmplRcd to $EmplRcd      999
+
+      let $LumpSumPay        = 'N'
+      let $SkipEmplee        = 'N'
+      let $LateStart         = 'N'
+      let $EarlyTerminate    = 'N'
+      let $LOAflag           = 'N'
+      let $UpdatePayroll     = 'N'
+      let $ForceRemainAmt    = 'N'
+      let $FirstPayment      = 'Y'
+
+      let #AdjActualAmt = 0
+      let #TtlLOAAmt    = 0
+      let #LOADays      = 0
+      let #TtlDecrRatio = 0
+
+      if $LastPaymentDt <> '' and $PaymentTerm <> 'L'
+          let $BalloonPayment = 'Y'
+      else
+          let $BalloonPayment = 'N'
+      end-if
+
+      do Initialize-Array
+      do Find-Contract-Parm
+      do Read-InProgress-Payment
+
+      evaluate $SkipEmplee
+
+          when = 'N'
+              if $ContParmExist = 'Y'
+                  let $RetrieveJobDate = $ContParm_ContractEffdt
+              else
+                  let $RetrieveJobDate = $CP_Pay_Begin_Dt
+              end-if
+
+              do Delete-Contract-Parm
+              do Delete-Contract-Detail
+              do Select-Job-Info
+
+          when = 'N'
+              do Insert-Current-Pay-Begin-Dt
+
+          when = 'N'
+              do Select-Contract-Info
+
+          when = 'N'
+              if $PaymentTerm = 'L'
+                  do SetWorkDayString($ContractBeginDt, $ContractEndDt, $PD_Work_Schedule, $WorkDayString)
+                  do Determine-ContractDates
+                  let $BeforeContract = 'N'
+                  let $AfterContract  = 'N'
+
+                  if $UseHolSchd = 'Y'
+                      if $Job_Holiday_Schd = ''
+                          do GetHolSched($ContractBeginDt, $ContractEndDt, $PD_Holiday_Schd, $WorkDayString)
+                      else
+                          do GetHolSched($ContractBeginDt, $ContractEndDt, $Job_Holiday_Schd, $WorkDayString)
+                      end-if
+                  end-if
+
+                  if $SchoolSchedule <> ''
+                      do GetSchBreak($ContractBeginDt, $ContractEndDt, $SchoolSchedule, $WorkDayString)
+                  end-if
+
+                  do FindPayPeriodWrkDays ($ContractBeginDt, $ContractEndDt, $ContractBeginDt,
+                                           $WorkDayString, 'W', #ContractWorkDays)
+
+                  if $EarlyTerminate = 'Y'
+                      let $PaymentBeginDt = $ContractTermDt
+                      let $PaymentEndDt   = $ContractTermDt
+                  end-if
+              else
+                  do SetWorkDayString($PaymentBeginDt, $PaymentEndDt, $PD_Work_Schedule, $WorkDayString)
+                  do Determine-ContractDates
+
+                  if $UseHolSchd = 'Y'
+                      if $Job_Holiday_Schd = ''
+                          do GetHolSched($PaymentBeginDt, $PaymentEndDt, $PD_Holiday_Schd, $WorkDayString)
+                      else
+                          do GetHolSched($PaymentBeginDt, $PaymentEndDt, $Job_Holiday_Schd, $WorkDayString)
+                      end-if
+                  end-if
+
+                  if $SchoolSchedule <> ''
+                      do GetSchBreak($PaymentBeginDt, $PaymentEndDt, $SchoolSchedule, $WorkDayString)
+                  end-if
+
+                  do FindPayPeriodWrkDays ($ContractBeginDt, $ContractEndDt, $PaymentBeginDt,
+                                           $WorkDayString, 'W', #ContractWorkDays)
+              end-if
+
+              do Prepare-JobArray
+              do Read-PayCalendar
+
+          when = 'N'
+
+              #debug do Print-Array-1
+
+              if $PaymentTerm = 'L'
+                  do Determine-LumpSum-Contract-Amt
+              else
+                  do Determine-Contract-Amt
+              end-if
+
+          when = 'N'
+              do Populate-RateArray
+
+          when = 'N'
+              if $PaymentTerm = 'L'
+                   do Check-LOA-exists
+                   if $LOAflag = 'Y' or $LateStart = 'Y' or $EarlyTerminate = 'Y'
+                       do Calculate-LumpSum-LOA-portion
+                   end-if
+              else
+                  if $LOAflag = 'Y' or $LateStart = 'Y' or $EarlyTerminate = 'Y'
+                      do Calculate-LOA-portion
+                  end-if
+              end-if
+
+          when = 'N'
+              if $PaymentTerm <> 'L'
+                  do Determine-Retro-Amt
+              end-if
+
+          when = 'N'
+              do Process-Contract-Parm
+
+          when = 'N'
+              do Check-InProgress-Payments
+              if $UpdatePayroll = 'Y'
+                  do Update-Payroll
+              end-if
+              do Reset-Recalc-Indicator
+
+      end-evaluate
+  end-if
+
+FROM PS_JOB JOBA, PS_CONTRACT CONTA, PS_FREQUENCY_TBL FRQ_TBL6, PS_HP_CNTRACT_LIST CNTLIS
+WHERE CNTLIS.HP_CONTRACT_STATUS = 'A'
+  [$ReCalc_CNTLIS]
+  AND JOBA.EMPLID    = CONTA.EMPLID
+  AND JOBA.EMPL_RCD = CONTA.EMPL_RCD
+  AND JOBA.COMP_FREQUENCY        = FRQ_TBL6.FREQUENCY_ID
+  AND FRQ_TBL6.EFF_STATUS       = 'A'
+  AND FRQ_TBL6.FREQUENCY_TYPE   = 'C'
+  AND FRQ_TBL6.EFFDT = (SELECT MAX(FRQ_TBL61.EFFDT)
+                          FROM PS_FREQUENCY_TBL FRQ_TBL61
+                         WHERE FRQ_TBL61.FREQUENCY_ID   = FRQ_TBL6.FREQUENCY_ID
+                           AND FRQ_TBL61.EFFDT         <= JOBA.EFFDT)
+  AND JOBA.COMPANY        = $PD_Company
+  AND JOBA.PAYGROUP       = $PD_Paygroup
+  AND CONTA.EFFDT = (SELECT MAX(CONTA1.EFFDT)
+                      FROM PS_CONTRACT CONTA1
+                     WHERE CONTA1.EMPLID = CONTA.EMPLID
+                       AND CONTA1.EMPL_RCD = CONTA.EMPL_RCD
+                       AND CONTA1.HP_CONTRACT_NUM = CONTA.HP_CONTRACT_NUM
+                       AND CONTA1.EFFDT <= $CP_Pay_End_Dt)
+  AND ((CONTA.PAYMENT_BEGIN_DT <= $CP_Pay_End_Dt
+        AND CONTA.PAYMENT_END_DT   >= $CP_Pay_Begin_Dt)
+   OR (CONTA.CONTRACT_BEGIN_DT <= $CP_Pay_End_Dt
+        AND CONTA.CONTRACT_END_DT   >= $CP_Pay_Begin_Dt))
+  AND (JOBA.EFFDT = (SELECT MAX(JOBA1.EFFDT)
+                      FROM PS_JOB JOBA1
+                     WHERE JOBA1.EMPLID         = JOBA.EMPLID
+                       AND JOBA1.EMPL_RCD      = JOBA.EMPL_RCD
+                       AND JOBA1.COMP_FREQUENCY = JOBA.COMP_FREQUENCY
+                       AND JOBA1.EFFDT         <= $CP_Pay_End_Dt)
+     OR JOBA.EFFDT = (SELECT MAX(JOBA11.EFFDT)
+                        FROM PS_JOB JOBA11
+                       WHERE JOBA11.EMPLID         = JOBA.EMPLID
+                         AND JOBA11.EMPL_RCD       = JOBA.EMPL_RCD
+                         AND JOBA11.COMP_FREQUENCY = JOBA.COMP_FREQUENCY
+                         AND JOBA11.EFFDT         <= CONTA.CONTRACT_TERM_DT))
+  AND (JOBA.EFFDT <= CONTA.CONTRACT_TERM_DT
+     OR CONTA.CONTRACT_TERM_DT IS NULL)
+  AND JOBA.EFFSEQ = (SELECT MAX(JOBA2.EFFSEQ)
+                      FROM PS_JOB JOBA2
+                     WHERE JOBA2.EMPLID         = JOBA.EMPLID
+                       AND JOBA2.EMPL_RCD      = JOBA.EMPL_RCD
+                       AND JOBA2.COMP_FREQUENCY = JOBA.COMP_FREQUENCY
+                       AND JOBA2.EFFDT          = JOBA.EFFDT)
+  AND CONTA.EMPLID = CNTLIS.EMPLID
+  AND CONTA.EMPL_RCD = CNTLIS.EMPL_RCD
+  AND CONTA.HP_CONTRACT_NUM = CNTLIS.HP_CONTRACT_NUM
+ORDER BY CONTA.EMPLID, CONTA.EMPL_RCD, CONTA.HP_CONTRACT_NUM, JOBA.EFFDT DESC
+end-select
+
+end-procedure
+
+!****************************************************************************
+! Find-Contract-Parm                                                        *
+!****************************************************************************
+begin-procedure Find-Contract-Parm
+
+  let $ContParmExist   = 'N'
+  let #PNE_CarryOver   = 0
+  let #CRG_CarryOver   = 0
+  let #ENP_CarryOver   = 0
+  let #Wrk_CarryOver   = 0
+  let #LOA_CarryOver   = 0
+  let #PNE_Adj         = 0
+  let #CRG_Adj         = 0
+  let #ENP_Adj         = 0
+  let #Wrk_Adj         = 0
+  let #NewCRGAdj       = 0
+  let #NewPNEAdj       = 0
+  let #NewENPAdj       = 0
+  let #NewWrkAdj       = 0
+
+  do Find-MaxContractSeq
+
+  if $FutureContPaidDtl = 'Y'
+      add 1 to #EEs_in_Error
+      let $Error = 'ERROR-Select Contract Parm '|| $Emplid || ', ' || $EmplRcd ||
+                   ' with future Contract Details found.' || '  Employee skipped.'
+      display $Error
+      let $SkipEmplee = 'Y'
+  else
+      do Find-ContractSeq-with-Adj
+
+      do Read-Contract-Parm
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Find-MaxContractSeq                                                       *
+!****************************************************************************
+begin-procedure Find-MaxContractSeq
+
+  let #MaxContractSeq  = 0
+  let $FutureContPaidDtl = 'N'
+
+begin-select loops=1
+CONTDTL.HP_CONTRACT_SEQ
+CONTDTL.PAY_END_DT
+
+  let #MaxContractSeq = &CONTDTL.HP_CONTRACT_SEQ
+
+  do Format-DateTime(&CONTDTL.PAY_END_DT, $CMP_PayEndDt, {DEFCMP},'','')
+  if $CMP_PayEndDt > $CMP_CP_Pay_End_Dt
+      let $FutureContPaidDtl = 'Y'
+  end-if
+
+FROM PS_HP_CONTPAY_DTL CONTDTL
+WHERE CONTDTL.EMPLID            = $EmplID
+  AND CONTDTL.EMPL_RCD          = #EmplRcd
+  AND CONTDTL.HP_CONTRACT_NUM   = #ContractNum
+  AND CONTDTL.HP_PAYMENT_STATUS IN ('C', 'P', 'S')
+ORDER BY CONTDTL.HP_CONTRACT_SEQ DESC, CONTDTL.PAY_END_DT DESC
+
+end-select
+end-procedure
+
+!****************************************************************************
+! Find-ContractSeq-with-Adj                                                 *
+!****************************************************************************
+begin-procedure Find-ContractSeq-with-Adj
+
+begin-select loops=1
+CONTPRM1.HP_CONTRACT_SEQ
+CONTPRM1.HP_ADJ_CRG
+CONTPRM1.HP_ADJ_PNE
+CONTPRM1.HP_ADJ_ENP
+CONTPRM1.HP_ADJ_WRK
+
+  let #NewCRGAdj = &CONTPRM1.HP_ADJ_CRG
+  let #NewPNEAdj = &CONTPRM1.HP_ADJ_PNE
+  let #NewENPAdj = &CONTPRM1.HP_ADJ_ENP
+  let #NewWrkAdj = &CONTPRM1.HP_ADJ_WRK
+
+FROM PS_HP_CONTPAY_PARM CONTPRM1
+WHERE CONTPRM1.EMPLID            = $EmplID
+  AND CONTPRM1.EMPL_RCD          = #EmplRcd
+  AND CONTPRM1.HP_CONTRACT_NUM   = #ContractNum
+  AND CONTPRM1.HP_CONTRACT_SEQ   > #MaxContractSeq
+  AND (CONTPRM1.HP_ADJ_CRG <> 0
+    OR CONTPRM1.HP_ADJ_ENP <> 0
+    OR CONTPRM1.HP_ADJ_PNE <> 0
+    OR CONTPRM1.HP_ADJ_WRK <> 0)
+ORDER BY CONTPRM1.HP_CONTRACT_SEQ ASC
+
+end-select
+end-procedure
+
+!****************************************************************************
+! Read-Contract-Parm                                                        *
+!****************************************************************************
+begin-procedure Read-Contract-Parm
+
+begin-select
+CONTPARM.HP_CONTRACT_SEQ
+CONTPARM.HP_CONTRACT_EFFDT
+CONTPARM.COMPANY
+CONTPARM.PAYGROUP
+CONTPARM.CONTRACT_BEGIN_DT
+CONTPARM.CONTRACT_END_DT
+CONTPARM.PAYMENT_BEGIN_DT
+CONTPARM.PAYMENT_END_DT
+CONTPARM.HP_CONTRACT_AMT
+CONTPARM.ANNUAL_RT
+CONTPARM.MONTHLY_RT
+CONTPARM.DAILY_RT
+CONTPARM.HOURLY_RT
+CONTPARM.WORK_SCHEDULE
+CONTPARM.HOLIDAY_SCHEDULE
+CONTPARM.HP_SCHOOL_SCHEDULE
+CONTPARM.HP_CARRY_OVER_CRG
+CONTPARM.HP_CARRY_OVER_PNE
+CONTPARM.HP_CARRY_OVER_ENP
+CONTPARM.HP_CARRY_OVER_WRK
+CONTPARM.HP_ADJ_CRG
+CONTPARM.HP_ADJ_ENP
+CONTPARM.HP_ADJ_PNE
+CONTPARM.HP_ADJ_WRK
+CONTPARM.HP_LOA_AMT
+
+  let $ContParmExist = 'Y'
+  let #ContParm_ContractSeq     = &CONTPARM.HP_CONTRACT_SEQ
+  let $ContParm_ContractEffdt   = &CONTPARM.HP_CONTRACT_EFFDT
+  let $ContParm_Company         = &CONTPARM.COMPANY
+  let $ContParm_Paygroup        = &CONTPARM.PAYGROUP
+  let $ContParm_ContractBeginDt = &CONTPARM.CONTRACT_BEGIN_DT
+  let $ContParm_ContractEndDt   = &CONTPARM.CONTRACT_END_DT
+  let $ContParm_PaymentBeginDt  = &CONTPARM.PAYMENT_BEGIN_DT
+  let $ContParm_PaymentEndDt    = &CONTPARM.PAYMENT_END_DT
+  let #ContParm_ContractAmt     = &CONTPARM.HP_CONTRACT_AMT
+  let #ContParm_AnnualRt        = &CONTPARM.ANNUAL_RT
+  let #ContParm_MonthlyRt       = &CONTPARM.MONTHLY_RT
+  let #ContParm_DailyRt         = &CONTPARM.DAILY_RT
+  let #ContParm_HourlyRt        = &CONTPARM.HOURLY_RT
+  let $ContParm_WrkSchd         = &CONTPARM.WORK_SCHEDULE
+  let $ContParm_HolSchd         = &CONTPARM.HOLIDAY_SCHEDULE
+  let $ContParm_SchSchd         = &CONTPARM.HP_SCHOOL_SCHEDULE
+  let #CRG_CarryOver            = &CONTPARM.HP_CARRY_OVER_CRG
+  let #PNE_CarryOver            = &CONTPARM.HP_CARRY_OVER_PNE
+  let #ENP_CarryOver            = &CONTPARM.HP_CARRY_OVER_ENP
+  let #Wrk_CarryOver            = &CONTPARM.HP_CARRY_OVER_WRK
+  let #CRG_Adj                  = &CONTPARM.HP_ADJ_CRG
+  let #PNE_Adj                  = &CONTPARM.HP_ADJ_PNE
+  let #ENP_Adj                  = &CONTPARM.HP_ADJ_ENP
+  let #Wrk_Adj                  = &CONTPARM.HP_ADJ_WRK
+  let #LOA_CarryOver            = &CONTPARM.HP_LOA_AMT
+
+  let $ContParm_HolSchd = rtrim($ContParm_HolSchd, ' ')
+  if $ContParm_HolSchd = ''
+      let $ContParm_HolSchd = ' '
+  end-if
+
+  do Read-Paid-Contract-Dtl
+  do Read-Paid-Contract-Adj
+
+  let #CRG_CarryOver = #CRG_CarryOver + #CRG_Adj
+  let #PNE_CarryOver = #PNE_CarryOver + #PNE_Adj
+  let #ENP_CarryOver = #ENP_CarryOver + #ENP_Adj
+  let #Wrk_CarryOver = #Wrk_CarryOver + #Wrk_Adj
+
+FROM PS_HP_CONTPAY_PARM CONTPARM
+WHERE CONTPARM.EMPLID            = $EmplID
+  AND CONTPARM.EMPL_RCD          = #EmplRcd
+  AND CONTPARM.HP_CONTRACT_NUM   = #ContractNum
+  AND CONTPARM.HP_CONTRACT_SEQ   = #MaxContractSeq
+end-select
+
+end-procedure
+
+!****************************************************************************
+! Read-Paid-Contract-Dtl                                                    *
+!****************************************************************************
+begin-procedure Read-Paid-Contract-Dtl
+
+begin-select
+CONTDTLB.PAY_END_DT
+CONTDTLB.HP_ACTUAL_WRK
+CONTDTLB.HP_LOA_AMT
+CONTDTLB.OFF_CYCLE
+CONTDTLB.SEPCHK
+
+  let $FirstPayment    = 'N'
+  let #Wrk_CarryOver   = #Wrk_CarryOver + &CONTDTLB.HP_ACTUAL_WRK
+  let #LOA_CarryOver   = #LOA_CarryOver + &CONTDTLB.HP_LOA_AMT
+  do Read-PayCheck-Info
+
+FROM PS_HP_CONTPAY_DTL CONTDTLB
+WHERE CONTDTLB.EMPLID            = $EmplID
+  AND CONTDTLB.EMPL_RCD          = #EmplRcd
+  AND CONTDTLB.HP_CONTRACT_NUM   = #ContractNum
+  AND CONTDTLB.HP_CONTRACT_SEQ   = #ContParm_ContractSeq
+  AND CONTDTLB.HP_PAYMENT_STATUS IN ('P', 'S')
+end-select
+
+end-procedure
+
+!****************************************************************************
+! Read-Paid-Contract-Adj                                                    *
+!****************************************************************************
+begin-procedure Read-Paid-Contract-Adj
+
+begin-select
+CONTDTLC.HP_ACTUAL_WRK
+
+  let #Wrk_CarryOver = #Wrk_CarryOver + &CONTDTLC.HP_ACTUAL_WRK
+
+FROM PS_HP_CONTPAY_DTL CONTDTLC
+WHERE CONTDTLC.EMPLID            = $EmplID
+  AND CONTDTLC.EMPL_RCD          = #EmplRcd
+  AND CONTDTLC.HP_CONTRACT_NUM   = #ContractNum
+  AND CONTDTLC.HP_CONTRACT_SEQ   = #ContParm_ContractSeq
+  AND CONTDTLC.HP_PAYMENT_STATUS = 'J'
+  AND CONTDTLC.PAY_END_DT < $CP_Pay_End_Dt
+end-select
+
+end-procedure
+
+!****************************************************************************
+! Read-PayCheck-Info                                                        *
+!****************************************************************************
+begin-procedure Read-PayCheck-Info
+
+  let $ReadfromView = 'Y'
+
+begin-select
+PYCNTDTL.HP_ACTUAL_CRG
+PYCNTDTL.HP_ACTUAL_PNE
+PYCNTDTL.HP_ACTUAL_ENP
+PYCNTDTL.HP_PAID_LEAVE
+PYCNTDTL.HP_UNPAID_LEAVE
+
+  let #CRG_CarryOver   = #CRG_CarryOver + &PYCNTDTL.HP_ACTUAL_CRG + &PYCNTDTL.HP_PAID_LEAVE
+  let #PNE_CarryOver   = #PNE_CarryOver + &PYCNTDTL.HP_ACTUAL_PNE
+  let #ENP_CarryOver   = #ENP_CarryOver + &PYCNTDTL.HP_ACTUAL_ENP
+  let #LOA_CarryOver   = #LOA_CarryOver + &PYCNTDTL.HP_UNPAID_LEAVE
+  let $ReadfromView = 'N'
+
+FROM PS_PAY_CHECK PAYCHK
+,    PS_PAY_CNTRACT_DTL PYCNTDTL
+WHERE PAYCHK.COMPANY = $ContParm_Company
+  AND PAYCHK.PAYGROUP = $ContParm_Paygroup
+  AND PAYCHK.PAY_END_DT = &CONTDTLB.PAY_END_DT
+  AND PAYCHK.OFF_CYCLE = &CONTDTLB.OFF_CYCLE
+  AND PAYCHK.SEPCHK = &CONTDTLB.SEPCHK
+  AND PYCNTDTL.EMPLID = $EmplID
+  AND PYCNTDTL.HP_CONTRACT_NUM = #ContractNum
+  AND PYCNTDTL.HP_CONTRACT_SEQ = #ContParm_ContractSeq
+  AND PAYCHK.COMPANY = PYCNTDTL.COMPANY
+  AND PAYCHK.PAYGROUP = PYCNTDTL.PAYGROUP
+  AND PAYCHK.PAY_END_DT = PYCNTDTL.PAY_END_DT
+  AND PAYCHK.OFF_CYCLE = PYCNTDTL.OFF_CYCLE
+  AND PAYCHK.PAGE_NUM = PYCNTDTL.PAGE_NUM
+  AND PAYCHK.LINE_NUM = PYCNTDTL.LINE_NUM
+  AND PAYCHK.SEPCHK = PYCNTDTL.SEPCHK
+  AND PAYCHK.PAYCHECK_STATUS IN ('A','F','R')
+end-select
+
+  if $ReadfromView = 'Y'
+      do Read-PayCheck-Info-from-View
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Read-PayCheck-Info-from-View                                              *
+!****************************************************************************
+begin-procedure Read-PayCheck-Info-from-View
+
+begin-select
+CNTDTLVW.HP_ACTUAL_CRG
+CNTDTLVW.HP_ACTUAL_PNE
+CNTDTLVW.HP_ACTUAL_ENP
+CNTDTLVW.HP_PAID_LEAVE
+CNTDTLVW.HP_UNPAID_LEAVE
+
+  let #CRG_CarryOver   = #CRG_CarryOver + &CNTDTLVW.HP_ACTUAL_CRG + &CNTDTLVW.HP_PAID_LEAVE
+  let #PNE_CarryOver   = #PNE_CarryOver + &CNTDTLVW.HP_ACTUAL_PNE
+  let #ENP_CarryOver   = #ENP_CarryOver + &CNTDTLVW.HP_ACTUAL_ENP
+  let #LOA_CarryOver   = #LOA_CarryOver + &CNTDTLVW.HP_UNPAID_LEAVE
+  let $ReadfromView = 'N'
+
+FROM PS_PAY_CONTDTL_VW CNTDTLVW
+WHERE CNTDTLVW.EMPLID = $EmplID
+  AND CNTDTLVW.HP_CONTRACT_NUM = #ContractNum
+  AND CNTDTLVW.HP_CONTRACT_SEQ = #ContParm_ContractSeq
+  AND CNTDTLVW.PAY_END_DT = &CONTDTLB.PAY_END_DT
+  AND CNTDTLVW.OFF_CYCLE = &CONTDTLB.OFF_CYCLE
+  AND CNTDTLVW.SEPCHK = &CONTDTLB.SEPCHK
+end-select
+
+end-procedure
+
+!****************************************************************************
+! Read-InProgress-Payment                                                   *
+!****************************************************************************
+begin-procedure Read-InProgress-Payment
+
+  let #ip_idx = 0
+
+begin-select
+CONTDTLD.HP_CONTRACT_SEQ
+CONTDTLD.PAY_END_DT
+CONTDTLD.SEPCHK
+CONTDTLD.HP_WORKDAYS
+CONTDTLD.HP_PROJECT_CRG
+CONTDTLD.HP_PROJECT_PNE
+CONTDTLD.HP_PROJECT_ENP
+CONTDTLD.HP_ACTUAL_WRK
+CONTDTLD.HP_LOA_AMT
+
+  put &CONTDTLD.HP_CONTRACT_SEQ &CONTDTLD.PAY_END_DT &CONTDTLD.SEPCHK &CONTDTLD.HP_WORKDAYS
+      &CONTDTLD.HP_PROJECT_PNE &CONTDTLD.HP_PROJECT_CRG &CONTDTLD.HP_PROJECT_ENP
+      &CONTDTLD.HP_ACTUAL_WRK &CONTDTLD.HP_LOA_AMT
+  into InProgress (#ip_idx) IP_ContractSeq IP_PrdEndDate IP_SepChk IP_ActualDay IP_PNEAmt IP_CRGAmt
+       IP_ENPAmt IP_WrkAmt IP_LOAAmt
+  add 1 to #ip_idx
+
+FROM PS_HP_CONTPAY_DTL CONTDTLD
+WHERE CONTDTLD.EMPLID            = $EmplID
+  AND CONTDTLD.EMPL_RCD          = #EmplRcd
+  AND CONTDTLD.HP_CONTRACT_NUM   = #ContractNum
+  AND CONTDTLD.HP_PAYMENT_STATUS = 'C'
+  AND CONTDTLD.OFF_CYCLE         = 'N'
+  AND CONTDTLD.PAY_END_DT >= $CP_Pay_End_Dt
+end-select
+
+  let #ip_Cnt = #ip_idx
+
+end-procedure
+
+!****************************************************************************
+! Select-Job-Info                                                           *
+!****************************************************************************
+begin-procedure Select-Job-Info
+
+  let #job_idx = 0
+  let #ContFreqCompRate  = 0
+  let #ContFreqChangeAmt = 0
+  let $FristContractRow  = 'Y'
+  let #PriorCompRate     = 0
+
+begin-select
+JOBB.EFFDT
+JOBB.EFFSEQ
+JOBB.ACTION
+JOBB.COMPANY
+JOBB.PAYGROUP
+JOBB.HOLIDAY_SCHEDULE
+JOBB.COMPRATE
+JOBB.CHANGE_AMT
+JOBB.PRORATE_CNT_AMT
+JOBB.LUMP_SUM_PAY
+FRQ_TBL7.FREQUENCY_TYPE
+
+  if $SkipEmplee = 'N'
+
+      if $FristContractRow = 'Y'
+          let #Jobb.ChangeAmt = 0
+      else
+          let #Jobb.ChangeAmt = &JOBB.COMPRATE - #PriorCompRate
+      end-if
+
+      if #job_idx >= #MaxJob
+
+          add 1 to #EEs_in_Error
+          let $Error = 'ERROR-Select Job Data '|| $Emplid || ', ' || $EmplRcd ||
+                       ' with maximum array size reached.' || '  Employee skipped.'
+          display $Error
+          let $SkipEmplee = 'Y'
+      else
+          if #job_idx > 0 or &FRQ_TBL7.FREQUENCY_TYPE  = 'C'
+
+              let $Job_Holiday_Schd = rtrim(&JOBB.HOLIDAY_SCHEDULE, ' ')
+              let $JobAction = rtrim(&JOBB.ACTION, ' ')
+              evaluate $JobAction
+                  when = 'LOA'
+                  when = 'SWB'
+                      let $LOAflag = 'Y'
+                      break
+              end-evaluate
+
+              if $Job_Holiday_Schd = ''
+                  let $HolSchd = $PD_Holiday_Schd
+              else
+                  let $HolSchd = &JOBB.HOLIDAY_SCHEDULE
+              end-if
+
+              if &FRQ_TBL7.FREQUENCY_TYPE  = 'C'
+                  let #PriorCompRate     = &JOBB.COMPRATE
+                  let #ContFreqCompRate  = &JOBB.COMPRATE
+                  let #ContFreqChangeAmt = #Jobb.ChangeAmt
+                  let $FristContractRow = 'N'
+              else
+                  let #ContFreqChangeAmt = 0
+              end-if
+
+              put &JOBB.EFFDT  &JOBB.EFFSEQ 'N' &JOBB.ACTION &JOBB.COMPANY &JOBB.PAYGROUP $HolSchd
+                  #ContFreqCompRate #ContFreqChangeAmt &JOBB.PRORATE_CNT_AMT &JOBB.LUMP_SUM_PAY
+                  &FRQ_TBL7.FREQUENCY_TYPE
+              into JobArray (#job_idx)
+                  JobEffdt  JobEffSeq FutureDate JobAction JobCompany JobPaygroup JobHolSchd
+                  JobCompRt JobChangeAmt JobProrateOptn JobLumpSumPay JobFreqType
+
+              add 1 to #job_idx
+          end-if
+      end-if
+  end-if
+
+FROM PS_JOB JOBB,  PS_FREQUENCY_TBL FRQ_TBL7
+WHERE JOBB.EMPLID    = $EmplID
+  AND JOBB.EMPL_RCD  = #EmplRcd
+  AND ((JOBB.EFFDT   = (SELECT MAX(JOBB1.EFFDT)
+                          FROM PS_JOB JOBB1
+                         WHERE JOBB1.EMPLID    = JOBB.EMPLID
+                           AND JOBB1.EMPL_RCD  = JOBB.EMPL_RCD
+                           AND JOBB1.EFFDT    <= $RetrieveJobDate))
+       OR
+       (JOBB.EFFDT BETWEEN $RetrieveJobDate and $ContractEndDt))
+  AND JOBB.EFFSEQ    = (SELECT MAX(JOBB2.EFFSEQ)
+                          FROM PS_JOB JOBB2
+                         WHERE JOBB2.EMPLID    = JOBB.EMPLID
+                           AND JOBB2.EMPL_RCD  = JOBB.EMPL_RCD
+                           AND JOBB2.EFFDT     = JOBB.EFFDT)
+  AND JOBB.COMP_FREQUENCY  = FRQ_TBL7.FREQUENCY_ID
+  AND FRQ_TBL7.EFF_STATUS  = 'A'
+  AND FRQ_TBL7.EFFDT       = (SELECT MAX(FRQ_TBL71.EFFDT)
+                                FROM PS_FREQUENCY_TBL FRQ_TBL71
+                               WHERE FRQ_TBL71.FREQUENCY_ID   = FRQ_TBL7.FREQUENCY_ID
+                                 AND FRQ_TBL71.EFFDT         <= JOBB.EFFDT)
+ORDER BY JOBB.EFFDT, JOBB.EFFSEQ ASC
+end-select
+
+
+  !Check if the program is not skipping rate changes
+   Let #job_idx_aux = 0
+   Let #JobTotNr = #job_idx - 1 
+   Let #JOB.EFFSEQ = 0
+   LET #JOB.CHANGEAMT = 0
+
+   While #job_idx_aux <= #JobTotNr
+      Get #JOB.EFFSEQ    From JobArray (#job_idx_aux) JobEffSeq
+      Get #JOB.CHANGEAMT From JobArray (#job_idx_aux) JobChangeAmt
+      If #JOB.EFFSEQ > 0 AND #JOB.CHANGEAMT = 0
+         Let #J.COMPRATE = 0
+         Let #JOB.COMPRATE = 0
+         Let $JOB.EFFDT = ''
+         Get $JOB.EFFDT    From JobArray (#job_idx_aux) JobEffdt
+         Get #JOB.COMPRATE From JobArray (#job_idx_aux) JobCompRt
+         DO Search-Additional-RateChange
+      End-If
+      Let #job_idx_aux = #job_idx_aux + 1
+   End-While
+
+  let #JobCnt = #job_idx
+
+end-procedure
+
+
+!****************************************************************************
+! Search-Additional-RateChange                                              *
+!****************************************************************************
+begin-procedure Search-Additional-RateChange
+   
+   
+Begin-Select
+J.EFFDT
+J.EFFSEQ
+J.ACTION
+J.COMPANY
+J.PAYGROUP
+J.HOLIDAY_SCHEDULE
+J.COMPRATE
+J.CHANGE_AMT
+J.PRORATE_CNT_AMT
+J.LUMP_SUM_PAY
+FT.FREQUENCY_TYPE
+
+   MOVE &J.COMPRATE TO #J.COMPRATE
+   If #JOB.COMPRATE <> #J.COMPRATE
+      Let #JobChangeAmt = #JOB.COMPRATE - #J.COMPRATE
+      Put #JobChangeAmt Into JobArray (#job_idx_aux) JobChangeAmt
+      Do ReOrder-JobArray
+      LET #job_idx = #job_idx + 1
+      If &FT.FREQUENCY_TYPE  = 'C'
+          let $Job_Holiday_Schd = rtrim(&J.HOLIDAY_SCHEDULE, ' ')
+          let $JobAction = rtrim(&J.ACTION, ' ')
+          evaluate $JobAction
+              when = 'LOA'
+              when = 'SWB'
+                  let $LOAflag = 'Y'
+                  break
+          end-evaluate
+
+          if $Job_Holiday_Schd = ''
+              let $HolSchd = $PD_Holiday_Schd
+          else
+              let $HolSchd = &J.HOLIDAY_SCHEDULE
+          end-if
+
+          !JobChangeAmt is 0. We are inserting the first entry that was skipped.
+          !The skipped record corresponds to a change in salary amount.
+          put &J.EFFDT 'N' &J.ACTION &J.COMPANY &J.PAYGROUP $HolSchd
+              &J.COMPRATE 0 &J.PRORATE_CNT_AMT &J.LUMP_SUM_PAY
+              &FT.FREQUENCY_TYPE
+          into JobArray (#job_idx_aux)
+              JobEffdt FutureDate JobAction JobCompany JobPaygroup JobHolSchd
+              JobCompRt JobChangeAmt JobProrateOptn JobLumpSumPay JobFreqType
+      End-If               
+
+   End-If
+
+FROM PS_JOB J ,
+    PS_FREQUENCY_TBL FT
+WHERE J.EMPLID = $EmplID
+  AND J.EMPL_RCD = #EmplRcd
+  AND J.EFFDT = $JOB.EFFDT 
+  AND J.EFFSEQ = (SELECT MAX(J1.EFFSEQ)
+                  FROM PS_JOB J1
+                 WHERE J1.EMPLID    = J.EMPLID
+                   AND J1.EMPL_RCD  = J.EMPL_RCD
+                   AND J1.EFFDT     = J.EFFDT
+                   AND J1.EFFSEQ < #JOB.EFFSEQ)
+  AND J.COMP_FREQUENCY  = FT.FREQUENCY_ID
+  AND FT.EFF_STATUS  = 'A'
+  AND FT.EFFDT = (SELECT MAX(FT1.EFFDT)
+                  FROM PS_FREQUENCY_TBL FT1
+                 WHERE FT1.FREQUENCY_ID = FT.FREQUENCY_ID
+                   AND FT1.EFFDT      <= J.EFFDT)
+
+End-Select
+end-procedure
+
+!****************************************************************************
+! Insert-Current-Pay-Begin-Dt                                               *
+!****************************************************************************
+begin-procedure ReOrder-JobArray
+
+   Let #job_idx_Reord = #JobTotNr
+   While #job_idx_ReOrd >= #job_idx_aux
+         Get $JobEffdt       from JobArray (#job_idx_Reord) JobEffdt 
+         Get #JobEffSeq      from JobArray (#job_idx_Reord) JobEffseq
+         Get $FutureDate     from JobArray (#job_idx_Reord) FutureDate 
+         Get $JobAction      from JobArray (#job_idx_Reord) JobAction
+         Get $JobCompany     from JobArray (#job_idx_Reord) JobCompany
+         Get $JobPaygroup    from JobArray (#job_idx_Reord) JobPaygroup
+         Get $JobHolSchd     from JobArray (#job_idx_Reord) JobHolSchd
+         Get #JobCompRt      from JobArray (#job_idx_Reord) JobCompRt
+         Get #JobChangeAmt   from JobArray (#job_idx_Reord) JobChangeAmt
+         Get $JobProrateOptn from JobArray (#job_idx_Reord) JobProrateOptn
+         Get $JobLumpSumPay  from JobArray (#job_idx_Reord) JobLumpSumPay
+         Get $JobFreqType    from JobArray (#job_idx_Reord) JobFreqType
+
+          put ' '    0   ' '   ' '   ' '  ' '   ' ' 
+              0     0   ' '   ' '  ' '
+         into JobArray (#job_idx_Reord)
+              JobEffdt JobEffSeq FutureDate JobAction JobCompany JobPaygroup JobHolSchd
+              JobCompRt JobChangeAmt JobProrateOptn JobLumpSumPay JobFreqType
+
+          let #job_idx_Reord = #job_idx_Reord + 1
+
+          put $JobEffdt #JobEffseq $FutureDate $JobAction $JobCompany $JobPaygroup $JobHolSchd
+              #JobCompRt #JobChangeAmt $JobProrateOptn $JobLumpSumPay $JobFreqType
+          into JobArray (#job_idx_Reord)
+               JobEffdt  JobEffseq  FutureDate JobAction JobCompany JobPaygroup JobHolSchd
+               JobCompRt JobChangeAmt JobProrateOptn JobLumpSumPay JobFreqType
+
+          let #job_idx_Reord = #job_idx_Reord - 2
+   End-While
+End-Procedure
+
+
+!****************************************************************************
+! Insert-Current-Pay-Begin-Dt                                               *
+!****************************************************************************
+begin-procedure Insert-Current-Pay-Begin-Dt
+
+  let $ContSearch = 'Y'
+  let #job_idx = #JobCnt - 1
+  while #job_idx >= 0 and $ContSearch = 'Y'
+
+      get $JobEffdt from JobArray (#job_idx) JobEffdt
+      do Format-DateTime($JobEffdt, $CMP_JobEffdt, {DEFCMP},'','')
+
+      if $CMP_JobEffdt < $CMP_CP_Pay_Begin_Dt
+
+          do New-Row-to-JobArray
+          let #next_job_idx = #job_idx + 1
+          put $CP_Pay_Begin_Dt 'N' 'Y' into JobArray (#next_job_idx) JobEffdt FutureDate SysCreateInd
+
+          let $ContSearch = 'N'
+      else
+          if $CMP_JobEffdt = $CMP_CP_Pay_Begin_Dt
+              let $ContSearch = 'N'
+          end-if
+      end-if
+
+      let #job_idx = #job_idx - 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Select-Contract-Info                                                      *
+!****************************************************************************
+begin-procedure Select-Contract-Info
+
+  let $FirstContRec = 'Y'
+
+begin-select
+CONTB.EFFDT
+CONTB.CONTRACT_BEGIN_DT
+CONTB.CONTRACT_END_DT
+CONTB.PAYMENT_BEGIN_DT
+CONTB.PAYMENT_END_DT
+CONTB.PAYMENT_TERM
+CONTB.FREQ_ID_MONTHLY
+CONTB.HP_DAILY_HRS
+CONTB.HP_CONTRACT_START
+CONTB.CONTRACT_TERM_DT
+CONTB.HP_SCHOOL_SCHEDULE
+CONTB.HP_USE_HOL_SCHD
+CONTB.HP_WORKDAYS
+FRQ_TBL8.FREQ_ANNUAL_FACTOR
+
+  if $SkipEmplee = 'N'
+      do Locate-JobArray-Entry
+  end-if
+
+  let $FirstContRec = 'N'
+
+FROM PS_CONTRACT CONTB,  PS_FREQUENCY_TBL FRQ_TBL8
+WHERE CONTB.EMPLID          = $EmplID
+  AND CONTB.EMPL_RCD        = #EmplRcd
+  AND CONTB.HP_CONTRACT_NUM = #ContractNum
+  AND ((CONTB.EFFDT   = (SELECT MAX(CONTB1.EFFDT)
+                          FROM PS_CONTRACT CONTB1
+                         WHERE CONTB1.EMPLID          = CONTB.EMPLID
+                           AND CONTB1.EMPL_RCD        = CONTB.EMPL_RCD
+                           AND CONTB1.HP_CONTRACT_NUM = CONTB.HP_CONTRACT_NUM
+                           AND CONTB1.EFFDT          <= $RetrieveJobDate))
+       OR
+       (CONTB.EFFDT BETWEEN $RetrieveJobDate and $ContractEndDt))
+  AND CONTB.FREQ_ID_MONTHLY = FRQ_TBL8.FREQUENCY_ID
+  AND FRQ_TBL8.EFFDT        = (SELECT MAX(FRQ_TBL81.EFFDT)
+                                 FROM PS_FREQUENCY_TBL FRQ_TBL81
+                                WHERE FRQ_TBL81.FREQUENCY_ID   = FRQ_TBL8.FREQUENCY_ID
+                                  AND FRQ_TBL81.EFFDT         <= CONTB.EFFDT)
+ORDER BY CONTB.EFFDT ASC
+end-select
+end-procedure
+
+!****************************************************************************
+! Locate-JobArray-Entry                                                     *
+!****************************************************************************
+begin-procedure Locate-JobArray-Entry
+
+  let #job_idx = 0
+  let $ContSearch = 'Y'
+  do Format-DateTime(&CONTB.EFFDT, $CMP_ContEffdt, {DEFCMP},'','')
+  do Format-DateTime($RetrieveJobDate, $CMP_RetrieveJobDate, {DEFCMP},'','')
+
+  while #job_idx < #JobCnt and $ContSearch = 'Y'
+      get $JobEffdt from JobArray (#job_idx) JobEffdt
+      do Format-DateTime($JobEffdt, $CMP_JobEffdt, {DEFCMP},'','')
+
+      if $CMP_ContEffdt = $CMP_JobEffdt
+          do Move-Contract-Info
+          put 'N' into JobArray (#job_idx) SysCreateInd
+          let $ContSearch = 'N'
+      else
+          if $CMP_ContEffdt < $CMP_JobEffdt
+              if #job_idx = 0
+                  if $CMP_ContEffdt < $CMP_RetrieveJobDate
+                      put 'N' into JobArray (#job_idx) SysCreateInd
+                      do Move-Contract-Info
+                  else
+                      do New-Row-to-JobArray
+                      put &CONTB.EFFDT 'N' 'N' into JobArray (#job_idx) JobEffdt FutureDate SysCreateInd
+                      do Move-Contract-Info
+                  end-if
+              else
+                  do New-Row-to-JobArray
+                  put &CONTB.EFFDT 'N' 'N' into JobArray (#job_idx) JobEffdt FutureDate SysCreateInd
+                  do Move-Contract-Info
+              end-if
+              let $ContSearch = 'N'
+          else
+              if $FirstContRec = 'Y'
+                  let #mv_job_idx = #job_idx
+                  do Put-Contract-Info-to-Array
+              end-if
+
+              let #next_job_idx = #job_idx + 1
+
+              if #next_job_idx = #JobCnt
+                  if $CMP_ContEffdt > $CMP_RetrieveJobDate
+                      do New-Row-to-JobArray
+                      let #job_idx = #next_job_idx
+                  end-if
+                  put &CONTB.EFFDT 'N' 'N' into JobArray (#job_idx) JobEffdt FutureDate SysCreateInd
+                  do Move-Contract-Info
+                  let $ContSearch = 'N'
+              else
+                  get $NextJobEffdt from JobArray (#next_job_idx) JobEffdt
+                  do Format-DateTime($NextJobEffdt, $CMP_NextJobEffdt, {DEFCMP},'','')
+
+                  if $CMP_ContEffdt >=  $CMP_NextJobEffdt
+                      let $ContSearch = 'Y'
+                  else
+                      if $CMP_ContEffdt > $CMP_RetrieveJobDate
+                          do New-Row-to-JobArray
+                          let #job_idx = #next_job_idx
+                      end-if
+                      put &CONTB.EFFDT 'N' 'N' into JobArray (#job_idx) JobEffdt FutureDate SysCreateInd
+                      do Move-Contract-Info
+                      let $ContSearch = 'N'
+                  end-if
+              end-if
+          end-if
+      end-if
+
+      let #job_idx = #job_idx + 1
+
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Move-Contract-Info                                                        *
+!****************************************************************************
+begin-procedure Move-Contract-Info
+
+  let #mv_job_idx = #job_idx
+  while #mv_job_idx < #JobCnt
+
+      do Put-Contract-Info-to-Array
+
+      add 1 to #mv_job_idx
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Put-Contract-Info-to-Array                                                *
+!****************************************************************************
+begin-procedure Put-Contract-Info-to-Array
+
+  put &CONTB.CONTRACT_BEGIN_DT &CONTB.CONTRACT_END_DT &CONTB.PAYMENT_BEGIN_DT &CONTB.PAYMENT_END_DT
+      &CONTB.FREQ_ID_MONTHLY &CONTB.HP_DAILY_HRS &CONTB.PAYMENT_TERM &CONTB.HP_CONTRACT_START
+      &CONTB.CONTRACT_TERM_DT &CONTB.HP_SCHOOL_SCHEDULE &CONTB.HP_USE_HOL_SCHD &CONTB.HP_WORKDAYS
+      &FRQ_TBL8.FREQ_ANNUAL_FACTOR
+  into JobArray (#mv_job_idx)
+      JobContBeginDt JobContEndDt JobPymtBeginDt JobPymtEndDt JobMthFreqID JobDailyHrs JobPaymentTerm
+      JobActualStrDt JobContTermDt JobSchSchd JobUseHolSchd JobWorkDays JobMthFactor
+
+end-procedure
+
+!****************************************************************************
+! New-Row-to-JobArray                                                       *
+!****************************************************************************
+begin-procedure New-Row-to-JobArray
+
+  let #prv_job_idx = #JobCnt - 1
+  let #JobCnt = #JobCnt + 1
+
+  if #JobCnt >= #MaxJob
+
+      add 1 to #EEs_in_Error
+      let $Error = 'ERROR-Select Contract Info '|| $Emplid || ', ' || $EmplRcd ||
+                   ' with maximum array size reached.' || '  Employee skipped.'
+      display $Error
+      let $SkipEmplee = 'Y'
+      let $ContSearch = 'N'
+  else
+      while #prv_job_idx >= #job_idx
+
+          get $JobEffdt $FutureDate $JobAction $JobCompany $JobPaygroup $JobHolSchd
+              #JobCompRt #JobChangeAmt $JobProrateOptn $JobLumpSumPay $JobFreqType
+              $JobContBeginDt $JobContEndDt $JobPymtBeginDt $JobPymtEndDt $JobMthFreqID #JobDailyHrs $JobPaymentTerm
+              $JobActualStrDt $JobContTermDt $JobSchSchd $JobUseHolSchd #JobWorkDays #JobMthFactor $SysCreateInd
+          from JobArray (#prv_job_idx)
+               JobEffdt FutureDate JobAction JobCompany JobPaygroup JobHolSchd
+               JobCompRt JobChangeAmt JobProrateOptn JobLumpSumPay JobFreqType
+               JobContBeginDt JobContEndDt JobPymtBeginDt JobPymtEndDt JobMthFreqID JobDailyHrs JobPaymentTerm
+               JobActualStrDt JobContTermDt JobSchSchd JobUseHolSchd JobWorkDays JobMthFactor SysCreateInd
+
+          let #new_job_idx = #prv_job_idx + 1
+
+          put $JobEffdt $FutureDate $JobAction $JobCompany $JobPaygroup $JobHolSchd
+              #JobCompRt #JobChangeAmt $JobProrateOptn $JobLumpSumPay $JobFreqType
+              $JobContBeginDt $JobContEndDt $JobPymtBeginDt $JobPymtEndDt $JobMthFreqID #JobDailyHrs $JobPaymentTerm
+              $JobActualStrDt $JobContTermDt $JobSchSchd $JobUseHolSchd #JobWorkDays #JobMthFactor $SysCreateInd
+          into JobArray (#new_job_idx)
+               JobEffdt FutureDate JobAction JobCompany JobPaygroup JobHolSchd
+               JobCompRt JobChangeAmt JobProrateOptn JobLumpSumPay JobFreqType
+               JobContBeginDt JobContEndDt JobPymtBeginDt JobPymtEndDt JobMthFreqID JobDailyHrs JobPaymentTerm
+               JobActualStrDt JobContTermDt JobSchSchd JobUseHolSchd JobWorkDays JobMthFactor SysCreateInd
+
+          let #prv_job_idx = #prv_job_idx - 1
+
+      end-while
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Prepare-JobArray                                                          *
+!****************************************************************************
+begin-procedure Prepare-JobArray
+
+  do Format-DateTime($CP_Pay_Begin_Dt, $CMP_CP_PayBeginDt, {DEFCMP},'','')
+  do Format-DateTime($CP_Pay_End_Dt, $CMP_CP_PayEndDt, {DEFCMP},'','')
+  let #cur_job_idx = -1
+  let #lstpp_job_idx = 0
+
+  let #job_idx = #JobCnt - 1
+  while #job_idx >= 0
+
+      get $JobEffdt $UseHolSchd from JobArray (#job_idx) JobEffdt JobUseHolSchd
+      if $UseHolSchd <> 'Y'
+          put ' ' into JobArray (#job_idx) JobHolSchd
+      end-if
+
+      do Format-DateTime($JobEffdt, $CMP_JobEffdt, {DEFCMP},'','')
+      if $CMP_JobEffdt > $CMP_CP_PayEndDt
+          put 'Y' into JobArray (#job_idx) FutureDate
+      else
+          if #cur_job_idx = -1
+              let #cur_job_idx = #job_idx
+          end-if
+
+          if $CMP_JobEffdt < $CMP_CP_PayBeginDt and #lstpp_job_idx = 0
+              let #lstpp_job_idx = #job_idx
+          end-if
+
+          put #ContractWorkDays into JobArray (#job_idx) JobWorkDays
+      end-if
+
+      let #job_idx = #job_idx - 1
+  end-while
+
+  if #cur_job_idx = -1
+      let #cur_job_idx = 0
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Update-Payroll                                                            *
+!****************************************************************************
+begin-procedure Update-Payroll
+
+  let $err-statement1 = 'CNTPAY01, Update Error - Update-Payroll'
+  let $err-statement2 = 'Bind Varables: Employee '||$Emplid
+
+begin-sql on-error=Error-Display
+UPDATE PS_PAY_LINE SET JOB_CHANGE = 'R'
+WHERE EMPLID = $Emplid
+  AND EMPL_RCD = #EmplRcd
+  AND CONFIRMED = 'N'
+  AND JOB_CHANGE <> 'R'
+  AND MANUAL_CHECK = 'N'
+end-sql
+
+end-procedure
+
+!****************************************************************************
+! Reset-Recalc-Indicator                                                    *
+!****************************************************************************
+begin-procedure Reset-Recalc-Indicator
+
+  let $err-statement1 = 'CNTPAY01, Update Error - Reset-Recalc-Indicator'
+  let $err-statement2 = 'Bind Varables: Employee '||$Emplid || ', ' || $EmplRcd
+
+begin-sql on-error=Error-Display
+UPDATE PS_HP_CNTRACT_LIST SET HP_RECALC_CONTRACT = 'N'
+WHERE EMPLID = $Emplid
+  AND EMPL_RCD = #EmplRcd
+  AND HP_CONTRACT_NUM = #ContractNum
+end-sql
+
+end-procedure
+
+!****************************************************************************
+! Validate-Previous-Pay-Calendar                                            *
+!****************************************************************************
+begin-procedure Validate-Previous-Pay-Calendar
+
+  let  $Valid_Previous_Pay_Calendar = 'Y'
+
+begin-select
+PAY_CAL_VAL.PAY_CONFIRM_RUN
+PAY_CAL_VAL.PAY_END_DT
+
+  let  $Previous_Pay_Confirm        = &PAY_CAL_VAL.PAY_CONFIRM_RUN
+  let  $Previous_Pay_End_Dt         = &PAY_CAL_VAL.PAY_END_DT
+
+  if $Previous_Pay_Confirm <> 'Y'
+
+      let     $Valid_Previous_Pay_Calendar = 'N'
+
+      display ' '
+      display '   Pay Calendar: ' noline
+      display $PD_Company         noline
+      display ', '                noline
+      display $PD_Paygroup        noline
+      display ', '                noline
+      display $CP_Pay_End_Dt      noline
+      display ' not processed'
+      display '   Confirm has not been completed for previous calendar'
+      display '   Last Confirmed Pay End Date: ' noline
+      display $Previous_Pay_End_Dt noline
+      display ' '
+  else
+      let      $Valid_Previous_Pay_Calendar = 'Y'
+  end-if
+
+FROM  PS_PAY_CALENDAR PAY_CAL_VAL
+WHERE PAY_CAL_VAL.COMPANY    = $PD_Company
+  AND PAY_CAL_VAL.PAYGROUP   = $PD_Paygroup
+  AND PAY_CAL_VAL.PAY_OFF_CYCLE_CAL = 'N'
+  AND PAY_CAL_VAL.RUN_ID    <> ' '
+  AND PAY_CAL_VAL.PAY_END_DT = (SELECT MAX(PAY_CAL_X.PAY_END_DT)
+                                  FROM PS_PAY_CALENDAR PAY_CAL_X
+                                 WHERE PAY_CAL_X.COMPANY     = $PD_Company
+                                   AND PAY_CAL_X.PAYGROUP    = $PD_Paygroup
+                                   AND PAY_CAL_X.PAY_OFF_CYCLE_CAL = 'N'
+                                   AND PAY_CAL_X.RUN_ID     <> ' '
+                                   AND PAY_CAL_X.PAY_END_DT <= $CP_Pay_Begin_Dt)
+end-select
+end-procedure
+
+!****************************************************************************
+! Read-Paycalendar                                                          *
+!****************************************************************************
+begin-procedure Read-PayCalendar
+
+  let #wrk_idx = 0
+  let #firstpymt_idx = -1
+  let #lstpymt_idx = -1
+  let #balloon_pymt_idx = -1
+  let $WrkDayStr_BeginDt     = $PaymentBeginDt
+  let $WrkDayStr_EndDt       = $PaymentEndDt
+  let $CMP_WrkDayStr_BeginDt = $CMP_PaymentBeginDt
+  let $CMP_WrkDayStr_EndDt   = $CMP_PaymentEndDt
+  do Format-DateTime($CP_Pay_End_Dt, $CMP_CP_PayEndDt, {DEFCMP},'','')
+  do Format-DateTime($ContractTermDt, $CMP_ContractTermDt, {DEFCMP},'','')
+
+  if $BalloonPayment = 'Y'
+      do Format-DateTime($LastPaymentDt, $CMP_LastPaymentDt, {DEFCMP},'','')
+  end-if
+
+begin-select
+CAL.PAY_BEGIN_DT
+CAL.PAY_END_DT
+CAL.PAY_SHEETS_RUN
+
+  do Format-DateTime(&CAL.PAY_BEGIN_DT, $CMP_PrdBeginDt, {DEFCMP},'','')
+  do Format-DateTime(&CAL.PAY_END_DT, $CMP_PrdEndDt, {DEFCMP},'','')
+
+  if $CMP_PrdEndDt < $CMP_CP_PayEndDt
+      let $Processed_PP = 'Y'
+  else
+      let $Processed_PP = 'N'
+  end-if
+
+  if $PaymentTerm = 'L'
+
+      do FindPayPeriodWrkDays($ContractBeginDt, $ContractEndDt, $ContractBeginDt,
+                              $WorkDayString, 'P', #ActualPaidDays)
+
+      let #LumpSum_TtlPaidDays = #ActualPaidDays
+      let #LumpSum_wrk_idx = #wrk_idx
+
+      do FindPayPeriodWrkDays($ContractBeginDt, $ContractEndDt, $ContractBeginDt,
+                              $WorkDayString, 'W', #ActualWorkDays)
+
+      put &CAL.PAY_BEGIN_DT &CAL.PAY_END_DT $CMP_PrdBeginDt $CMP_PrdEndDt #ActualWorkDays 0 0 0
+      into WrkArray(#wrk_idx)
+           WrkPayBegDt WrkPayEndDt WrkCMPPayBegDt WrkCMPPayEndDt WrkActualDay WrkActualAmt WrkLOADay WrkLOAAmt
+
+      let #BefCont_PPRatio = 0
+      let #DurCont_PPRatio = 1
+      let #AftCont_PPRatio = 0
+  else
+      if $Processed_PP = 'N'
+          if $LateStart = 'Y'
+              if ($CMP_ContractStart >= $CMP_PrdBeginDt) and ($CMP_ContractStart <= $CMP_PrdEndDt)
+                  let #firstpymt_idx = #wrk_idx
+              end-if
+          end-if
+
+          if $EarlyTerminate = 'Y'
+              if ($CMP_ContractTermDt >= $CMP_PrdBeginDt) and ($CMP_ContractTermDt <= $CMP_PrdEndDt)
+                  let #lstpymt_idx = #wrk_idx
+              end-if
+          end-if
+
+          if $BalloonPayment = 'Y'
+              if ($CMP_LastPaymentDt >= $CMP_PrdBeginDt) and ($CMP_LastPaymentDt <= $CMP_PrdEndDt)
+                  if #lstpymt_idx = -1
+                      let #balloon_pymt_idx = #wrk_idx
+                  end-if
+              end-if
+          end-if
+      end-if
+
+      if $CMP_PrdBeginDt < $CMP_WrkDayStr_BeginDt
+
+          do Convert-to-DTU-Date($WrkDayStr_BeginDt, $Temp_Dt)
+          do DTU-Subtract-Days($Temp_Dt, 1, $Temp_Dt2)
+          do Convert-from-DTU-Date($Temp_Dt2, $TmpEndDt)
+
+          let $WrkDayStr_BeginDt     = &CAL.PAY_BEGIN_DT
+          let $CMP_WrkDayStr_BeginDt = $CMP_PrdBeginDt
+
+          do AppendWorkDayString($WrkDayStr_BeginDt, $TmpEndDt, $PD_Work_Schedule, 'B', $WorkDayString)
+      end-if
+
+      if $CMP_PrdEndDt > $CMP_WrkDayStr_EndDt
+
+          do Convert-to-DTU-Date($WrkDayStr_EndDt, $Temp_Dt)
+          do DTU-Add-Days($Temp_Dt, 1, $Temp_Dt2)
+          do Convert-from-DTU-Date($Temp_Dt2, $TmpBeginDt)
+
+          let $WrkDayStr_EndDt     = &CAL.PAY_END_DT
+          let $CMP_WrkDayStr_EndDt = $CMP_PrdEndDt
+
+          do AppendWorkDayString($TmpBeginDt, $WrkDayStr_EndDt, $PD_Work_Schedule, 'A', $WorkDayString)
+
+      end-if
+
+      do CalculateWrkDays ($ContractBeginDt, $ContractEndDt, &CAL.PAY_BEGIN_DT, &CAL.PAY_END_DT,
+                           $WrkDayStr_BeginDt, $WorkDayString, 'W', #ActualWorkDays)
+
+      put &CAL.PAY_BEGIN_DT &CAL.PAY_END_DT $CMP_PrdBeginDt $CMP_PrdEndDt #ActualWorkDays 0 0 0
+      into WrkArray(#wrk_idx)
+           WrkPayBegDt WrkPayEndDt WrkCMPPayBegDt WrkCMPPayEndDt WrkActualDay WrkActualAmt WrkLOADay WrkLOAAmt
+
+      array-add #ActualWorkDays to TotalArray(0) TotalWorkDays
+
+      if $BeforeContract = 'Y'
+          do Determine-PPRatio ($BefCont_BeginDt, $BefCont_EndDt, &CAL.PAY_BEGIN_DT, &CAL.PAY_END_DT,
+                                $WrkDayStr_BeginDt, $WorkDayString, #BefCont_PPRatio)
+      else
+          let #BefCont_PPRatio = 0
+      end-if
+
+      do Determine-PPRatio ($ContractBeginDt, $ContractEndDt, &CAL.PAY_BEGIN_DT, &CAL.PAY_END_DT,
+                            $WrkDayStr_BeginDt, $WorkDayString, #DurCont_PPRatio)
+
+
+      if $AfterContract = 'Y'
+          do Determine-PPRatio ($AftCont_BeginDt, $AftCont_EndDt, &CAL.PAY_BEGIN_DT, &CAL.PAY_END_DT,
+                                $WrkDayStr_BeginDt, $WorkDayString, #AftCont_PPRatio)
+      else
+          let #AftCont_PPRatio = 0
+      end-if
+  end-if
+
+  put #BefCont_PPRatio into WrkArray(#wrk_idx) WrkPPRatio (0)
+  put #DurCont_PPRatio into WrkArray(#wrk_idx) WrkPPRatio (1)
+  put #DurCont_PPRatio into WrkArray(#wrk_idx) WrkPPRatio (2)
+  put #DurCont_PPRatio into WrkArray(#wrk_idx) WrkPPRatio (3)
+  put #AftCont_PPRatio into WrkArray(#wrk_idx) WrkPPRatio (4)
+
+  array-add #BefCont_PPRatio to TotalArray(0) TotalRatio
+  array-add #DurCont_PPRatio to TotalArray(1) TotalRatio
+  array-add #AftCont_PPRatio to TotalArray(2) TotalRatio
+
+  if $Processed_PP = 'Y'
+      put 'Y' into WrkArray(#wrk_idx) WrkConfInd
+  else
+      if &CAL.PAY_SHEETS_RUN = 'Y'
+          put 'I' into WrkArray(#wrk_idx) WrkConfInd
+      else
+          put 'N' into WrkArray(#wrk_idx) WrkConfInd
+      end-if
+
+      put #BefCont_PPRatio into WrkArray(#wrk_idx) WrkRemainPPRatio (0)
+      put #DurCont_PPRatio into WrkArray(#wrk_idx) WrkRemainPPRatio (1)
+      put #DurCont_PPRatio into WrkArray(#wrk_idx) WrkRemainPPRatio (2)
+      put #DurCont_PPRatio into WrkArray(#wrk_idx) WrkRemainPPRatio (3)
+      put #AftCont_PPRatio into WrkArray(#wrk_idx) WrkRemainPPRatio (4)
+
+      array-add #BefCont_PPRatio to TotalArray(0) TotalRemainRatio
+      array-add #DurCont_PPRatio to TotalArray(1) TotalRemainRatio
+      array-add #AftCont_PPRatio to TotalArray(2) TotalRemainRatio
+  end-if
+
+  let #wrk_idx = #wrk_idx + 1
+
+FROM PS_PAY_CALENDAR CAL
+WHERE CAL.COMPANY = $PD_Company
+AND CAL.PAYGROUP = $PD_Paygroup
+AND CAL.PAY_OFF_CYCLE_CAL = 'N'
+AND (CAL.PAY_END_DT BETWEEN $PaymentBeginDt AND $PaymentEndDt
+  OR CAL.PAY_BEGIN_DT BETWEEN $PaymentBeginDt AND $PaymentEndDt
+  OR ($PaymentBeginDt BETWEEN CAL.PAY_BEGIN_DT AND CAL.PAY_END_DT
+    AND $PaymentEndDt BETWEEN CAL.PAY_BEGIN_DT AND CAL.PAY_END_DT))
+order by CAL.PAY_BEGIN_DT, CAL.PAY_END_DT
+end-select
+
+  let #WrkCnt = #wrk_idx
+
+end-procedure
+
+!****************************************************************************
+! Populate-RateArray                                                        *
+!****************************************************************************
+begin-procedure Populate-RateArray
+
+  let $ContSearch = 'Y'
+  let #RateCnt = 0
+  let #job_idx = #cur_job_idx
+  let $RateEndDt = $ContractEndDt
+
+  while #job_idx >= 0 and $ContSearch = 'Y'
+
+      get $JobEffdt $FutureDate $JobProrateOptn #JobDailyRt
+      from JobArray (#job_idx) JobEffdt FutureDate JobProrateOptn JobDailyRt
+
+      do Format-DateTime($JobEffdt, $CMP_JobEffdt, {DEFCMP},'','')
+
+      if $FutureDate = 'N'
+
+          let #rt_idx = #RateCnt
+          put $RateEndDt #JobDailyRt into RateArray (#rt_idx) RateEndDt DailyRt
+
+          if $JobProrateOptn <> 'E' or
+             $CMP_JobEffdt <= $CMP_ContractBeginDt
+              let $ContSearch = 'N'
+              put $ContractBeginDt into RateArray (#rt_idx) RateBegDt
+          else
+              put $JobEffdt into RateArray (#rt_idx) RateBegDt
+
+              do Convert-to-DTU-Date($JobEffdt, $Temp_Dt)
+              do DTU-Subtract-Days($Temp_Dt, 1, $Temp_Dt2)
+              do Convert-from-DTU-Date($Temp_Dt2, $RateEndDt)
+          end-if
+
+          let #RateCnt = #RateCnt + 1
+      end-if
+
+      let #job_idx = #job_idx - 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Check-LOA-exists                                                          *
+!****************************************************************************
+begin-procedure Check-LOA-exists
+
+begin-select
+'x'
+
+  let $LOAflag = 'Y'
+
+FROM PS_JOB JOBC
+WHERE JOBC.EMPLID    = $EmplID
+  AND JOBC.EMPL_RCD  = #EmplRcd
+  AND ((JOBC.EFFDT   = (SELECT MAX(JOBC1.EFFDT)
+                          FROM PS_JOB JOBC1
+                         WHERE JOBC1.EMPLID    = JOBC.EMPLID
+                           AND JOBC1.EMPL_RCD  = JOBC.EMPL_RCD
+                           AND JOBC1.EFFDT    <= $ContractStart))
+       OR
+       (JOBC.EFFDT BETWEEN $ContractStart and $ContractTermDt))
+  AND JOBC.EFFSEQ    = (SELECT MAX(JOBC2.EFFSEQ)
+                          FROM PS_JOB JOBC2
+                         WHERE JOBC2.EMPLID    = JOBC.EMPLID
+                           AND JOBC2.EMPL_RCD  = JOBC.EMPL_RCD
+                           AND JOBC2.EFFDT     = JOBC.EFFDT)
+  AND JOBC.ACTION in ('LOA', 'SWB')
+end-select
+
+end-procedure
+
+!****************************************************************************
+! Calculate-LumpSum-LOA-portion                                             *
+!****************************************************************************
+begin-procedure Calculate-LumpSum-LOA-portion
+
+  let #TtlLOAAmt = 0
+  let #LOADays = 0
+
+  if $LateStart = 'Y'
+      do Convert-to-DTU-Date($ContractStart, $Temp_Dt)
+      do DTU-Subtract-Days($Temp_Dt, 1, $Temp_Dt2)
+      do Convert-from-DTU-Date($Temp_Dt2, $Bef_ContractStart)
+
+      do FindPayPeriodWrkDays($ContractBeginDt, $Bef_ContractStart, $ContractBeginDt,
+                              $WorkDayString, 'P', #ActualPaidDays)
+      let #LOADays = #LOADays + #ActualPaidDays
+  end-if
+
+  if $EarlyTerminate = 'Y'
+      do Convert-to-DTU-Date($ContractTermDt, $Temp_Dt)
+      do DTU-Add-Days($Temp_Dt, 1, $Temp_Dt2)
+      do Convert-from-DTU-Date($Temp_Dt2, $Aft_ContractTermDt)
+
+      do FindPayPeriodWrkDays($Aft_ContractTermDt, $ContractEndDt, $ContractBeginDt,
+                              $WorkDayString, 'P', #ActualPaidDays)
+      let #LOADays = #LOADays + #ActualPaidDays
+  end-if
+
+  if $LOAflag = 'Y'
+      do Find-LumpSum-LOA-breaks
+  end-if
+
+  get #ContractAmt from JobArray (#cur_job_idx) ContractAmt
+  let #TtlLOAAmt = round(#ContractAmt / #LumpSum_TtlPaidDays * #LOADays, 2)
+  put #TtlLOAAmt into WrkArray(#LumpSum_wrk_idx) WrkLOAAmt
+
+end-procedure
+
+!****************************************************************************
+! Find-LumpSum-LOA-breaks                                                   *
+!****************************************************************************
+begin-procedure Find-LumpSum-LOA-breaks
+
+  let $prevAction = ' '
+  let $StartDt = $ContractStart
+
+begin-select
+JOBD.EFFDT
+JOBD.ACTION
+
+  let $Action = rtrim(&JOBD.ACTION, ' ')
+
+  if $prevAction = ' '
+      if $Action = 'LOA' or $Action = 'SWB'
+          let $prevAction = 'L'
+      else
+          let $prevAction = 'A'
+      end-if
+  else
+      if $prevAction = 'L'
+           if $Action <> 'LOA' and $Action <> 'SWB'
+
+               do Convert-to-DTU-Date(&JOBD.EFFDT, $Temp_Dt)
+               do DTU-Subtract-Days($Temp_Dt, 1, $Temp_Dt2)
+               do Convert-from-DTU-Date($Temp_Dt2, $EndDt)
+
+               do FindPayPeriodWrkDays($StartDt, $EndDt, $ContractBeginDt,
+                                       $WorkDayString, 'P', #ActualPaidDays)
+
+               let #LOADays = #LOADays + #ActualPaidDays
+               let $prevAction = 'A'
+           end-if
+      else
+          if $Action = 'LOA' or $Action= 'SWB'
+              let $prevAction = 'L'
+              let $StartDt = &JOBD.EFFDT
+          end-if
+      end-if
+  end-if
+
+FROM PS_JOB JOBD
+WHERE JOBD.EMPLID    = $EmplID
+  AND JOBD.EMPL_RCD  = #EmplRcd
+  AND ((JOBD.EFFDT   = (SELECT MAX(JOBD1.EFFDT)
+                          FROM PS_JOB JOBD1
+                         WHERE JOBD1.EMPLID    = JOBD.EMPLID
+                           AND JOBD1.EMPL_RCD  = JOBD.EMPL_RCD
+                           AND JOBD1.EFFDT    <= $ContractStart))
+       OR
+       (JOBD.EFFDT BETWEEN $ContractStart and $ContractTermDt))
+  AND JOBD.EFFSEQ    = (SELECT MAX(JOBD2.EFFSEQ)
+                          FROM PS_JOB JOBD2
+                         WHERE JOBD2.EMPLID    = JOBD.EMPLID
+                           AND JOBD2.EMPL_RCD  = JOBD.EMPL_RCD
+                           AND JOBD2.EFFDT     = JOBD.EFFDT)
+ORDER BY JOBD.EFFDT ASC
+end-select
+
+  if $prevAction = 'L'
+      let $EndDt = $ContractTermDt
+      do FindPayPeriodWrkDays($StartDt, $EndDt, $ContractBeginDt,
+                              $WorkDayString, 'P', #ActualPaidDays)
+
+      let #LOADays = #LOADays + #ActualPaidDays
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Calculate-LOA-portion                                                     *
+!****************************************************************************
+begin-procedure Calculate-LOA-portion
+
+  let #TtlLOAAmt = 0
+  let #TtlDecrRatio = 0
+
+  get #DC_Ratio from TotalArray(1) TotalRatio
+
+  get #pContractAmt from JobArray (#cur_job_idx) ContractAmt
+
+  let #rt_idx = 0
+  get #lstDailyRt from RateArray (#rt_idx) DailyRt
+
+  let #rt_idx = #RateCnt - 1
+  get #firstDailyRt from RateArray (#rt_idx) DailyRt
+
+  if $LateStart = 'Y'
+      let #wrk_idx = 0
+      let $ContSearch = 'Y'
+      while #wrk_idx < #WrkCnt and $ContSearch = 'Y'
+
+          let #DecrRatio = 0
+          let #DecrRemRatio = 0
+          let #LOADays = 0
+
+          get $ConfInd $PrdBeginDt $PrdEndDt $CMP_PrdBeginDt $CMP_PrdEndDt #ActualWorkDays
+          from WrkArray(#wrk_idx)
+               WrkConfInd WrkPayBegDt WrkPayEndDt WrkCMPPayBegDt WrkCMPPayEndDt WrkActualDay
+
+          get #DC_PPRatio #DC_RemainPPRatio from WrkArray(#wrk_idx) WrkPPRatio (2) WrkRemainPPRatio (2)
+
+          if $ConfInd = 'N' or $ConfInd = 'I'
+              if $CMP_ContractStart > $CMP_PrdEndDt
+
+                  let #DecrRatio    = #DC_PPRatio
+                  let #DecrRemRatio = #DC_RemainPPRatio
+                  let #LOADays      = #ActualWorkDays
+              else
+                  if $CMP_ContractStart > $CMP_PrdBeginDt and $CMP_ContractStart <= $CMP_PrdEndDt
+
+                      if $CMP_ContractBeginDt > $CMP_PrdBeginDt
+                          let $LOABeginDt = $ContractBeginDt
+                      else
+                          let $LOABeginDt = $PrdBeginDt
+                      end-if
+
+                      do Convert-to-DTU-Date($ContractStart, $Temp_Dt)
+                      do DTU-Subtract-Days($Temp_Dt, 1, $Temp_Dt2)
+                      do Convert-from-DTU-Date($Temp_Dt2, $Bef_ContractStart)
+
+                      do Determine-PPRatio ($LOABeginDt, $Bef_ContractStart, $PrdBeginDt, $PrdEndDt,
+                                            $WrkDayStr_BeginDt, $WorkDayString, #DecrRatio)
+
+                      let #DecrRemRatio = #DecrRatio
+
+                      do CalculateWrkDays ($LOABeginDt, $Bef_ContractStart, $PrdBeginDt, $PrdEndDt,
+                                           $WrkDayStr_BeginDt, $WorkDayString, 'W', #LOADays)
+
+                      let $ContSearch = 'N'
+                  else
+                      let $ContSearch = 'N'
+                  end-if
+              end-if
+          else
+              if $FirstPayment = 'Y'
+                  let #LOADays   = #ActualWorkDays
+                  let #DecrRatio = #DC_PPRatio
+              end-if
+          end-if
+
+          if $ContractCalOptn = 'A'
+              let #LOAAmt = round(#LOADays * #firstDailyRt, 2)
+          else
+              let #LOAAmt = round(#pContractAmt / #DC_Ratio * #DecrRatio, 2)
+          end-if
+
+          let #TtlLOAAmt = #TtlLOAAmt + #LOAAmt
+          let #TtlDecrRatio = #TtlDecrRatio + #DecrRatio
+
+          do Subtract-from-Cumulated-Totals
+          array-add #LOADays #LOAAmt to WrkArray(#wrk_idx) WrkLOADay WrkLOAAmt
+
+          let #wrk_idx = #wrk_idx + 1
+      end-while
+  end-if
+
+  if $EarlyTerminate = 'Y'
+      let #wrk_idx = #WrkCnt - 1
+      let $ContSearch = 'Y'
+      while #wrk_idx >= 0 and $ContSearch = 'Y'
+
+          let #DecrRatio = 0
+          let #DecrRemRatio = 0
+          let #LOADays = 0
+
+          get $ConfInd $PrdBeginDt $PrdEndDt $CMP_PrdBeginDt $CMP_PrdEndDt #ActualWorkDays
+          from WrkArray(#wrk_idx)
+               WrkConfInd WrkPayBegDt WrkPayEndDt WrkCMPPayBegDt WrkCMPPayEndDt WrkActualDay
+
+          get #DC_PPRatio #DC_RemainPPRatio from WrkArray(#wrk_idx) WrkPPRatio (2) WrkRemainPPRatio (2)
+
+          if $ConfInd = 'N' or $ConfInd = 'I'
+              if $CMP_ContractTermDt < $CMP_PrdBeginDt
+
+                  let #DecrRatio    = #DC_PPRatio
+                  let #DecrRemRatio = #DC_RemainPPRatio
+                  let #LOADays      = #ActualWorkDays
+              else
+                  if $CMP_ContractTermDt >= $CMP_PrdBeginDt and $CMP_ContractTermDt <= $CMP_PrdEndDt
+
+                      if $CMP_ContractEndDt < $CMP_PrdEndDt
+                          let $LOAEndDt = $ContractEndDt
+                      else
+                          let $LOAEndDt = $PrdEndDt
+                      end-if
+
+                      do Convert-to-DTU-Date($ContractTermDt, $Temp_Dt)
+                      do DTU-Add-Days($Temp_Dt, 1, $Temp_Dt2)
+                      do Convert-from-DTU-Date($Temp_Dt2, $Aft_ContractEnd)
+
+                      do Determine-PPRatio ($Aft_ContractEnd, $LOAEndDt, $PrdBeginDt, $PrdEndDt,
+                                            $WrkDayStr_BeginDt, $WorkDayString, #DecrRatio)
+
+                      let #DecrRemRatio = #DecrRatio
+
+                      do CalculateWrkDays ($Aft_ContractEnd, $LOAEndDt, $PrdBeginDt, $PrdEndDt,
+                                           $WrkDayStr_BeginDt, $WorkDayString, 'W', #LOADays)
+
+                      let $ContSearch = 'N'
+                  else
+                      let $ContSearch = 'N'
+                  end-if
+              end-if
+
+              if $ContractCalOptn = 'A'
+                  let #LOAAmt = round(#LOADays * #lstDailyRt, 2)
+              else
+                  let #LOAAmt = round(#pContractAmt / #DC_Ratio * #DecrRatio, 2)
+              end-if
+              let #TtlLOAAmt = #TtlLOAAmt + #LOAAmt
+              let #TtlDecrRatio = #TtlDecrRatio + #DecrRatio
+
+              do Subtract-from-Cumulated-Totals
+              array-add #LOADays #LOAAmt to WrkArray(#wrk_idx) WrkLOADay WrkLOAAmt
+          end-if
+
+          let #wrk_idx = #wrk_idx - 1
+      end-while
+  end-if
+
+  if $LOAflag = 'Y'
+
+      let $LOA_ContractBegDt = $ContractStart
+      let $LOA_ContractEndDt = $ContractTermDt
+      do Format-DateTime($LOA_ContractBegDt, $CMP_LOA_ContractBegDt, {DEFCMP},'','')
+      do Format-DateTime($LOA_ContractEndDt, $CMP_LOA_ContractEndDt, {DEFCMP},'','')
+
+      let #job_idx = 0
+
+      while #job_idx < #JobCnt
+
+          let #next_job_idx = #job_idx + 1
+
+          get $JobEffdt $JobAction $JobProrateOptn #JobDailyRt
+          from JobArray (#job_idx) JobEffdt JobAction JobProrateOptn JobDailyRt
+
+          do Format-DateTime($JobEffdt, $CMP_JobEffdt, {DEFCMP},'','')
+
+          let $JobAction = rtrim($JobAction, ' ')
+
+          if $JobAction = 'LOA' or $JobAction = 'SWB'
+
+              if #next_job_idx = #JobCnt
+                  let $EndJobEffdt = $LOA_ContractEndDt
+              else
+                  get $NextJobEffdt from JobArray (#next_job_idx) JobEffdt
+                  do Convert-to-DTU-Date($NextJobEffdt, $Temp_Dt)
+                  do DTU-Subtract-Days($Temp_Dt, 1, $Temp_Dt2)
+                  do Convert-from-DTU-Date($Temp_Dt2, $EndJobEffdt)
+              end-if
+              do Format-DateTime($EndJobEffdt, $CMP_EndJobEffdt, {DEFCMP},'','')
+
+              if $CMP_LOA_ContractBegDt > $CMP_EndJobEffdt or
+                 $CMP_LOA_ContractEndDt < $CMP_JobEffdt
+              else
+                  if $CMP_LOA_ContractBegDt > $CMP_JobEffdt
+                      let $JobEffdt     = $LOA_ContractBegDt
+                      let $CMP_JobEffdt = $CMP_LOA_ContractBegDt
+                  end-if
+
+                  if $CMP_LOA_ContractEndDt < $CMP_EndJobEffdt
+                      let $EndJobEffdt     = $LOA_ContractEndDt
+                      let $CMP_EndJobEffdt = $CMP_LOA_ContractEndDt
+                  end-if
+
+                  do Calculate-LOA-portion-by-JobEffdt
+              end-if
+          end-if
+
+          let #job_idx = #job_idx + 1
+      end-while
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Calculate-LOA-portion-by-JobEffdt                                         *
+!****************************************************************************
+begin-procedure Calculate-LOA-portion-by-JobEffdt
+
+  let $ContSearch = 'Y'
+  let #wrk_idx = 0
+  while #wrk_idx < #WrkCnt and $ContSearch = 'Y'
+
+      let #DecrRatio = 0
+      let #DecrRemRatio = 0
+      let #LOADays = 0
+
+      get $ConfInd $PrdBeginDt $PrdEndDt $CMP_PrdBeginDt $CMP_PrdEndDt #ActualWorkDays
+      from WrkArray(#wrk_idx)
+           WrkConfInd WrkPayBegDt WrkPayEndDt WrkCMPPayBegDt WrkCMPPayEndDt WrkActualDay
+
+      get #DC_PPRatio #DC_RemainPPRatio from WrkArray(#wrk_idx) WrkPPRatio (2) WrkRemainPPRatio (2)
+
+      if $ConfInd = 'N' or $ConfInd = 'I'
+
+          if $CMP_EndJobEffdt < $CMP_PrdBeginDt
+              let $ContSearch = 'N'
+          else
+              if $CMP_JobEffdt > $CMP_PrdEndDt
+              else
+                  if $CMP_JobEffdt <= $CMP_PrdBeginDt
+
+                      if $CMP_EndJobEffdt >= $CMP_PrdEndDt
+
+                          let #DecrRatio    = #DC_PPRatio
+                          let #DecrRemRatio = #DC_RemainPPRatio
+                          let #LOADays      = #ActualWorkDays
+
+                          let $RateSrchBegDt = $PrdBeginDt
+                          let $RateSrchEndDt = $PrdEndDt
+                      else
+                          do Determine-PPRatio ($PrdBeginDt, $EndJobEffdt, $PrdBeginDt, $PrdEndDt,
+                                                $WrkDayStr_BeginDt, $WorkDayString, #DecrRatio)
+
+                          do CalculateWrkDays ($PrdBeginDt, $EndJobEffdt, $PrdBeginDt, $PrdEndDt,
+                                               $WrkDayStr_BeginDt, $WorkDayString, 'W', #LOADays)
+
+                          let #DecrRemRatio = #DecrRatio
+
+                          let $ContSearch = 'N'
+
+                          let $RateSrchBegDt = $PrdBeginDt
+                          let $RateSrchEndDt = $EndJobEffdt
+                      end-if
+                  else
+                      if $CMP_EndJobEffdt >= $CMP_PrdEndDt
+                          let $EndDt = $PrdEndDt
+                      else
+                          let $EndDt = $EndJobEffdt
+                          let $ContSearch = 'N'
+                      end-if
+
+                      do Determine-PPRatio ($JobEffdt, $EndDt, $PrdBeginDt, $PrdEndDt,
+                                            $WrkDayStr_BeginDt, $WorkDayString, #DecrRatio)
+
+                      do CalculateWrkDays ($JobEffdt, $EndDt, $PrdBeginDt, $PrdEndDt,
+                                           $WrkDayStr_BeginDt, $WorkDayString, 'W', #LOADays)
+
+                      let #DecrRemRatio = #DecrRatio
+
+                      let $RateSrchBegDt = $JobEffdt
+                      let $RateSrchEndDt = $EndDt
+                  end-if
+
+                  if $ContractCalOptn = 'A'
+
+                      let #LOAAmt = 0
+                      let #PayPrdLOADay = #LOADays
+
+                      let #rt_idx = #RateCnt - 1
+                      while #rt_idx >= 0 and #PayPrdLOADay > 0
+
+                          get $RateBegDt $RateEndDt #DailyRt
+                          from RateArray (#rt_idx) RateBegDt RateEndDt DailyRt
+
+                          do CalculateWrkDays ($RateBegDt, $RateEndDt, $RateSrchBegDt, $RateSrchEndDt,
+                                               $WrkDayStr_BeginDt, $WorkDayString, 'W', #curRateDays)
+
+                          let #LOAAmt = #LOAAmt + round(#curRateDays * #DailyRt, 2)
+                          let #PayPrdLOADay = #PayPrdLOADay - #curRateDays
+                          let #rt_idx = #rt_idx - 1
+                      end-while
+                  else
+                      let #LOAAmt = round(#pContractAmt / #DC_Ratio * #DecrRatio, 2)
+                  end-if
+
+                  let #TtlLOAAmt = #TtlLOAAmt + #LOAAmt
+                  let #TtlDecrRatio = #TtlDecrRatio + #DecrRatio
+
+                  do Subtract-from-Cumulated-Totals
+                  array-add #LOADays #LOAAmt to WrkArray(#wrk_idx) WrkLOADay WrkLOAAmt
+              end-if
+          end-if
+      end-if
+
+      let #wrk_idx = #wrk_idx + 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Subtract-from-Cumulated-Totals                                            *
+!****************************************************************************
+begin-procedure Subtract-from-Cumulated-Totals
+
+  array-subtract #DecrRatio from WrkArray(#wrk_idx) WrkPPRatio (1)
+  array-subtract #DecrRatio from WrkArray(#wrk_idx) WrkPPRatio (2)
+  array-subtract #DecrRatio from WrkArray(#wrk_idx) WrkPPRatio (3)
+  array-subtract #DecrRatio from TotalArray(1) TotalRatio
+
+  array-subtract #DecrRemRatio from WrkArray(#wrk_idx) WrkRemainPPRatio (1)
+  array-subtract #DecrRemRatio from WrkArray(#wrk_idx) WrkRemainPPRatio (2)
+  array-subtract #DecrRemRatio from WrkArray(#wrk_idx) WrkRemainPPRatio (3)
+  array-subtract #DecrRemRatio from TotalArray(1) TotalRemainRatio
+
+  array-add #DecrRatio    to TotalArray(1) TotalLOARatio
+  array-add #DecrRemRatio to TotalArray(1) TotalLOARemRatio
+
+end-procedure
+
+!****************************************************************************
+! Determine-LumpSum-Contract-Amt                                            *
+!****************************************************************************
+begin-procedure Determine-LumpSum-Contract-Amt
+
+  let #job_idx = #JobCnt - 1
+  get $pJobEffdt $pJobAction $pJobCompany $pJobPaygroup $pJobHolSchd
+      #pJobCompRt #pJobChangeAmt $pJobProrateOptn $pJobLumpSumPay $pJobFreqType
+      $pJobContBeginDt $pJobContEndDt $pJobPymtBeginDt $pJobPymtEndDt $pJobMthFreqID #pJobDailyHrs $pJobPaymentTerm
+      $pJobActualStrDt $pJobContTermDt $pJobSchSchd $pJobUseHolSchd #pJobWorkDays #pJobMthFactor
+      #pJobAnnlRt #pJobMthRt #pJobDailyRt #pJobHrlyRt #pContractAmt
+  from JobArray (#job_idx)
+       JobEffdt JobAction JobCompany JobPaygroup JobHolSchd
+       JobCompRt JobChangeAmt JobProrateOptn JobLumpSumPay JobFreqType
+       JobContBeginDt JobContEndDt JobPymtBeginDt JobPymtEndDt JobMthFreqID JobDailyHrs JobPaymentTerm
+       JobActualStrDt JobContTermDt JobSchSchd JobUseHolSchd JobWorkDays JobMthFactor
+       JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt
+
+  let #JobRemainDays = 0
+  do Compare-LumpSum-with-Cont-Parm
+
+end-procedure
+
+!****************************************************************************
+! Determine-Contract-Amt                                                    *
+!****************************************************************************
+begin-procedure Determine-Contract-Amt
+
+  get #BC_Ratio from TotalArray(0) TotalRatio
+  get #DC_Ratio from TotalArray(1) TotalRatio
+  get #AC_Ratio from TotalArray(2) TotalRatio
+  let #TotalPP = #BC_Ratio + #DC_Ratio + #AC_Ratio
+
+  let #job_idx = 0
+  get $pJobEffdt $pJobAction $pJobCompany $pJobPaygroup $pJobHolSchd
+      #pJobCompRt #pJobChangeAmt $pJobProrateOptn $pJobLumpSumPay $pJobFreqType
+      $pJobContBeginDt $pJobContEndDt $pJobPymtBeginDt $pJobPymtEndDt $pJobMthFreqID #pJobDailyHrs $pJobPaymentTerm
+      $pJobActualStrDt $pJobContTermDt $pJobSchSchd $pJobUseHolSchd #pJobWorkDays #pJobMthFactor
+      #pJobAnnlRt #pJobMthRt #pJobDailyRt #pJobHrlyRt #pContractAmt
+  from JobArray (#job_idx)
+       JobEffdt JobAction JobCompany JobPaygroup JobHolSchd
+       JobCompRt JobChangeAmt JobProrateOptn JobLumpSumPay JobFreqType
+       JobContBeginDt JobContEndDt JobPymtBeginDt JobPymtEndDt JobMthFreqID JobDailyHrs JobPaymentTerm
+       JobActualStrDt JobContTermDt JobSchSchd JobUseHolSchd JobWorkDays JobMthFactor
+       JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt
+
+  let $FindOptn = 'E'
+  let $FindJobEffdt = $pJobEffdt
+  let $FindJobContEndDt = $ContractEndDt
+  let $FindJobPymtEndDt = $PaymentEndDt
+  do FindRemainContPrd
+  let #JobRemainDays = #RemainContPrd
+
+  let #pPNECarryOver = #PNE_CarryOver
+  let #pCRGCarryOver = #CRG_CarryOver
+  let #pENPCarryOver = #ENP_CarryOver
+  let #pWrkCarryOver = #Wrk_CarryOver
+  let #pLOACarryOver = #LOA_CarryOver
+
+  do Compare-with-Cont-Parm
+
+  let #job_idx = 1
+
+  while #job_idx < #JobCnt and $SkipEmplee = 'N'
+
+      get $JobEffdt $JobAction $JobCompany $JobPaygroup $JobHolSchd
+          #JobCompRt #JobChangeAmt $JobProrateOptn $JobLumpSumPay $JobFreqType
+          $JobContBeginDt $JobContEndDt $JobPymtBeginDt $JobPymtEndDt $JobMthFreqID #JobDailyHrs $JobPaymentTerm
+          $JobActualStrDt $JobContTermDt $JobSchSchd $JobUseHolSchd #JobWorkDays #JobMthFactor
+          #JobAnnlRt #JobMthRt #JobDailyRt #JobHrlyRt #ContractAmt
+      from JobArray (#job_idx)
+           JobEffdt JobAction JobCompany JobPaygroup JobHolSchd
+           JobCompRt JobChangeAmt JobProrateOptn JobLumpSumPay JobFreqType
+           JobContBeginDt JobContEndDt JobPymtBeginDt JobPymtEndDt JobMthFreqID JobDailyHrs JobPaymentTerm
+           JobActualStrDt JobContTermDt JobSchSchd JobUseHolSchd JobWorkDays JobMthFactor
+           JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt
+
+      let $FindOptn = 'E'
+      let $FindJobEffdt = $JobEffdt
+      let $FindJobContEndDt = $ContractEndDt
+      let $FindJobPymtEndDt = $PaymentEndDt
+      do FindRemainContPrd
+      let #JobRemainDays = #RemainContPrd
+
+      do Compare-Job-Rows
+
+      if $SkipEmplee = 'N'
+          let $pJobEffdt        = $JobEffdt
+          let $pJobAction       = $JobAction
+          let $pJobCompany      = $JobCompany
+          let $pJobPaygroup     = $JobPaygroup
+          let $pJobHolSchd      = $JobHolSchd
+          let #pJobCompRt       = #JobCompRt
+          let #pJobChangeAmt    = #JobChangeAmt
+          let $pJobProrateOptn  = $JobProrateOptn
+          let $pJobLumpSumPay   = $JobLumpSumPay
+          let $pJobFreqType     = $JobFreqType
+          let $pJobContBeginDt  = $JobContBeginDt
+          let $pJobContEndDt    = $JobContEndDt
+          let $pJobPymtBeginDt  = $JobPymtBeginDt
+          let $pJobPymtEndDt    = $JobPymtEndDt
+          let $pJobMthFreqID    = $JobMthFreqID
+          let #pJobDailyHrs     = #JobDailyHrs
+          let $pJobPaymentTerm  = $JobPaymentTerm
+          let $pJobActualStrDt  = $JobActualStrDt
+          let $pJobContTermDt   = $JobContTermDt
+          let $pJobSchSchd      = $JobSchSchd
+          let $pJobUseHolSchd   = $JobUseHolSchd
+          let #pJobWorkDays     = #JobWorkDays
+          let #pJobMthFactor    = #JobMthFactor
+          let #pJobAnnlRt       = #JobAnnlRt
+          let #pJobMthRt        = #JobMthRt
+          let #pJobDailyRt      = #JobDailyRt
+          let #pJobHrlyRt       = #JobHrlyRt
+          let #pContractAmt     = #ContractAmt
+      end-if
+
+      let #job_idx = #job_idx + 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Compare-LumpSum-with-Cont-Parm                                            *
+!****************************************************************************
+begin-procedure Compare-LumpSum-with-Cont-Parm
+
+  let #pJobAnnlRt = #pJobCompRt
+  let #pJobMthRt = round(#pJobCompRt / #pJobMthFactor, 3)
+
+  if $ContParmExist = 'N'
+
+      let #LastContParmSeq = 0
+      let #pJobDailyRt = round(#pJobCompRt / #pJobWorkDays,3)
+      if #pJobDailyHrs <> 0
+          let #pJobHrlyRt = round(#pJobDailyRt / #pJobDailyHrs, 6)
+      else
+          let #pJobHrlyRt = 0
+      end-if
+
+      put  'Y' 'N' 'N' #LastContParmSeq #pJobAnnlRt #pJobMthRt #pJobDailyRt #pJobHrlyRt #pJobAnnlRt
+      into JobArray(#job_idx)
+           InsContParm RateChange SysCreateInd ContParmSeq JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt
+  else
+      let #LastContParmSeq = #ContParm_ContractSeq
+      let #NextContParmSeq = #LastContParmSeq + 1
+      let #pContractAmt = #ContParm_ContractAmt
+
+      let #pJobDailyRt = round(#pContractAmt / #pJobWorkDays,3)
+      if #pJobDailyHrs <> 0
+          let #pJobHrlyRt = round(#pJobDailyRt / #pJobDailyHrs, 6)
+      else
+          let #pJobHrlyRt = 0
+      end-if
+
+      if ($pJobCompany <> $ContParm_Company or $pJobPaygroup <> $ContParm_Paygroup or $pJobFreqType <> 'C')
+        and rtrim($pJobContTermDt, ' ') = ''
+
+          add 1 to #EEs_in_Error
+          let $Error = 'ERROR-Compare Contract Parm '|| $Emplid || ', ' || $EmplRcd ||
+                       ' and contract terminated.' || '  Employee skipped.'
+          display $Error
+          let $SkipEmplee = 'Y'
+      else
+          put  'N' 'N' #LastContParmSeq #pJobAnnlRt #pJobMthRt #pJobDailyRt #pJobHrlyRt #pContractAmt #JobRemainDays
+          into JobArray(#job_idx)
+               InsContParm RateChange ContParmSeq JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt JobRemainDays
+
+          if #pJobCompRt <> #ContParm_AnnualRt
+              put  'Y' 'Y' #NextContParmSeq into JobArray(#job_idx) InsContParm RateChange ContParmSeq
+
+              array-add #PNE_CarryOver to JobArray(#job_idx) PNECarryOver
+              array-add #CRG_CarryOver to JobArray(#job_idx) CRGCarryOver
+              array-add #ENP_CarryOver to JobArray(#job_idx) ENPCarryOver
+              array-add #Wrk_CarryOver to JobArray(#job_idx) WrkCarryOver
+              array-add #LOA_CarryOver to JobArray(#job_idx) LOACarryOver
+          end-if
+      end-if
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Compare-with-Cont-Parm                                                    *
+!****************************************************************************
+begin-procedure Compare-with-Cont-Parm
+
+  let #pJobAnnlRt = #pJobCompRt
+  let #pJobMthRt = round(#pJobCompRt / #pJobMthFactor, 3)
+
+  if $pJobPaymentTerm <> $PaymentTerm
+      add 1 to #EEs_in_Error
+      let $Error = 'ERROR-Compare Contract Parm '|| $Emplid || ', ' || $EmplRcd ||
+                   ' and different payment term.' || '  Employee skipped.'
+      display $Error
+      let $SkipEmplee = 'Y'
+  end-if
+
+  if $ContParmExist = 'N'
+
+      let #LastContParmSeq = 0
+      let #pContractAmt    = #pJobCompRt
+      let #pJobDailyRt = round(#pJobCompRt / #pJobWorkDays,3)
+      if #pJobDailyHrs <> 0
+          let #pJobHrlyRt = round(#pJobDailyRt / #pJobDailyHrs, 6)
+      else
+          let #pJobHrlyRt = 0
+      end-if
+
+      put  'Y' 'N' #LastContParmSeq #pJobAnnlRt #pJobMthRt #pJobDailyRt #pJobHrlyRt #pJobAnnlRt
+      into JobArray(#job_idx)
+           InsContParm RateChange ContParmSeq JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt
+  else
+      let #LastContParmSeq = #ContParm_ContractSeq
+      let #NextContParmSeq = #LastContParmSeq + 1
+      let #pContractAmt = #ContParm_ContractAmt
+
+      if $pJobProrateOptn = 'E'
+          let #pJobDailyRt = round(#pJobCompRt / #pJobWorkDays,3)
+      else
+          let #pJobDailyRt = round(#pContractAmt / #pJobWorkDays,3)
+      end-if
+
+      if #pJobDailyHrs <> 0
+          let #pJobHrlyRt = round(#pJobDailyRt / #pJobDailyHrs, 6)
+      else
+          let #pJobHrlyRt = 0
+      end-if
+
+      if ($pJobCompany <> $ContParm_Company or $pJobPaygroup <> $ContParm_Paygroup or $pJobFreqType <> 'C')
+        and rtrim($pJobContTermDt, ' ') = ''
+
+          add 1 to #EEs_in_Error
+          let $Error = 'ERROR-Compare Contract Parm '|| $Emplid || ', ' || $EmplRcd ||
+                       ' and contract terminated.' || '  Employee skipped.'
+          display $Error
+          let $SkipEmplee = 'Y'
+      else
+          put  'N' 'N' #LastContParmSeq #pJobAnnlRt #pJobMthRt #pJobDailyRt #pJobHrlyRt #pContractAmt #JobRemainDays
+          into JobArray(#job_idx)
+               InsContParm RateChange ContParmSeq JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt JobRemainDays
+
+          if #pJobCompRt <> #ContParm_AnnualRt
+              let $JobEffdt       = $pJobEffdt
+              let $JobProrateOptn = $pJobProrateOptn
+              do Format-DateTime($JobEffdt, $CMP_JobEffdt, {DEFCMP},'','')
+
+              if $CMP_JobEffdt > $CMP_ContractEndDt
+                  let #pContractAmt = #ContParm_ContractAmt
+                  let #pJobCompRt = #ContParm_AnnualRt
+                  let #pJobChangeAmt = 0
+                  let #pJobChgDelta = 0
+
+                  let #pJobAnnlRt = #pJobCompRt
+                  let #pJobMthRt = round(#pJobCompRt / #pJobMthFactor, 3)
+                  if $pJobProrateOptn = 'E'
+                      let #pJobDailyRt = round(#pJobCompRt / #pJobWorkDays,3)
+                  else
+                      let #pJobDailyRt = round(#pContractAmt / #pJobWorkDays,3)
+                  end-if
+                  if #pJobDailyHrs <> 0
+                      let #pJobHrlyRt = round(#pJobDailyRt / #pJobDailyHrs, 6)
+                  else
+                      let #pJobHrlyRt = 0
+                  end-if
+
+                  put  'N' 'N' #LastContParmSeq #pJobCompRt #pJobChangeAmt #pJobChgDelta
+                       #pJobAnnlRt #pJobMthRt #pJobDailyRt #pJobHrlyRt #pContractAmt
+                  into JobArray(#job_idx)
+                       InsContParm RateChange ContParmSeq JobCompRt JobChangeAmt JobChgDelta
+                       JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt
+              else
+                  let #pJobDailyRt = round(#pJobCompRt / #pJobWorkDays,3)
+                  if #pJobDailyHrs <> 0
+                      let #pJobHrlyRt = round(#pJobDailyRt / #pJobDailyHrs, 6)
+                  else
+                      let #pJobHrlyRt = 0
+                  end-if
+
+                  if $CMP_JobEffdt <= $CMP_ContractBeginDt
+                      let $JobProrateOptn = 'N'
+                      put $JobProrateOptn into JobArray(#job_idx) JobProrateOptn
+                  end-if
+
+                  if #pJobChangeAmt = 0
+                      let #pJobChangeAmt = #pJobCompRt - #ContParm_AnnualRt
+                      put #pJobChangeAmt into JobArray(#job_idx) JobChangeAmt
+                  end-if
+
+                  let $FindOptn = $JobProrateOptn
+                  evaluate $JobProrateOptn
+
+                      when = 'C'
+                      when = 'P'
+                          do FindRemainContPrd
+
+                          if $JobProrateOptn = 'C'
+                              let #pJobChgDelta = round(#pJobChangeAmt / #DC_Ratio * #RemainContPrd, 2)
+                          else
+                              let #pJobChgDelta = round(#pJobChangeAmt / #TotalPP * #RemainContPrd, 2)
+                          end-if
+
+                          let #pJobDailyRt = round((#ContParm_AnnualRt + #pJobChgDelta) / #pJobWorkDays, 3)
+                          if #pJobDailyHrs <> 0
+                              let #pJobHrlyRt = round(#pJobDailyRt / #pJobDailyHrs, 6)
+                          else
+                              let #pJobHrlyRt = 0
+                          end-if
+                          break
+
+                      when = 'E'
+                          do FindRemainContPrd
+                          let #pJobChgDelta = round((#pJobDailyRt - #ContParm_DailyRt) * #RemainContPrd, 2)
+                          break
+
+                      when-other
+                          let #pJobChgDelta = #pJobChangeAmt
+                  end-evaluate
+
+                  let #ContractAmt = #ContParm_AnnualRt + #pJobChgDelta
+                  let #DailyRtDiff = #pJobDailyRt - #ContParm_DailyRt
+
+                  put  'Y' 'Y' #NextContParmSeq #pJobCompRt #pJobChgDelta
+                       #pJobAnnlRt #pJobMthRt #pJobDailyRt #pJobHrlyRt #ContractAmt #DailyRtDiff
+                  into JobArray(#job_idx)
+                       InsContParm RateChange ContParmSeq JobCompRt JobChgDelta
+                       JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt DailyRtDiff
+
+                  array-add #pPNECarryOver to JobArray(#job_idx) PNECarryOver
+                  array-add #pCRGCarryOver to JobArray(#job_idx) CRGCarryOver
+                  array-add #pENPCarryOver to JobArray(#job_idx) ENPCarryOver
+                  array-add #pWrkCarryOver to JobArray(#job_idx) WrkCarryOver
+                  array-add #pLOACarryOver to JobArray(#job_idx) LOACarryOver
+
+                  let #LastContParmSeq = #NextContParmSeq
+              end-if
+          else
+              if $pJobCompany <> $ContParm_Company
+                or $pJobPaygroup <> $ContParm_Paygroup
+                or $pJobContBeginDt <> $ContParm_ContractBeginDt
+                or $pJobContEndDt <> $ContParm_ContractEndDt
+                or $pJobPymtBeginDt <> $ContParm_PaymentBeginDt
+                or $pJobPymtEndDt <> $ContParm_PaymentEndDt
+                or #pJobMthRt <> #ContParm_MonthlyRt
+                or #pJobDailyRt <> #ContParm_DailyRt
+                or #pJobHrlyRt <> #ContParm_HourlyRt
+                or #pContractAmt <> #ContParm_ContractAmt
+                or $PD_Work_Schedule <> $ContParm_WrkSchd
+                or $pJobHolSchd <> $ContParm_HolSchd
+                or $pJobSchSchd <> $ContParm_SchSchd
+
+                  put 'Y' #NextContParmSeq into JobArray(#job_idx) InsContParm ContParmSeq
+
+                  array-add #pPNECarryOver to JobArray(#job_idx) PNECarryOver
+                  array-add #pCRGCarryOver to JobArray(#job_idx) CRGCarryOver
+                  array-add #pENPCarryOver to JobArray(#job_idx) ENPCarryOver
+                  array-add #pWrkCarryOver to JobArray(#job_idx) WrkCarryOver
+                  array-add #pLOACarryOver to JobArray(#job_idx) LOACarryOver
+
+                  let #LastContParmSeq = #NextContParmSeq
+              end-if
+          end-if
+      end-if
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Compare-Job-Rows                                                          *
+!****************************************************************************
+begin-procedure Compare-Job-Rows
+
+  let #JobAnnlRt = #JobCompRt
+  let #JobMthRt = round(#JobCompRt / #JobMthFactor, 3)
+
+  array-add #pPNECarryOver to JobArray(#job_idx) PNECarryOver
+  array-add #pCRGCarryOver to JobArray(#job_idx) CRGCarryOver
+  array-add #pENPCarryOver to JobArray(#job_idx) ENPCarryOver
+  array-add #pWrkCarryOver to JobArray(#job_idx) WrkCarryOver
+  array-add #pLOACarryOver to JobArray(#job_idx) LOACarryOver
+
+  let #NextContParmSeq = #LastContParmSeq + 1
+
+  if ($pJobCompany <> $JobCompany or $pJobPaygroup <> $JobPaygroup or $JobFreqType <> 'C')
+    and rtrim($JobContTermDt, ' ') = ''
+
+      add 1 to #EEs_in_Error
+      let $Error = 'ERROR-Compare Job Rows '|| $Emplid || ', ' || $EmplRcd ||
+                   ' and contract terminated.' || '  Employee skipped.'
+      display $Error
+      let $SkipEmplee = 'Y'
+  else
+      if $JobPaymentTerm <> $PaymentTerm
+          add 1 to #EEs_in_Error
+          let $Error = 'ERROR-Compare Job Rows '|| $Emplid || ', ' || $EmplRcd ||
+                       ' and different payment term.' || '  Employee skipped.'
+          display $Error
+          let $SkipEmplee = 'Y'
+      else
+          let #ContractAmt = #pContractAmt
+          if $JobProrateOptn = 'E'
+              let #JobDailyRt = round(#JobCompRt / #JobWorkDays,3)
+          else
+              let #JobDailyRt = round(#ContractAmt / #JobWorkDays, 3)
+          end-if
+
+          if #JobDailyHrs <> 0
+              let #JobHrlyRt = round(#JobDailyRt / #JobDailyHrs, 6)
+          else
+              let #JobHrlyRt = 0
+          end-if
+
+          put  'N' 'N' #LastContParmSeq #JobAnnlRt #JobMthRt #JobDailyRt #JobHrlyRt #ContractAmt #JobRemainDays
+          into JobArray(#job_idx)
+               InsContParm RateChange ContParmSeq JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt JobRemainDays
+
+          if #pJobCompRt <> #JobCompRt
+              do Format-DateTime($JobEffdt, $CMP_JobEffdt, {DEFCMP},'','')
+
+              if $CMP_JobEffdt > $CMP_ContractEndDt
+                  let #JobCompRt = #pJobCompRt
+                  let #ContractAmt = #pContractAmt
+                  let #JobChangeAmt = 0
+                  let #JobChgDelta = 0
+
+                  let #JobAnnlRt = #JobCompRt
+                  let #JobMthRt = round(#JobCompRt / #JobMthFactor, 3)
+
+                  if $JobProrateOptn = 'E'
+                      let #JobDailyRt = round(#JobCompRt / #JobWorkDays,3)
+                  else
+                      let #JobDailyRt = round(#ContractAmt / #JobWorkDays,3)
+                  end-if
+
+                  if #JobDailyHrs <> 0
+                      let #JobHrlyRt = round(#JobDailyRt / #JobDailyHrs, 6)
+                  else
+                      let #JobHrlyRt = 0
+                  end-if
+
+                  put  'N' 'N' #LastContParmSeq #JobCompRt #JobChangeAmt #JobChgDelta
+                       #JobAnnlRt #JobMthRt #JobDailyRt #JobHrlyRt #ContractAmt
+                  into JobArray(#job_idx)
+                       InsContParm RateChange ContParmSeq JobCompRt JobChangeAmt JobChgDelta
+                       JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt
+              else
+                  if $CMP_JobEffdt <= $CMP_ContractBeginDt
+                      let $JobProrateOptn = 'N'
+                      put $JobProrateOptn into JobArray(#job_idx) JobProrateOptn
+                  end-if
+
+                  if #JobChangeAmt = 0
+                      let #JobChangeAmt = #JobCompRt - #pJobCompRt
+                      put #JobChangeAmt into JobArray(#job_idx) JobChangeAmt
+                  end-if
+
+                  let $FindOptn = $JobProrateOptn
+                  evaluate $JobProrateOptn
+
+                      when = 'C'
+                      when = 'P'
+                          do FindRemainContPrd
+
+                          if $JobProrateOptn = 'C'
+                              let #JobChgDelta = round(#JobChangeAmt / #DC_Ratio * #RemainContPrd, 2)
+                          else
+                              let #JobChgDelta = round(#JobChangeAmt / #TotalPP * #RemainContPrd, 2)
+                          end-if
+                          let #JobDailyRt = round((#pContractAmt  + #JobChgDelta) / #JobWorkDays,3)
+                          break
+
+                      when = 'E'
+                          do FindRemainContPrd
+                          let #JobChgDelta = round((#JobDailyRt - #pJobDailyRt) * #RemainContPrd, 2)
+                          let #JobDailyRt = round(#JobCompRt / #JobWorkDays,3)
+                          break
+
+                      when-other
+                          let #JobChgDelta = #JobChangeAmt
+                          let #JobDailyRt = round((#pContractAmt  + #JobChgDelta) / #JobWorkDays,3)
+                  end-evaluate
+
+                  if #JobDailyHrs <> 0
+                      let #JobHrlyRt = round(#JobDailyRt / #JobDailyHrs, 6)
+                  else
+                      let #JobHrlyRt = 0
+                  end-if
+
+                  let #ContractAmt = #pContractAmt + #JobChgDelta
+                  let #DailyRtDiff = #JobDailyRt - #pJobDailyRt
+
+                  put  'Y' 'Y' #NextContParmSeq #JobCompRt #JobChgDelta
+                       #JobAnnlRt #JobMthRt #JobDailyRt #JobHrlyRt #ContractAmt #DailyRtDiff
+                  into JobArray(#job_idx)
+                       InsContParm RateChange ContParmSeq JobCompRt JobChgDelta
+                       JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt DailyRtDiff
+
+                  let #LastContParmSeq = #NextContParmSeq
+              end-if
+          end-if
+      end-if
+
+      if ($TermDtChanged = 'N' and
+          ($JobCompany <> $pJobCompany or $JobPaygroup <> $pJobPaygroup or $JobContTermDt <> $ContractTermDt))
+        or #JobCompRt <> #pJobCompRt
+        or $JobContBeginDt <> $pJobContBeginDt
+        or $JobContEndDt <> $pJobContEndDt
+        or $JobPymtBeginDt <> $pJobPymtBeginDt
+        or $JobPymtEndDt <> $pJobPymtEndDt
+        or #JobMthRt <> #pJobMthRt
+        or #JobDailyRt <> #pJobDailyRt
+        or #JobHrlyRt <> #pJobHrlyRt
+        or #ContractAmt <> #pContractAmt
+        or $JobHolSchd <> $pJobHolSchd
+        or $JobSchSchd <> $pJobSchSchd
+
+          if $JobContTermDt <> $ContractTermDt
+              let $TermDtChanged = 'Y'
+          end-if
+          put 'Y' #NextContParmSeq into JobArray(#job_idx) InsContParm ContParmSeq
+          let #LastContParmSeq = #NextContParmSeq
+      end-if
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Determine-Retro-Amt                                                       *
+!****************************************************************************
+begin-procedure Determine-Retro-Amt
+
+  get #BC_Ratio #BC_RemainRatio from TotalArray(0) TotalRatio TotalRemainRatio
+  get #DC_Ratio #DC_RemainRatio from TotalArray(1) TotalRatio TotalRemainRatio
+  get #AC_Ratio #AC_RemainRatio from TotalArray(2) TotalRatio TotalRemainRatio
+  get #DC_LOARatio #DC_LOARemRatio from TotalArray(1) TotalLOARatio TotalLOARemRatio
+
+  let #BC_PaidRatio = #BC_Ratio - #BC_RemainRatio
+  let #DC_PaidRatio = #DC_Ratio - #DC_RemainRatio
+  let #AC_PaidRatio = #AC_Ratio - #AC_RemainRatio
+  let #DC_PaidLOARatio = #DC_LOARatio - #DC_LOARemRatio
+
+  let #TotalPP = #BC_Ratio + #DC_Ratio + #AC_Ratio + #DC_LOARatio
+  let #DC_TtlRatio  = #DC_Ratio + #DC_LOARatio
+  let #DC_TtlPaidRatio = #DC_PaidRatio + #DC_PaidLOARatio
+
+  let #PNE_RetroAmt = 0
+  let #CRG_RetroAmt = 0
+  let #ENP_RetroAmt = 0
+  let #PNE_TotalAmt = 0
+  let #ENP_TotalAmt = 0
+  let #PNE_RetroTtl = 0
+  let #CRG_RetroTtl = 0
+  let #ENP_RetroTtl = 0
+
+  let #PNE_RetroCarryOver = #PNE_CarryOver - #PNE_Adj
+  let #CRG_RetroCarryOver = #CRG_CarryOver - #CRG_Adj
+  let #ENP_RetroCarryOver = #ENP_CarryOver - #ENP_Adj
+
+  get $curJobEffdt #CurContractAmt $curJobLumpSumPay
+  from JobArray (#cur_job_idx) JobEffdt ContractAmt JobLumpSumPay
+
+  let #job_idx = #lstpp_job_idx
+  get $JobEffdt #ContractAmt from JobArray (#job_idx) JobEffdt ContractAmt
+
+  if $curJobLumpSumPay = 'Y'
+               and ((#ContractAmt < #CurContractAmt) or (#ContParm_ContractAmt < #CurContractAmt))
+
+      do Format-DateTime($JobEffdt, $CMP_JobEffdt, {DEFCMP},'','')
+
+      if $CMP_JobEffdt < $CMP_CP_Pay_Begin_Dt
+
+          if $CMP_CP_Pay_Begin_Dt < $CMP_ContractBeginDt
+
+              let #PNE_RetroAmt = round(#curContractAmt / #TotalPP * #BC_PaidRatio, 2)
+              let #PNE_RetroAmt = #PNE_RetroAmt - #PNE_RetroCarryOver
+
+              put #PNE_RetroAmt 0 0 0
+              into JobArray (#job_idx) PNE_RetroAmt CRG_RetroAmt ENP_RetroAmt ActualWrk
+
+              let #PNE_RetroTtl = #PNE_RetroTtl + #PNE_RetroAmt
+          else
+              if $CMP_CP_Pay_Begin_Dt >= $CMP_ContractBeginDt and
+                 $CMP_CP_Pay_Begin_Dt <= $CMP_ContractEndDt
+
+                  let #PNE_TotalAmt = round(#curContractAmt / #TotalPP * #BC_Ratio, 2)
+                  let #PNE_RetroAmt = round(#curContractAmt / #TotalPP * #BC_PaidRatio, 2)
+                  let #PNE_RetroAmt = #PNE_RetroAmt + round(#PNE_TotalAmt / #DC_TtlRatio * #DC_TtlPaidRatio * -1, 2)
+                  let #PNE_RetroAmt = #PNE_RetroAmt - #PNE_RetroCarryOver
+
+                  let #CRG_RetroAmt = round(#curContractAmt / #DC_TtlRatio * #DC_TtlPaidRatio, 2)
+                  let #CRG_RetroAmt = #CRG_RetroAmt - #CRG_RetroCarryOver - #LOA_CarryOver
+
+                  let #ENP_TotalAmt = round(#curContractAmt / #TotalPP * #AC_Ratio, 2)
+                  let #ENP_RetroAmt = round(#ENP_TotalAmt / #DC_TtlRatio * #DC_TtlPaidRatio * -1, 2)
+                  let #ENP_RetroAmt = #ENP_RetroAmt - #ENP_RetroCarryOver
+
+                  put #PNE_RetroAmt #CRG_RetroAmt #ENP_RetroAmt 0
+                  into JobArray (#job_idx) PNE_RetroAmt CRG_RetroAmt ENP_RetroAmt ActualWrk
+
+                  let #PNE_RetroTtl = #PNE_RetroTtl + #PNE_RetroAmt
+                  let #CRG_RetroTtl = #CRG_RetroTtl + #CRG_RetroAmt
+                  let #ENP_RetroTtl = #ENP_RetroTtl + #ENP_RetroAmt
+              end-if
+          end-if
+      end-if
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Process-Contract-Parm                                                     *
+!****************************************************************************
+begin-procedure Process-Contract-Parm
+
+  let $CRG_Exceeded = 'N'
+
+  do Determine-Actual-WrkAmt
+
+  do Distribute-ContractAmt
+
+  if $ContractCalOptn = 'A' and $PaymentTerm <> 'L'
+      do Calculate-ActualWork-Adjustment
+  end-if
+
+  let #RetroTtl = #PNE_RetroTtl + #CRG_RetroTtl + #ENP_RetroTtl
+
+  if $RunCtl_SepChk = 'N' or #RetroTtl < 0
+
+      let $ContSearch = 'Y'
+      let #wrk_idx = 0
+
+      while #wrk_idx < #WrkCnt and $ContSearch = 'Y'
+
+          get $ConfInd from WrkArray (#wrk_idx) WrkConfInd
+          if $ConfInd = 'N' or $ConfInd = 'I'
+              array-add #PNE_RetroTtl to WrkArray (#wrk_idx) WrkRetroAmt (0)
+              array-add #CRG_RetroTtl to WrkArray (#wrk_idx) WrkRetroAmt (2)
+              array-add #ENP_RetroTtl to WrkArray (#wrk_idx) WrkRetroAmt (4)
+              array-add #PNE_RetroTtl to TotalArray(0) TotalAmt
+              array-add #CRG_RetroTtl to TotalArray(1) TotalAmt
+              array-add #ENP_RetroTtl to TotalArray(2) TotalAmt
+              let #PNE_RetroTtl = 0
+              let #CRG_RetroTtl = 0
+              let #ENP_RetroTtl = 0
+              let $ContSearch = 'N'
+          end-if
+
+          let #wrk_idx = #wrk_idx + 1
+      end-while
+  end-if
+
+  do Roundoff-ContractAmt
+
+  if $LateStart = 'Y' and #firstpymt_idx <> -1
+      do Cumulate-LateStart_LOAAmt
+  end-if
+
+  if $EarlyTerminate = 'Y' and #lstpymt_idx <> -1
+      do Cumulate-EarlyTerm_LOAAmt
+      do Adjust-Last-Payment
+  end-if
+
+  if $BalloonPayment = 'Y' and #balloon_pymt_idx <> -1
+      do Balloon-Payment
+  end-if
+
+  do Insert-Contract-Payment
+
+  #debug do Print-Array-2
+
+end-procedure
+
+!****************************************************************************
+! Determine-Actual-WrkAmt                                                   *
+!****************************************************************************
+begin-procedure Determine-Actual-WrkAmt
+
+  if $PaymentTerm = 'L'
+
+      get #ContractAmt from JobArray(#cur_job_idx) ContractAmt
+
+      let #wrk_idx = #LumpSum_wrk_idx
+      put #ContractAmt into WrkArray(#wrk_idx) WrkActualAmt
+  else
+      let #wrk_idx = 0
+
+      while #wrk_idx < #WrkCnt
+
+          get $ConfInd $PrdBeginDt $PrdEndDt #PayPrdWrkDay
+          from WrkArray (#wrk_idx) WrkConfInd WrkPayBegDt WrkPayEndDt WrkActualDay
+
+          if $ConfInd = 'N' or $ConfInd = 'I'
+
+              let #CalculateAmt = 0
+              do Calculate-Actual-WrkAmt
+              put #CalculateAmt into WrkArray(#wrk_idx) WrkActualAmt
+          end-if
+
+          let #wrk_idx = #wrk_idx + 1
+      end-while
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Calculate-Actual-WrkAmt                                                   *
+!****************************************************************************
+begin-procedure Calculate-Actual-WrkAmt
+
+  let #rt_idx = #RateCnt - 1
+
+  while #rt_idx >= 0 and #PayPrdWrkDay > 0
+
+      get $RateBegDt $RateEndDt #DailyRt from RateArray (#rt_idx) RateBegDt RateEndDt DailyRt
+
+      do CalculateWrkDays ($RateBegDt, $RateEndDt, $PrdBeginDt, $PrdEndDt,
+                           $WrkDayStr_BeginDt, $WorkDayString, 'W', #curRateDays)
+
+      let #CalculateAmt = #CalculateAmt + round(#curRateDays * #DailyRt, 2)
+      let #PayPrdWrkDay = #PayPrdWrkDay - #curRateDays
+      let #rt_idx = #rt_idx - 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Distribute-ContractAmt                                                    *
+!****************************************************************************
+begin-procedure Distribute-ContractAmt
+
+  let #CRG_CarryOver = #CRG_CarryOver + #NewCRGAdj
+  let #PNE_CarryOver = #PNE_CarryOver + #NewPNEAdj
+  let #ENP_CarryOver = #ENP_CarryOver + #NewENPAdj
+
+  get #BC_Ratio from TotalArray(0) TotalRatio
+  get #DC_Ratio from TotalArray(1) TotalRatio
+  get #AC_Ratio from TotalArray(2) TotalRatio
+  let #TotalPP = #BC_Ratio + #DC_Ratio + #AC_Ratio
+
+  get #BC_RemainRatio  from TotalArray(0) TotalRemainRatio
+  get #DC_RemainRatio  from TotalArray(1) TotalRemainRatio
+  get #AC_RemainRatio  from TotalArray(2) TotalRemainRatio
+  let #TotalRemainRatio = #BC_RemainRatio + #DC_RemainRatio + #AC_RemainRatio
+
+  get #ContractAmt from JobArray(#cur_job_idx) ContractAmt
+  let #ContractAmt = #ContractAmt - #LOA_CarryOver - #TtlLOAAmt
+
+  let #CRG_Amt = #ContractAmt - #CRG_RetroTtl - #CRG_CarryOver
+
+  if #CRG_Amt < 0
+      let $WarnAmt = edit(#CRG_Amt, '999999999.99')
+      let $WarningMsg = 'Warning - Contract Amount paid exceed contract worth defined for - Employee ID / Rcd# '||
+                        $Emplid || '/' || $EmplRcd || ', Amount = ' || $WarnAmt
+      display $WarningMsg
+
+      let #CRG_Amt = 0
+      let $CRG_Exceeded = 'Y'
+  end-if
+
+  if #TotalRemainRatio <> 0
+
+      let #ContribAmt = #CRG_Amt - #PNE_RetroTtl - #PNE_CarryOver - #ENP_RetroTtl - #ENP_CarryOver
+      let #PNE_Amt = round(#ContribAmt / #TotalRemainRatio * #BC_RemainRatio, 2)
+      let #PNE_ContribAmt = #PNE_Amt + #PNE_RetroTtl + #PNE_CarryOver
+      let #ENP_Amt = round(#ContribAmt / #TotalRemainRatio * #AC_RemainRatio, 2)
+      let #ENP_ContribAmt = #ENP_Amt + #ENP_RetroTtl + #ENP_CarryOver
+
+      let #wrk_idx = 0
+      while #wrk_idx < #WrkCnt
+
+          get $ConfInd from WrkArray (#wrk_idx) WrkConfInd
+
+          if $ConfInd = 'N' or $ConfInd = 'I'
+
+              get #ActualDay #ActualAmt #LOADays #LOAAmt
+              from WrkArray (#wrk_idx) WrkActualDay WrkActualAmt WrkLOADay WrkLOAAmt
+
+              get #BC_PNE_Ratio from WrkArray (#wrk_idx) WrkPPRatio (0)
+              get #DC_PNE_Ratio from WrkArray (#wrk_idx) WrkPPRatio (1)
+              get #DC_CRG_Ratio from WrkArray (#wrk_idx) WrkPPRatio (2)
+              get #DC_ENP_Ratio from WrkArray (#wrk_idx) WrkPPRatio (3)
+              get #AC_ENP_Ratio from WrkArray (#wrk_idx) WrkPPRatio (4)
+
+              if #BC_RemainRatio <> 0
+                  let #PNE_PPAmt     = round(#PNE_Amt / #BC_RemainRatio * #BC_PNE_Ratio, 2)
+              else
+                  let #PNE_PPAmt     = 0
+              end-if
+
+              if #DC_RemainRatio <> 0
+                  let #PNE_PPContAmt = round(#PNE_ContribAmt / #DC_RemainRatio * #DC_PNE_Ratio * -1, 2)
+                  let #CRG_PPAmt     = round(#CRG_Amt / #DC_RemainRatio * #DC_CRG_Ratio, 2)
+                  let #ENP_PPContAmt = round(#ENP_ContribAmt / #DC_RemainRatio * #DC_ENP_Ratio * -1, 2)
+              else
+                  let #PNE_PPContAmt = 0
+                  let #CRG_PPAmt     = 0
+                  let #ENP_PPContAmt = 0
+              end-if
+
+              if #AC_RemainRatio <> 0
+                  let #ENP_PPAmt     = round(#ENP_Amt / #AC_RemainRatio * #AC_ENP_Ratio, 2)
+              else
+                  let #ENP_PPAmt     = 0
+              end-if
+
+              put #PNE_PPAmt     into WrkArray(#wrk_idx) WrkAmt (0)
+              put #PNE_PPContAmt into WrkArray(#wrk_idx) WrkAmt (1)
+              put #CRG_PPAmt     into WrkArray(#wrk_idx) WrkAmt (2)
+              put #ENP_PPContAmt into WrkArray(#wrk_idx) WrkAmt (3)
+              put #ENP_PPAmt     into WrkArray(#wrk_idx) WrkAmt (4)
+
+              array-add #PNE_PPAmt     to TotalArray(0) TotalAmt
+              array-add #PNE_PPContAmt to TotalArray(0) TotalAmt
+              array-add #CRG_PPAmt     to TotalArray(1) TotalAmt
+              array-add #ENP_PPContAmt to TotalArray(2) TotalAmt
+              array-add #ENP_PPAmt     to TotalArray(2) TotalAmt
+
+              let #ActualWrkAmt = #ActualAmt - #LOAAmt
+              put #ActualWrkAmt into WrkArray(#wrk_idx) WrkActualAmt
+              array-add #ActualWrkAmt to TotalArray(0) TotalActWrk
+          end-if
+
+          let #wrk_idx = #wrk_idx + 1
+      end-while
+  else
+      let $CRG_Exceeded = 'Y'
+      let #wrk_idx = 0
+      while #wrk_idx < #WrkCnt
+
+          get $ConfInd from WrkArray (#wrk_idx) WrkConfInd
+
+          if $ConfInd = 'N' or $ConfInd = 'I'
+
+              put 0   into WrkArray(#wrk_idx) WrkAmt (0)
+              put 0   into WrkArray(#wrk_idx) WrkAmt (1)
+              put 0   into WrkArray(#wrk_idx) WrkAmt (2)
+              put 0   into WrkArray(#wrk_idx) WrkAmt (3)
+              put 0   into WrkArray(#wrk_idx) WrkAmt (4)
+              put 0   into WrkArray(#wrk_idx) WrkActualAmt
+          end-if
+
+          let #wrk_idx = #wrk_idx + 1
+      end-while
+
+      if #CRG_Amt <> 0
+          let $ForceRemainAmt = 'Y'
+          do Print-Contract-Info
+          display 'Manual adjustment may be required due to terminated Contract.'
+      end-if
+
+      let #ContribAmt = 0
+      let #PNE_Amt = 0
+      let #PNE_ContribAmt = 0
+      let #ENP_Amt = 0
+      let #ENP_ContribAmt = 0
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Calculate-ActualWork-Adjustment                                           *
+!****************************************************************************
+begin-procedure Calculate-ActualWork-Adjustment
+
+  get #CurContractAmt #CurLOACarryOver from JobArray (#cur_job_idx) ContractAmt LOACarryOver
+
+  array-add #Wrk_CarryOver to TotalArray(0) TotalActWrk
+  get #TotalActWrkAmt from TotalArray(0) TotalActWrk
+
+  let #AdjActualAmt = (#TotalActWrkAmt + #TtlLOAAmt) - (#CurContractAmt - #CurLOACarryOver)
+  if abs(#AdjActualAmt) < 1
+      do Roundoff-ActualAmt
+  else
+      let $WarnAmt = edit(#AdjActualAmt, '999999999.99')
+      let $WarningMsg = 'Warning - Discrepancy difference found on Actual work amount - Employee ID / Rcd# '||
+                        $Emplid || '/' || $EmplRcd || ', Amount = ' || $WarnAmt
+      display $WarningMsg
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Roundoff-ActualAmt                                                        *
+!****************************************************************************
+begin-procedure Roundoff-ActualAmt
+
+  let #ValidCnt = 0
+  let #wrk_idx = 0
+  let #firstidx = -1
+  while #wrk_idx < #WrkCnt
+
+      get $ConfInd #WrkAmt from WrkArray (#wrk_idx) WrkConfInd WrkActualAmt
+      if $ConfInd = 'N' or $ConfInd = 'I'
+          if #firstidx = -1
+              let #firstidx = #wrk_idx
+          end-if
+          if #WrkAmt <> 0
+              let #ValidCnt = #ValidCnt + 1
+          end-if
+      end-if
+
+      let #wrk_idx = #wrk_idx + 1
+  end-while
+
+  let #RemainAmt = #AdjActualAmt
+
+  if #ValidCnt <> 0
+      let #Cycle = ceil((abs(#AdjActualAmt) * 100) / #ValidCnt)
+
+      let #wrk_idx = 0
+      while #wrk_idx < #WrkCnt
+
+          get $ConfInd #WrkAmt from WrkArray (#wrk_idx) WrkConfInd WrkActualAmt
+
+          if ($ConfInd = 'N' or $ConfInd = 'I') and #WrkAmt <> 0
+
+              let #RoundOffAmt = .01 * #Cycle
+
+              if #RemainAmt > 0
+                  let #CompareAmt = #RemainAmt - #RoundOffAmt
+
+                  if #CompareAmt < 0
+                      let #RoundOffAmt = #RemainAmt
+                  end-if
+
+                  array-subtract #RoundOffAmt from WrkArray(#wrk_idx) WrkActualAmt
+                  array-subtract #RoundOffAmt from TotalArray(0) TotalActWrk
+                  let #RemainAmt = #RemainAmt - #RoundOffAmt
+              else
+                  let #CompareAmt = #RemainAmt + #RoundOffAmt
+
+                  if #CompareAmt > 0
+                      let #RoundOffAmt = #RemainAmt * -1
+                  end-if
+
+                  array-add #RoundOffAmt to WrkArray(#wrk_idx) WrkActualAmt
+                  array-add #RoundOffAmt to TotalArray(0) TotalActWrk
+                  let #RemainAmt = #RemainAmt + #RoundOffAmt
+              end-if
+          end-if
+
+          let #wrk_idx = #wrk_idx + 1
+      end-while
+  else
+      if #firstidx <> - 1
+          if #RemainAmt > 0
+              array-subtract #RemainAmt from WrkArray (#firstidx) WrkActualAmt
+              array-subtract #RemainAmt from TotalArray (0) TotalActWrk
+          else
+              array-add #RemainAmt to WrkArray (#firstidx) WrkActualAmt
+              array-add #RemainAmt to TotalArray (0) TotalActWrk
+          end-if
+      else
+          let $WarnAmt = edit(#RemainAmt , '999999999.99')
+          let $WarningMsg = 'Warning - Rounding difference found on Actual work amount - Employee ID / Rcd# '||
+                            $Emplid || '/' || $EmplRcd || ', Amount = ' || $WarnAmt
+          display $WarningMsg
+      end-if
+  end-if
+
+
+  let #AdjActualAmt = 0
+
+end-procedure
+
+!****************************************************************************
+! Roundoff-ContractAmt                                                      *
+!****************************************************************************
+begin-procedure Roundoff-ContractAmt
+
+  get #TotalPNEAmt from TotalArray(0) TotalAmt
+  get #TotalCRGAmt from TotalArray(1) TotalAmt
+  get #TotalENPAmt from TotalArray(2) TotalAmt
+
+  get #ContractAmt from JobArray (#cur_job_idx) ContractAmt
+  let #ContractAmt = #ContractAmt - #CRG_RetroTtl - #CRG_CarryOver - #LOA_CarryOver - #TtlLOAAmt
+
+  let #TotalPNEAmt = #TotalPNEAmt + #PNE_RetroTtl + #PNE_CarryOver
+  let #TotalENPAmt = #TotalENPAmt + #ENP_RetroTtl + #ENP_CarryOver
+
+  if abs(#TotalPNEAmt) < 1
+
+      let #ValidCnt = 0
+      let #wrk_idx = 0
+      let #firstidx = -1
+      while #wrk_idx < #WrkCnt
+
+          get $ConfInd #WrkAmt1 from WrkArray (#wrk_idx) WrkConfInd WrkAmt (0)
+          get #WrkAmt2 from WrkArray (#wrk_idx) WrkAmt (1)
+          let #WrkAmt = #WrkAmt1 + #WrkAmt2
+          if $ConfInd = 'N' or $ConfInd = 'I'
+              if #firstidx = -1
+                  let #firstidx = #wrk_idx
+              end-if
+              if #WrkAmt <> 0
+                  let #ValidCnt = #ValidCnt + 1
+              end-if
+          end-if
+
+          let #wrk_idx = #wrk_idx + 1
+      end-while
+
+      let #RemainAmt = #TotalPNEAmt
+
+      if #ValidCnt <> 0
+          let #Cycle = ceil((abs(#TotalPNEAmt) * 100) / #ValidCnt)
+
+          let #wrk_idx = 0
+          while #wrk_idx < #WrkCnt
+
+              get $ConfInd #WrkAmt1 from WrkArray (#wrk_idx) WrkConfInd WrkAmt (0)
+              get #WrkAmt2 from WrkArray (#wrk_idx) WrkAmt (1)
+              let #WrkAmt = #WrkAmt1 + #WrkAmt2
+
+              if abs(#WrkAmt1) <> 0
+                  let #i = 0
+              else
+                  let #i = 1
+              end-if
+
+              if ($ConfInd = 'N' or $ConfInd = 'I') and #WrkAmt <> 0
+
+                  let #RoundOffAmt = .01 * #Cycle
+
+                  if #RemainAmt > 0
+                      let #CompareAmt = #RemainAmt - #RoundOffAmt
+
+                      if #CompareAmt < 0
+                          let #RoundOffAmt = #RemainAmt
+                      end-if
+
+                      array-subtract #RoundOffAmt from WrkArray (#wrk_idx) WrkAmt (#i)
+                      array-subtract #RoundOffAmt from TotalArray (0) TotalAmt
+                      let #RemainAmt = #RemainAmt - #RoundOffAmt
+                  else
+                      let #CompareAmt = #RemainAmt + #RoundOffAmt
+
+                      if #CompareAmt > 0
+                          let #RoundOffAmt = #RemainAmt * -1
+                      end-if
+
+                      array-add #RoundOffAmt to WrkArray (#wrk_idx) WrkAmt (#i)
+                      array-add #RoundOffAmt to TotalArray (0) TotalAmt
+                      let #RemainAmt = #RemainAmt + #RoundOffAmt
+                  end-if
+              end-if
+
+              let #wrk_idx = #wrk_idx + 1
+          end-while
+      else
+          if #firstidx <> - 1
+              if #RemainAmt > 0
+                  array-subtract #RemainAmt from WrkArray (#firstidx) WrkAmt (0)
+                  array-subtract #RemainAmt from TotalArray (0) TotalAmt
+              else
+                  array-add #RemainAmt to WrkArray (#firstidx) WrkAmt (1)
+                  array-add #RemainAmt to TotalArray (0) TotalAmt
+              end-if
+          else
+              let $WarnAmt = edit(#RemainAmt , '999999999.99')
+              let $WarningMsg = 'Warning - Rounding difference found on Paid not Earned - Employee ID / Rcd# '||
+                                $Emplid || '/' || $EmplRcd || ', Amount = ' || $WarnAmt
+              display $WarningMsg
+          end-if
+      end-if
+  else
+      let $WarnAmt = edit(#TotalPNEAmt, '999999999.99')
+      let $WarningMsg = 'Warning - Discrepancy difference found on Paid not Earned - Employee ID / Rcd# '||
+                        $Emplid || '/' || $EmplRcd || ', Amount = ' || $WarnAmt
+      display $WarningMsg
+  end-if
+
+  if $CRG_Exceeded = 'N'
+
+      let #CRG_DiffAmt = #TotalCRGAmt - #ContractAmt
+
+      if abs(#CRG_DiffAmt) < 1
+
+          let #ValidCnt = 0
+          let #wrk_idx = 0
+          let #firstidx = -1
+          while #wrk_idx < #WrkCnt
+
+              get $ConfInd #WrkAmt from WrkArray (#wrk_idx) WrkConfInd WrkAmt (2)
+              if $ConfInd = 'N' or $ConfInd = 'I'
+                  if #firstidx = -1
+                      let #firstidx = #wrk_idx
+                  end-if
+                  if #WrkAmt <> 0
+                      let #ValidCnt = #ValidCnt + 1
+                  end-if
+              end-if
+
+              let #wrk_idx = #wrk_idx + 1
+          end-while
+
+          let #RemainAmt = #CRG_DiffAmt
+
+          if #ValidCnt <> 0
+              let #Cycle = ceil((abs(#CRG_DiffAmt) * 100) / #ValidCnt)
+
+              let #wrk_idx = 0
+              while #wrk_idx < #WrkCnt
+
+                  get $ConfInd #WrkAmt from WrkArray (#wrk_idx) WrkConfInd WrkAmt (2)
+
+                  if ($ConfInd = 'N' or $ConfInd = 'I') and #WrkAmt <> 0
+
+                      let #RoundOffAmt = .01 * #Cycle
+
+                      if #RemainAmt > 0
+                          let #CompareAmt = #RemainAmt - #RoundOffAmt
+
+                          if #CompareAmt < 0
+                              let #RoundOffAmt = #RemainAmt
+                          end-if
+
+                          array-subtract #RoundOffAmt from WrkArray (#wrk_idx) WrkAmt (2)
+                          array-subtract #RoundOffAmt from TotalArray (1) TotalAmt
+                          let #RemainAmt = #RemainAmt - #RoundOffAmt
+                      else
+                          let #CompareAmt = #RemainAmt + #RoundOffAmt
+
+                          if #CompareAmt > 0
+                              let #RoundOffAmt = #RemainAmt * -1
+                          end-if
+
+                          array-add #RoundOffAmt to WrkArray (#wrk_idx) WrkAmt (2)
+                          array-add #RoundOffAmt to TotalArray (1) TotalAmt
+                          let #RemainAmt = #RemainAmt + #RoundOffAmt
+                      end-if
+                  end-if
+
+                  let #wrk_idx = #wrk_idx + 1
+              end-while
+          else
+              if #firstidx <> - 1
+                  if #RemainAmt > 0
+                      array-subtract #RemainAmt from WrkArray (#firstidx) WrkAmt (2)
+                      array-subtract #RemainAmt from TotalArray (1) TotalAmt
+                  else
+                      array-add #RemainAmt to WrkArray (#firstidx) WrkAmt (2)
+                      array-add #RemainAmt to TotalArray (1) TotalAmt
+                  end-if
+              else
+                  let $WarnAmt = edit(#RemainAmt , '999999999.99')
+                  let $WarningMsg = 'Warning - Rounding difference found on Contract Regular - Employee ID / Rcd# '||
+                                    $Emplid || '/' || $EmplRcd || ', Amount = ' || $WarnAmt
+                  display $WarningMsg
+              end-if
+          end-if
+      else
+          let $WarnAmt = edit(#CRG_DiffAmt, '999999999.99')
+          let $WarningMsg = 'Warning - Discrepancy difference found on Contract Regular - Employee ID / Rcd# '||
+                            $Emplid || '/' || $EmplRcd || ', Amount = ' || $WarnAmt
+          display $WarningMsg
+      end-if
+  end-if
+
+  if abs(#TotalENPAmt) < 1
+
+      let #ValidCnt = 0
+      let #wrk_idx = 0
+      let #firstidx = -1
+      while #wrk_idx < #WrkCnt
+
+          get $ConfInd #WrkAmt1 from WrkArray (#wrk_idx) WrkConfInd WrkAmt (3)
+          get #WrkAmt2 from WrkArray (#wrk_idx) WrkAmt (4)
+          let #WrkAmt = #WrkAmt1 + #WrkAmt2
+          if $ConfInd = 'N' or $ConfInd = 'I'
+              let #firstidx = #wrk_idx
+              if #WrkAmt <> 0
+                  let #ValidCnt = #ValidCnt + 1
+              end-if
+          end-if
+
+          let #wrk_idx = #wrk_idx + 1
+      end-while
+
+      let #RemainAmt = #TotalENPAmt
+
+      if #ValidCnt <> 0
+          let #Cycle = ceil((abs(#TotalENPAmt) * 100) / #ValidCnt)
+
+          let #wrk_idx = 0
+          while #wrk_idx < #WrkCnt
+
+              get $ConfInd #WrkAmt1 from WrkArray (#wrk_idx) WrkConfInd WrkAmt (3)
+              get #WrkAmt2 from WrkArray (#wrk_idx) WrkAmt (4)
+              let #WrkAmt = #WrkAmt1 + #WrkAmt2
+
+              if abs(#WrkAmt2) <> 0
+                  let #i = 4
+              else
+                  let #i = 3
+              end-if
+
+              if ($ConfInd = 'N' or $ConfInd = 'I') and #WrkAmt <> 0
+
+                  let #RoundOffAmt = .01 * #Cycle
+
+                  if #RemainAmt > 0
+                      let #CompareAmt = #RemainAmt - #RoundOffAmt
+
+                      if #CompareAmt < 0
+                          let #RoundOffAmt = #RemainAmt
+                      end-if
+
+                      array-subtract #RoundOffAmt from WrkArray (#wrk_idx) WrkAmt (#i)
+                      array-subtract #RoundOffAmt from TotalArray (2) TotalAmt
+                      let #RemainAmt = #RemainAmt - #RoundOffAmt
+                  else
+                      let #CompareAmt = #RemainAmt + #RoundOffAmt
+
+                      if #CompareAmt > 0
+                          let #RoundOffAmt = #RemainAmt * -1
+                      end-if
+
+                      array-add #RoundOffAmt to WrkArray (#wrk_idx) WrkAmt (#i)
+                      array-add #RoundOffAmt to TotalArray (2) TotalAmt
+                      let #RemainAmt = #RemainAmt + #RoundOffAmt
+                  end-if
+              end-if
+
+              let #wrk_idx = #wrk_idx + 1
+          end-while
+      else
+          if #firstidx <> - 1
+              if #RemainAmt > 0
+                  array-subtract #RemainAmt from WrkArray (#firstidx) WrkAmt (4)
+                  array-subtract #RemainAmt from TotalArray (2) TotalAmt
+              else
+                  array-add #RemainAmt to WrkArray (#firstidx) WrkAmt (3)
+                  array-add #RemainAmt to TotalArray (2) TotalAmt
+              end-if
+          else
+              let $WarnAmt = edit(#RemainAmt , '999999999.99')
+              let $WarningMsg = 'Warning - Rounding difference found on Earned not Paid - Employee ID / Rcd# '||
+                                $Emplid || '/' || $EmplRcd || ', Amount = ' || $WarnAmt
+              display $WarningMsg
+          end-if
+      end-if
+  else
+      let $WarnAmt = edit(#TotalENPAmt, '999999999.99')
+      let $WarningMsg = 'Warning - Discrepancy difference found on Earned not Paid - Employee ID / Rcd# '||
+                        $Emplid || '/' || $EmplRcd || ', Amount = ' || $WarnAmt
+      display $WarningMsg
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Cumulate-LateStart_LOAAmt                                                 *
+!****************************************************************************
+begin-procedure Cumulate-LateStart_LOAAmt
+
+  let #wrk_idx = 0
+  while #wrk_idx < #firstpymt_idx
+      get #ActualDay #ProjLOAAmt from WrkArray (#wrk_idx) WrkActualDay WrkLOAAmt
+      array-subtract #ActualDay #ProjLOAAmt from WrkArray (#wrk_idx) WrkActualDay WrkLOAAmt
+      array-add      #ActualDay #ProjLOAAmt   to WrkArray (#firstpymt_idx) WrkActualDay WrkLOAAmt
+      let #wrk_idx = #wrk_idx + 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Cumulate-EarlyTerm_LOAAmt                                                 *
+!****************************************************************************
+begin-procedure Cumulate-EarlyTerm_LOAAmt
+
+  let #wrk_idx = #WrkCnt - 1
+  while #wrk_idx > #lstpymt_idx
+      get #ActualDay #ProjLOAAmt from WrkArray (#wrk_idx) WrkActualDay WrkLOAAmt
+      array-subtract #ActualDay #ProjLOAAmt from WrkArray (#wrk_idx) WrkActualDay WrkLOAAmt
+      array-add      #ActualDay #ProjLOAAmt   to WrkArray (#lstpymt_idx) WrkActualDay WrkLOAAmt
+      let #wrk_idx = #wrk_idx - 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Balloon-Payment                                                           *
+!****************************************************************************
+begin-procedure Balloon-Payment
+
+  let #wrk_idx = #WrkCnt - 1
+  while #wrk_idx > #balloon_pymt_idx
+
+      get #PNE_PPAmt     #PNE_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (0) WrkRetroAmt (0)
+      get #PNE_PPContAmt #PNE_RetroContAmt from WrkArray (#wrk_idx) WrkAmt (1) WrkRetroAmt (1)
+      get #CRG_PPAmt     #CRG_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (2) WrkRetroAmt (2)
+      get #ENP_PPContAmt #ENP_RetroContAmt from WrkArray (#wrk_idx) WrkAmt (3) WrkRetroAmt (3)
+      get #ENP_PPAmt     #ENP_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (4) WrkRetroAmt (4)
+
+      array-subtract #PNE_PPAmt     #PNE_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (0) WrkRetroAmt (0)
+      array-subtract #PNE_PPContAmt #PNE_RetroContAmt from WrkArray (#wrk_idx) WrkAmt (1) WrkRetroAmt (1)
+      array-subtract #CRG_PPAmt     #CRG_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (2) WrkRetroAmt (2)
+      array-subtract #ENP_PPContAmt #ENP_RetroContAmt from WrkArray (#wrk_idx) WrkAmt (3) WrkRetroAmt (3)
+      array-subtract #ENP_PPAmt     #ENP_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (4) WrkRetroAmt (4)
+
+      array-add #PNE_PPAmt     #PNE_RetroAmt     to WrkArray (#balloon_pymt_idx) WrkAmt (0) WrkRetroAmt (0)
+      array-add #PNE_PPContAmt #PNE_RetroContAmt to WrkArray (#balloon_pymt_idx) WrkAmt (1) WrkRetroAmt (1)
+      array-add #CRG_PPAmt     #CRG_RetroAmt     to WrkArray (#balloon_pymt_idx) WrkAmt (2) WrkRetroAmt (2)
+      array-add #ENP_PPContAmt #ENP_RetroContAmt to WrkArray (#balloon_pymt_idx) WrkAmt (3) WrkRetroAmt (3)
+      array-add #ENP_PPAmt     #ENP_RetroAmt     to WrkArray (#balloon_pymt_idx) WrkAmt (4) WrkRetroAmt (4)
+
+      let #wrk_idx = #wrk_idx - 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Adjust-Last-Payment                                                       *
+!****************************************************************************
+begin-procedure Adjust-Last-Payment
+
+  get #ContractAmt from JobArray (#cur_job_idx) ContractAmt
+
+  get #PNE_PPAmt     #PNE_RetroAmt     from WrkArray (#lstpymt_idx) WrkAmt (0) WrkRetroAmt (0)
+  get #PNE_PPContAmt #PNE_RetroContAmt from WrkArray (#lstpymt_idx) WrkAmt (1) WrkRetroAmt (1)
+  get #CRG_PPAmt     #CRG_RetroAmt     from WrkArray (#lstpymt_idx) WrkAmt (2) WrkRetroAmt (2)
+  get #ENP_PPContAmt #ENP_RetroContAmt from WrkArray (#lstpymt_idx) WrkAmt (3) WrkRetroAmt (3)
+  get #ENP_PPAmt     #ENP_RetroAmt     from WrkArray (#lstpymt_idx) WrkAmt (4) WrkRetroAmt (4)
+
+  do Cumulate-Unpaid-Entries
+
+  let #PNE_Amt = #PNE_CumAmt - #PNE_RetroTtl - #PNE_CarryOver + #PNE_PPAmt - #PNE_PPContAmt
+                 + #PNE_RetroAmt - #PNE_RetroContAmt
+  if #PNE_Amt <> 0
+      array-add #PNE_Amt to WrkArray (#lstpymt_idx) WrkAmt (1)
+  end-if
+
+  if $CRG_Exceeded = 'N'
+
+      let #CRG_Amt = #ContractAmt - #CRG_RetroTtl - #CRG_CarryOver - #LOA_CarryOver - #TtlLOAAmt
+                     - #CRG_CumAmt - #CRG_PPAmt - #CRG_RetroAmt
+      if #CRG_Amt <> 0
+          array-subtract #CRG_Amt from WrkArray (#lstpymt_idx) WrkAmt (2)
+      end-if
+  else
+      if $ForceRemainAmt = 'Y'
+          array-add #CRG_Amt to WrkArray (#lstpymt_idx) WrkAmt (2)
+      end-if
+  end-if
+
+  let #ENP_Amt = #ENP_CumAmt - #ENP_RetroTtl - #ENP_CarryOver + #ENP_PPAmt - #ENP_PPContAmt
+                 + #ENP_RetroAmt - #ENP_RetroContAmt
+  if #ENP_Amt <> 0
+      array-add #ENP_Amt to WrkArray (#lstpymt_idx) WrkAmt (3)
+  end-if
+
+  let #wrk_idx = #WrkCnt - 1
+  while #wrk_idx > #lstpymt_idx
+      put 0 0 into WrkArray (#wrk_idx) WrkAmt (0) WrkRetroAmt (0)
+      put 0 0 into WrkArray (#wrk_idx) WrkAmt (1) WrkRetroAmt (1)
+      put 0 0 into WrkArray (#wrk_idx) WrkAmt (2) WrkRetroAmt (2)
+      put 0 0 into WrkArray (#wrk_idx) WrkAmt (3) WrkRetroAmt (3)
+      put 0 0 into WrkArray (#wrk_idx) WrkAmt (4) WrkRetroAmt (4)
+      let #wrk_idx = #wrk_idx - 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Cumulate-Unpaid-Entries                                                   *
+!****************************************************************************
+begin-procedure Cumulate-Unpaid-Entries
+
+  let #PNE_CumAmt = 0
+  let #CRG_CumAmt = 0
+  let #ENP_CumAmt = 0
+  let $ConfInd = 'N'
+
+  let #wrk_idx = #lstpymt_idx - 1
+  while #wrk_idx >= 0 and ($ConfInd = 'N' or $ConfInd = 'I')
+
+      get $ConfInd from WrkArray(#wrk_idx) WrkConfInd
+      if $ConfInd = 'N' or $ConfInd = 'I'
+          get #unpPNE_PPAmt     #unpPNE_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (0) WrkRetroAmt (0)
+          get #unpPNE_PPContAmt #unpPNE_RetroContAmt from WrkArray (#wrk_idx) WrkAmt (1) WrkRetroAmt (1)
+          get #unpCRG_PPAmt     #unpCRG_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (2) WrkRetroAmt (2)
+          get #unpENP_PPContAmt #unpENP_RetroContAmt from WrkArray (#wrk_idx) WrkAmt (3) WrkRetroAmt (3)
+          get #unpENP_PPAmt     #unpENP_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (4) WrkRetroAmt (4)
+
+          let #PNE_CumAmt = #PNE_CumAmt + #unpPNE_PPAmt - #unpPNE_PPContAmt + #unpPNE_RetroAmt - #unpPNE_RetroContAmt
+          let #CRG_CumAmt = #CRG_CumAmt + #unpCRG_PPAmt + #unpCRG_RetroAmt
+          let #ENP_CumAmt = #ENP_CumAmt + #unpENP_PPAmt - #unpENP_PPContAmt + #unpENP_RetroAmt - #unpENP_RetroContAmt
+      end-if
+
+      let #wrk_idx = #wrk_idx - 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Insert-Contract-Payment                                                   *
+!****************************************************************************
+begin-procedure Insert-Contract-Payment
+
+  let #job_idx        = 0
+  let #LstContParmSeq = #ContParm_ContractSeq
+  let #ParmPNEAdj     = 0
+  let #ParmCRGAdj     = 0
+  let #ParmENPAdj     = 0
+  let #ParmWrkAdj     = 0
+
+  while #job_idx < #JobCnt
+
+      get $InsContParm $SysCreateInd from JobArray (#job_idx) InsContParm SysCreateInd
+
+      let #next_job_idx = #job_idx + 1
+      if #next_job_idx < #JobCnt
+          get $NextFutureDate from JobArray (#next_job_idx) FutureDate
+      else
+          let $NextFutureDate = 'Y'
+      end-if
+
+      if $InsContParm = 'Y' and $SysCreateInd = 'N'
+          get $JobEffdt $FutureDate $JobCompany $JobPaygroup $JobHolSchd
+              $JobContBeginDt $JobContEndDt $JobPymtBeginDt $JobPymtEndDt $JobSchSchd
+              #ContParmSeq #JobAnnlRt #JobMthRt #JobDailyRt #JobHrlyRt #ContractAmt
+              #PNECarryOver #CRGCarryOver #ENPCarryOver #WrkCarryOver #LOACarryOver
+          from JobArray (#job_idx)
+               JobEffdt FutureDate JobCompany JobPaygroup JobHolSchd
+               JobContBeginDt JobContEndDt JobPymtBeginDt JobPymtEndDt JobSchSchd
+               ContParmSeq JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt
+               PNECarryOver CRGCarryOver ENPCarryOver WrkCarryOver LOACarryOver
+
+          if $NextFutureDate = 'Y'
+              let #ParmPNEAdj = #NewPNEAdj
+              let #ParmCRGAdj = #NewCRGAdj
+              let #ParmENPAdj = #NewENPAdj
+              let #ParmWrkAdj = #NewWrkAdj
+          end-if
+
+          do Insert-Contract-Parm
+
+          if $FutureDate = 'N'
+               let #LstContParmSeq = #ContParmSeq
+          end-if
+      end-if
+
+      let #job_idx = #job_idx + 1
+  end-while
+
+  if $PaymentTerm <> 'L'
+      if #AdjActualAmt <> 0
+          do Insert-Adjustment
+      end-if
+
+      if #PNE_RetroTtl <> 0 or #CRG_RetroTtl <> 0 or #ENP_RetroTtl <> 0
+          do Insert-Retro-SepChk
+      end-if
+  end-if
+
+  let #SepChk  = 0
+  let $OffCycle = 'N'
+  let #wrk_idx = 0
+  while #wrk_idx < #WrkCnt
+
+      let $PaymentStatus = 'A'
+      get $ConfInd from WrkArray (#wrk_idx) WrkConfInd
+
+      if $ConfInd = 'N' or $ConfInd = 'I'
+
+          get $PrdEndDt #ActualDay #ActualWrkAmt #ProjLOAAmt
+          from WrkArray (#wrk_idx) WrkPayEndDt WrkActualDay WrkActualAmt WrkLOAAmt
+
+          get #PNE_PPAmt     #PNE_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (0) WrkRetroAmt (0)
+          get #PNE_PPContAmt #PNE_RetroContAmt from WrkArray (#wrk_idx) WrkAmt (1) WrkRetroAmt (1)
+          get #CRG_PPAmt     #CRG_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (2) WrkRetroAmt (2)
+          get #ENP_PPContAmt #ENP_RetroContAmt from WrkArray (#wrk_idx) WrkAmt (3) WrkRetroAmt (3)
+          get #ENP_PPAmt     #ENP_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (4) WrkRetroAmt (4)
+
+          let #PNE_PPAmt = #PNE_PPAmt + #PNE_PPContAmt + #PNE_RetroAmt + #PNE_RetroContAmt
+          let #CRG_PPAmt = #CRG_PPAmt + #CRG_RetroAmt
+          let #ENP_PPAmt = #ENP_PPAmt + #ENP_PPContAmt + #ENP_RetroAmt + #ENP_RetroContAmt
+
+          if $ContractCalOptn = 'P'
+              let #ProjActWrk = #CRG_PPAmt
+          else
+              let #ProjActWrk = #ActualWrkAmt
+          end-if
+
+          if $ConfInd = 'I'
+              do Set-Payment-Status
+          end-if
+
+          if #PNE_PPAmt <> 0 or #CRG_PPAmt <> 0 or #ENP_PPAmt <> 0 or
+             #ProjActWrk <> 0 or #ActualDay <> 0 or #ProjLOAAmt <> 0
+
+              let #TotalPaid = #PNE_PPAmt + #CRG_PPAmt + #ENP_PPAmt
+              if #TotalPaid < 0
+                  let $WarnAmt = edit(#TotalPaid, '999999999.99')
+                  let $WarningMsg = 'Warning - Negative payment, adjustment may be required - Employee ID / Rcd# '
+                                    || $Emplid || '/' || $EmplRcd || ', Amount = ' || $WarnAmt
+                  display $WarningMsg
+              end-if
+              do Insert-Contract-Detail
+          end-if
+      end-if
+
+      let #wrk_idx = #wrk_idx + 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Insert-Adjustment                                                         *
+!****************************************************************************
+begin-procedure Insert-Adjustment
+
+  let $OffCycle = 'Y'
+  let $PaymentStatus = 'J'
+  let #SepChk  = 99
+
+  let $ContSearch = 'Y'
+  let #wrk_idx = 0
+  while #wrk_idx < #WrkCnt and $ContSearch = 'Y'
+
+      get $ConfInd $PrdEndDt from WrkArray (#wrk_idx) WrkConfInd WrkPayEndDt
+
+      if $ConfInd = 'N' or $ConfInd = 'I'
+
+          let #PNE_PPAmt = 0
+          let #CRG_PPAmt = 0
+          let #ENP_PPAmt = 0
+          let #ActualDay = 0
+          let #ProjActWrk = #AdjActualAmt * -1
+          let #ProjLOAAmt = 0
+
+          do Insert-Contract-Detail
+
+          let $ContSearch = 'N'
+      end-if
+
+      let #wrk_idx = #wrk_idx + 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Insert-Retro-SepChk                                                       *
+!****************************************************************************
+begin-procedure Insert-Retro-SepChk
+
+  let $OffCycle = 'N'
+  let #SepChk  = 1
+
+  let $ContSearch = 'Y'
+  let #wrk_idx = 0
+  while #wrk_idx < #WrkCnt and $ContSearch = 'Y'
+
+      let $PaymentStatus = 'A'
+      get $ConfInd $PrdEndDt from WrkArray (#wrk_idx) WrkConfInd WrkPayEndDt
+
+      if $ConfInd = 'N' or $ConfInd = 'I'
+
+          let #PNE_PPAmt = #PNE_RetroTtl
+          let #CRG_PPAmt = #CRG_RetroTtl
+          let #ENP_PPAmt = #ENP_RetroTtl
+          let #ActualDay = 0
+          let #ProjLOAAmt = 0
+
+          if $ContractCalOptn = 'P'
+              let #ProjActWrk = #CRG_PPAmt
+          else
+              let #ProjActWrk = 0
+          end-if
+
+          if $ConfInd = 'I'
+              do Set-Payment-Status
+          end-if
+
+          let #TotalPaid = #PNE_PPAmt + #CRG_PPAmt + #ENP_PPAmt
+          if #TotalPaid < 0
+              let $WarnAmt = edit(#TotalPaid, '999999999.99')
+              let $WarningMsg = 'Warning - Negative payment, adjustment may be required - Employee ID / Rcd# '
+                                || $Emplid || '/' || $EmplRcd || ', Amount = ' || $WarnAmt
+              display $WarningMsg
+          end-if
+          do Insert-Contract-Detail
+
+          let $ContSearch = 'N'
+      end-if
+
+      let #wrk_idx = #wrk_idx + 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Set-Payment-Status                                                        *
+!****************************************************************************
+begin-procedure Set-Payment-Status
+
+  let #ip_idx = 0
+  let $ContSearch = 'Y'
+  while #ip_idx < #ip_cnt and $ContSearch = 'Y'
+
+      get #ip_ContractSeq $ip_PrdEndDate #ip_SepChk #ip_ActualDay #ip_PNEAmt #ip_CRGAmt #ip_ENPAmt
+          #ip_WrkAmt #ip_LOAAmt $ip_Compare
+      from InProgress (#ip_idx) IP_ContractSeq IP_PrdEndDate IP_SepChk IP_ActualDay IP_PNEAmt IP_CRGAmt
+           IP_ENPAmt IP_WrkAmt IP_LOAAmt IP_Compare
+
+      do Format-DateTime($ip_PrdEndDate, $CMP_ip_PrdEndDate, {DEFCMP},'','')
+      do Format-DateTime($PrdEndDt, $CMP_PrdEndDt, {DEFCMP},'','')
+
+      if $CMP_ip_PrdEndDate = $CMP_PrdEndDt
+                            and #ip_SepChk = #SepChk and $ip_Compare = ' '
+
+          if #ip_ContractSeq <> #LstContParmSeq
+            or #ip_ActualDay <> #ActualDay
+            or #ip_PNEAmt <> #PNE_PPAmt
+            or #ip_CRGAmt <> #CRG_PPAmt
+            or #ip_ENPAmt <> #ENP_PPAmt
+            or #ip_WrkAmt <> #ProjActWrk
+            or #ip_LOAAmt <> #ProjLOAAmt
+
+              let $UpdatePayroll = 'Y'
+              put 'N' into InProgress (#ip_idx) IP_Compare
+          else
+              put 'Y' into InProgress (#ip_idx) IP_Compare
+          end-if
+
+          let $PaymentStatus = 'C'
+          let $ContSearch = 'N'
+      end-if
+
+      add 1 to #ip_idx
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! Check-InProgress-Payments                                                 *
+!****************************************************************************
+begin-procedure Check-InProgress-Payments
+
+  if $UpdatePayroll = 'N'
+
+      let #ip_idx = 0
+      let $ContSearch = 'Y'
+      while #ip_idx < #ip_cnt and $ContSearch = 'Y'
+
+          get $ip_Compare from InProgress (#ip_idx) IP_Compare
+
+          if $ip_Compare = ' '
+              let $UpdatePayroll = 'Y'
+              let $ContSearch = 'N'
+          end-if
+
+          add 1 to #ip_idx
+      end-while
+  end-if
+
+  if $UpdatePayroll = 'N'
+      do Check-Pay-Line-JobChange
+  end-if
+
+end-procedure
+
+!****************************************************************************
+! Check-Pay-Line-JobChange                                                  *
+!****************************************************************************
+begin-procedure Check-Pay-Line-JobChange
+
+begin-select loops=1
+EMPLID
+  let $UpdatePayroll = 'Y'
+FROM PS_PAY_LINE
+WHERE EMPLID = $Emplid
+  AND EMPL_RCD = #EmplRcd
+  AND CONFIRMED = 'N'
+  AND JOB_CHANGE not in ('R', 'N')
+  AND MANUAL_CHECK = 'N'
+end-select
+end-procedure
+
+!****************************************************************************
+! Insert-Contract-Parm                                                      *
+!****************************************************************************
+begin-procedure Insert-Contract-Parm
+
+  move #EmplRcd      to $EmplRcd      999
+  move #ContractNum  to $ContractNum  9999999
+  move #ContParmSeq  to $ContParmSeq  999
+  move #ContractAmt  to $ContractAmt  999999999.99mi
+  move #JobAnnlRt    to $AnnualRt     999999999.99
+  move #JobMthRt     to $MonthlyRt    999999999.99
+  move #JobDailyRt   to $DailyRt      999999999.99
+  move #JobHrlyRt    to $HourlyRt     999999999.99
+  move #CRGCarryOver to $CRGCarryOver 999999999.99mi
+  move #PNECarryOver to $PNECarryOver 999999999.99mi
+  move #ENPCarryOver to $ENPCarryOver 999999999.99mi
+  move #WrkCarryOver to $WrkCarryOver 999999999.99mi
+  move #LOACarryOver to $LOACarryOver 999999999.99mi
+  move #ParmPNEAdj   to $ParmPNEAdj   999999999.99mi
+  move #ParmCRGAdj   to $ParmCRGAdj   999999999.99mi
+  move #ParmENPAdj   to $ParmENPAdj   999999999.99mi
+  move #ParmWrkAdj   to $ParmWrkAdj   999999999.99mi
+
+  let $err-statement1 = 'CNTPAY01, Insert Error - Insert-Contract-Parm'
+  let $err-statement2 = 'Key Values: TABLE: PS_HP_CONTPAY_PARM'     ||
+                         ', EMPLID:'             ||$EmplID          ||
+                         ', EMPL_RCD:'           ||$EmplRcd         ||
+                         ', HP_CONTRACT_NUM:'    ||$ContractNum     ||
+                         ', HP_CONTRACT_SEQ:'    ||$ContParmSeq     ||
+                         ', HP_CONTRACT_EFFDT:'  ||$JobEffdt        ||
+                         ', COMPANY:'            ||$PD_Company      ||
+                         ', PAYGROUP:'           ||$PD_Paygroup     ||
+                         ', CONTRACT_BEGIN_DT:'  ||$JobContBeginDt  ||
+                         ', CONTRACT_END_DT:'    ||$JobContEndDt    ||
+                         ', PAYMENT_BEGIN_DT:'   ||$JobPymtBeginDt  ||
+                         ', PAYMENT_END_DT:'     ||$JobPymtEndDt    ||
+                         ', HP_CONTRACT_AMT:'    ||$ContractAmt     ||
+                         ', ANNUAL_RT:'          ||$AnnualRt        ||
+                         ', MONTHLY_RT:'         ||$MonthlyRt       ||
+                         ', DAILY_RT:'           ||$DailyRt         ||
+                         ', HOURLY_RT:'          ||$HourlyRt        ||
+                         ', WORK_SCHEDULE:'      ||$PD_Work_Schedule||
+                         ', HOLIDAY_SCHEDULE:'   ||$JobHolSchd      ||
+                         ', HP_SCHOOL_SCHEDULE:' ||$JobSchSchd      ||
+                         ', HP_CARRY_OVER_CRG:'  ||$CRGCarryOver    ||
+                         ', HP_CARRY_OVER_PNE:'  ||$PNECarryOver    ||
+                         ', HP_CARRY_OVER_ENP:'  ||$ENPCarryOver    ||
+                         ', HP_CARRY_OVER_WRK:'  ||$WrkCarryOver    ||
+                         ', HP_ADJ_CRG:'         ||$ParmCRGAdj      ||
+                         ', HP_ADJ_ENP:'         ||$ParmENPAdj      ||
+                         ', HP_ADJ_PNE:'         ||$ParmPNEAdj      ||
+                         ', HP_ADJ_WRK:'         ||$ParmWrkAdj      ||
+                         ', HP_LOA_AMT:'         ||$LOACarryOver
+
+begin-sql on-error=Error-Display
+INSERT INTO PS_HP_CONTPAY_PARM (EMPLID,
+                                EMPL_RCD,
+                                HP_CONTRACT_NUM,
+                                HP_CONTRACT_SEQ,
+                                HP_CONTRACT_EFFDT,
+                                COMPANY,
+                                PAYGROUP,
+                                CONTRACT_BEGIN_DT,
+                                CONTRACT_END_DT,
+                                PAYMENT_BEGIN_DT,
+                                PAYMENT_END_DT,
+                                HP_CONTRACT_AMT,
+                                ANNUAL_RT,
+                                MONTHLY_RT,
+                                DAILY_RT,
+                                HOURLY_RT,
+                                WORK_SCHEDULE,
+                                HOLIDAY_SCHEDULE,
+                                HP_SCHOOL_SCHEDULE,
+                                HP_CARRY_OVER_CRG,
+                                HP_CARRY_OVER_PNE,
+                                HP_CARRY_OVER_ENP,
+                                HP_CARRY_OVER_WRK,
+                                HP_ADJ_CRG,
+                                HP_ADJ_ENP,
+                                HP_ADJ_PNE,
+                                HP_ADJ_WRK,
+                                HP_LOA_AMT)
+                        VALUES ($EmplID,
+                                #EmplRcd,
+                                #ContractNum,
+                                #ContParmSeq,
+                                $JobEffdt,
+                                $PD_Company,
+                                $PD_Paygroup,
+                                $JobContBeginDt,
+                                $JobContEndDt,
+                                $JobPymtBeginDt,
+                                $JobPymtEndDt,
+                                #ContractAmt,
+                                #JobAnnlRt,
+                                #JobMthRt,
+                                #JobDailyRt,
+                                #JobHrlyRt,
+                                $PD_Work_Schedule,
+                                $JobHolSchd,
+                                $JobSchSchd,
+                                #CRGCarryOver,
+                                #PNECarryOver,
+                                #ENPCarryOver,
+                                #WrkCarryOver,
+                                #ParmCRGAdj,
+                                #ParmENPAdj,
+                                #ParmPNEAdj,
+                                #ParmWrkAdj,
+                                #LOACarryOver)
+
+end-SQL
+end-procedure
+
+!****************************************************************************
+! Insert-Contract-Detail                                                    *
+!****************************************************************************
+begin-procedure Insert-Contract-Detail
+
+  move #EmplRcd        to $EmplRcd     999
+  move #ContractNum    to $ContractNum 9999999
+  move #LstContParmSeq to $ContractSeq 999
+  move #SepChk         to $SepChk      99
+  move #ActualDay      to $PrdWorkDays 99999
+  move #CRG_PPAmt      to $CRG_PPAmt   999999999.99mi
+  move #PNE_PPAmt      to $PNE_PPAmt   999999999.99mi
+  move #ENP_PPAmt      to $ENP_PPAmt   999999999.99mi
+  move #ProjActWrk     to $ProjActWrk  999999999.99mi
+  move #ProjLOAAmt     to $ProjLOAAmt  999999999.99mi
+
+  let $err-statement1 = 'CNTPAY01, Insert Error - Insert-Contract-Detail'
+  let $err-statement2 = 'Key Values: TABLE: PS_HP_CONTPAY_DTL'      ||
+                         ', EMPLID:'            ||$EmplID           ||
+                         ', EMPL_RCD:'          ||$EmplRcd          ||
+                         ', HP_CONTRACT_NUM:'   ||$ContractNum      ||
+                         ', HP_CONTRACT_SEQ:'   ||$ContractSeq      ||
+                         ', PAY_END_DT:'        ||$PrdEndDt         ||
+                         ', OFF_CYCLE:'         ||$OffCycle         ||
+                         ', SEPCHK:'            ||$SepChk           ||
+                         ', HP_WORKDAYS:'       ||$PrdWorkDays      ||
+                         ', HP_PROJECT_CRG:'    ||$CRG_PPAmt        ||
+                         ', HP_PROJECT_PNE:'    ||$PNE_PPAmt        ||
+                         ', HP_PROJECT_ENP:'    ||$ENP_PPAmt        ||
+                         ', HP_ACTUAL_WRK:'     ||$ProjActWrk       ||
+                         ', HP_LOA_AMT:'        ||$ProjLOAAmt       ||
+                         ', HP_PAYMENT_STATUS:' ||$PaymentStatus
+
+begin-sql on-error=Error-Display
+INSERT INTO PS_HP_CONTPAY_DTL (EMPLID,
+                               EMPL_RCD,
+                               HP_CONTRACT_NUM,
+                               HP_CONTRACT_SEQ,
+                               PAY_END_DT,
+                               OFF_CYCLE,
+                               SEPCHK,
+                               HP_WORKDAYS,
+                               HP_PROJECT_CRG,
+                               HP_PROJECT_PNE,
+                               HP_PROJECT_ENP,
+                               HP_ACTUAL_WRK,
+                               HP_LOA_AMT,
+                               HP_PAYMENT_STATUS)
+                       VALUES ($EmplID,
+                               #EmplRcd,
+                               #ContractNum,
+                               #LstContParmSeq,
+                               $PrdEndDt,
+                               $OffCycle,
+                               #SepChk,
+                               #ActualDay,
+                               #CRG_PPAmt,
+                               #PNE_PPAmt,
+                               #ENP_PPAmt,
+                               #ProjActWrk,
+                               #ProjLOAAmt,
+                               $PaymentStatus)
+end-SQL
+end-procedure
+
+!****************************************************************************
+! Delete-Contract-Parm                                                      *
+!****************************************************************************
+begin-procedure Delete-Contract-Parm
+
+begin-sql on-error=Ignore
+DELETE FROM PS_HP_CONTPAY_PARM
+WHERE EMPLID = $EmplID
+  AND EMPL_RCD = #EmplRcd
+  AND HP_CONTRACT_NUM = #ContractNum
+  AND HP_CONTRACT_SEQ > #ContParm_ContractSeq
+end-sql
+
+end-procedure
+
+!****************************************************************************
+! Delete-Contract-Detail                                                    *
+!****************************************************************************
+begin-procedure Delete-Contract-Detail
+
+begin-sql on-error=Ignore
+DELETE FROM PS_HP_CONTPAY_DTL
+WHERE EMPLID = $EmplID
+  AND EMPL_RCD = #EmplRcd
+  AND HP_CONTRACT_NUM = #ContractNum
+  AND HP_CONTRACT_SEQ >= #ContParm_ContractSeq
+  AND (HP_PAYMENT_STATUS in ('A', 'C')
+     OR (HP_PAYMENT_STATUS = 'J'
+         AND PAY_END_DT >= $CP_Pay_End_Dt))
+end-sql
+
+end-procedure
+
+!****************************************************************************
+! Start-Processing                                                          *
+!****************************************************************************
+begin-procedure Start-Processing
+
+  do Get-Current-Datetime
+  display ' '
+  display ' '
+  display $Indent noline
+  display 'Started  Processing ' noline
+  display $Processing noline
+  display ' at ' noline
+  display $SysDateTime
+
+end-procedure
+
+!****************************************************************************
+! Finish-Processing                                                         *
+!****************************************************************************
+begin-procedure Finish-Processing
+
+  do Get-Current-Datetime
+  display ' '
+  display $Indent noline
+  display 'Finished Processing ' noline
+  display $Processing noline
+  display ' at ' noline
+  display $SysDateTime
+
+end-procedure
+
+!****************************************************************************
+! Delete-Run-Control                                                        *
+!****************************************************************************
+begin-procedure Delete-Run-Control
+
+begin-sql
+DELETE FROM PS_RC_PAYINIT
+WHERE OPRID       = $Prcs_OprID
+  AND RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-sql
+
+end-procedure
+
+!****************************************************************************
+! Wrapup                                                                    *
+!****************************************************************************
+begin-procedure Wrapup
+
+  do Delete-Run-Control
+  do Reset
+  do Stdapi-Term
+
+end-procedure
+
+!****************************************************************************
+! Ignore                                                                    *
+!****************************************************************************
+begin-procedure Ignore
+  !Dummy procedure to avoid error if no records to delete
+end-procedure
+
+
+!****************************************************************************
+! Print-Contract-Info                                                       *
+!****************************************************************************
+begin-procedure Print-Contract-Info
+
+  display 'Emplid = ' noline
+  display $Emplid noline
+  display ', Empl Rcd# = ' noline
+  display #EmplRcd noline noline
+  display ', Contract # = ' noline
+  display #ContractNum
+  display ' '
+
+end-procedure
+
+!****************************************************************************
+! Print-Array-1                                                             *
+!****************************************************************************
+begin-procedure Print-Array-1
+
+  display ' '
+  display '------------------------------------------------------------------'
+  display 'Emplid = ' noline
+  display $Emplid noline
+  display ', Empl Rcd# = ' noline
+  display #EmplRcd noline
+  display ', Late Start = ' noline
+  display $LateStart noline
+  display ', Early Terminate = ' noline
+  display $EarlyTerminate noline
+  display ', LOA periods = ' noline
+  display $LOAflag
+
+  display '***** Before Calculate Contract Amount *****'
+  do Print-Array
+
+end-procedure
+
+!****************************************************************************
+! Print-Array-2                                                             *
+!****************************************************************************
+begin-procedure Print-Array-2
+
+  display ' '
+  display '***** After Insert to Contract Details *****'
+  display ' '
+  do Print-Array
+
+end-procedure
+
+!****************************************************************************
+! Print-Array                                                               *
+!****************************************************************************
+begin-procedure Print-Array
+
+  let #wrk_idx = 0
+  while #wrk_idx < #WrkCnt
+
+      get $PrdBeginDt $PrdEndDt $ConfInd #ActualDay #LOADay #LOAAmt
+      from WrkArray (#wrk_idx) WrkPayBegDt WrkPayEndDt WrkConfInd WrkActualDay WrkLOADay WrkLOAAmt
+
+      get #BC_PNE_Ratio from WrkArray (#wrk_idx) WrkPPRatio (0)
+      get #DC_PNE_Ratio from WrkArray (#wrk_idx) WrkPPRatio (1)
+      get #DC_CRG_Ratio from WrkArray (#wrk_idx) WrkPPRatio (2)
+      get #DC_ENP_Ratio from WrkArray (#wrk_idx) WrkPPRatio (3)
+      get #AC_ENP_Ratio from WrkArray (#wrk_idx) WrkPPRatio (4)
+
+      get #BC_PNE_RemRatio from WrkArray (#wrk_idx) WrkRemainPPRatio (0)
+      get #DC_PNE_RemRatio from WrkArray (#wrk_idx) WrkRemainPPRatio (1)
+      get #DC_CRG_RemRatio from WrkArray (#wrk_idx) WrkRemainPPRatio (2)
+      get #DC_ENP_RemRatio from WrkArray (#wrk_idx) WrkRemainPPRatio (3)
+      get #AC_ENP_RemRatio from WrkArray (#wrk_idx) WrkRemainPPRatio (4)
+
+      let $Temp =  $PrdBeginDt || ' to ' || $PrdEndDt || ' confirmed = ' || $ConfInd || ' '
+      display $Temp noline
+      display 'Work Days = ' noline
+      display #ActualDay
+
+      display '       PP Ratio = ' noline
+      display #BC_PNE_Ratio noline
+      display ' ' noline
+      display #DC_PNE_Ratio noline
+      display ' ' noline
+      display #DC_CRG_Ratio noline
+      display ' ' noline
+      display #DC_ENP_Ratio noline
+      display ' ' noline
+      display #AC_ENP_Ratio
+
+      display 'PP Remain Ratio = ' noline
+      display #BC_PNE_RemRatio noline
+      display ' ' noline
+      display #DC_PNE_RemRatio noline
+      display ' ' noline
+      display #DC_CRG_RemRatio noline
+      display ' ' noline
+      display #DC_ENP_RemRatio noline
+      display ' ' noline
+      display #AC_ENP_RemRatio
+
+      get #PNE_PPAmt     #PNE_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (0) WrkRetroAmt (0)
+      get #PNE_PPContAmt #PNE_RetroContAmt from WrkArray (#wrk_idx) WrkAmt (1) WrkRetroAmt (1)
+      get #CRG_PPAmt     #CRG_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (2) WrkRetroAmt (2)
+      get #ENP_PPContAmt #ENP_RetroContAmt from WrkArray (#wrk_idx) WrkAmt (3) WrkRetroAmt (3)
+      get #ENP_PPAmt     #ENP_RetroAmt     from WrkArray (#wrk_idx) WrkAmt (4) WrkRetroAmt (4)
+
+      display '      PP Amount = ' noline
+      display #PNE_PPAmt noline
+      display ' ' noline
+      display #PNE_PPContAmt noline
+      display ' ' noline
+      display #CRG_PPAmt noline
+      display ' ' noline
+      display #ENP_PPContAmt noline
+      display ' ' noline
+      display #ENP_PPAmt
+
+      display '   Retro Amount = ' noline
+      display #PNE_RetroAmt noline
+      display ' ' noline
+      display #PNE_RetroContAmt noline
+      display ' ' noline
+      display #CRG_RetroAmt noline
+      display ' ' noline
+      display #ENP_RetroContAmt noline
+      display ' ' noline
+      display #ENP_RetroAmt
+
+      display 'LOA Days = ' noline
+      display #LOADay noline
+      display ', LOA Amount = ' noline
+      display #LOAAmt
+
+      let #wrk_idx = #wrk_idx + 1
+  end-while
+
+  display ' '
+
+  let #wrk_idx = 0
+  while #wrk_idx < 3
+
+      get #Disp_Ratio #Disp_RemRatio #Disp_LOARatio #Disp_LOARemRatio
+          #TotalAmt #TotalWorkDay #TotalActualWrkAmt
+      from TotalArray(#wrk_idx) TotalRatio TotalRemainRatio TotalLOARatio TotalLOARemRatio
+                                TotalAmt TotalWorkDays TotalActWrk
+
+      if #wrk_idx = 0
+          display 'Total Work Days = ' noline
+          display #TotalWorkDay noline
+          display ', Total Actual Work Amt = ' noline
+          display #TotalActualWrkAmt
+      end-if
+
+      display 'Total Ratio = ' noline
+      display #Disp_Ratio noline
+      display ' ' noline
+      display #Disp_RemRatio noline
+      display ' ' noline
+      display #Disp_LOARatio noline
+      display ' ' noline
+      display #Disp_LOARemRatio noline
+      display ' ' noline
+      display #TotalAmt
+
+      let #wrk_idx = #wrk_idx + 1
+  end-while
+
+  display ' '
+
+  let #job_idx = 0
+  while #job_idx < #JobCnt
+
+      display ' '
+
+      get $JobEffdt $FutureDate $JobAction $JobCompany $JobPaygroup $JobHolSchd
+          #JobCompRt #JobChangeAmt #JobChgDelta $JobProrateOptn $JobLumpSumPay $JobFreqType
+          $JobContBeginDt $JobContEndDt $JobPymtBeginDt $JobPymtEndDt $JobMthFreqID #JobDailyHrs $JobPaymentTerm
+          $JobActualStrDt $JobContTermDt $JobSchSchd $JobUseHolSchd #JobWorkDays #JobMthFactor
+          $InsContParm $RateChange #ContParmSeq #JobAnnlRt #JobMthRt #JobDailyRt #JobHrlyRt #ContractAmt #DailyRtDiff
+          #PNE_RetroAmt #CRG_RetroAmt #ENP_RetroAmt #ActualWrk #JobRemainDays
+          #PNECarryOver #CRGCarryOver #ENPCarryOver #WrkCarryOver #LOACarryOver $SysCreateInd
+      from JobArray (#job_idx)
+           JobEffdt FutureDate JobAction JobCompany JobPaygroup JobHolSchd
+           JobCompRt JobChangeAmt JobChgDelta JobProrateOptn JobLumpSumPay JobFreqType
+           JobContBeginDt JobContEndDt JobPymtBeginDt JobPymtEndDt JobMthFreqID JobDailyHrs JobPaymentTerm
+           JobActualStrDt JobContTermDt JobSchSchd JobUseHolSchd JobWorkDays JobMthFactor
+           InsContParm RateChange ContParmSeq JobAnnlRt JobMthRt JobDailyRt JobHrlyRt ContractAmt DailyRtDiff
+           PNE_RetroAmt CRG_RetroAmt ENP_RetroAmt ActualWrk JobRemainDays
+           PNECarryOver CRGCarryOver ENPCarryOver WrkCarryOver LOACarryOver SysCreateInd
+
+      let $DispJob = 'JobEffdt = ' || $JobEffdt || ', FutureDate = ' || $FutureDate || ', JobAction = ' || $JobAction
+                  || ', JobCompany = ' || $JobCompany || ', JobPaygroup = ' || $JobPaygroup
+                  || ', JobHolSchd = ' ||$JobHolSchd || ', System Created = ' || $SysCreateInd
+      display $DispJob
+
+      let $JobCompRt = edit(#JobCompRt, '999999999.99')
+      let $JobChangeAmt = edit(#JobChangeAmt, '999999999.99')
+      let $JobChgDelta = edit(#JobChgDelta, '999999999.99')
+      let $DispJob = 'JobCompRt = ' || $JobCompRt || ', JobChangeAmt = ' || $JobChangeAmt
+                  || ', JobChgDelta = ' || $JobChgDelta
+                  || ', JobProrateOptn = ' || $JobProrateOptn || ', JobLumpSumPay = ' || $JobLumpSumPay
+                  || ', JobFreqType = ' || $JobFreqType
+      display $DispJob
+
+      let $JobDailyHrs = edit(#JobDailyHrs,'9999.99')
+      let $DispJob = 'JobContBeginDt = ' || $JobContBeginDt || ', JobContEndDt = ' || $JobContEndDt
+                  || ', JobPymtBeginDt = ' || $JobPymtBeginDt || ', JobPymtEndDt = ' || $JobPymtEndDt
+                  || ', JobMthFreqID = ' || $JobMthFreqID || ', JobDailyHrs = ' || $JobDailyHrs
+                  || ', Payment Term = ' || $JobPaymentTerm
+      display $DispJob
+
+      let $JobWorkDays = edit(#JobWorkDays, '999')
+      let $JobMthFactor = edit(#JobMthFactor, '999999.999999')
+      let $DispJob = 'JobActualStrDt = ' || $JobActualStrDt || ', JobContTermDt = ' || $JobContTermDt
+                  || ', JobSchSchd = ' || $JobSchSchd || ', JobUseHolSchd = ' || $JobUseHolSchd
+                  || ', JobWorkDays = ' || $JobWorkDays || ', JobMthFactor = ' || $JobMthFactor
+      display $DispJob
+
+      let $ContParmSeq = edit(#ContParmSeq, '99')
+      let $JobAnnlRt = edit(#JobAnnlRt, '999999999.999')
+      let $JobMthRt = edit(#JobMthRt, '999999999.999')
+      let $JobDailyRt = edit(#JobDailyRt, '999999999.999')
+      let $JobHrlyRt = edit(#JobHrlyRt, '999999.999999')
+      let $ContractAmt = edit(#ContractAmt, '999999999.99')
+      let $DailyRtDiff = edit(#DailyRtDiff, '999999.999999')
+      let $DispJob = 'InsContParm = ' || $InsContParm || ', RateChange = ' || $RateChange
+                  || ', ContParmSeq = ' || $ContParmSeq || ', JobAnnlRt ' || $JobAnnlRt
+                  || ', JobMthRt = ' || $JobMthRt || ', JobDailyRt = ' || $JobDailyRt
+                  || ', JobHrlyRt = ' || $JobHrlyRt || ', Contract Amount = ' || $ContractAmt
+                  || ', Daily Rt Diff = ' || $DailyRtDiff
+      display $DispJob
+
+      let $PNE_RetroAmt = edit(#PNE_RetroAmt, '999999999.99')
+      let $CRG_RetroAmt = edit(#CRG_RetroAmt, '999999999.99')
+      let $ENP_RetroAmt = edit(#ENP_RetroAmt, '999999999.99')
+      let $ActualWrk    = edit(#ActualWrk, '999999999.99')
+      let $JobRemainDays = edit(#JobRemainDays, '999')
+      let $DispJob = 'PNE RetroAmt = ' || $PNE_RetroAmt || ', CRG RetroAmt = ' || $CRG_RetroAmt
+                  || ', ENP RetroAmt = ' || $ENP_RetroAmt || ', Actual Work = ' || $ActualWrk
+                  || ', Remain Days = ' || $JobRemainDays
+      display $DispJob
+
+      let $PNECarryOver = edit(#PNECarryOver, '999999999.99')
+      let $CRGCarryOver = edit(#CRGCarryOver, '999999999.99')
+      let $ENPCarryOver = edit(#ENPCarryOver, '999999999.99')
+      let $WrkCarryOver = edit(#WrkCarryOver, '999999999.99')
+      let $LOACarryOver = edit(#LOACarryOver, '999999999.99')
+      let $DispJob = 'PNE CarryOver = ' || $PNECarryOver || ', CRG CarryOver = ' || $CRGCarryOver
+                  || ', ENP CarryOver = ' || $ENPCarryOver || ', Wrk CarryOver = ' || $WrkCarryOver
+                  || ', LOA CarryOver = ' || $LOACarryOver
+      display $DispJob
+
+      let #job_idx = #job_idx + 1
+  end-while
+
+  display ' '
+
+  let #rt_idx = 0
+  while #rt_idx < #RateCnt
+
+      get $RateBegDt $RateEndDt #DailyRt from RateArray (#rt_idx) RateBegDt RateEndDt DailyRt
+      let $DailyRt = edit(#DailyRt, '999999999.999')
+      let $DispRate = 'Rate Begin Dt = ' || $RateBegDt || ', Rate End Dt = ' || $RateEndDt ||
+                    ', Daily Rt = ' || $DailyRt
+      display $DispRate
+
+      let #rt_idx = #rt_idx + 1
+  end-while
+
+end-procedure
+
+!****************************************************************************
+! SQCs                                                                      *
+!****************************************************************************
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stderror.sqc'  !Routine for error display
+#Include 'datemath.sqc'  !Routines for date arithmetic
+#Include 'datewrk.sqc'   !Routines for working with dates
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'payrnctl.sqc'  !Get run control parameters.  This will change
+                         !depending on the type of report you are running
+                         !and which type of parameters are being used to
+                         !run the report.
+#include 'cntpaywk.sqc'

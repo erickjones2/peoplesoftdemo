@@ -1,0 +1,478 @@
+!***********************************************************************
+!  TAX860AZ:  Qtrly Wage List - ARIZONA - CSV                          *
+!                                                                      *
+!             NOTE: "#IFDEF TAXTEST" in main SELECT is used for        *
+!                   testing this report against DEMO database          *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2019, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  30102750                                            !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+#include 'setup32.sqc' !Printer and page-size initialization
+#include 'usarpt.sqc'  ! NID_COUNTRY defined
+
+begin-report
+
+  do Init-Report
+
+! These variables are used by rptsmmry.sqc
+  Let $Prnt_CoTxGrs = 'N'
+  Let $Prnt_CoExGrs = 'Y'
+
+  do Process-Main
+  if #FileCount > 1
+     do Close-File
+  end-if
+
+  if $RecordWritten = 'Y'
+    display ''
+    display 'Upon successful conclusion of this program, one or more'
+    display 'files will have been created:'
+    display ''
+    display 'T86AZxxx - where "xxx" represents a volume identifier for each company code.'
+    display ''
+    display ''  
+    display 'The file(s) contain CSV format required for reporting quarterly' 
+    display 'wages to the Arizona Department of the Economic Security.'
+    display ''           
+    display 'Follow the instructions from the department for preparing'
+    display 'and submitting the file(s).'
+    display ''
+  else
+    do Print-Summary-Data('NoData')
+  end-if
+
+  do Stdapi-Term
+
+end-report
+
+
+begin-procedure Init-Report
+
+  move 'TAX860AZ' to $ReportID
+  move 'TAX860AZ' to $Program
+ 
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Get-Calendar-Year-Id
+  do Stdapi-Init
+  do Initialization
+  
+  move 'Arizona Quarterly UI Wage Report' to $ReportTitle
+  display ''
+  display 'Creating CSV File for Arizona UI Wage Reporting'
+  
+end-procedure
+
+ 
+begin-procedure Initialization
+
+#ifdef TAXTEST
+  move 'CA'              to $State
+  move 'CA'              to $Insert_State
+#else
+  move 'AZ'              to $State
+  move 'AZ'              to $Insert_State
+#endif
+
+  do Get-Tax-Reporting-Run-Controls
+  move &TX.Balance_Year to $RptYear 9999
+  move $RptYear          to $ReportYear ~~xx
+  move $RptYear          to $RptYear xxxx
+  move $PeriodEndDate    to $AsOfDate
+
+  display ' '
+  display 'Processing balances for '   noline
+  display $RptQtrYr
+
+  let $FileType = 'C'
+  
+  move 1  to #FileCount
+
+  move 100000000.00  to #OverFileLimit
+  do Delete-Skip-File
+
+end-procedure
+
+
+begin-procedure Open-File
+
+  if #FileCount > 1
+     do Close-File
+  end-if
+
+  move 'CSV' to $FileExtension
+#ifdef OS400
+  let $FileID = 'T86AZ' || &A.Company || '(D' || $FileExtension || ')'
+#else
+  #ifdef MVS
+    let $FileID = 'T86AZ' || &A.Company
+  #else
+    let $FileID = 'T86AZ' || &A.Company || '.' || $FileExtension
+  #endif
+#endif
+  let $FileID = '{IMPORTPREFIX}' || $FileID
+#ifdef MVS
+  open $FileID as 10 for-writing record=275:fixed_nolf
+#else
+  open $FileID as 10 for-writing record=275:fixed
+#endif
+  Add 1 to #FileCount
+
+end-procedure
+
+
+begin-procedure Close-File
+
+  close 10
+
+end-procedure
+
+
+begin-procedure Process-Main
+
+begin-SELECT
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+end-SELECT
+
+begin-SELECT
+A.COMPANY
+
+  move &A.Company to $Company
+
+  do Read-Employee-Data
+
+FROM  PS_COMPANY_TBL A
+WHERE A.EFF_STATUS = 'A'
+AND A.TAX_REPORT_TYPE = '2'
+AND A.EFFDT =
+  (SELECT MAX(EFFDT)
+     FROM PS_COMPANY_TBL
+     WHERE  COMPANY = A.COMPANY
+       AND  EFFDT  <= $AsOfDate)
+ORDER BY A.COMPANY
+end-SELECT
+  if #Count_F > 0
+    do Print-Summary-Data('FileTotal')
+    move 'Y' to $RecordWritten
+  end-if
+  
+  do delete-Skip-File
+
+end-procedure
+
+
+begin-procedure Read-Employee-Data
+
+begin-SELECT
+C.COMPANY    () on-break print=never BEFORE=BEFORE-COMPANY
+                                     AFTER=AFTER-COMPANY
+C.EMPLID
+C.NLGRS_QTD
+C.TXGRS_QTD
+D1.NATIONAL_ID
+PN.FIRST_NAME
+PN.LAST_NAME
+    
+  if &C.NlGrs_QTD > 0 and &C.NlGrs_QTD < #OverFileLimit
+    do Process-Employee
+  else
+    do Insert-Skip-Record
+  end-if
+
+FROM  PS_TAX_BALANCE C, PS_NAMES PN,
+      PS_PERS_NID D1
+WHERE C.COMPANY       = &A.Company
+  AND PN.EMPLID       = C.EMPLID
+  AND C.TAX_CLASS     = 'U'
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+#ifdef TAXTEST
+  AND C.STATE         = 'CA'
+#else
+  AND C.STATE         = 'AZ'
+#endif
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_PERIOD =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND C.NLGRS_QTD <> 0
+  AND C.EMPLID            = D1.EMPLID
+  AND PN.NAME_TYPE = 'PRI'
+  AND PN.EFFDT =
+      (SELECT MAX(PX.EFFDT)
+       FROM   PS_NAMES PX
+       WHERE  PX.EMPLID    = PN.EMPLID
+         AND  PX.NAME_TYPE = PN.NAME_TYPE
+         AND  PX.EFFDT    <= $AsOfDate)
+  AND D1.COUNTRY = {NID_Country}
+  AND D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+ORDER BY D1.NATIONAL_ID
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Process-Employee
+
+  move &D1.NATIONAL_ID to $S123 xxx       !isolate first 3 digits
+  if $S123 = &Temp_SSN_Mask or RTRIM(&D1.NATIONAL_ID, ' ') = ''
+    move 'I        '   to $NATIONAL_ID
+  else
+    move &D1.NATIONAL_ID        to $NATIONAL_ID
+  end-if
+  
+  move &PN.Last_Name             to $LAST_NAME   
+ 
+!---SEARCH AND REMOVE SPECIAL CHARS FROM LAST NAME
+     move ''  to $In_String
+     move $LAST_NAME to $In_String
+     do Convert-Special-Chars
+     let $LAST_NAME =  ''
+     let $LAST_NAME =  $Name_Clean
+     let $LAST_NAME = rtrim($LAST_NAME,' ')
+
+  move &PN.First_Name to $First_Name
+
+!---SEARCH AND REMOVE SPECIAL CHARS FROM FIRST NAME
+     move ''  to $In_String
+     move $First_Name to $In_String
+     do Convert-Special-Chars
+     let $First_Name =  ''
+     let $First_Name =  $Name_Clean
+     let $First_Name = rtrim($First_Name,' ')
+
+ 
+  uppercase $Last_Name
+  uppercase $First_Name
+
+  let $First_Name = SUBSTR($First_Name,1,15)
+
+  move &C.NlGrs_QTD to #NlGrs_QTD
+  add #NlGrs_QTD to #Co_NlGrs_QTD
+
+  move &C.TxGrs_QTD to #TxGrs_QTD
+
+  do write-csv-record
+
+end-procedure
+
+
+begin-procedure Before-Company
+
+  do Open-File
+
+end-procedure
+
+
+begin-procedure After-Company
+
+  do Read-Skip-File
+  do Print-Summary-Data('CoTotal')
+  add #Co_NlGrs_QTD to #Tot_NlGrs_QTD
+  add #Co_ExGrs_QTD to #Tot_ExGrs_QTD
+  add #Count_S      to #Count_F
+  move 0            to #Count_S
+  move 0            to #Co_NlGrs_QTD
+  move 0            to #Co_ExGrs_QTD
+  new-page
+  
+end-procedure
+
+
+begin-procedure Write-CSV-Record
+     
+  let #Excess_W = #NlGrs_QTD - #TxGrs_QTD
+
+  if #Excess_W < 0
+     let #Excess_W = 0
+  end-if
+  
+  add #Excess_W      to #Co_ExGrs_QTD 
+  
+  move #NlGrs_QTD        to $NlGrs_QTD    99999999.99
+  move #Excess_W         to $Excess_W     99999999.99
+  
+  let $OutputF =  $NATIONAL_ID || ',' || $Last_Name || ',' || $First_Name ||
+                 ',' || $NlGrs_QTD || ',' || $Excess_W 
+
+  write 10 from  $OutputF
+
+  add 1 to #Count_S
+  move 0   to #Excess_W
+
+end-procedure
+
+
+begin-procedure Convert-Special-Chars
+
+   move 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'        to $Alphabet
+   
+!  let $AccentY  =  'âäàåáãæÄÅÀÁÂÃÄÅÆçÇÐéêëèÉÈÊËïîìíÌÍÎÏñÑôöòÖóõÒÓÔÕüûùÜúÙÚÛÿýÝŸ'
+   let $AccentN  =  'AAAAAAAAAAAAAAAACCDEEEEEEEEIIIIIIIINNOOOOOOOOOOUUUUUUUUYYYY'
+   let $AccentY  =   unicode('U+00E2') ||  unicode('U+00E4') ||  unicode('U+00E0') ||
+                     unicode('U+00E1') ||  unicode('U+00E5') ||  unicode('U+00E3') ||
+                     unicode('U+00E6') ||  unicode('U+00C4') ||  unicode('U+00C5') ||
+                     unicode('U+00C0') ||  unicode('U+00C1') ||  unicode('U+00C2') ||
+                     unicode('U+00C3') ||  unicode('U+00C4') ||  unicode('U+00C5') ||
+                     unicode('U+00C6') ||  unicode('U+00E7') ||  unicode('U+00C7') ||
+                     unicode('U+00D0') ||  unicode('U+00E9') ||  unicode('U+00EA') ||
+                     unicode('U+00EB') ||  unicode('U+00E8') ||  unicode('U+00C9') ||
+                     unicode('U+00C8') ||  unicode('U+00CA') ||  unicode('U+00CB') ||
+                     unicode('U+00EF') ||  unicode('U+00EE') ||  unicode('U+00EC') ||
+                     unicode('U+00ED') ||  unicode('U+00CC') ||  unicode('U+00CD') ||
+                     unicode('U+00CE') ||  unicode('U+00CF') ||
+                     unicode('U+00F1') ||  unicode('U+00D1') ||
+                     unicode('U+00F4') ||  unicode('U+00F6') || unicode('U+00F2') ||
+                     unicode('U+00D6') ||  unicode('U+00F3') || unicode('U+00F5') ||
+                     unicode('U+00D2') ||  unicode('U+00D3') || unicode('U+00D4') ||
+                     unicode('U+00D5') ||  unicode('U+00FC') || unicode('U+00FB') ||
+                     unicode('U+00F9') ||  unicode('U+00DC') || unicode('U+00FA') ||
+                     unicode('U+00D9') ||  unicode('U+00DA') || unicode('U+00DB') ||
+                     unicode('U+00FF') ||  unicode('U+00FD') || unicode('U+00DD') ||
+                     unicode('U+0178')
+
+   let #I = 1
+   let $Name_clean = ''
+   let #In_Len = Length(Rtrim($In_String, ' '))
+
+   while #I <= #In_Len
+     let $Char = Substr($In_String, #I, 1)
+     let $Upper_Char = Upper($Char)
+     let #Loc = Instr($Alphabet,$Upper_Char,1)
+     if #Loc > 0
+       let $Name_clean = $Name_clean || $Upper_Char
+     else
+       let #Loc = Instr($AccentY,$Char,1)
+       if #Loc > 0
+         let $Name_clean = $Name_clean || Substr($AccentN,#Loc,1)
+       end-if
+     end-if
+     add 1 To #I
+   end-while
+   
+end-procedure
+
+
+begin-procedure Insert-Skip-Record
+
+  move &C.Txgrs_QTD  to $Err_Txgrs_QTD 09999999999.99
+  move &C.Nlgrs_QTD  to $Err_Nlgrs_QTD 09999999999.99
+
+  let $err-statement1 = 'TAX860AZ, Insert-Error - INSERT-SKIP-RECORD'
+  let $err-statement2 = 'Key Values: TABLE PS_PY_R_TAX810' ||
+                        ', STATE ' || $Insert_State ||
+                        ', COMPANY ' || $Company ||
+                        ', NATIONAL_ID ' || &D1.National_ID ||
+                        ', EMPLID ' || &C.Emplid ||
+                        ', TXGRS_QTD ' || $Err_Txgrs_QTD ||
+                        ', NLGRS_QTD ' || $Err_Nlgrs_QTD
+
+begin-SQL on-error=Error-Display
+  INSERT INTO PS_PY_R_TAX810
+        (STATE,
+         COMPANY,
+         NATIONAL_ID,
+         EMPLID,
+         TXGRS_QTD,
+         NLGRS_QTD)
+ VALUES ($Insert_State,
+         $Company,
+         &D1.National_ID,
+         &C.EmplID,
+         &C.Txgrs_QTD,
+         &C.Nlgrs_QTD)
+end-SQL
+
+end-procedure
+
+
+begin-procedure Delete-Skip-File
+
+begin-SQL On-Error=Ignore
+  DELETE FROM PS_PY_R_TAX810 where STATE = $Insert_State
+end-SQL
+
+end-procedure
+
+
+begin-procedure Ignore
+
+end-procedure
+
+
+begin-procedure Read-Skip-File
+
+begin-SELECT
+PYR.EMPLID
+PYR.TXGRS_QTD
+PYR.NLGRS_QTD
+
+  let $R_Emplid    = &PYR.Emplid
+  let #R_TXGRS_QTD = &PYR.TXGRS_QTD
+  let #R_NLGRS_QTD = &PYR.NLGRS_QTD
+
+  if &PYR.NLGRS_QTD >= #OverFileLimit
+     do Print-Summary-Data('BigFirst')
+  else
+     do Print-Summary-Data('NegSecond')
+  end-if
+
+FROM  PS_PY_R_TAX810 PYR
+WHERE PYR.STATE       = $Insert_State
+  AND PYR.COMPANY     = $Company
+ORDER BY PYR.NLGRS_QTD desc, PYR.NATIONAL_ID
+end-SELECT
+
+end-procedure
+
+
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'getstdta.sqc'  !Get-State-Tax-Data procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'rptsmmry.sqc'  !Print-Summary-Data procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'stderror.sqc'  !Routine for error display
+#Include 'txrnctl1.sqc'  !Process Scheduler Run Controls

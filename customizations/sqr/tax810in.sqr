@@ -1,0 +1,1041 @@
+!***********************************************************************
+!  TAX810IN:  Qtrly Wage List - Tape - INDIANA                         *
+!                                                                      *
+!             NOTE: "#IFDEF TAXTEST" in main SELECT is used for        *
+!                   testing this report against DEMO database          *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2019, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  29677873                                            !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+#include 'setup31.sqc' !Printer and page-size initialization
+#include 'usarpt.sqc'  ! NID_COUNTRY defined
+
+begin-report
+  do Init-Report
+
+! These variables are used by rptsmmry.sqc
+  Let $Prnt_CoTxGrs = 'N'
+  Let $Prnt_CoExGrs = 'N'
+  do Get-Quarter-Dates
+  do Process-Main
+
+  close 10
+
+  if $RecordWritten = 'Y'
+    display ''
+    display 'Upon successful conclusion of this program, one or more'
+    display 'files will have been created as follows:'
+    display ''
+    display '  TAX810IN      '
+    display ''
+    display 'The file contains 275-character records in the format'
+    display 'required for electronic submission to the Indiana'
+    display 'Department of Employment and Training Services.' 
+    display '' 
+    display 'Follow the instructions from the state for preparing and'
+    display 'submitting the file.'
+    display ''
+  else
+    do Print-Summary-Data('NoData')
+  end-if
+
+  do Stdapi-Term
+
+end-report
+
+begin-procedure Init-Report
+  move 'TAX810IN' to $ReportID
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Stdapi-Init
+  do Initialization
+  do Get-Calendar-Year-Id
+ 
+end-procedure
+
+begin-procedure Initialization
+#ifdef TAXTEST
+  move 'CA'              to $State
+#else
+  move 'IN'              to $State
+#endif
+
+  do Get-Tax-Reporting-Run-Controls
+  move &TX.Balance_Year to $RptYear 9999
+  move $RptYear         to $PmtYear 9999
+  let  $RptgYr = SUBSTR($RptYear,3,2)
+  move $PeriodEndDate    to $AsOfDate
+
+  display ' '
+  display 'Processing balances for '   noline
+  display $RptQtrYr
+
+  move 275 to #RecordLength
+  let $Program        = 'TAX810IN'
+
+  if $PRCS_Process_Instance = ''
+     do Prompts
+  else
+     do Select-Parameters
+     do Convert-Parameters
+  end-if
+
+  do Evaluate-File-Type
+  do Calculate-Diskette-Capacity
+
+!if $FileType = 'D'
+!  move 'Indiana Quarterly UI Wage Report - Diskette' to $ReportTitle
+!  display ''
+!  display 'Creating Diskette File for Indiana UI Wage Reporting'
+!  do Open-Diskette-File
+! else
+  move 'Indiana Quarterly UI Wage Report ' to $ReportTitle
+  display ''
+  display 'Creating File for Indiana UI Wage Reporting'
+  do Open-Tape-File
+! end-if 
+
+end-procedure
+
+begin-procedure Process-Main
+begin-SELECT
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+end-SELECT
+
+  move &TX.Company       to $Company  !TX.Company is the Transmitter
+  if RTRIM($Company,' ') = ''
+    display '*** Company field blank on Tax Run Control Record ***'
+    display '***************** Processing stopped ****************'
+    stop
+  end-if
+  do Get-Company-Data                 !Transmitter identifying data
+  !Bug#28179075 Req1:to Populate ONLY records of type E or S
+  !do Write-A-Record
+  !do Write-B-Record
+
+begin-SELECT
+A.COMPANY
+A.DESCR
+A.ADDRESS1
+A.CITY
+A.STATE
+A.POSTAL
+
+  move &A.Company to $Company
+  move &A.Descr   to $CompanyName
+
+  move '' to $priorEmplID
+  do Read-Employee-Data
+
+FROM  PS_COMPANY_TBL A
+WHERE A.EFF_STATUS = 'A'
+  AND A.TAX_REPORT_TYPE = '2'
+  AND A.EFFDT =
+  (SELECT MAX(EFFDT)
+     FROM PS_COMPANY_TBL
+     WHERE  COMPANY = A.COMPANY
+       AND  EFFDT  <= $AsOfDate)
+ORDER BY COMPANY
+end-SELECT
+
+  if #Count_F > 0
+  !BUG#28179075
+    !do Write-F-Record
+    do Print-Summary-Data('FileTotal')
+  end-if
+
+end-procedure
+
+begin-procedure Read-Employee-Data
+begin-SELECT
+C.COMPANY    () on-break print=never before=Before-Company
+                                     AFTER=AFTER-COMPANY
+C.EMPLID
+C.NLGRS_QTD
+C.TXGRS_QTD
+C.NLGRS_YTD
+D1.NATIONAL_ID
+D.LAST_NAME
+D.FIRST_NAME
+D.MIDDLE_NAME
+P.HIRE_DT
+
+  if &C.NlGrs_QTD > 0
+    DO Convert-To-DTU-Date(&P.HIRE_DT,$ESD)
+      UNSTRING $ESD BY '-' INTO $ESD_YYYY $ESD_MM $ESD_DD
+    do Process-Employee
+  else
+    do Print-Summary-Data('NegWage')
+  end-if
+
+  if $FileType = 'D' and #RecordCount >= #MaxRecordsPerDiskette
+    do Open-Diskette-File
+  end-if
+
+FROM  PS_TAX_BALANCE C, PS_PERSON_NAME D, PS_PERS_NID D1, PS_EMPLOYMENT P
+WHERE C.COMPANY       = &A.Company
+  AND D.EMPLID        = C.EMPLID
+  AND P.EMPLID        = C.EMPLID
+  AND C.TAX_CLASS     = 'U'
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+#ifdef TAXTEST
+  AND C.STATE         = 'CA'
+#else
+  AND C.STATE         = 'IN'
+#endif
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND C.NLGRS_QTD <> 0
+  AND P.EMPL_RCD  =
+      (SELECT MIN(EMPL_RCD)
+       FROM   PS_EMPLOYMENT
+       WHERE  EMPLID      = C.EMPLID)
+  AND D.EMPLID            = D1.EMPLID
+  AND D1.COUNTRY = {NID_Country}
+  AND D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+ORDER BY D1.NATIONAL_ID
+end-SELECT
+end-procedure
+
+begin-procedure Process-Employee
+  move &D1.NATIONAL_ID to $S123 xxx       !isolate first 3 digits
+  if $S123 = &Temp_SSN_Mask or RTRIM(&D1.NATIONAL_ID, ' ') = ''
+    move '000000000'   to $NATIONAL_ID
+  else
+    move &D1.NATIONAL_ID        to $NATIONAL_ID
+  end-if
+
+  let $LastName   = rtrim(&D.LAST_NAME, ' ')
+  let $FirstName  = rtrim(&D.FIRST_NAME, ' ')
+  let $Middlename = rtrim(&D.MIDDLE_NAME,' ')
+  let $MidInitial = {ps-substr}(&D.MIDDLE_NAME,1,1)
+  uppercase $LastName
+  uppercase $FirstName
+  uppercase $Middlename
+  move &C.NlGrs_QTD to #NlGrs_QTD
+  add #NlGrs_QTD to #Co_NlGrs_QTD
+  multiply 100 times #NlGrs_QTD
+  do Format-Number(#NlGrs_QTD,  $NlGrs_QTD,  '09999999999999')
+
+  move &C.TxGrs_QTD to #TxGrs_QTD
+  add #TxGrs_QTD to #Co_TxGrs_QTD
+  multiply 100 times #TxGrs_QTD
+  do Format-Number(#TxGrs_QTD,  $TxGrs_QTD,  '09999999999999')
+
+  let #Excess_W = &C.NlGrs_QTD - &C.TxGrs_QTD
+
+  if #Excess_W < 0
+     let #Excess_W = 0
+  end-if
+
+  add #Excess_W to #Co_Excess_W_In
+  multiply 100 times #Excess_W
+  do Format-Number(#Excess_W,  $Excess_W,  '09999999999999')
+
+  move &C.TxGrs_QTD to #Taxable_W
+  add #Taxable_W to #Co_Taxable_W_In
+  multiply 100 times #Taxable_W
+  do Format-Number(#Taxable_W,  $Taxable_W,  '09999999999999')
+
+  let $MonEmpFlg1 = 'N'
+  let $MonEmpFlg2 = 'N'
+  let $MonEmpFlg3 = 'N'
+
+  do Get-Monthly-Employment-Indicator
+  move ' ' to $US_SOC_CD                
+   if $MonEmpFlg1 = 'Y'
+     add 1 to #Month1Count
+     let #T_Month1Count = #T_Month1Count
+  end-if
+  if $MonEmpFlg2 = 'Y'
+     add 1 to #Month2Count
+     let #T_Month2Count = #T_Month2Count
+  end-if
+  if $MonEmpFlg3 = 'Y'
+     add 1 to #Month3Count
+     let #T_Month3Count = #T_Month3Count
+  end-if
+
+begin-SELECT
+J.US_SOC_CD
+  let $US_SOC_CD = ''
+  let $US_SOC_CD = rtrim(&J.US_SOC_CD, ' ')
+  if $US_SOC_CD = ''
+     move ' ' to $US_SOC_CD
+  end-if
+  let #Fld_Lngth   = length($US_SOC_CD)
+  let $Last3Chars  = SUBSTR($US_SOC_CD, #Fld_Lngth - 2, 3)
+  
+  if $Last3Chars = '.00'
+     let $US_SOC_CODE = SUBSTR($US_SOC_CD,1,#Fld_Lngth - 3)
+  else
+     let $US_SOC_CODE = $US_SOC_CD
+  end-if  
+
+FROM  PS_JOBCODE_TBL J, PS_JOB P WHERE P.EMPLID  = &C.EmplID
+AND P.COMPANY = $Company
+AND P.JOB_INDICATOR = 'P'
+AND P.EFFDT  = (SELECT MAX(EFFDT)
+                    FROM PS_JOB P1
+                   WHERE P1.EMPLID        = P.EMPLID
+                     AND P1.COMPANY       = P.COMPANY
+                     AND P1.JOB_INDICATOR = P.JOB_INDICATOR
+                     AND  P1.EFFDT       <= $AsOfDate)
+AND P.EFFSEQ = (SELECT MAX(EFFSEQ)
+                    FROM PS_JOB P2
+                   WHERE P2.EMPLID        = P.EMPLID
+                     AND P2.COMPANY       = P.COMPANY
+                     AND P2.JOB_INDICATOR = P.JOB_INDICATOR
+                     AND P2.EFFDT         = P.EFFDT)
+AND J.SETID   = P.SETID_JOBCODE
+AND J.JOBCODE = P.JOBCODE
+AND J.EFFDT   = (SELECT MAX(EFFDT)
+                   FROM PS_JOBCODE_TBL
+                  WHERE SETID    = J.SETID
+                    AND JOBCODE  = J.JOBCODE
+                    AND EFFDT   <= $AsOfDate)
+end-SELECT
+
+
+  do Chk-Soc
+  let $Final_soc = $OutputSoc
+  do Chk-Empl-Name
+  DO Get-FT-PT-Indicator
+  Do GetZIP-PrimaryLoc
+  do Write-S-Record
+  move 'Y' to $RecordWritten
+end-procedure
+
+begin-procedure Chk-Soc
+!SOC code only numeric(0-9) allowed
+  let $OutputSoc = ''
+  let $ChkSoc   = rtrim($US_SOC_CODE,' ')
+  if $ChkSoc <> ''
+     let #ChkSoc_Lgth = length($ChkSoc)
+     let #ChkSoc_Pos  = 1
+     while #ChkSoc_Pos <= #ChkSoc_Lgth
+           let $ChkSoc_Sub  = substr($ChkSoc, #ChkSoc_Pos, 1)
+           let $ChkSoc_Sub  = upper($ChkSoc_Sub)
+           let #ChkSoc_Inst = instr('0123456789',$ChkSoc_Sub, 1)
+           if #ChkSoc_Inst <> 0
+              let $OutputSoc = $OutputSoc || $ChkSoc_Sub
+           end-if
+           add 1 to #ChkSoc_Pos
+     end-while
+  else
+     let $OutputSoc = ' '
+  end-if
+end-procedure
+
+begin-procedure Chk-Empl-Name 
+!Full First Name Accepts the following special characters: Dash (-), Apostrophe (')
+  let $ChkfName   = rtrim($FirstName,' ')
+  let $f_valid_chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'' '   
+  let $f_invalid_chars = translate($chkfName, $f_valid_chars, '') 
+  let #f_invalid = length($f_invalid_chars)  
+  If #f_invalid
+     move ' ' to #Disp_Eid
+     let $Disp_Eid   = rtrim(&C.EMPLID, ' ')
+     let $fName_Displ   = rtrim($FirstName,' ')||' '||rtrim($Middlename,' ')||' '||rtrim($LastName,' ') 
+     display '*** Employee first name should contain only alpha-numeric character (A-Z, 0-9) or Dash (-) or Apostrophe ('')***'
+     display 'Employee Id:   ' noline
+     display $Disp_Eid
+     display 'Employee Name:   ' noline
+     display $fName_Displ
+  end-if
+
+!Middle Initial or Space
+  uppercase $MidInitial
+  let $MiddleName-Aux  = $MidInitial  
+  let $valid_chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 '       
+  let $invalid_chars = translate($MiddleName-Aux, $valid_chars, '')
+  let #invalid = length($invalid_chars)
+  If #invalid
+     move ' ' to #Disp_Eid
+     let $Disp_Eid   = rtrim(&C.EMPLID, ' ')
+     let $mName_Displ   = rtrim($FirstName,' ')||' '||rtrim($Middlename,' ')||' '||rtrim($LastName,' ') 
+     display '*** Employee middle name first character should be alpha-numeric character (A-Z, 0-9) or a space***'
+     display '*** NO other special characters except space within the middle name are valid     ***'
+     display 'Employee Id:   ' noline
+     display $Disp_Eid
+     display 'Employee Name:   ' noline
+     display $mName_Displ
+  end-if
+
+  
+!Full Last Name Accepts the following special characters: Dash (-), Apostrophe (')
+  let $ChklName  = rtrim($LastName,' ')
+  let $l_valid_chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'' '   
+  let $l_invalid_chars = translate($chklName, $l_valid_chars, '')
+  let #l_invalid = length($l_invalid_chars)    
+  If #l_invalid
+     move ' ' to #Disp_Eid
+     let $Disp_Eid   = rtrim(&C.EMPLID, ' ')
+     let $lName_Displ   = rtrim($FirstName,' ')||' '||rtrim($Middlename,' ')||' '||rtrim($LastName,' ') 
+     display '*** Employee last name should contain only alpha-numeric character (A-Z, 0-9) or Dash (-) or Apostrophe ('')***'
+     display 'Employee Id:   ' noline
+     display $Disp_Eid
+     display 'Employee Name:   ' noline
+     display $lName_Displ
+  end-if
+
+end-procedure
+
+Begin-Procedure Get-FT-PT-Indicator
+  Move '' to $FP_TIME
+  MOVE '' TO $FULL_part_time
+  MOVE '' TO $TAX_LOCATION_CD
+begin-SELECT
+P.TAX_LOCATION_CD
+P.FULL_PART_TIME
+  let $FULL_part_time = upper(&P.FULL_PART_TIME)
+  LET $TAX_LOCATION_CD = LTRIM(RTRIM(&P.TAX_LOCATION_CD,  ' '),  ' ')
+FROM  PS_JOB P 
+WHERE P.EMPLID  = &C.EmplID
+AND P.COMPANY = $Company
+AND P.EMPL_RCD = (SELECT MIN(E.EMPL_RCD) 
+                    FROM PS_JOB E 
+                   WHERE E.EMPLID    = P.EMPLID 
+                     AND E.COMPANY   = P.COMPANY)
+AND P.EFFDT  = (SELECT MAX(EFFDT)
+                    FROM PS_JOB P1
+                   WHERE P1.EMPLID        = P.EMPLID
+                     AND P1.EMPL_RCD      = P.EMPL_RCD
+                     AND P1.COMPANY       = P.COMPANY
+                     AND P1.JOB_INDICATOR = P.JOB_INDICATOR
+                     AND  P1.EFFDT       <= $AsOfDate)
+AND P.EFFSEQ = (SELECT MAX(EFFSEQ)
+                    FROM PS_JOB P2
+                   WHERE P2.EMPLID        = P.EMPLID
+                     AND P2.EMPL_RCD      = P.EMPL_RCD
+                     AND P2.COMPANY       = P.COMPANY
+                     AND P2.JOB_INDICATOR = P.JOB_INDICATOR
+                     AND P2.EFFDT         = P.EFFDT)
+end-SELECT
+
+  if $FULL_part_time = 'F'
+     move 'FT' to $FP_TIME
+  else
+     if $FULL_part_time = 'P'
+        move 'PT' to $FP_TIME
+     else
+        move '00' to $FP_TIME
+     end-if
+  end-if
+end-procedure
+
+begin-procedure Before-Company
+  do Get-Company-Data
+
+#ifdef TAXTEST
+  move 'CA' to $State
+#else
+  move 'IN' to $State
+#endif
+  do Get-State-Tax-Data             !Employer ID
+
+
+  if RTRIM(&Employer_ID_SUT,' ') = ''
+    display '*** State Unemployment ID missing in Company State Tax Table ***'
+    display '*********************** Processing stopped *********************'
+    display ' State ' noline
+    display $State
+    display ' Company ' noline
+    display $Company
+    stop
+  end-if
+  move &A.Descr        to $ErName
+
+  move &A.Address1     to $ErAddress1
+  move &A.City         to $ErCity
+  move &A.State        to $ErState
+  move &A.Postal       to $ErPostal
+
+  do Validate-ID-SUT
+  do Write-E-Record
+end-procedure
+
+begin-procedure After-Company
+  if #Count_S > 0
+  !BUG#28179075
+    !do Write-T-Record
+    do Print-Summary-Data('CoTotal')
+
+    add #Co_NlGrs_QTD to #Tot_NlGrs_QTD
+    add #Co_Excess_W_In to #Tot_Excess_W
+    add #Co_Taxable_W_In to #Tot_Taxable_W
+    add #Month1Count to #T_Month1Count
+    add #Month2Count to #T_Month2Count
+    add #Month3Count to #T_Month3Count
+    
+
+    add #Count_S to #Count_F
+
+    move 0 to #Co_NlGrs_QTD
+    move 0 to #Co_TxGrs_QTD
+    move 0 to #Co_ExGrs_QTD
+    move 0 to #Co_Excess_W_In
+    move 0 to #Co_Taxable_W_In
+    move 0 to #Month1Count
+    move 0 to #Month2Count
+    move 0 to #Month3Count
+    
+    move 0 to #Count_S
+    new-page
+  end-if
+end-procedure
+
+begin-procedure Write-A-Record
+  move $CompanyName    to $TransmitterName
+  move &CT.Federal_EIN to $FedEIN 099999999
+  move $CompnyAdd1     to $TransmitterAddress
+  move $CompnyCity        to $TransmitterCity
+  move &CT.State       to $TransmitterState
+  move &CT.Postal      to $Zip
+  move $Zip            to $ZipExtsn ~~~~~~xxxx
+
+  if instr($Zip,'-',6) = 0 and $ZipExtsn <> '    '
+    let $Zip = substr($Zip,1,5) || '-' || substr($Zip,6,4)
+  end-if
+
+  move $Zip         to $ZipExtsn ~~~~~xxxxx
+
+  uppercase $TransmitterName
+  uppercase $TransmitterAddress
+  uppercase $TransmitterCity
+  uppercase $TransmitterContact
+
+  write 10 from    'A':1
+                   $Sp:4
+               $FedEIN:9
+                   $Sp:9
+      $TransmitterName:50
+    $TransmitterAddress:40
+      $TransmitterCity:25
+     $TransmitterState:2
+                   $Sp:8
+                   $Sp:5
+                  $Zip:5
+             $ZipExtsn:5
+   $TransmitterContact:30
+     $TransmitterPhone:10
+  $TransmitterPhoneExt:4
+                   $Sp:68
+
+  add 1 to #RecordCount
+end-procedure
+
+begin-procedure Write-B-Record
+  write 10 from   'B':1
+                  $Sp:145
+     $TransmitterName:44
+   $TransmitterAddress:35
+     $TransmitterCity:20
+    $TransmitterState:2
+                  $Sp:5
+                 $Zip:5
+            $ZipExtsn:5
+                  $Sp:13
+
+  add 1 to #RecordCount
+end-procedure
+
+begin-procedure Write-E-Record
+  uppercase $ErName
+  uppercase $ErAddress
+  uppercase $ErCity
+  move &CT.Federal_EIN to $FedEIN 099999999
+  move &CT.Postal      to $Zip
+  move $Zip            to $ZipExtsn ~~~~~~xxxx
+ 
+  if instr($Zip,'-',6) = 0 and $ZipExtsn <> '    '
+    let $Zip = substr($Zip,1,5) || '-' || substr($Zip,6,4)
+  end-if
+
+  move $Zip         to $ZipExtsn ~~~~~xxxxx
+  write 10 from 'E':1
+           $PmtYear:4
+            $FedEIN:9
+                $Sp:9
+            $ErName:50
+        $ErAddress1:40
+            $ErCity:25
+           $ErState:2
+                $Sp:8
+!BUG#28179075 Zip and ZipExtsn positions swaped
+          $ZipExtsn:5
+               $Zip:5
+                $Sp:14
+     $SUT_ID_Edit07:7
+                $Sp:8
+       $QtrEndMonth:2
+                $Sp:86
+
+  move 'Y' to $RecordWritten
+  add 1 to #Count_E
+  add 1 to #RecordCount
+end-procedure
+
+begin-procedure Write-S-Record
+  
+  write 10 from 'S':1        !   1
+       $NATIONAL_ID:9        !   2 - 10
+          $LastName:20       !  11 - 30
+         $FirstName:12       !  31 - 42
+        $MidInitial:1        !  43
+               '18':2        !  44 - 45
+!BUG#28179075 
+            $ESD_MM:2        !  46 - 47
+            $ESD_DD:2        !  48 - 49
+          $ESD_YYYY:4        !  50 - 53 
+            $POSTAL:5        !  54 - 58
+                $Sp:5        !  59 - 63
+         $NlGrs_QTD:14       !  64 - 77
+!BUG#28179075
+!         $Excess_W:14       !  78 - 91
+!        $Taxable_W:14       !  92 - 105
+                 $Sp:28      ! 78  - 105
+          $Final_soc:6       ! 106 - 111
+                $Sp:35       ! 112 - 146
+!     $SUT_ID_Edit07:7       ! 147 - 153
+!    $SUT_ID_Edit815:8       ! 154 - 161
+!                $Sp:43      ! 162 - 204
+      $SUT_ID_Edit07:6       ! 147 - 152
+                 $Sp:52      ! 153 - 204
+            $FP_TIME:2       ! 205 - 206
+                $Sp:5        ! 207 - 211
+        $MonEmpFlg1:1        ! 212 - 212
+        $MonEmpFlg2:1        ! 213 - 213
+        $MonEmpFlg3:1        ! 214 - 214
+       $QtrEndMonth:2        ! 215 - 216
+           $RptYear:4        ! 217 - 220
+                $Sp:55       ! 221 - 275
+
+  add 1 to #RecordCount
+  add 1 to #Count_S
+  move '' to $NlGrs_QTD
+  move 0  to #NlGrs_QTD
+  move '' to $Excess_W
+  move 0  to #Excess_W
+  move '' to $Taxable_W
+  move 0  to #Taxable_W
+  let $LastName   = ' '
+  let $FirstName  = ' '
+  let $MidInitial = ' '
+end-procedure
+
+begin-procedure Write-T-Record
+  move #Count_S to $Count_S 0999999
+
+  add #Co_NlGrs_QTD to #Co_ExGrs_QTD
+  move #Co_NlGrs_QTD to #Temp1
+  multiply 100 times #Temp1
+  move #Temp1 to $Co_NlGrs_QTD 09999999999999
+
+  subtract #Co_TxGrs_QTD from #Co_ExGrs_QTD
+  move #Co_TxGrs_QTD to #Temp2
+  multiply 100 times #Temp2
+  move #Temp2 to $Co_TxGrs_QTD 09999999999999
+
+  let #Temp3 = #Temp1 - #Temp2
+  move #Temp3 to $Co_ExGrs_QTD 09999999999999
+
+  move #Co_Excess_W_In to #Temp4
+  multiply 100 times #Temp4
+  move #Temp4 to $Co_Excess_W 09999999999999
+
+  move #Co_Taxable_W_In to #Temp5
+  multiply 100 times #Temp5
+  move #Temp5 to $Co_Taxable_W 09999999999999
+
+   write 10 from 'T':1
+            $Count_S:7
+                 $Sp:18
+       $Co_NlGrs_QTD:14
+        $Co_Excess_W:14
+       $Co_Taxable_W:14
+                 $Sp:207
+
+  add 1 to #RecordCount
+  move 0  to #T_Gross
+end-procedure
+
+begin-procedure Write-F-Record
+
+  move #Count_F to $Count_F 0999999999
+  move #Count_E to $Count_E 0999999999
+  move #Tot_NlGrs_QTD to #Temp
+  multiply 100 times #Temp
+  move #Temp to $Tot_NlGrs_QTD 099999999999999
+
+  move #Tot_Excess_W to #Temp6
+  multiply 100 times #Temp6
+  move #Temp6 to $Tot_Excess_W 099999999999999
+
+  move #Tot_Taxable_W to #Temp7
+  multiply 100 times #Temp7
+  move #Temp7 to $Tot_Taxable_W 099999999999999
+  
+   write 10 from 'F':1
+            $Count_F:10
+           $Count_E:10
+                $Sp:19
+    $Tot_NlGrs_QTD:15
+      $Tot_Excess_W:15
+     $Tot_Taxable_W:15
+               $Sp:190
+end-procedure
+
+begin-procedure Validate-ID-SUT
+  move &Employer_ID_SUT to $StateEIN
+  let $SUT_ID_Indiana = rtrim ($StateEIN, ' ')
+  let #lenSUT = length($SUT_ID_Indiana)
+  if #lenSUT < 6
+    do SUT-Invalid
+  end-if
+  let $Six_char_ID  = substr ($SUT_ID_Indiana, 1, 6)
+  do  Is-String-Numeric ($Six_Char_ID, #Rtrn_Value)
+  if #Rtrn_Value = 0
+    do SUT-Invalid
+  end-if
+
+  let $Seventh_Chr = substr ($SUT_ID_Indiana, 7, 1)
+  do  Is-String-Numeric ($Seventh_Chr, #Rtrn_Value)
+  if #Rtrn_Value = 1
+    and $Seventh_Chr <> ''
+    do SUT-Invalid
+  else
+      if #Rtrn_Value = 0
+      and $Seventh_Chr = ''
+        do SUT-Invalid
+      end-if
+  end-if
+
+  let $SUT_ID_Edit07 = substr ($SUT_ID_Indiana, 1, 7)
+
+  if #lenSUT < 11
+    let $SUT_ID_Edit815 = ' 000    '
+  else
+    let $LocCode = substr($SUT_ID_Indiana, 9, 3)
+    do Is-String-Numeric ($LocCode, #Rtrn_Value)
+    if #Rtrn_Value = 0
+      do SUT-Invalid
+    end-if
+    let $SUT_ID_Edit815 = ' ' || $LocCode || '    '
+  end-if
+
+end-procedure
+
+Begin-procedure  SUT-Invalid
+    display ''
+    display 'Invalid Indiana ID number -- process terminating'
+    display 'For Company: ' noline
+    display  $ErName
+    display 'State ID number is: ' noline
+    display  &Employer_ID_SUT
+    display ''
+    display 'Indiana ID should be entered as: 999999X( 999)'
+    display ''
+    stop
+end-procedure
+
+begin-procedure Is-String-Numeric ($Test_String, :#Return_Value)
+  let #Max_Lngth = length ($Test_String)
+  let #Return_Value  =  1
+  let #Char_Pos  =  1
+
+  while #Char_Pos <= #Max_Lngth
+    let $Test_Char = substr ($Test_String, #Char_Pos, 1)
+    let #Which_Digit = instr ('0123456789', $Test_Char, 1)
+    if  #Which_Digit = 0
+      let #Return_Value  =  0
+      break
+    end-if
+    add 1 to #Char_Pos
+  end-while
+end-procedure
+
+begin-procedure Prompts
+  display 'Enter Transmitter Contact Information:'
+  input $TransmitterContact  maxlen=30 '  Contact name (30 char max)'
+  input $TransmitterPhone    maxlen=10 '  Contact phone (e.g. 9995551212)'
+  input $TransmitterPhoneExt maxlen=4  '  Contact 4-digit extension'
+  do Unstring-Phone-No
+
+  while $FileType = ''
+    !input $FileType 'Tape, cartridge or diskette file? (T, C, D or Q to quit)'
+    input $FileType 'Enter X for Electronic filetype or Q to quit.'
+    uppercase $FileType
+    !if INSTR('TDCQ',$FileType,1) = 0
+    if INSTR('XQ',$FileType,1) = 0
+      display ' '
+      !display '***** Enter T, D, C or Q *****'
+      display '***** Enter X or Q *****'
+      display ' '
+      move '' to $FileType
+    end-if
+  end-while
+end-procedure
+
+begin-procedure Convert-Parameters
+  move $RC_QTR_UI.Contact_Person    to $TransmitterContact
+  move $RC_QTR_UI.Contact_Phone     to $TransmitterPhone
+  move $RC_QTR_UI.Contact_Phone_Ext to $TransmitterPhoneExt
+  move $RC_QTR_UI.Diskette_Type     to $DisketteType
+  move $RC_QTR_UI.Reporting_Medium  to $FileType
+  do Unstring-Phone-No
+  
+ if $FileType <> 'X'
+    move 'X' to $FileType
+ end-if
+
+end-procedure
+
+begin-procedure Unstring-Phone-No
+  unstring  $TransmitterPhone by '/' into $str1 $str2
+  unstring $str2 by '-' into $str3 $str4
+  let $TransmitterPhone = $str1 || $str3 || $str4
+end-procedure
+
+begin-procedure Evaluate-File-Type
+
+  evaluate $FileType
+    when = 'Q'
+      stop
+
+    when = 'D'
+      if $Prcs_Process_Instance = ''
+         do Get-Diskette-Format
+         if $DisketteType = '1' or
+            $DisketteType = '2'
+           move 'D3'             to $FilingType
+         else
+           move 'D5'             to $FilingType
+         end-if
+      else
+         move 'D3'               to $FilingType
+      end-if
+      move &TX.Recording_Cd to $Recording_Cd
+      break
+
+    when = 'T'
+      move &TX.Tape_Density      to $Density
+      move &TX.Recording_Cd      to $Recording_Cd
+      move 'SL'                  to $Tape_Label
+      move &TX.Computer_Mfr      to $Computer_Mfr
+      move 'MT'                  to $FilingType
+      move '09'                  to $Tracks
+      break
+
+    when = 'C'
+      move &TX.Recording_Cd      to $Recording_Cd
+      move 'SL'                  to $Tape_Label
+      move &TX.Computer_Mfr      to $Computer_Mfr
+      move 'MC'                  to $FilingType
+
+  end-evaluate
+end-procedure
+
+begin-procedure Open-Diskette-File
+   if #FileExtension <> 0
+      close 10
+   end-if
+   add 1 to #FileExtension
+   move #FileExtension to $FileExtension 099
+   #ifdef OS400
+       let $FileExtension = '(D' || $FileExtension || ')'
+       let $FileID = '{IMPORTPREFIX}' || 'TAX810IN' || $FileExtension
+   #else
+       let $FileID = '{IMPORTPREFIX}' || 'TAX810IN.' || $FileExtension
+   #endif
+   open $FileID as 10 for-writing record=275:fixed
+   move 0 to #RecordCount
+end-procedure
+
+begin-procedure Open-Tape-File
+  open '{IMPORTPREFIX}TAX810IN{IMPORTSUFFIX}' as 10 for-writing record=275:fixed
+end-procedure
+
+begin-procedure Get-Quarter-Dates
+
+    move &TX.Balance_Year   to $EffYear 9999
+    move &TX.Balance_Qtr    to $EffQuarter 9
+
+    let #EffYear       = to_number($EffYear)
+    let #EffQuarter    = to_number($EffQuarter)
+
+    evaluate $EffQuarter
+        when = '1'
+            move '01'       to $1stmonth
+            move '02'       to $2ndmonth
+            move '03'       to $3rdmonth
+            move '31'       to $Lastday
+            move 'Jan'      to $Month1_Name
+            move 'Feb'      to $Month2_Name
+            move 'Mar'      to $Month3_Name
+            break
+        when = '2'
+            move '04'       to $1stmonth
+            move '05'       to $2ndmonth
+            move '06'       to $3rdmonth
+            move '30'       to $Lastday
+            move 'Apr'      to $Month1_Name
+            move 'May'      to $Month2_Name
+            move 'Jun'      to $Month3_Name
+            break
+        when = '3'
+            move '07'       to $1stmonth
+            move '08'       to $2ndmonth
+            move '09'       to $3rdmonth
+            move '30'       to $Lastday
+            move 'Jul'      to $Month1_Name
+            move 'Aug'      to $Month2_Name
+            move 'Sep'      to $Month3_Name
+            break
+        when-other
+            move '10'       to $1stmonth
+            move '11'       to $2ndmonth
+            move '12'       to $3rdmonth
+            move '31'       to $Lastday
+            move 'Oct'      to $Month1_Name
+            move 'Nov'      to $Month2_Name
+            move 'Dec'      to $Month3_Name
+    end-evaluate
+
+    let $Date_Field         =  $EffYear || $1stMonth || '01'
+    do Format-DateTime($Date_Field, $First_Day_Of_Quarter, {DEFCMP},'','native')
+
+    let $Date_Field         =  $EffYear || $3rdMonth || $Lastday
+    do Format-DateTime($Date_Field, $Last_Day_Of_Quarter, {DEFCMP},'','native')
+
+    let $12thOfMonth1       =  $EffYear || $1stMonth || '12'
+    do Format-DateTime($12thOfMonth1, $12th_Of_1st_Month, {DEFCMP},'','native')
+
+    let $12thOfMonth2       =  $EffYear || $2ndMonth || '12'
+    do Format-DateTime($12thOfMonth2, $12th_Of_2nd_Month, {DEFCMP},'','native')
+
+    let $12thOfMonth3       =  $EffYear || $3rdMonth || '12'
+    do Format-DateTime($12thOfMonth3, $12th_Of_3rd_Month, {DEFCMP},'','native')
+
+end-procedure
+
+Begin-Procedure GetZIP-PrimaryLoc
+ MOVE ' ' TO $POSTAL
+begin-SELECT
+TL.POSTAL 
+   MOVE &TL.POSTAL TO $POSTAL
+FROM   PS_TAX_LOCATION1 TL
+WHERE  TL.TAX_LOCATION_CD = $TAX_LOCATION_CD
+end-SELECT
+
+End-Procedure
+
+
+begin-procedure Get-Monthly-Employment-Indicator
+begin-SELECT
+A1.COMPANY
+A1.PAYGROUP
+A1.PAY_END_DT
+A1.EMPLID
+A1.EMPL_RCD
+A1.EARNS_BEGIN_DT
+A1.EARNS_END_DT
+A1.PAY_LINE_STATUS
+
+   move &A1.EARNS_BEGIN_DT to $EarnsBD
+   move &A1.EARNS_END_DT   to $EarnsED
+
+   do Format-DateTime($EarnsBD, $EarnsBeginDt,{DEFCMP},'','')
+   do Format-DateTime($EarnsED, $EarnsEndDt,{DEFCMP},'','')
+
+   if $EarnsBeginDt <= $12thOfMonth1
+     if $EarnsEndDt >= $12thOfMonth1
+          let $MonEmpFlg1 = 'Y'
+      end-if
+   end-if
+
+    if $EarnsBeginDt <= $12thOfMonth2
+      if $EarnsEndDt >= $12thOfMonth2
+          let $MonEmpFlg2 = 'Y'
+      end-if
+    end-if
+
+    if $EarnsBeginDt <= $12thOfMonth3
+      if $EarnsEndDt >= $12thOfMonth3
+           let $MonEmpFlg3 = 'Y'
+       end-if
+    end-if
+
+ FROM PS_PAY_EARNINGS A1, PS_PAY_CHECK C1
+WHERE A1.COMPANY = $Company
+  AND A1.EMPLID  = &C.EMPLID
+  AND A1.PAY_END_DT BETWEEN $First_Day_Of_Quarter AND $Last_Day_Of_Quarter
+  AND A1.PAY_LINE_STATUS = 'F'
+  AND (($12th_Of_1st_Month BETWEEN A1.EARNS_BEGIN_DT AND A1.EARNS_END_DT)
+    OR ($12th_Of_2nd_Month BETWEEN A1.EARNS_BEGIN_DT AND A1.EARNS_END_DT)
+    OR ($12th_Of_3rd_Month BETWEEN A1.EARNS_BEGIN_DT AND A1.EARNS_END_DT))
+  AND A1.COMPANY = C1.COMPANY
+  AND A1.PAYGROUP = C1.PAYGROUP
+  AND A1.PAY_END_DT = C1.PAY_END_DT
+  AND A1.OFF_CYCLE = C1.OFF_CYCLE
+  AND A1.PAGE_NUM = C1.PAGE_NUM
+  AND A1.LINE_NUM = C1.LINE_NUM
+  AND C1.PAYCHECK_STATUS IN ('F','A','R')
+end-SELECT
+end-procedure
+
+
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'getstdta.sqc'  !Get-State-Tax-Data procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'datemath.sqc'  !Routines for date and time  
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'getfrmat.sqc'  !Get-Diskette-Format procedure
+#Include 'rptsmmry.sqc'  !Print-Summary-Data procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'txrnctl1.sqc'  !Process Scheduler Run Controls
+#Include 'getaddr.sqc'   !Get Person Current Address

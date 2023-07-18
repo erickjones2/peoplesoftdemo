@@ -1,0 +1,297 @@
+!***********************************************
+!  parpt1: Form 5500 Participant Count
+!***********************************************
+!
+! 6/8/2004  PY - MODIFY FOR PERSON MODEL AND MULTIPLE JOBS
+!
+!  modified by John Gonsalves on 7/23/2001
+!
+!  The user must now update participation in addition to status codes
+!  prior to running form 5500 count
+!
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/17:14:59:54                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+
+begin-report
+  DO Init-DateTime
+  DO Init-Number
+  DO Get-Current-DateTime
+  DO P-100-Init-Report
+  DO P-200-Process-Main
+  DO P-500-End-Report
+  DO StdApi-Term
+  END-report
+
+#Include 'setup06.sqc'   !Printer and page-size initialization
+
+
+begin-procedure P-100-Init-Report
+  OPEN '{IMPORTPREFIX}PAWPC01.EXT{IMPORTSUFFIX}' as 1 for-writing record=1000;fixed_nolf
+  DO StdApi-Init
+  IF $prcs_process_instance = ''
+   DO P-125-Ask-values
+  ELSE
+   DO P-150-Get-values-Pa
+  END-IF
+   let #a_count = 0
+   let #b_count = 0
+   let #c_count = 0
+   let #e_count = 0
+   let #f_count = 0
+   let #h_count = 0
+end-procedure
+
+begin-procedure P-125-Ask-Values
+  INPUT $ben_plan_inpt             'Enter Benefit Plan'
+  INPUT $asofdate_inpt             'Enter As of Date'
+  LET $benefit_plan     = rtrim($ben_plan_inpt,'')
+  LET $asofdate         = rtrim($asofdate_inpt,'')
+end-procedure
+
+begin-procedure P-150-Get-Values-Pa
+  DO Select-Parameters-PA
+  LET $benefit_plan      = &pa_run_cntl.benefit_plan
+  LET $asofdate          = &pa_run_cntl.as_of_date
+  do Convert-To-DTU-Date (&pa_run_cntl.as_of_date,$work_asofdate)
+  do dtu-subtract-days ($work_asofdate, 365, $subtracted_date)
+  do Convert-From-DTU-Date ($subtracted_date, $prior_year_date)
+end-procedure
+
+begin-procedure P-200-Process-Main
+let $sql-statement = 'PASPC01 - P-200-Process-Main'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+MAIN1.EMPLID
+MAIN1.PENSION_STATUS
+   let $emplid = &MAIN1.EMPLID
+   DO P-300-Determine-Vesting
+   let $pension_status_code = &MAIN1.PENSION_STATUS
+   if $pension_status_code = 'TNV' or $pension_status_code ='TDF'
+       or $pension_status_code ='TST' or $pension_status_code ='TPY' or
+       $pension_status_code ='RDF' or $pension_status_code ='RPY'
+       do P-310-Determine-Term-Date
+     end-if
+   DO P-325-Process-Count
+FROM PS_PA_EMP_PEN_STAT MAIN1
+WHERE MAIN1.BENEFIT_PLAN = $benefit_plan
+AND MAIN1.EFFDT = (SELECT MAX(MAIN2.EFFDT) FROM PS_PA_EMP_PEN_STAT MAIN2
+WHERE MAIN2.EFFDT <= $ASOFDATE AND MAIN2.BENEFIT_PLAN = $benefit_plan
+AND MAIN2.EMPLID=MAIN1.EMPLID)
+END-SELECT
+end-procedure
+
+begin-procedure P-300-Determine-Vesting
+let $FOUND_FLAG='N'
+let $sql-statement = 'PASPC01 - P-300-Determine-Vesting'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+VST.VESTING_PERCENT
+VST.EMPLID
+    let $FOUND_FLAG='Y'
+    let #vst_percent = &vst.vesting_percent
+FROM PS_PA_EMP_PEN_VEST VST
+WHERE VST.BENEFIT_PLAN = $benefit_plan
+AND VST.EMPLID = $emplid
+AND VST.EFFDT = (SELECT MAX(VST2.EFFDT) FROM PS_PA_EMP_PEN_VEST VST2
+WHERE VST2.EFFDT <= $ASOFDATE AND VST2.BENEFIT_PLAN = $benefit_plan
+AND VST2.EMPLID=VST.EMPLID)
+END-SELECT
+IF $FOUND_FLAG='N'
+   LET $ERROR_STATEMENT='There is no vesting record for ' || $EMPLID || '.  Vesting percent assumed to be zero.'
+   DISPLAY $ERROR_STATEMENT
+   let #vst_percent=0
+END-IF
+end-procedure
+
+
+begin-procedure P-310-Determine-Term-Date
+let $FOUND_FLAG='N'
+let $termed_within_year = 'N'
+
+let $term_date_within_year = 'N'
+
+let $sql-statement = 'PASPC01 - P-310-Determine-Term-Date'
+
+let $active_jobs = 'N'
+
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+JOB.EFFDT
+JOB.EMPL_STATUS
+JOB.HR_STATUS
+JOB.PER_ORG
+     let $empl_status = &JOB.EMPL_STATUS
+     if $active_jobs = 'N'
+         if $empl_status = 'Q' or $empl_status = 'R' or 
+         $empl_status = 'T' or $empl_status = 'U' 
+             let $job_effdt = &JOB.EFFDT
+             do Format-DateTime($job_effdt, $job_effdt, {DEFDATE}, '', '')
+
+             if $job_effdt >= $prior_year_date
+                 let $term_date_within_year = 'Y'
+             end-if
+         else
+            let $hr_status = &JOB.HR_STATUS
+            let $per_org = &JOB.PER_ORG
+            if $hr_status = 'A' and $per_org = 'EMP'
+                let $active_jobs = 'Y'
+            end-if
+         end-if
+     end-if
+
+FROM PS_JOB JOB
+WHERE JOB.EMPLID = $emplid
+AND JOB.EFFDT = (SELECT MAX (JOB2.EFFDT) FROM PS_JOB JOB2
+WHERE JOB2.EFFDT <= $ASOFDATE 
+AND JOB2.EMPLID=JOB.EMPLID
+AND JOB2.EMPL_RCD = JOB.EMPL_RCD)
+AND JOB.EFFSEQ = (SELECT MAX(JOB3.EFFSEQ) FROM PS_JOB JOB3
+WHERE JOB3.EMPLID = JOB.EMPLID
+AND JOB3.EMPL_RCD = JOB.EMPL_RCD
+AND JOB3.EFFDT = JOB.EFFDT)
+END-SELECT
+
+if $active_jobs = 'N' and $term_date_within_year = 'Y'
+   let $termed_within_year = 'Y'
+end-if
+
+!
+let $FOUND_FLAG='N'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+PRT.PART_STATUS
+PRT.EMPLID
+    let $FOUND_FLAG='Y'
+    let $prt_stat = &prt.part_status
+FROM PS_PA_PRTC_PRTPN PRT
+WHERE PRT.BENEFIT_PLAN = $benefit_plan
+AND PRT.EMPLID = $emplid
+AND PRT.EFFDT = (SELECT MAX(PRT2.EFFDT) FROM PS_PA_PRTC_PRTPN PRT2
+WHERE PRT2.EFFDT <= $ASOFDATE AND PRT2.BENEFIT_PLAN = $benefit_plan
+AND PRT2.EMPLID=PRT.EMPLID)
+END-SELECT
+IF $FOUND_FLAG='N'
+let $prt-stat='N'
+END-IF
+!
+end-procedure
+
+begin-procedure P-325-Process-Count
+
+! #a_count
+   if ($pension_status_code = 'APR' or
+      $pension_status_code = 'ANS' or
+      $pension_status_code = 'AVS' or
+      $pension_status_code = 'A70')
+    add 1 to #a_count
+    add 1 to #f_count
+   end-if
+
+! #b_count
+   if ($pension_status_code = 'TPY' or
+      $pension_status_code = 'RPY' or
+      $pension_status_code = 'DPY')
+    add 1 to #b_count
+    add 1 to #f_count
+   end-if
+
+! #c_count
+   if ($pension_status_code = 'TDF' or
+      $pension_status_code = 'RDF' or
+      $pension_status_code = 'DDF')
+    add 1 to #c_count
+    add 1 to #f_count
+   end-if
+
+! #e_count
+   if ($pension_status_code = 'BDF' or
+      $pension_status_code = 'BPY' or
+      $pension_status_code = 'XBP')
+    add 1 to #e_count
+    add 1 to #f_count
+   end-if
+
+! #h_count
+   if $pension_status_code = 'TNV' and $termed_within_year = 'Y' and $prt_stat = 'Y'
+    add 1 to #h_count
+   else
+   if ($pension_status_code = 'TDF' or
+      $pension_status_code = 'TST' or
+      $pension_status_code = 'TPY' or
+      $pension_status_code = 'RDF' or
+      $pension_status_code = 'RPY')
+      and  #vst_percent < 1 and $termed_within_year = 'Y'
+    add 1 to #h_count
+   end-if
+   end-if
+end-procedure
+
+
+
+
+
+begin-procedure P-500-End-Report
+let $a_count  = to_Char(#a_count)
+let $b_count  = to_Char(#b_count)
+let $c_count  = to_Char(#c_count)
+let $e_count  = to_Char(#e_count)
+let $f_count  = to_Char(#f_count)
+let $h_count  = to_Char(#h_count)
+
+write 1 from
+'A_COUNT,B_COUNT,C_COUNT,E_COUNT,H_COUNT'
+
+write 1 from
+$a_count  ','
+$b_count   ','
+$c_count   ','
+$e_count   ','
+$h_count
+
+do format-datetime($asofdate, $countdate, {DEFMDY}, '', '')
+
+write 1 from
+'Total number of participants as of '
+$countdate
+
+write 1 from
+$f_count
+
+close 1
+end-procedure
+
+#include 'paextrct.sqc'    !Report ID INPUT
+#include 'stdapi.sqc'    !Update Process Request API
+#include 'parnctl1.sqc'  !Get run control parameter values
+#include 'pagetval.sqc'  !Get values mask routines
+#include 'readxlat.sqc'  !read translate table
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'datemath.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers

@@ -1,0 +1,587 @@
+!***********************************************************************
+!  TAX810NE:  Qtrly Wage List - Tape - NEBRASKA                        *
+!                                                                      *
+!             NOTE: "#IFDEF TAXTEST" in main SELECT is used for        *
+!                   testing this report against DEMO database          *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2017, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  25838040                                            !
+!                                                                      *
+!***********************************************************************
+
+
+#include 'setenv.sqc' !Set environment
+#include 'setup31.sqc' !Printer and page-size initialization
+#include 'usarpt.sqc'  ! NID_COUNTRY defined
+
+begin-report
+  do Init-Report
+
+! These variables are used by rptsmmry.sqc
+  Let $Prnt_CoTxGrs = 'N'
+  Let $Prnt_CoExGrs = 'N'
+
+  do Process-Main
+
+  if #FileCount > 1
+     close 10
+  end-if
+
+  if $RecordWritten = 'Y'
+    display ''
+    display 'Upon successful conclusion of this program, one or more'
+    display 'files will have been created:'
+    display ''
+    display '  T81NExxx   where "xxx" represents a volume identifier'
+    display '             for each company code.'
+    display ''
+    display 'The file(s) contain the CSV format required for reporting quarterly wages'
+    display 'to the Nebraska Department of Labor.'
+    display ''
+    display 'Follow the instructions from the department for preparing'
+    display 'and submitting the file(s).'
+    display ''
+  else
+    do Print-Summary-Data('NoData')
+  end-if
+
+  do Stdapi-Term
+
+end-report
+
+begin-procedure Init-Report
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+
+  move '0' to $Year4
+  move '' to $DDelimiter
+  do Format-DateTime($AsOfToday,  $CurrentDate, {DEFMDY}, '', '')
+  do Get-Calendar-Year-Id
+  do Stdapi-Init
+
+  do Initialization
+  move 'TAX810NE' to $ReportID
+  move 'Nebraska Quarterly UI Wage Report' to $ReportTitle
+  display ''
+  display 'Creating file for Nebraska UI Wage Reporting'
+  display ''
+
+end-procedure
+
+begin-procedure Initialization
+#ifdef TAXTEST
+  move 'CA'              to $State
+#else
+  move 'NE'              to $State
+#endif
+
+  do Delete-Temp-Name-Table
+  do Get-Tax-Reporting-Run-Controls
+  move &TX.Balance_Year to $RptYear 9999
+  move $RptYear          to $CalendarYr
+  move $RptYear          to $RptYear ~~xx
+  move $PeriodEndDate    to $AsOfDate
+
+  display ' '
+  display 'Processing balances for '   noline
+  display $RptQtrYr
+
+  move 1  to #FileCount
+
+  if $PRCS_Process_Instance = ''
+     do Prompts
+     do Get-Contact-Person
+  else
+     do Select-Parameters
+     do Convert-Parameters
+  end-if
+
+end-procedure
+
+
+begin-procedure Delete-Temp-Name-Table
+begin-SQL on-error=Ignore
+  DELETE FROM PS_R_TAX810ST
+end-SQL
+end-procedure
+
+begin-procedure Ignore
+! dummy procedure to avoid SQL error message on delete of empty table
+end-procedure
+
+begin-procedure Process-Main
+
+  move &TX.Company       to $Company  !TX.Company is the Transmitter
+  if RTRIM($Company,' ') = ''
+    display '*** Company field blank on Tax Run Control Record ***'
+    display '***************** Processing stopped ****************'
+    stop
+  end-if
+
+begin-SELECT
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+end-SELECT
+
+begin-SELECT
+A.COMPANY
+A.DESCR
+A.FEDERAL_EIN
+A.ADDRESS1
+A.CITY
+A.STATE
+A.POSTAL
+
+  move &A.Company to $Company
+  move &A.Descr   to $CompanyName
+
+  move '' to $priorEmplID
+  do Read-Employee-Data
+
+FROM  PS_COMPANY_TBL A
+WHERE A.EFF_STATUS = 'A'
+  AND A.TAX_REPORT_TYPE = '2'
+  AND A.EFFDT =
+  (SELECT MAX(EFFDT)
+     FROM PS_COMPANY_TBL
+     WHERE  COMPANY = A.COMPANY
+       AND  EFFDT  <= $AsOfDate)
+ORDER BY COMPANY
+end-SELECT
+  if #Count_F > 0
+     do Print-Summary-Data('FileNames')
+  end-if
+end-procedure
+
+begin-procedure Read-Employee-Data
+begin-SELECT
+C.COMPANY    () on-break print=never before=Before-Company
+                                     AFTER=AFTER-COMPANY
+C.EMPLID
+C.NLGRS_QTD
+C.TXGRS_QTD
+D1.NATIONAL_ID
+D.LAST_NAME
+D.FIRST_NAME
+
+  if &C.NlGrs_QTD > 0
+    do Process-Employee
+  else
+    do Print-Summary-Data('NegWage')
+  end-if
+
+FROM  PS_TAX_BALANCE C, PS_NAMES D, PS_PERS_NID D1
+WHERE C.COMPANY       = &A.Company
+  AND D.EMPLID        = C.EMPLID
+  AND C.TAX_CLASS     = 'U'
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+#ifdef TAXTEST
+  AND C.STATE         = 'CA'
+#else
+  AND C.STATE         = 'NE'
+#endif
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND C.NLGRS_QTD <> 0
+  AND D.EMPLID            = D1.EMPLID
+  AND D.NAME_TYPE = 'PRI'
+  AND D.EFFDT =
+      (SELECT MAX(DX.EFFDT)
+       FROM   PS_NAMES DX
+       WHERE  DX.EMPLID    = D.EMPLID
+         AND  DX.NAME_TYPE = D.NAME_TYPE
+         AND  DX.EFFDT    <= $AsOfDate)
+  AND D1.COUNTRY = {NID_Country}
+  AND D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+ORDER BY D1.NATIONAL_ID
+end-SELECT
+end-procedure
+
+begin-procedure Process-Employee
+  move &D1.NATIONAL_ID to $S123 xxx       !isolate first 3 digits
+  MOVE ' ' TO $NATIONAL_ID
+  if $S123 = &Temp_SSN_Mask or RTRIM(&D1.NATIONAL_ID, ' ') = ''
+    move 'I        '   to $NATIONAL_ID
+  end-if
+  MOVE &D.LAST_NAME    TO $LAST_NAME
+  MOVE &D.FIRST_NAME   TO $FIRST_NAME
+  UPPERCASE $LAST_NAME
+  UPPERCASE $FIRST_NAME
+  LET $QUOTES_MARK = '"'
+  LET $NAME =  $QUOTES_MARK || $LAST_NAME || ',' || $FIRST_NAME || $QUOTES_MARK
+
+  IF $NATIONAL_ID = ' '
+     MOVE &D1.NATIONAL_ID to $NATIONAL_ID XXX-XX-XXXX
+  END-IF
+  
+  move &C.NlGrs_QTD to #NlGrs_QTD
+  add #NlGrs_QTD to #Co_NlGrs_QTD
+
+  MOVE #NlGrs_QTD TO $NlGrs_QTD_Aux
+  LET #PointPos = INSTR ($NlGrs_QTD_Aux, '.',1)
+  LET #PointPos = #PointPos - 1
+  LET $NlGrs_QTD = SUBSTR($NlGrs_QTD_Aux,1,#PointPos)
+  LET #PointPos = #PointPos + 2
+  LET $NlGrs_QTD_Decimal = SUBSTR($NlGrs_QTD_Aux,#PointPos,2)
+  LET $NlGrs_QTD = $NlGrs_QTD || '.' || $NlGrs_QTD_Decimal
+
+  MOVE 'PS_RC_TAX810NE D'  to $TAX810X1
+  MOVE 'PS_RC_TAX810NE D1' to $TAX810X2
+  MOVE 'PS_RC_TAX810NE D2' to $TAX810X3
+  MOVE 'PS_RC_TAX810NE D3' to $TAX810X4
+  MOVE &C.EMPLID TO $EmplID
+  DO Get-Hours
+  IF #Hours > 9999
+     LET $Hours = '9999'
+  ELSE
+     LET #Hours = #Hours + .99
+     LET #Hours = trunc (#Hours,0)
+     DO Format-Number(#Hours, $Hours, '0999')
+  END-IF
+  MOVE '' TO $JOB-DESCR
+  Do Get-Job-Data
+  
+  MOVE '' TO $NlGrs_QTD_Aux
+  MOVE '' TO $NlGrs_QTD_Decimal
+  MOVE 0 TO #PointPos
+  add 1 to #Count_S
+  add 1 to #Count_T
+
+  do write-s-record
+  add 1 to #Count_R
+
+end-procedure
+
+begin-procedure Before-Company
+  do Get-Company-Data
+
+  do Get-State-Tax-Data             !Employer ID
+  if RTRIM(&Employer_ID_SUT,' ') = ''
+    display '*** State Unemployment ID missing in Company State Tax Table ***'
+    display '*********************** Processing stopped *********************'
+    display 'Company' noline
+    display $Company
+    stop
+  end-if
+
+  let $StateEIN = RTRIM(&Employer_ID_SUT,' ')
+  while INSTR($StateEIN,'-',1) <> 0
+    let #Hyphen = INSTR($StateEIN,'-',1)
+    if #Hyphen > 0
+      let $StateEIN = SUBSTR($StateEIN,1,(#Hyphen - 1)) ||
+                      SUBSTR($StateEIN,(#Hyphen + 1),12)
+    end-if
+  end-while
+  while INSTR($StateEIN,' ',1) <> 0
+    let #Spaces = INSTR($StateEIN,' ',1)
+    if #Spaces > 0
+      let $StateEIN = SUBSTR($StateEIN,1,(#Spaces - 1)) ||
+                      SUBSTR($StateEIN,(#Spaces + 1),12)
+    end-if
+  end-while
+  while INSTR($StateEIN,'.',1) <> 0
+    let #Marks = INSTR($StateEIN,'.',1)
+    if #Marks > 0
+      let $StateEIN = SUBSTR($StateEIN,1,(#Marks - 1)) ||
+                      SUBSTR($StateEIN,(#Marks + 1),12)
+    end-if
+  end-while
+  move $StateEIN to $StateEIN 099999999999
+
+  do Open-File
+  Do Write-CSV-Heading
+  do Build-Temp-Name-Table
+
+end-procedure
+
+begin-procedure After-Company
+  if #Count_S > 0
+    do Print-Summary-Data('CoTotal')
+
+    add #Co_NlGrs_QTD to #Tot_NlGrs_QTD
+    add #Count_S to #Count_F
+    add #Count_R to #Count_R_Total
+
+    move 0 to #Co_NlGrs_QTD
+    move 0 to #Count_S
+    move 0 to #Count_R
+
+    new-page
+  end-if
+end-procedure
+
+BEGIN-PROCEDURE Get-Job-Data
+ MOVE ' ' TO $JOB_INDICATOR
+BEGIN-SELECT
+P.JOBCODE
+P.SETID_JOBCODE
+P.JOB_INDICATOR
+  MOVE &P.JobCode TO $JobCode
+  MOVE &P.SETID_JOBCODE TO $SETID_JobCode
+  MOVE &P.JOB_INDICATOR TO $JOB_INDICATOR
+
+  DO GET-JOB-DESCR
+
+FROM  PS_JOB P
+     WHERE  P.EMPLID  = $EmplID
+       AND  P.COMPANY = $Company
+       AND  P.EFFDT  = (SELECT MAX(EFFDT)
+            FROM PS_JOB P1
+            WHERE  P1.EMPLID = P.EMPLID
+              AND  P1.COMPANY   = P.COMPANY
+              AND  P1.JOB_INDICATOR = P.JOB_INDICATOR
+              AND  P1.EFFDT  <= $AsOfDate)
+       AND  P.EFFSEQ  = (SELECT MAX(EFFSEQ)
+            FROM PS_JOB P2
+            WHERE P2.EMPLID    = P.EMPLID
+              AND P2.COMPANY   = P.COMPANY
+              AND P2.JOB_INDICATOR = P.JOB_INDICATOR
+              AND P2.EFFDT     = P.EFFDT)
+       AND P.JOB_INDICATOR = 'P'
+END-SELECT
+ IF $JOB_INDICATOR = ' '
+    DO GET-JOB-DESCR-ALL-COMPANIES
+ END-IF
+END-PROCEDURE
+
+BEGIN-PROCEDURE GET-JOB-DESCR-ALL-COMPANIES
+ MOVE '' TO $JOB_INDICATOR
+BEGIN-SELECT
+P3.JOBCODE
+P3.SETID_JOBCODE
+
+  MOVE &P3.JobCode TO $JobCode
+  MOVE &P3.SETID_JOBCODE TO $SETID_JobCode
+  DO GET-JOB-DESCR
+
+FROM  PS_JOB P3
+     WHERE  P3.EMPLID  = $EmplID
+       AND  P3.COMPANY = $Company
+       AND  P3.JOB_INDICATOR = 'S'
+       AND  P3.EFFDT  = (SELECT MAX(EFFDT)
+            FROM PS_JOB P4
+            WHERE  P4.EMPLID = P3.EMPLID
+              AND  P4.COMPANY   = P3.COMPANY
+              AND  P4.JOB_INDICATOR = P3.JOB_INDICATOR
+              AND  P4.EFFDT  <= $AsOfDate)
+       AND  P3.EFFSEQ  = (SELECT MAX(EFFSEQ)
+            FROM PS_JOB P5
+            WHERE P5.EMPLID    = P3.EMPLID
+              AND P5.COMPANY   = P3.COMPANY
+              AND P5.JOB_INDICATOR = P3.JOB_INDICATOR
+              AND P5.EFFDT     = P3.EFFDT)
+END-SELECT
+END-PROCEDURE
+
+BEGIN-PROCEDURE GET-JOB-DESCR
+BEGIN-SELECT
+J.DESCR
+   MOVE &J.DESCR TO $JOB-DESCR
+FROM  PS_JOBCODE_TBL J
+WHERE J.SETID = $SETID_JobCode
+  AND J.JOBCODE = $JobCode
+  AND J.EFFDT = (SELECT MAX(EFFDT)
+     FROM PS_JOBCODE_TBL
+     WHERE  SETID = J.SETID
+       AND  JOBCODE = J.JOBCODE
+       AND  EFFDT  <= $AsOfDate)
+end-SELECT
+end-procedure
+
+
+Begin-Procedure Write-CSV-Heading
+
+  let $OutputF = 'CSV' 
+  write 10 from $OutputF
+
+End-Procedure
+
+begin-procedure Write-Tape-E
+
+  write 10 from 'E':1
+                $Sp:157
+                'F':1
+                $Sp:8
+                'B':1
+               '31':2
+                $Sp:5
+          $StateEIN:12
+                $Sp:88
+
+  move 'Y' to $RecordWritten
+end-procedure
+
+begin-procedure Write-Disk-Header1
+
+ write 10 from  'H':1
+           $RptYear:2
+          $RptQtrYr:1
+          $StateEIN:10
+            $FedEIN:9
+         $ErAddress:30
+            $ErCity:25
+
+  add 1 to #RecordCount
+
+end-procedure
+
+begin-procedure Write-Disk-Header2
+
+ write 10 from          'H':1
+  $RC_QTR_UI.Contact_Person:30
+   $RC_QTR_UI.Contact_Phone:10
+                    $ErName:30
+                   $ErState:2
+                     $ErZip:5
+
+  add 1 to #RecordCount
+
+end-procedure
+
+begin-procedure Write-S-Record
+  let $OutputF = $NATIONAL_ID  || ',' || $NAME || ',' || $NlGrs_QTD ||
+                 ',' || $Hours || ',' || $JOB-DESCR
+  write 10 from  $OutputF
+  move '' to $NlGrs_QTD
+  move 0  to #NlGrs_QTD
+  MOVE '' TO $Hours
+  move 'Y' to $RecordWritten
+end-procedure
+
+
+
+begin-procedure Prompts
+
+  let $FileType = 'C'
+end-procedure
+
+begin-procedure Convert-Parameters
+
+  move $RC_QTR_UI.Reporting_Medium to $FileType
+  move $RC_QTR_UI.Diskette_Type    to $DisketteType
+  move $RC_QTR_UI.Contact_Person   to $ContactName
+  move $RC_QTR_UI.Contact_Phone    to $ContactPhone
+
+  unstring  $ContactPhone  by '/' into $str1 $str2
+  unstring $str2 by '-' into $str3 $str4
+  let $ContactPhone  = $str1 || $str3 || $str4
+end-procedure
+
+
+begin-procedure Get-Contact-Person
+
+    display '  '
+  while $ContactName = ''
+    display 'Enter the name of the person to be contacted in case of '
+    display 'questions or problems.'
+    input $ContactName 'Enter name up to 30 characters '
+    uppercase $ContactName
+  end-while
+    display '  '
+
+    display '  '
+  while $ContactPhone = ''
+    display 'Enter the contact person''s telephone number as area code'
+    display 'followed by 7-digit phone number, with no parentheses or '
+    display 'hyphens. '
+    input $ContactPhone 'Enter ten-digit number '
+  end-while
+    display '  '
+
+    move $ContactName to $RC_QTR_UI.Contact_Person
+    move $ContactPhone to $RC_QTR_UI.Contact_Phone
+
+end-procedure
+
+
+begin-procedure Open-File
+
+  if #FileCount > 1
+     close 10
+  end-if
+
+  move 'CSV' to $FileExtension
+#ifdef OS400
+  let $FileID1 = 'T81NE' || &A.Company || '(D' || $FileExtension || ')'
+#else
+  #ifdef MVS
+    let $FileID1 = 'T81NE' || &A.Company
+  #else
+    let $FileID1 = 'T81NE' || &A.Company || '.' || $FileExtension
+  #endif
+#endif
+  let $FileID1 = '{IMPORTPREFIX}' || $FileID1
+#ifdef MVS
+  open $FileID1 as 10 for-writing record=275:fixed_nolf
+#else
+  open $FileID1 as 10 for-writing record=275:fixed
+#endif
+  Add 1 to #FileCount
+
+end-procedure
+
+
+
+begin-Procedure Build-Temp-Name-Table
+begin-SQL on-error=Insert-Name-Error
+  INSERT INTO PS_R_TAX810ST (STATE, COMPANY)
+         VALUES ($State, &A.Company)
+end-SQL
+end-Procedure
+
+begin-procedure Insert-Name-Error
+  display 'Error on insert to temporary Name table '
+end-procedure
+
+
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'getstdta.sqc'  !Get-State-Tax-Data procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'getfrmat.sqc'  !Get-Diskette-Format procedure
+#Include 'rptsmmry.sqc'  !Print-Summary-Data procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'txrnctl1.sqc'  !Get-Run-Control procedure
+#Include 'txovrflw.sqc'  !Split-S-Record
+#Include 'gethours.sqc'  !Get-Hours procedure

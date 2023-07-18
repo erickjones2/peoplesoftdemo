@@ -1,0 +1,2653 @@
+!***********************************************************************
+!  GPBRSD01:  Unemployment Insurance File/Report                       *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2017, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                *
+!           $Bug:  27220378                                            *
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc'   ! set enviroment
+
+begin-setup
+#include 'setupdb.sqc'
+
+declare-variable
+  date $dvar $dter $dvar1 $dvar2 $dvar67 $dhir $dter1 $TerminationDt 
+  integer #element
+end-declare
+
+declare-layout THIS_REPORT
+  orientation = PORTRAIT
+  paper-size = (8.27,11.69)
+end-declare
+
+declare-report THIS_REPORT
+  layout=THIS_REPORT
+end-declare
+
+end-setup
+
+#define MAX_DETAIL    2000   !Max elements in Detail Array
+
+!**************************************
+begin-report
+!#debug show '*** Report ***'
+!**************************************
+move '1' to $ReportDateType   ! Set for date to format as DMY
+move '1' to $ReportYear4      ! Set for year to be formatted YYYY
+do Init-Report
+do Select-Parameters
+let $SecurityClauseWithoutERN = ''
+let $_TableAlias = 'A'
+do Security-Param
+
+if $OutType = '1' or $OutType = '3'
+   do Process-Main
+
+if #count_Emplid > 0
+   do Open-File
+   do Write-File
+   close 1
+End-if   
+   clear-array name=UnemplReg
+else
+   if $OutType = '4'
+      do Process-Main
+      do Write-File
+      clear-array name=UnemplReg
+   end-if
+end-if
+end-report
+
+!**************************************
+begin-procedure Init-Report
+!#debug show '*** Init Report ***'
+!**************************************
+  do Init-DateTime
+  do Init-Number
+  do Stdapi-Init
+  do Get-Current-DateTime
+  move 'GPBRSD01' to $ReportID
+  move 'Requerimento de Seguro-Desemprego - SD' to $ReportTitle
+  move 'Ver. 2016.18'    to $ReportVersion
+  move '.'                to $ReportSThousand
+  move ','                to $ReportSDecimal
+
+  display $ReportID
+  display $ReportTitle
+  display $ReportVersion
+  date-time () hh:mi:ss &timeBegan
+  display 'Report Began: ' noline
+  display &timeBegan
+
+  Let $DateCur = datenow()
+  do Convert-To-DTU-Date($DateCur, $DateCur)
+  do Convert-From-DTU-Date($DateCur, $DateCur)
+
+  do Stdapi-Term
+end-procedure Init-Report
+
+!**************************************
+begin-procedure Select-Parameters
+!#debug show '** Select-Parameters **'
+!**************************************
+let $WhereClause = ''
+let $OrderClause = ''
+begin-select
+RC.COMPANY
+RC.GPBR_HORIZONTAL
+RC.GPBR_VERTICAL
+RC.EE_LVL_SORT_OPTION
+RC.GPBR_LIST_OPTION
+RC.GB_GROUP_ID
+RC.BGN_DT
+RC.END_DT
+RC.GPBR_OUTPUT_TYPE
+
+  let $Company    = &RC.COMPANY
+  let #Horz       = &RC.GPBR_HORIZONTAL + 1
+  let #Vert       = &RC.GPBR_VERTICAL + 1
+  let $sortLvl    = &RC.EE_LVL_SORT_OPTION
+  let $ListOption = &RC.GPBR_LIST_OPTION
+  let $GroupId    = &RC.GB_GROUP_ID
+  let $RBgn_dt    = &RC.BGN_DT
+  let $REnd_dt    = &RC.END_DT
+  let $OutType    = &RC.GPBR_OUTPUT_TYPE
+
+
+  evaluate $ListOption
+  when = '2'
+       let $WhereClause = ' AND JOB.ESTABID IN ( SELECT EST.ESTABID FROM PS_GPBR_RC_UNEMP1 EST WHERE '
+       let $WhereClause = $WhereClause || 'EST.OPRID = ' || '''' || $PRCS_OPRID || ''''
+       let $WhereClause = $WhereClause  || ' AND EST.RUN_CNTL_ID  = ' || '''' || $PRCS_RUN_CNTL_ID || '''' || ' ) '
+  when = '3'
+       let $WhereClause = 'AND JOB.EMPLID IN ( SELECT EMP.EMPLID FROM PS_GPBR_RC_UNEMP2 EMP WHERE'
+       let $WhereClause = $WhereClause || ' EMP.OPRID = ' || '''' || $PRCS_OPRID || ''''
+       let $WhereClause = $WhereClause || ' AND EMP.RUN_CNTL_ID  = ' || '''' || $PRCS_RUN_CNTL_ID || '''' || ' ) '
+  when = '7'
+       let $WhereClause = 'AND JOB.DEPTID IN ( SELECT DEP.DEPTID FROM PS_GPBR_RC_UNEMP3 DEP WHERE'
+       let $WhereClause = $WhereClause || ' DEP.BUSINESS_UNIT = JOB.BUSINESS_UNIT '
+       let $WhereClause = $WhereClause || ' AND DEP.OPRID = ' || '''' || $PRCS_OPRID || ''''
+       let $WhereClause = $WhereClause || ' AND DEP.RUN_CNTL_ID  = ' || '''' || $PRCS_RUN_CNTL_ID || '''' || ' ) '
+  when = '4'
+       let $WhereClause = ' AND JOB.EMPLID IN ' || ' (SELECT GR.EMPLID FROM  PS_GB_GRP_RES_TBL GR '
+       let $WhereClause = $WhereClause || ' WHERE GR.GB_GROUP_ID = ' || '''' || $GroupID  || ''''
+       let $WhereClause = $WhereClause || ' AND GR.VERSIONGBQDM = (SELECT MAX(G.VERSIONGBQDM) FROM '
+       let $WhereClause = $WhereClause || ' PS_GB_GRP_RES_TBL G WHERE G.GB_GROUP_ID = GR.GB_GROUP_ID) '
+       let $WhereClause = $WhereClause || ' AND GR.JOB_EFFDT     = (SELECT MAX(G2.JOB_EFFDT) FROM PS_GB_GRP_RES_TBL G2 '
+       let $WhereClause = $WhereClause || ' WHERE G2.GB_GROUP_ID = GR.GB_GROUP_ID AND G2.VERSIONGBQDM  = GR.VERSIONGBQDM '
+       let $WhereClause = $WhereClause || ' AND G2.EMPLID        = GR.EMPLID AND G2.EMPL_RCD      = GR.EMPL_RCD))'
+  end-evaluate
+
+  let $OrderClause = 'ORDER BY '  
+
+  if $OutType <> '2'
+     let $OrderClause = $OrderClause  || 'JOB.ESTABID, '
+  end-if
+
+  evaluate $sortLvl
+  when = '10'
+       let $OrderClause = $OrderClause  || 'JOB.EMPLID'
+  when = '20'
+       let $OrderClause = $OrderClause  || 'E.NAME_DISPLAY'
+  end-evaluate
+
+from  PS_GPBR_RC_UNEMP RC
+where RC.OPRID = $prcs_oprid
+and   RC.RUN_CNTL_ID = $prcs_run_cntl_id
+end-select
+end-procedure Select-Parameters
+
+!**************************************
+begin-procedure Get-Pin-String
+!#debug show 'Get-Pin-String'
+!**************************************
+create-array name=pin size=36 field=pinstring:char
+let $pins01a = '('
+let $pins01s = '('
+let $WClause2 = ' AND P.EFFDT = (SELECT MAX(DT.EFFDT)'
+let $WClause2 = $WClause2 || ' FROM ' || $Table || ' DT WHERE DT.COMPANY = P.COMPANY'
+let $WClause2 = $WClause2 || ' AND DT.EFFDT <= ''' || $TerminationDt || ''')'
+
+Let $Table = $Table || 'P' 
+
+begin-select
+P.GPBR_PIN_UNEMP_NUM
+P.GPBR_ERDD_SIGN
+
+  let $NPin = &P.GPBR_PIN_UNEMP_NUM
+  let $NPin = to_char(trunc(to_number($NPin),0))
+  let $Sign = rtrim(&P.GPBR_ERDD_SIGN, ' ')
+  if $Sign = 'A'
+   let $pins01a = $pins01a || $NPin || ','
+  else
+   let $pins01s = $pins01s || $NPin || ','
+  end-if
+
+from
+[$Table]
+where P.COMPANY = $Company
+[$WClause2]
+end-select
+do arrange-string($pins01a,$S01a)
+do arrange-string($pins01s,$S01s)
+end-procedure Get-Pin-String
+
+!**************************************
+begin-procedure arrange-string($in, :$out)
+!**************************************
+ if (length($in) - 1) > 0
+   let $out = substr($in,1,(length($in) - 1)) || ')'
+ else
+   let $out = ''
+ end-if
+do fill-pin-array($out, #position)
+let #_position  = #_position  + 1
+end-procedure
+
+!**************************************
+begin-procedure fill-pin-array($val, #position)
+!**************************************
+put $val into pin (#position) pinstring
+end-procedure
+
+!**************************************
+begin-procedure get-pin-array
+!**************************************
+let #J = 0
+while #J < 32
+  get $pin_array from pin (#J)
+  let #J = #J + 1
+end-while
+end-procedure get-pin-array
+
+!**************************************
+begin-procedure Process-Main
+!#debug show '** Process-Main **'
+!**************************************
+let $CD = 'N'
+let #element = -1
+let $arrayset = 'N'
+Let #count_Emplid = 0
+begin-select
+E.NAME_DISPLAY
+E.FIRST_NAME
+E.MIDDLE_NAME
+E.LAST_NAME
+A.SEX
+C.BIRTHDATE
+G.EDUCATION_LVL_BRA
+JOB.HIRE_DT
+JOB.TERMINATION_DT
+JOB.ESTABID
+JOB.EMPL_RCD
+JOB.EMPLID
+   let $Print_Emplid = 'Y'
+   let $errorExists = 'N'
+   let $EmplidRef= &JOB.EMPLID
+   let $Name     = substr(upper(rtrim(&E.NAME_DISPLAY, ' ')), 1, 40)
+   let $Name1    = upper(rtrim(&E.FIRST_NAME, ' '))
+   let $Name2    = upper(rtrim(&E.MIDDLE_NAME, ' '))
+   let $Name3    = upper(rtrim(&E.LAST_NAME, ' '))
+   if $Name2 <> ' '
+       let $NameC    = $Name1 || ' ' || $Name2 || ' ' || $Name3
+   else
+       let $NameC    = $Name1 || ' ' || $Name3
+   end-if
+
+   let $Sex      = rtrim(&A.SEX, ' ')
+   if $Sex = 'F'
+      let $Sex = '2'
+   else
+      let $Sex = '1'
+   end-if
+   if isblank($Sex) = 1
+      do issue-error-msg('GENDER', $EmplidRef)
+   end-if
+
+   !HIRE DATE
+   do convert-to-dtu-date(&JOB.HIRE_DT,$HireDt)
+   let $dhir = rtrim(&JOB.HIRE_DT, ' ')
+   if isblank($HireDt) = 1
+      do issue-error-msg('HIREDT', $EmplidRef)
+   end-if
+   !TERMINATION DATE
+   let $TerminationDt = rtrim(&JOB.TERMINATION_DT, ' ')
+   
+   let $dter = $TerminationDt
+   do convert-to-dtu-date($dter,$dterr)
+   do convert-from-dtu-date($dterr,$dterr)
+  
+   do convert-to-dtu-date(&JOB.TERMINATION_DT,$TermDt)
+
+   if isblank($TermDt) = 1
+      do issue-error-msg('TERMDT', $EmplidRef)
+   end-if
+
+   !BIRTH DATE
+   do convert-to-dtu-date(&C.BIRTHDATE,$BirthDt)
+
+   if isblank($BirthDt) = 1
+      do issue-error-msg('BIRTHDT', $EmplidRef)
+   end-if
+
+   let $EducationLvl = ltrim(&G.EDUCATION_LVL_BRA, '0')
+   let #EducationLvl = &G.EDUCATION_LVL_BRA
+   if #EducationLvl > 9
+     let $EducationLvl = '9'
+   end-if
+   if isblank($EducationLvl) = 1
+      do issue-error-msg('EDUCATIONLVL', $EmplidRef)
+   end-if
+
+   !JOB ESTABID
+   let $EmpEstabId  = rtrim(&JOB.ESTABID, ' ')
+
+   !JOB EMPL_RCD
+   let #EMPL_RCD    = &JOB.EMPL_RCD
+
+   !JOB EMPLID
+   let $Emplid      = &JOB.EMPLID
+
+   Let #count_Emplid = #count_Emplid + 1
+
+   do Select-Employee-Data
+!  do Select-JobCode-Data
+   do Select-Address
+   do Select-Telefone
+   do Select-MotherName
+   do Select-National-Id
+   do Select-Estab-Id
+   do Select-Weekly-Hours
+   do Select-Bank
+   let $Table = 'PS_GPBR_UNEMP_SAL '
+   do Get-Pin-String
+   do Get-Run_type
+   do Get-Salary
+   do Get-Count-Salary
+   let $Table = 'PS_GPBR_UNEMP_SEV '
+   do Get-Pin-String
+   do Get-Indem
+   let $Table = 'PS_GPBR_UNEMP_WRK '
+   do Get-Pin-String
+   do Get-Accum-Worked
+   evaluate $OutType
+   when = '1' 
+      if $arrayset = 'N'
+         do Setup-Array
+         let $arrayset = 'Y'
+         let $warned   = 'N'
+      end-if 
+      if $errorExists = 'N'
+         do Fill-Array
+      end-if
+   when = '2'
+      if $errorExists = 'N'
+         do Get-Alignment
+         let $CD = 'Y'
+         do Print-Data
+         do Get-Alignment
+         let $CD = 'N'
+         new-page
+         do Print-Data
+         do Get-Alignment
+         new-page
+      end-if
+   when = '3'
+      if $arrayset = 'N'
+         do Setup-Array
+         let $arrayset = 'Y'
+         let $warned   = 'N'
+      end-if 
+      if $errorExists = 'N'   
+         do Get-Alignment
+         let $CD = 'Y'
+         do Print-Data
+         do Get-Alignment
+         let $CD = 'N'
+         new-page
+         do Print-Data
+         do Get-Alignment
+         new-page
+         do Fill-Array
+      end-if 
+
+   when = '4' 
+      if $arrayset = 'N'
+         do Setup-Array
+         let $arrayset = 'Y'
+         let $warned   = 'N'
+      end-if 
+      if $errorExists = 'N'   
+         do Fill-Array
+       end-if
+
+   end-evaluate
+
+
+from PS_PERS_DATA_EFFDT A
+    ,PS_PERSON C
+    ,PS_PERSON_NAME E
+    ,PS_PERS_DATA_BRA G
+    ,PS_JOB JOB
+where A.EMPLID = JOB.EMPLID
+and A.EMPLID = C.EMPLID
+and A.EMPLID = E.EMPLID
+and A.EMPLID = G.EMPLID
+and E.NAME_TYPE = 'PRI'
+and A.EFFDT     = (select MAX(AA.EFFDT) from PS_PERS_DATA_EFFDT AA
+                   where AA.EMPLID = A.EMPLID and AA.EFFDT <= JOB.EFFDT)
+and G.EFFDT     = (select MAX(GG.EFFDT) from PS_PERS_DATA_BRA GG
+                   where GG.EMPLID = G.EMPLID and GG.EFFDT <= JOB.EFFDT)
+and JOB.EFFDT   = (select MAX(J.EFFDT) from PS_JOB J
+                   where J.EMPLID = JOB.EMPLID and J.EMPL_RCD = JOB.EMPL_RCD and J.ESTABID = JOB.ESTABID)
+and JOB.EFFSEQ  = (select MAX(J2.EFFSEQ) from PS_JOB J2
+                   where J2.EMPLID = JOB.EMPLID and J2.EMPL_RCD = JOB.EMPL_RCD
+                   and J2.EFFDT = JOB.EFFDT and J2.ESTABID = JOB.ESTABID)
+and JOB.EMPL_STATUS in ('T','U','V')
+AND NOT EXISTS (SELECT 'X' FROM PS_LEG_MOV_DET_BRA LEG
+              WHERE LEG.PROCESS_TYPE_BRA = '10'
+                AND LEG.ACTION = JOB.ACTION
+                AND LEG.ACTION_REASON  = JOB.ACTION_REASON
+                AND LEG.SEFIP_LEG_MOV_BRA = 'I5'
+                AND LEG.EFFDT = (SELECT MAX(LEG2.EFFDT) FROM PS_LEG_MOV_DET_BRA LEG2
+                                  WHERE LEG.ACTION  = LEG2.ACTION
+                                    AND LEG.ACTION_REASON = LEG2.ACTION_REASON
+                                    AND LEG.PROCESS_TYPE_BRA = LEG2.PROCESS_TYPE_BRA
+                                    AND LEG2.EFFDT <= $REnd_dt )
+              )                        
+and JOB.EFFDT  >= $RBgn_dt
+and JOB.EFFDT  <= $REnd_dt
+and JOB.COMPANY = $Company
+[$WhereClause]
+[$SecurityClauseWithoutERN]
+[$OrderClause]
+
+end-select
+
+if $OutType <> '2'
+   do Sort-Array
+end-if
+
+end-procedure Process-Main
+
+
+!**************************************
+begin-procedure Select-Employee-Data
+!#debug show '** Select-Employee-Data **'
+!**************************************
+let $CBO        = ''
+let $CBODescr   = ''
+let $GPPaygroup = ''
+let $Effdt      = ''
+let $JobCode    = ''
+let $SIJobCode  = ''
+let $CTPSSerie  = ''
+let $CTPSState  = ''
+let $dvar       = ''
+let $dvar1      = ''
+let $dvar2      = ''
+let $HireDtD    = ''
+let $HireDtM    = ''
+let $HireDtY    = ''
+let $HireDt4Y   = ''
+let $dtuDtD     = ''
+let $dtuDtM     = ''
+let $dtuDtY     = ''
+let $firstday   = ''
+let $dvarBgn    = ''
+let $dvar1Bgn   = ''
+let $dvar2Bgn   = ''
+let $dter2 = dateadd($dter,'day', 1)
+do Convert-To-DTU-Date($dter2, $dter2)
+do Convert-From-DTU-Date($dter2, $dter2)
+
+begin-select
+AA.EFFDT
+AB.CBO_CD_BRA
+AA.GP_PAYGROUP
+AA.JOBCODE
+AA.SETID_JOBCODE
+AA.MONTHLY_RT
+AA.TERMINATION_DT
+F.CTPS_SERIES_BRA
+F.CTPS_STATE_BRA
+C.DESCR
+
+  let $CBO         = rtrim(&AB.CBO_CD_BRA, ' ')
+  let $CBO         = replace($CBO,'-','')
+  let $CBODescr    = upper(substr(ltrim(rtrim(&C.DESCR,' '),' '),1,20))
+  let $GPPaygroup  = rtrim(&AA.GP_PAYGROUP,' ')
+  let $Effdt       = &AA.EFFDT
+  let $JobCode     = &AA.JOBCODE
+  let $SIJobCode   = &AA.SETID_JOBCODE  
+  Do OnlyNumbers(&F.CTPS_SERIES_BRA, $New_CTPSSerie, $Change)
+  let $New_CTPSSerieC = lpad($New_CTPSSerie,5,'0')
+  let $CTPSSerie   = substr(ltrim(rtrim($New_CTPSSerieC, ' '),' '),3,3)
+  let $CTPSState   = rtrim(&F.CTPS_STATE_BRA, ' ')
+  let $dvar        = $Effdt
+  let $dvar        = dateadd($dvar, 'month', -1)
+  let $dvar1       = dateadd($dvar, 'month', -1)
+  let $dvar2       = dateadd($dvar1, 'month', -1)
+
+  do Get-CBO-Descr-lang
+  
+from PS_JOB AA,
+     PS_JOB_JR AB,
+     PS_PERSON_BRA F,
+     PS_CBO_CD_TBL_BRA C
+where AA.EMPLID     = $Emplid
+and   AA.EMPL_RCD   = #EMPL_RCD
+and   AB.EMPLID     = AA.EMPLID
+and   AB.EMPL_RCD   = AA.EMPL_RCD
+and   AA.EMPLID     = F.EMPLID
+and   AB.CBO_CD_BRA = C.CBO_CD_BRA
+and   AB.EFFDT      = AA.EFFDT
+and   AA.EFFDT      = (select MAX(AC.EFFDT) from PS_JOB AC
+                      where AC.EMPLID  = AA.EMPLID and AC.EMPL_RCD = AA.EMPL_RCD
+                      and AC.EFFDT <= $DateCur AND AC.ESTABID=AA.ESTABID)             
+and   AA.EFFSEQ     = (select MAX(AD.EFFSEQ) from PS_JOB AD
+                      where AD.EMPLID = AA.EMPLID and AD.EMPL_RCD = AA.EMPL_RCD
+                      and AD.EFFDT  = AA.EFFDT and AD.ESTABID = AA.ESTABID)
+end-select
+
+if isblank($Effdt) = 1 !No data returned. Missing info is likely on PS_PERSON_BRA
+   do issue-error-msg('EFFDT', $EmplidRef)
+else
+   let $HireDtD   = substr($HireDt,9, 2)
+   let $HireDtM   = substr($HireDt,6, 2)
+   let $HireDtY   = substr($HireDt,3, 2)
+   let $HireDt4Y  = substr($HireDt,1, 4)
+
+   !Termination Date
+   do convert-to-dtu-date($dvar,$dvardtu)
+   do dtu-parse-date($dvardtu, #dtu_yr, #dtu_mo, #dtu_da)
+    let $dtuDtD   = substr($dvardtu,9, 2)
+    let $dtuDtM   = substr($dvardtu,6, 2)
+    let $dtuDtY   = substr($dvardtu,3, 2)
+   if $HireDtM = $dtuDtM and $HireDtY = $dtuDtY
+    let $firstday='-' || $HireDtD
+   else
+    let $firstday='-01'
+   end-if
+   let $dvarBgn = to_char(#dtu_yr) || '-' || edit(to_char(#dtu_mo),'09') || $firstday
+   do Convert-From-DTU-Date($dvarBgn, $dvarBgn)
+
+   !Termination Date - 1 month
+   do convert-to-dtu-date($dvar1,$dvar1dtu)
+   do dtu-parse-date($dvar1dtu, #dtu_yr, #dtu_mo, #dtu_da)
+    let $dtuDtD   = substr($dvar1dtu,9, 2)
+    let $dtuDtM   = substr($dvar1dtu,6, 2)
+    let $dtuDtY   = substr($dvar1dtu,3, 2)
+   if $HireDtM = $dtuDtM and $HireDtY = $dtuDtY
+    let $firstday='-' || $HireDtD
+   else
+    let $firstday='-01'
+   end-if
+   let $dvar1Bgn = to_char(#dtu_yr) || '-' || edit(to_char(#dtu_mo),'09') || $firstday
+   do Convert-From-DTU-Date($dvar1Bgn, $dvar1Bgn)
+
+   !Termination Date - 2 months
+   do convert-to-dtu-date($dvar2,$dvar1dtu)
+   do dtu-parse-date($dvar1dtu, #dtu_yr, #dtu_mo, #dtu_da)
+    let $dtuDtD   = substr($dvar1dtu,9, 2)
+    let $dtuDtM   = substr($dvar1dtu,6, 2)
+    let $dtuDtY   = substr($dvar1dtu,3, 2)
+   if $HireDtM = $dtuDtM and $HireDtY = $dtuDtY
+    let $firstday='-' || $HireDtD
+   else
+    let $firstday='-01'
+   end-if
+   let $dvar2Bgn = to_char(#dtu_yr) || '-' || edit(to_char(#dtu_mo),'09') || $firstday
+   do Convert-From-DTU-Date($dvar2Bgn, $dvar2Bgn)
+   
+   if isblank($CBO) = 1
+      do issue-error-msg('CBO', $EmplidRef)
+   end-if
+end-if
+
+Do OnlyNumbers($CTPSSerie, $New_CTPSSerie, $Change)
+If $Change = 'Y'
+  DO FILL_LEADING ($New_CTPSSerie , '0', 5, 'L', $New_CTPSSerie)
+  Let $CTPSSerie = $New_CTPSSerie
+End-if
+
+  
+end-procedure Select-Employee-Data
+
+
+!**************************************
+begin-procedure Get-CBO-Descr-lang
+!#debug show '* Get-CBO-Descr-lang'
+!**************************************
+begin-select
+CC.DESCR
+
+  let $CBODescr    = upper(substr(ltrim(rtrim(&CC.DESCR,' '),' '),1,20))
+
+from PS_JOB AA,
+     PS_JOB_JR AB,
+     PS_CBO_CD_BRA_LNG CC
+where AA.EMPLID      = $Emplid
+and   AA.EMPL_RCD    = #EMPL_RCD
+and   AB.EMPLID      = AA.EMPLID
+and   AB.EMPL_RCD    = AA.EMPL_RCD
+and   AB.CBO_CD_BRA  = CC.CBO_CD_BRA
+and   CC.LANGUAGE_CD = $curr_language_cd
+and   AB.EFFDT       = AA.EFFDT
+and   AA.EFFDT       = (select MAX(AC.EFFDT) from PS_JOB AC
+                       where AC.EMPLID  = AA.EMPLID and AC.EMPL_RCD = AA.EMPL_RCD
+                       and AC.EFFDT <= $DateCur AND AC.ESTABID=AA.ESTABID)             
+and   AA.EFFSEQ      = (select MAX(AD.EFFSEQ) from PS_JOB AD
+                       where AD.EMPLID = AA.EMPLID and AD.EMPL_RCD = AA.EMPL_RCD
+                       and AD.EFFDT  = AA.EFFDT and AD.ESTABID = AA.ESTABID)
+end-select
+end-procedure Get-CBO-Descr-lang
+
+
+!**************************************
+begin-procedure Select-JobCode-Data
+!**************************************
+let $CBO      = ''
+let $JobDescr = ''
+begin-select
+JC.DESCR
+JCB.CBO_CD_BRA
+
+    let $CBO = &JCB.CBO_CD_BRA
+    let $JobDescr = upper(substr(ltrim(rtrim(&JC.DESCR,' '),' '),1,20))
+
+from PS_JOBCODE_TBL JC
+, PS_JOBCODE_TBL_BRA JCB
+where JC.JOBCODE = $JobCode
+and JC.SETID   = $SIJobCode
+and JC.EFFDT   = (select MAX(JCC.EFFDT) from PS_JOBCODE_TBL JCC
+                  where JCC.SETID = JC.SETID
+                  and JCC.JOBCODE = JC.JOBCODE
+                  and JCC.EFFDT  <= $TerminationDt
+                  and EFF_STATUS  = 'A')
+and JC.JOBCODE = JCB.JOBCODE
+and JC.SETID   = JCB.SETID
+and JCB.EFFDT <= JC.EFFDT
+end-select
+end-procedure Select-JobCode-Data
+
+
+!**************************************
+begin-procedure Select-Address
+!#debug show '** Select-Address **'
+!**************************************
+let $Postal      = ''
+let $Num         = ''
+let $Address1    = ''
+let $Address2    = ''
+let $Address3    = ''
+let $Address4    = ''
+let $AddressC    = ''
+let $City        = ''
+let $State       = ''
+let $DescrState  = ''
+begin-select
+A.POSTAL
+A.ADDRESS1
+A.ADDRESS2
+A.ADDRESS3
+A.ADDRESS4
+A.NUM1
+A.CITY
+A.STATE
+S.DESCR
+
+  !CEP
+  let $Postal      = substr(rtrim(&A.POSTAL, ' '),1,9)
+
+  !NUM
+  let $Num         = ltrim(rtrim(&A.NUM1, ' '),' ')
+
+  !ADDRESS:
+  let $Address1    = upper(ltrim(rtrim(&A.ADDRESS1, ' '),' '))
+  let $Address2    = upper(ltrim(rtrim(&A.ADDRESS2, ' '),' '))
+  let $Address3    = upper(ltrim(rtrim(&A.ADDRESS3, ' '),' '))
+  let $Address4    = upper(ltrim(rtrim(&A.ADDRESS4, ' '),' '))
+  let $AddressC    = $Address1 || ' ' || $num || ' ' || $Address2
+
+  !CITY
+  let $City        = substr(upper(ltrim(rtrim(&A.CITY, ' '),' ')),1,16)
+
+  !UF
+  let $State       = rtrim(&A.STATE, ' ')
+  let $DescrState  = upper(rtrim(&S.DESCR, ' '))
+
+from PS_ADDRESSES A
+, PS_STATE_TBL S
+where A.EMPLID     = $Emplid
+and A.ADDRESS_TYPE = 'HOME'
+and A.EFF_STATUS   = 'A'
+and A.COUNTRY      = 'BRA'
+and A.EFFDT        = (select MAX(AA.EFFDT) from PS_ADDRESSES AA
+                      where AA.EMPLID = A.EMPLID
+                      and AA.EFFDT <= $TerminationDt)
+and A.STATE        = S.STATE
+and A.COUNTRY      = S.COUNTRY
+end-select
+if isblank($Address1) = 1
+   do issue-error-msg('ADDRESS', $EmplidRef)
+end-if   
+if isblank($Num) = 1
+   do issue-error-msg('ADDRNUM', $EmplidRef)
+end-if   
+end-procedure Select-Address
+
+!**************************************
+begin-procedure Select-Telefone
+!#debug show '** Select-Telefone **'
+!**************************************
+let $FullPhone  = ''
+begin-select
+A.PHONE
+
+  Let $FullPhone = Rtrim(&A.PHONE, ' ')
+
+from PS_PERSONAL_PHONE A
+where A.EMPLID = $Emplid
+and A.PHONE_TYPE = 'HOME'
+end-select
+
+     Do GetPhoneBRA ($FullPhone, $PhoneDDI, $PhoneDDD, $Phone, $PhoneRamal)
+     
+     let $Phone  = $PhoneDDD || $Phone
+     
+     if $Phone = ''
+        let $Phone = '0000000000'
+     end-if
+
+end-procedure Select-Telefone
+
+!**************************************
+begin-procedure Select-MotherName
+!#debug show '** Select-MotherName ****'
+!**************************************
+let $MNameC   = ''
+let $MNameF   = ''
+begin-select
+PI.MOTHER_NAME_BRA
+
+   let $MNameC   =  rtrim(&PI.MOTHER_NAME_BRA, ' ')
+   let $MnameF   =  rtrim(&PI.MOTHER_NAME_BRA, ' ')
+
+from PS_PERSON_INFO_BRA PI
+where PI.EMPLID = $Emplid
+end-select
+
+if $MNameC = ''
+   do Mother-Name-ADDL
+end-if
+end-procedure Select-MotherName
+
+!*************************************
+begin-procedure Mother-Name-ADDL
+!#debug show 'Procedure: Mother-Name-ADDL **'
+!**************************************
+let $MNameC   = ''
+let $MNameF   = ''
+begin-select
+NAM.NAME_DISPLAY
+
+   let $MNameC   =  rtrim(&NAM.NAME_DISPLAY, ' ')
+   let $MNameF   =  rtrim(&NAM.NAME_DISPLAY, ' ')
+   
+from PS_NAMES NAM
+where NAM.EMPLID = $Emplid
+and NAM.NAME_TYPE = 'MTR'
+and NAM.EFFDT = (select MAX(EFFDT)
+                 from PS_NAMES
+                 where EMPLID = NAM.EMPLID
+                 and NAME_TYPE = NAM.NAME_TYPE
+                 and EFFDT <= $REnd_dt)
+end-select
+if isblank($MNameC) = 1
+   do issue-error-msg('MTRNAME', $EmplidRef)
+end-if
+
+end-procedure Mother-Name-ADDL
+!**************************************
+begin-procedure Select-National-Id
+!#debug show '** Select-National-Id **'
+!**************************************
+let $NationalId = ''
+let $PISPASEP   = ''
+let $CTPS       = ''
+let $CPF        = ''
+begin-select
+A.NATIONAL_ID
+A.NATIONAL_ID_TYPE
+
+   let $NationalId = rtrim(&A.NATIONAL_ID_TYPE, ' ')
+
+   evaluate $NationalId
+   when = 'PIS'
+   when = 'PASEP'
+   when = 'NIT'
+     let $PISPASEP = rtrim(&A.NATIONAL_ID,' ')
+   when = 'CTPS'
+     let $CTPS     = rtrim(&A.NATIONAL_ID,' ')
+   when = 'CPF'
+     let $CPF      = rtrim(&A.NATIONAL_ID, ' ')
+   end-evaluate
+
+from PS_PERS_NID A
+where A.NATIONAL_ID_TYPE in  ('PIS', 'PASEP','NIT','CTPS', 'CPF')
+and A.EMPLID = $Emplid
+and A.COUNTRY = 'BRA'
+end-select
+if isblank($PISPASEP) = 1
+   do issue-error-msg('PISPASEP', $EmplidRef)
+end-if
+if isblank($CTPS) = 1
+   do issue-error-msg('CTPS', $EmplidRef)
+end-if
+if isblank($CPF) = 1
+   do issue-error-msg('CPF', $EmplidRef)
+end-if
+
+end-procedure Select-National-Id
+
+!**************************************
+begin-procedure Select-Estab-Id
+!#debug show '** Select-Estab-Id **'
+!**************************************
+let #CEI         = 0
+let #CGC         = 0
+let #CNAE        = 0
+let $AsocEstabId = ''
+let $Bank        = ''
+let $EstabEffDt  = ''
+let $EstabId     = ''
+let $EstabIdType = ''
+let $InsType     = ''
+let $LegType     = ''
+let $Nmbr8       = ''
+let $Nmbr9       = ''
+let $Nmbr10      = ''
+let $dter2 = dateadd($dter,'day', 1)
+do Convert-To-DTU-Date($dter2, $dter2)
+do Convert-From-DTU-Date($dter2, $dter2)
+
+begin-select
+A.EFFDT
+A.ESTAB_ID_TYPE_BRA
+A.ESTAB_ID_BRA
+A.ESTABID
+A2.SRC_BANK_ID
+A2.ESTAB_ASOC_BRA
+A2.COMP_INS_TYPE_BRA
+A2.LEGAL_ENT_TYPE_BRA
+
+
+  let $EstabEffDt = rtrim(&A.EFFDT, ' ')
+  let $EstabIdType = rtrim(&A.ESTAB_ID_TYPE_BRA, ' ')
+  let $EstabId = rtrim(&A.ESTABID, ' ')
+  let $Bank = rtrim(&A2.SRC_BANK_ID, ' ')
+  let $AsocEstabId = rtrim(&A2.ESTAB_ASOC_BRA, ' ')
+  let $InsType = rtrim(&A2.COMP_INS_TYPE_BRA, ' ')
+  let $LegType = rtrim(&A2.LEGAL_ENT_TYPE_BRA, ' ')
+
+  evaluate $InsType
+  when = '10'
+        if $EstabIdType = 'CNPJ'
+           let $Nmbr8 = '1'
+           let #CGC = &A.ESTAB_ID_BRA
+           let $Nmbr9 = edit(#CGC,'00000000000000')
+        end-if
+        if $EstabIdType = 'CNAE'
+           let #CNAE = &A.ESTAB_ID_BRA
+           let $Nmbr10 = to_char(#CNAE)
+        end-if
+  when = '20'
+        if $AsocEstabId <> '' and $AsocEstabId <> $EstabId
+           do Select-Asoc-Estab-Id
+           let $EstabId = $AsocEstabId
+        else
+            if $EstabIdType = 'CEI'
+               let $Nmbr8 = '2'
+               let #CEI   = &A.ESTAB_ID_BRA
+               let $Nmbr9 = edit(#CEI,'00000000000000')
+            end-if
+            if $EstabIdType = 'CNAE'
+               let #CNAE = &A.ESTAB_ID_BRA
+               let $Nmbr10 = to_char(#CNAE)
+            end-if
+       end-if
+  end-evaluate
+
+  do Select-Estab-Address
+  if $LegType = 'COM'
+     do Select-Company-Data
+  end-if
+
+from  PS_ESTAB_TBL_BRA A2
+      ,PS_ESTAB_ID_BRA A
+where A2.ESTABID       = $EmpEstabId
+and   A2.ESTABID       = A.ESTABID
+and   A.COUNTRY        = 'BRA'
+and   A.COUNTY_CD_BRA  = A2.COUNTY_CD_BRA
+and   A.EFFDT          = A2.EFFDT
+and   A.ESTAB_ID_TYPE_BRA in ('CEI','CNAE','CNPJ')
+and   A2.EFFDT         = (select MAX(AA2.EFFDT) from PS_ESTAB_TBL_BRA AA2
+                          where AA2.ESTABID = A2.ESTABID
+                          and AA2.COUNTY_CD_BRA = A2.COUNTY_CD_BRA
+                          and AA2.EFFDT <= $DateCur)
+end-select
+end-procedure Select-Estab-Id
+
+!**************************************
+begin-procedure Select-Asoc-Estab-Id
+!#debug show '** Select-Asoc-Estab-Id **'
+!**************************************
+let #CGCB         = 0
+let #CNAEB        = 0
+let $EstabIdTypeB = ''
+let $Nmbr8        = ''
+let $Nmbr9        = ''
+let $Nmbr10       = ''
+let $dter2 = dateadd($dter,'day', 1)
+do Convert-To-DTU-Date($dter2, $dter2)
+do Convert-From-DTU-Date($dter2, $dter2)
+begin-select
+B.ESTAB_ID_TYPE_BRA
+B.ESTAB_ID_BRA
+
+  let $EstabIdTypeB = rtrim(&B.ESTAB_ID_TYPE_BRA, ' ')
+
+  evaluate $EstabIdTypeB
+  when = 'CNPJ'
+       let $Nmbr8 = '1'
+       let #CGCB = &B.ESTAB_ID_BRA
+       let $Nmbr9 = edit(#CGCB,'00000000000000')
+  when = 'CNAE'
+       let #CNAEB = &B.ESTAB_ID_BRA
+       let $Nmbr10 = to_char(#CNAEB)
+  end-evaluate
+
+from  PS_ESTAB_ID_BRA B
+where B.ESTABID           = $AsocEstabId
+and   B.COUNTRY           = 'BRA'
+and   B.ESTAB_ID_TYPE_BRA in ('CNPJ','CNAE')
+and   B.EFFDT             = $EstabEffDt
+end-select
+end-procedure Select-Asoc-Estab-Id
+
+!******************************************
+begin-procedure Select-Company-Data
+!#debug show '** Select-Company-Data **'
+!******************************************
+let $EstabDescrS = ''
+begin-select
+A4.DESCR
+
+    let $EstabDescrS = upper(rtrim(&A4.DESCR, ' '))
+
+from PS_COMPANY_TBL A4,
+     PS_ESTAB_TBL A5
+where A5.ESTABID = $EstabId
+and A5.COMPANY   = A4.COMPANY
+and A5.EFFDT     = (select MAX(A6.EFFDT) from PS_ESTAB_TBL A6
+                    where A6.ESTABID = A5.ESTABID
+                    and A6.EFFDT <= $DateCur
+                    and A6.EFF_STATUS = 'A')               
+and A4.EFFDT     = (SELECT MAX(CC.EFFDT) FROM PS_COMPANY_TBL CC
+                    WHERE CC.COMPANY = A4.COMPANY
+                    AND CC.EFFDT <= $DateCur
+                    AND CC.EFF_STATUS = 'A')                
+end-select
+
+Begin-Select
+AA4.DESCR       
+               
+    let $EstabDescrS = upper(rtrim(&AA4.DESCR, ' '))
+
+from PS_COMPNY_TBL_LANG AA4,
+     PS_ESTAB_TBL A5
+where A5.ESTABID = $EstabId
+and A5.COMPANY   = AA4.COMPANY
+AND AA4.LANGUAGE_CD = $Curr_language_Cd
+and A5.EFFDT     = (select MAX(A6.EFFDT) from PS_ESTAB_TBL A6
+                    where A6.ESTABID = A5.ESTABID
+                    and A6.EFFDT <= $DateCur
+                    and A6.EFF_STATUS = 'A')               
+and AA4.EFFDT     = (SELECT MAX(CC.EFFDT) FROM PS_COMPNY_TBL_LANG CC
+                    WHERE CC.COMPANY = AA4.COMPANY
+                    AND CC.LANGUAGE_CD = AA4.LANGUAGE_CD
+                    AND CC.EFFDT <= $DateCur)                            
+end-select
+end-procedure  Select-Company-Data
+
+!******************************************
+begin-procedure Select-Estab-Address
+!#debug show '** Select-Estab-Address **'
+!******************************************
+let #NumberS     = 0
+let $CityS       = ''
+let $EstabDescrS = ''
+let $NeighS      = ''
+let $PostalS     = ''
+let $StateS      = ''
+let $StreetS     = ''
+begin-select
+A3.DESCR
+A3.ADDRESS1
+A3.ADDRESS4
+A3.NUM1
+A3.CITY
+A3.STATE
+A3.POSTAL
+
+   let $EstabDescrS = upper(rtrim(&A3.DESCR, ' '))
+   let $StreetS     = rtrim(&A3.ADDRESS1, ' ')
+   let $NeighS      = upper(rtrim(&A3.ADDRESS4, ' '))
+   let #NumberS     = &A3.NUM1
+   let $CityS       = upper(rtrim(&A3.CITY, ' '))
+   let $StateS      = upper(rtrim(&A3.STATE, ' '))
+   let $PostalS     = rtrim(&A3.POSTAL, ' ')
+
+from PS_ESTAB_TBL A3
+where A3.ESTABID = $EstabId
+and   A3.EFFDT   = (select MAX(A7.EFFDT) from PS_ESTAB_TBL A7
+                   where A7.ESTABID = A3.ESTABID
+                       and A7.EFFDT <= $DateCur
+                       and A7.EFF_STATUS = 'A')
+end-select
+
+
+BEGIN-Select
+AA3.DESCR
+
+  let $EstabDescrS = upper(rtrim(&AA3.DESCR, ' '))
+
+FROM PS_ESTAB_TBL_LANG AA3
+WHERE AA3.ESTABID = $Estabid
+AND   AA3.LANGUAGE_CD = $curr_language_cd
+and   AA3.EFFDT   = (select MAX(A7.EFFDT) from PS_ESTAB_TBL_LANG A7
+                   where A7.ESTABID = AA3.ESTABID
+                       and A7.LANGUAGE_CD = AA3.LANGUAGE_CD
+                       and A7.EFFDT <= $DateCur)
+end-select
+end-procedure  Select-Estab-Address
+
+
+!**************************************
+begin-procedure Select-Bank
+!**************************************
+let $Acct  = ''
+let $AcctD = ''
+begin-select
+AT.ACCOUNT_EC_ID
+AT.CHECK_DIGIT
+
+   let $Acct = substr(rtrim(&AT.ACCOUNT_EC_ID, ' '),1,8)
+   let $AcctD = substr(rtrim(&AT.CHECK_DIGIT, ' '),1,1)
+
+from PS_SRC_BANK CC,
+     PS_PYE_BANKACCT AT
+where CC.SRC_BANK_ID = $Bank
+and AT.EMPLID = $Emplid
+and CC.COUNTRY_CD    = AT.COUNTRY_CD
+and CC.BANK_CD       = AT.BANK_CD
+and CC.BRANCH_EC_CD  = AT.BRANCH_EC_CD
+and AT.EFF_STATUS    = 'A'
+end-select
+end-procedure Select-Bank
+
+!**************************************
+begin-procedure Select-Weekly-Hours
+!#debug show '** Select-Weekly-Hours **'
+!**************************************
+let #Weekly_Rate = 0
+let $Weekly_Rate = ''
+begin-select
+A.GPBR_WEEKLY_HOURS
+
+  let #Weekly_Rate = &A.GPBR_WEEKLY_HOURS
+
+  if #Weekly_Rate < 10
+    let $Weekly_Rate = '0' || to_char(#Weekly_Rate)
+  else
+    let $Weekly_Rate = to_char(#Weekly_Rate)
+  end-if
+
+from PS_GPBR_PAYEE_PARM A
+where A.EMPLID   = $Emplid
+and   A.EMPL_RCD = #EMPL_RCD
+and   A.BGN_DT   = (select MAX(PA.BGN_DT) from PS_GPBR_PAYEE_PARM PA
+                    where PA.EMPLID = A.EMPLID
+                    and PA.EMPL_RCD = A.EMPL_RCD
+                    and PA.BGN_DT <= $TerminationDt)
+end-select
+if #Weekly_Rate = 0
+   do issue-error-msg('WORKHR', $EmplidRef)
+end-if
+end-procedure Select-Weekly-Hours
+
+!**************************************
+begin-procedure Get-Indem
+!#debug show '** Get-Indem **'
+!**************************************
+let $Indem = '2'
+let $GIwhereClause = ''
+if $S01a <> '' and $S01s <> ''
+   let $GIwhereClause = ' AND (U3.PIN_NUM IN ' || $S01a || ' OR U3.PIN_NUM IN ' || $S01s || ')'
+else
+   if $S01a <> ''
+      let $GIwhereClause = ' AND U3.PIN_NUM IN ' || $S01a
+   end-if
+   if $S01s <> ''
+      let $GIwhereClause = ' AND U3.PIN_NUM IN ' || $S01s
+   end-if
+end-if
+
+
+begin-select distinct
+U3.PIN_NUM
+
+  let $Indem = '1'
+
+from PS_GP_RSLT_ED_VW U3
+where U3.EMPLID      = $Emplid
+and U3.EMPL_RCD      = #EMPL_RCD
+and U3.SLICE_END_DT <= $TerminationDt
+[$GIwhereClause]
+end-select
+end-procedure Get-Indem
+!**************************************
+begin-procedure Get-Run_type
+!#debug show '** Get-Run_type **'
+!**************************************
+let $run_type    = ''
+let $runtypeoptn = ''
+begin-select 
+L.RUN_TYPE 
+ let $run_type=&L.RUN_TYPE 
+ if $run_type <>''
+  if $runtypeoptn=''
+    let $runtypeoptn = '''' || $run_type || ''''
+  else  
+    let $runtypeoptn= $runtypeoptn || ',''' || $run_type || ''''
+  end-if  
+ end-if
+from ps_gpbr_rc_unemp4 L
+where L.oprid=$prcs_oprid
+and L.run_cntl_id=$prcs_run_cntl_id 
+end-select
+
+if $runtypeoptn <>''
+ let $runtypewhereClause = 'AND F.RUN_TYPE in (' || $runtypeoptn || ')'
+end-if
+
+end-procedure Get-Run_type
+!**************************************
+begin-procedure Get-Salary
+!#debug show '** Get-Salary **'
+!**************************************
+let #RsltVal   = 0
+let #RsltValA  = 0
+let #RsltValA1 = 0
+let #RsltValA2 = 0
+let #RsltValS  = 0
+let #RsltValS1 = 0
+let #RsltValS2 = 0
+
+if $S01a <> ''
+begin-select
+SUM(X1A.CALC_RSLT_VAL) &X1A.CALC_RSLT_VAL
+X1A.SLICE_BGN_DT
+
+      ! #debug show '$dvar2Bgn' $dvar2Bgn
+      ! #debug show '$dvarBgn' $dvarBgn
+      
+      let #RsltVal    = &X1A.CALC_RSLT_VAL
+      let $SliceBgnDt = rtrim(&X1A.SLICE_BGN_DT, ' ')
+      
+      evaluate $SliceBgnDt
+      when = $dvarBgn
+           let #RsltValA  = #RsltVal
+           ! #debug show ' #RsltValA :   ' #RsltValA
+      when = $dvar1Bgn
+           let #RsltValA1 = #RsltVal
+           ! #debug show ' #RsltValA1 :   ' #RsltValA1
+      when = $dvar2Bgn
+           let #RsltValA2 = #RsltVal
+           ! #debug show ' #RsltValA2 :   ' #RsltValA2
+      end-evaluate      
+      
+from PS_GP_RSLT_ED_VW X1A, PS_GP_CALENDAR F
+where X1A.PIN_NUM    in [$S01a]
+and X1A.EMPLID       = $Emplid
+and X1A.EMPL_RCD     = #EMPL_RCD
+and X1A.SLICE_BGN_DT BETWEEN $dvar2Bgn and X1A.SLICE_BGN_DT
+and X1A.RSLT_SEG_NUM = (select MAX(U3.RSLT_SEG_NUM) from PS_GP_RSLT_ED_VW U3
+                      where U3.EMPLID   = X1A.EMPLID   and U3.CAL_RUN_ID      = X1A.CAL_RUN_ID
+                      and   U3.EMPL_RCD = X1A.EMPL_RCD and U3.GP_PAYGROUP     = X1A.GP_PAYGROUP
+                      and   U3.CAL_ID   = X1A.CAL_ID   and U3.ORIG_CAL_RUN_ID = X1A.ORIG_CAL_RUN_ID
+                      and   U3.CAL_RUN_ID = U3.ORIG_CAL_RUN_ID
+                      and   U3.PIN_NUM  = X1A.PIN_NUM)
+and X1A.CAL_ID=F.CAL_ID
+and X1A.GP_PAYGROUP=F.GP_PAYGROUP
+and X1A.CAL_RUN_ID = X1A.ORIG_CAL_RUN_ID
+[$runtypewhereClause]
+group by X1A.SLICE_BGN_DT
+end-select
+end-if
+
+if $S01s <> ''
+begin-select
+SUM(X1S.CALC_RSLT_VAL) &X1S.CALC_RSLT_VAL
+X1S.SLICE_BGN_DT
+
+      let #RsltVal    = &X1S.CALC_RSLT_VAL
+      let $SliceBgnDt = rtrim(&X1S.SLICE_BGN_DT, ' ')
+      
+      evaluate $SliceBgnDt
+      when = $dvarBgn
+           let #RsltValS  = #RsltVal
+           #debug show ' #RsltValS :   ' #RsltValS
+      when = $dvar1Bgn
+           let #RsltValS1 = #RsltVal
+           #debug show ' #RsltValS1 :   ' #RsltValS1
+      when = $dvar2Bgn
+           let #RsltValS2 = #RsltVal
+           #debug show ' #RsltValS2 :   ' #RsltValS2
+      end-evaluate
+
+from PS_GP_RSLT_ED_VW X1S, PS_GP_CALENDAR F
+where X1S.PIN_NUM    in [$S01s]
+and X1S.EMPLID       = $Emplid
+and X1S.EMPL_RCD     = #EMPL_RCD
+and X1S.SLICE_BGN_DT BETWEEN $dvar2Bgn and $dvarBgn
+and X1S.RSLT_SEG_NUM = (select MAX(U3.RSLT_SEG_NUM) from PS_GP_RSLT_ED_VW U3
+                      where U3.EMPLID   = X1S.EMPLID   and U3.CAL_RUN_ID      = X1S.CAL_RUN_ID
+                      and   U3.EMPL_RCD = X1S.EMPL_RCD and U3.GP_PAYGROUP     = X1S.GP_PAYGROUP
+                      and   U3.CAL_ID   = X1S.CAL_ID   and U3.ORIG_CAL_RUN_ID = X1S.ORIG_CAL_RUN_ID
+                      and   U3.CAL_RUN_ID = U3.ORIG_CAL_RUN_ID
+                      and   U3.PIN_NUM  = X1S.PIN_NUM)
+and X1S.CAL_ID=F.CAL_ID
+and X1S.GP_PAYGROUP=F.GP_PAYGROUP
+and X1S.CAL_RUN_ID = X1S.ORIG_CAL_RUN_ID
+[$runtypewhereClause]
+group by X1S.SLICE_BGN_DT
+end-select
+end-if
+
+let #RsltVal = #RsltValA - #RsltValS
+let $mvar  = edit(#RsltVal,  '99999999.99')
+if #RsltVal = 0
+   do issue-error-msg('LASTSALARY', $EmplidRef)
+end-if
+let #RsltVal = #RsltValA1 - #RsltValS1
+let $mvar1 = edit(#RsltVal, '99999999.99')
+let #RsltVal = #RsltValA2 - #RsltValS2
+let $mvar2 = edit(#RsltVal, '99999999.99')
+
+let #RsltValT = #RsltValA + #RsltValA1 + #RsltValA2
+! #debug show ' #RsltValT :   ' #RsltValT
+    
+end-procedure Get-Salary
+
+!**************************************
+begin-procedure Get-Count-Salary
+!#debug show '** Get-Count-Salary **'
+!**************************************
+let #Count = 0
+let $GCSwhereClause = ''
+let $dvar67 = ''
+if $Indem = '1'
+   let $dvar67 = dateadd($dvar, 'month', -7)
+   add 1 to #Count
+else
+   let $dvar67 = dateadd($dvar, 'month', -6)
+end-if
+
+if $S01a <> '' and $S01s <> ''
+   let $GCSwhereClause = ' AND (V5.PIN_NUM IN ' || $S01a || ' OR V5.PIN_NUM IN ' || $S01s || ')'
+else
+   if $S01a <> ''
+      let $GCSwhereClause = ' AND V5.PIN_NUM IN ' || $S01a
+   end-if
+   if $S01s <> ''
+      let $GCSwhereClause = ' AND V5.PIN_NUM IN ' || $S01s
+   end-if
+end-if
+
+!#debug show  '$dvar67: '    $dvar67
+!#debug show  '$indem: '      $indem
+
+begin-select
+V5.SLICE_BGN_DT
+V5.SLICE_END_DT
+
+  if datediff(&V5.SLICE_END_DT, &V5.SLICE_BGN_DT, 'day') >= 15
+     add 1 to #Count
+  end-if
+
+from PS_GP_RSLT_ED_VW V5
+where V5.EMPLID     = $Emplid
+and   V5.EMPL_RCD   = #EMPL_RCD
+and   V5.SLICE_BGN_DT BETWEEN $dvar67 and $dter
+[$GCSwhereClause]
+end-select
+
+
+if #Count >= 6
+  let $Nmbr22 = '1'
+else
+  let $Nmbr22 = '2'
+end-if
+
+end-procedure Get-Count-Salary
+
+!**************************************
+begin-procedure Get-Accum-Worked
+!**************************************
+! #debug show 'Get-Accum-Worked **'
+let #TotMonth = 0
+let $GAWwhereClause = ''
+let $dvar3 = dateadd($dvar,'month', -36)
+do Convert-To-DTU-Date($dvar3, $dvar3)
+do Convert-From-DTU-Date($dvar3, $dvar3)
+
+if $Indem = '1'
+   add 1 to #TotMonth
+end-if
+
+do Convert-From-DTU-Date('2010-01-01', $MaxDate)
+if $dter < $MaxDate
+    let #TotMonth = ceil(datediff($dter,$dhir,'month'))
+else
+    !let $dter1 = $MaxDate
+    let #TotMonth = ceil(datediff($dter,$dhir,'month'))
+end-if
+
+! #debug show '$dvar3:  '      $dvar3
+! #debug show '#TotMonth: '   #TotMonth
+! #debug show '$MaxDate: '    $MaxDate
+
+if $S01a <> '' and $S01s <> ''
+   let $GAWwhereClause = 'AND (U1.PIN_NUM IN ' || $S01a || ' OR U1.PIN_NUM IN ' || $S01s || ')'
+else
+   if $S01a <> ''
+      let $GAWwhereClause = ' AND U1.PIN_NUM IN ' || $S01a
+   end-if
+   if $S01s <> ''
+      let $GAWwhereClause = ' AND U1.PIN_NUM IN ' || $S01s
+   end-if
+end-if
+
+begin-select distinct
+U1.SLICE_BGN_DT
+U1.SLICE_END_DT
+
+   if datediff(&U1.SLICE_END_DT, &U1.SLICE_BGN_DT, 'day') <= 15
+     add -1 to #TotMonth
+   end-if
+
+from PS_GP_RSLT_ACUM_VW U1
+where U1.EMPLID      = $Emplid
+and U1.EMPL_RCD      = #EMPL_RCD
+and U1.SLICE_BGN_DT BETWEEN $MaxDate and $dvar
+and U1.SEQ_NUM8      = (select MAX(U2.SEQ_NUM8) from PS_GP_RSLT_ACUM_VW U2
+                        where U2.EMPLID        = U1.EMPLID
+                        and U2.CAL_RUN_ID      = U1.CAL_RUN_ID
+                        and U2.ORIG_CAL_RUN_ID = U1.ORIG_CAL_RUN_ID
+                        and U2.SLICE_BGN_DT    = U1.SLICE_BGN_DT
+                        and U2.SLICE_END_DT    = U1.SLICE_END_DT
+                        and U2.ORIG_CAL_RUN_ID = U2.CAL_RUN_ID
+                        and U2.PIN_NUM         = U1.PIN_NUM)
+and U1.RSLT_SEG_NUM  = (select MAX(U3.RSLT_SEG_NUM) from PS_GP_RSLT_ACUM_VW U3
+                        where U3.EMPLID      = U1.EMPLID
+                        and   U3.CAL_RUN_ID  = U1.CAL_RUN_ID
+                        and   U3.EMPL_RCD    = U1.EMPL_RCD
+                        and   U3.GP_PAYGROUP = U1.GP_PAYGROUP
+                        and   U3.CAL_ID      = U1.CAL_ID
+                        and   U3.ORIG_CAL_RUN_ID = U1.ORIG_CAL_RUN_ID
+                        and   U3.ORIG_CAL_RUN_ID = U3.CAL_RUN_ID
+                        and   U3.PIN_NUM     = U1.PIN_NUM)
+and U1.ORIG_CAL_RUN_ID = U1.CAL_RUN_ID
+[$GAWwhereClause]
+end-select
+if #TotMonth > 36
+    let #TotMonth = 36
+end-if
+let $TotM = edit(#TotMonth,'00')
+end-procedure Get-Accum-Worked
+
+
+!**************************************
+begin-procedure Blank ($FieldIn, :$FieldOut)
+!**************************************
+let $FieldOut = ''
+let #Counter = 1
+let #LenField = length(ltrim(rtrim($FieldIn,' '), ' '))
+if #LenField > 0
+  while #LenField > 0
+    let $FieldOut = $FieldOut || substr(ltrim(rtrim($FieldIn,' '), ' '), #Counter,1) || ' '
+    add 1 to #Counter
+    add -1 to #LenField
+  end-while
+end-if
+end-procedure Blank
+
+!**************************************
+begin-procedure BlankNum($FieldIn, :$FieldOut)
+!**************************************
+let $FieldOut = ''
+let #Counter = 1
+let $FieldIn = replace($FieldIn,'.',',')
+let #LenField = length($FieldIn)
+if #LenField > 0
+  while #LenField > 0
+    if substr(rtrim($FieldIn,' '), #Counter,1) <> ','
+      let $FieldOut = $FieldOut || substr(rtrim($FieldIn,' '), #Counter,1) || ' '
+    else
+      let $FieldOut = rtrim($FieldOut,' ') || ' ' || substr(rtrim($FieldIn,' '), #Counter,1)
+    end-if
+    add 1 to #Counter
+    add -1 to #LenField
+  end-while
+end-if
+let $FieldOut = replace($FieldOut,',',' ')
+end-procedure BlankNum
+
+
+!**************************************
+begin-procedure fill($FieldIn, #Length, $FillChar, :$FieldOut)
+!*************************************
+  let $FieldIn  = rtrim($FieldIn,' ')
+  let $FieldIn  = ltrim($FieldIn,' ')
+  let $FieldOut = ''
+  let #FieldLength = length($FieldIn)
+  let #SPACES = #Length - #FieldLength
+  let #CONT = 1
+  while #CONT <= #SPACES
+      let $FieldOut = $FillChar || ltrim($FieldOut,' ')
+      add 1 to #CONT
+  end-while
+  let $FieldOut = $FieldOut || $FieldIn
+  let $FieldIn = ''
+end-procedure fill
+
+!*************************************
+begin-procedure Get-Alignment
+!#debug show '** Get-Alignment **'
+!*************************************
+
+let #d1 = #horz + 5
+let #d2 = #horz + 8
+let #d3 = #horz + 11
+let #d4 = #horz + 14
+let #d5 = #horz + 17
+let #d6 = #horz + 20
+let #d7 = #horz + 23
+let #d8 = #horz + 30
+let #d9 = #horz + 33
+let #d10 = #horz + 36
+let #d11 = #horz + 39
+let #d12 = #horz + 46
+let #d13 = #horz + 54
+let #d14 = #horz + 57
+let #d15 = #horz + 59
+
+let #s0  = #horz + 19
+let #s1  = #s0 + 1
+let #s2  = #s1 + 1
+let #s3  = #s2 + 1
+let #s4  = #s3 + 1
+let #s5  = #s4 + 1
+let #s6  = #s5
+let #sh0 = #vert + 55
+let #sh1 = #vert + 71
+let #ct  = #sh0  + 9
+
+let #h2  = #vert
+let #h3  = #vert
+let #h4a = #vert
+let #h4b = #vert
+let #h4c = #vert + 31
+let #h4d = #vert + 51
+let #h4e = #vert + 57
+let #h5  = #vert
+let #h6a = #vert + 26
+let #h6b = #vert + 41
+let #h6c = #vert + 47
+let #h7  = #vert + 55
+let #h8  = #vert + 7
+let #h9  = #vert + 14
+let #h10 = #vert + 45
+let #h11a = #vert
+let #h11b = #vert + 15
+let #h12a = #vert
+let #h12b = #vert + 3
+let #h12c = #vert + 7
+let #h13a = #vert + 14
+let #h13b = #vert + 18
+let #h13c = #vert + 22
+let #h14  = #vert + 38
+let #h15  = #vert + 51
+let #h16a = #vert + 56
+let #h16b = #vert + 60
+let #h16c = #vert + 64
+let #h17  = #vert + 71
+let #h18a = #vert
+let #h18b = #vert + 5
+let #h18c = #vert + 25
+let #h18d = #vert + 31
+let #h18e = #vert + 52
+let #h18f = #vert + 58
+let #h19  = #vert
+let #h20a = #vert + 27
+let #h20b = #vert + 41
+let #h21  = #vert + 71
+let #h22  = #vert + 19
+let #h23  = #vert + 39
+let #h24  = #vert + 55
+let #h25  = #vert
+let #h26  = #vert
+let #h27  = #vert + 15
+
+end-procedure Get-Alignment
+
+!*************************************
+begin-procedure Print-Data
+!#debug show '** Print-Data **'
+!*************************************
+alter-printer point-size = 11
+!=============
+!BOX 1
+!=============
+!2
+let $NameC = substr($NameC, 1, 40)
+if $Name2 <> ' '
+    let $NameC   = $Name1 || ' ' || $Name2 || ' ' || $Name3
+else
+    let $NameC   = $Name1 || ' ' || $Name3
+end-if
+let $NameC       = replace($NameC,'  ',' ')
+do format-name ($NameC, 40, $NameC)
+let $arrNameC    = $NameC
+do Blank($arrNameC, $FieldOut)
+print $FieldOut (#d1,#h2)
+!3
+do format-name ($MNameC, 40, $MNameC)
+let $MNameC = substr($MNameC, 1, 40)
+do format-name ($MNameC, 40, $MNameC)
+let $arrMNameC   = $MNameC
+do Blank($arrMNameC, $FieldOut)
+print $FieldOut (#d2,#h3)
+!4
+let $Address1N = substr($Address1, 1, (40-(LENGTH($num)+1)))|| ' '||$num
+do Blank ($Address1N, $FieldOut)
+print $FieldOut (#d3,#h4a)
+!let $AddrCompl   = substr(rtrim($num,' ') || ' ' || rtrim($Address2, ' '), 1, 16)
+let $AddrCompl   = substr(rtrim($Address2, ' '), 1, 16)
+do Blank ($AddrCompl, $FieldOut)
+!do Blank ($City, $FieldOut)
+print $FieldOut (#d4,#h4b)
+
+do fill ($Postal,9,' ',$Postal)
+do Blank ($Postal, $FieldOut)
+let $FieldOut = replace($FieldOut,'-',' ')
+print $FieldOut (#d4,#h4c)
+do Blank ($State, $FieldOut)
+print $FieldOut (#d4,#h4d)
+do fill ($Phone,10,' ',$Phone)
+do Blank ($Phone, $FieldOut)
+print $FieldOut (#d4,#h4e)
+!5
+do fill ($PISPASEP,11,' ',$PISPASEP)
+do Blank ($PISPASEP, $FieldOut)
+print $FieldOut (#d5,#h5)
+!6
+do fill ($CTPS,7,'0',$CTPS)
+do Blank ($CTPS, $FieldOut)
+print $FieldOut (#d5,#h6a)
+
+do fill ($CTPSSerie,3,'0',$CTPSSerie)
+do Blank ($CTPSSerie, $FieldOut)
+print $FieldOut (#d5,#h6b)
+
+do Blank ($CTPSState, $FieldOut)
+print $FieldOut (#d5,#h6c)
+!7
+do fill ($CPF,11,'0',$CPF)
+do Blank ($CPF, $FieldOut)
+print $FieldOut (#d5,#h7)
+!8
+do fill ($Nmbr8,1,'0',$Nmbr8)
+print $Nmbr8 (#d6,#h8)
+!9
+do fill ($Nmbr9,14,'0',$Nmbr9)
+do Blank ($Nmbr9, $FieldOut)
+print $FieldOut (#d6,#h9)
+!10
+let $Nmbr10 = substr($Nmbr10,1,5)
+do fill ($Nmbr10,5,'0',$Nmbr10)
+do Blank ($Nmbr10, $FieldOut)
+print $FieldOut (#d6,#h10)
+!11
+let $CBO = substr($CBO,1,6)
+do fill ($CBO,6,'0',$CBO)
+do Blank ($CBO, $FieldOut)
+print $FieldOut (#d7,#h11a)
+do Blank ($CBODescr, $FieldOut)
+print $FieldOut (#d7,#h11b)
+!SELLO - CARIMBO
+set-color print-text-foreground = ('blue')
+alter-printer point-size = 6
+graphic (#s0, #sh0, 1) horz-line
+graphic (#s6, #sh0, 1) horz-line
+let #ct1 = #ct - (length($Nmbr9)/4)
+print $Nmbr9 (#s1,#ct1, 30) edit 'xxxxxxxx/xxxx-xx'
+let #ct1 = #ct - (length($EstabDescrS)/4)
+print $EstabDescrS (#s2,#ct1, 30)
+let $FieldOut = $StreetS || ',' || to_char(#NumberS)
+let #ct1 = #ct - (length($FieldOut)/4)
+print $FieldOut (#s3,#ct1, 30)
+let $FieldOut = $NeighS || '    ' || $PostalS
+let #ct1 = #ct - (length($FieldOut)/4)
+print $FieldOut (#s4,#ct1, 30)
+let $FieldOut = $CityS || '-' || $StateS
+let #ct1 = #ct - (length($FieldOut)/4)
+print $FieldOut (#s5,#ct1, 30)
+graphic (#s0, #sh1, 1) horz-line
+graphic (#s6, #sh1, 1) horz-line
+set-color print-text-foreground = ('black')
+alter-printer point-size = 11
+!=============
+!BOX 2
+!=============
+!12
+let $HireDtD   = substr($HireDt,9, 2)
+let $HireDtM   = substr($HireDt,6, 2)
+let $HireDtY   = substr($HireDt,3, 2)
+do Blank ($HireDtD, $FieldOut)
+print $FieldOut (#d8,#h12a)
+do Blank ($HireDtM, $FieldOut)
+print $FieldOut (#d8,#h12b)
+do Blank ($HireDtY, $FieldOut)
+print $FieldOut (#d8,#h12c)
+!13
+let $TermDtD   = substr($TermDt,9, 2)
+let $TermDtM   = substr($TermDt,6, 2)
+let $TermDtY   = substr($TermDt,3, 2)
+do Blank ($TermDtD, $FieldOut)
+print $FieldOut (#d8,#h13a)
+do Blank ($TermDtM, $FieldOut)
+print $FieldOut (#d8,#h13b)
+do Blank ($TermDtY, $FieldOut)
+print $FieldOut (#d8,#h13c)
+!14
+print $Sex (#d8,#h14)
+!15
+print $EducationLvl (#d8,#h15)
+!16
+let $BirthDtD   = substr($BirthDt,9, 2)
+let $BirthDtM   = substr($BirthDt,6, 2)
+let $BirthDtY   = substr($BirthDt,3, 2)
+do Blank ($BirthDtD, $FieldOut)
+print $FieldOut (#d8,#h16a)
+do Blank ($BirthDtM, $FieldOut)
+print $FieldOut (#d8,#h16b)
+do Blank ($BirthDtY, $FieldOut)
+print $FieldOut (#d8,#h16c)
+!17
+Do Blank ($Weekly_Rate, $FieldOut)
+print $FieldOut (#d8,#h17)
+!18
+
+Do convert-to-dtu-date($dvar,$dvarrdtu)
+Do dtu-parse-date($dvarrdtu, #dtu_yr, #dtu_mo, #dtu_da)
+Let $month = EDIT(#dtu_mo,'09')
+Do Blank ($month, $FieldOut)
+print $FieldOut (#d9,#h18e)
+Do convert-to-dtu-date($dvar1,$dvar1dtu)
+Do dtu-parse-date($dvar1dtu, #dtu_yr, #dtu_mo, #dtu_da)
+Let $month = EDIT(#dtu_mo,'09')
+Do Blank ($month, $FieldOut)
+print $FieldOut (#d9,#h18c)
+Do convert-to-dtu-date($dvar2,$dvar2dtu)
+Do dtu-parse-date($dvar2dtu, #dtu_yr, #dtu_mo, #dtu_da)
+Let $month = EDIT(#dtu_mo,'09')
+Do Blank ($month, $FieldOut)
+print $FieldOut (#d9,#h18a)
+
+Do BlankNum ($mvar2, $FieldOut)
+print $FieldOut (#d9,#h18b)
+
+do BlankNum ($mvar1, $FieldOut)
+print $FieldOut (#d9,#h18d)
+
+Do BlankNum ($mvar, $FieldOut)
+print $FieldOut (#d9,#h18f)
+
+!19
+Do BlankNum ($TSal, $FieldOut)
+print $FieldOut (#d10,#h19)
+!20
+do fill ($Acct,7,' ',$Acct) 
+do Blank ($Acct, $FieldOut)
+print $FieldOut (#d10,#h20a)
+do fill ($AcctD,1,' ',$Acct)
+Do Blank ($AcctD, $FieldOut)
+print $FieldOut (#d10,#h20b)
+ 
+!21
+do Blank ($TotM, $FieldOut)
+let $FieldOut = '   ' || $FieldOut
+print $FieldOut (#d10,#h21)
+
+let $mvarT = edit(#RsltValT,  '99999999.99')
+do BlankNum ($mvarT, $FieldOut)
+print $FieldOut (#d10,#h18a)
+
+!22
+print $Nmbr22 (#d11,#h22)
+!23
+print $Indem (#d11,#h23)
+!24
+alter-printer point-size = 6
+set-color print-text-foreground = ('blue')
+print $EstabDescrS (#d12,#h24)
+set-color print-text-foreground = ('black')
+alter-printer point-size = 11
+if $CD = 'Y'
+  !25
+  do fill ($PISPASEP,11,' ',$PISPASEP)
+  do Blank ($PISPASEP, $FieldOut)
+  print $FieldOut   (#d13,#h25)
+  !26
+  let $NameC = substr($NameC, 1, 40)
+  do Blank($NameC, $FieldOut)
+  print $FieldOut   (#d14,#h26)
+  !27
+  do Blank($EstabDescrS, $FieldOut)
+  print $FieldOut (#d15,#h27)
+end-if
+end-procedure Print-Data
+
+!***************************************************************************
+begin-procedure Setup-Array
+!#debug show '** Procedure: Setup-Array **'
+!***************************************************************************
+create-array name=UnemplReg size={MAX_DETAIL}
+     field=hdrtype:char        !header inscr type CNPJ or CEI
+     field=hdrid:char          !header inscr id
+     field=dtlcpf:char         !detail CPF
+     field=dtlname:char        !detail employee's name
+     field=dtladdress:char     !detail address
+     field=dtladdrcompl:char   !detail complementary address i.e number
+     field=dtlzip:char         !detail zip code
+     field=dtlstate:char       !detail state
+     field=dtlddd:char         !detail phone regional code
+     field=dtlphone:char       !detail phone number
+     field=dtlmothernm:char    !detail employee's mother name
+     field=dtlpispasep:char    !detail PIS/PASEP
+     field=dtlctpsnbr:char     !detail CTPS number
+     field=dtlctpsseries:char  !detail CTPS series
+     field=dtlctpsstate:char   !detail CTPS state
+     field=dtlcbo:char         !detail CBO
+     field=dtlhiredt:char      !detail hiring date
+     field=dtltermdt:char      !detail termination date
+     field=dtlgender:char      !detail gender
+     field=dtldegrlvl:char     !detail degree level
+     field=dtlbirthdt:char     !detail birht date
+     field=dtlwrkhours:char    !detail worked hours
+     field=dtlantepenult:char  !detail antepenultimate salary
+     field=dtlpenult:char      !detail penultimate salary
+     field=dtllast:char        !detail last salary
+     field=dtlwrkmonths:char   !detail worked months '00'
+     field=dtlsixsal:char      !detail last six salaries received '0'
+     field=dtlindem:char       !detail indemnified salary
+     field=dtlbnkcd:char       !detail bank code
+     field=dtlbnkbranch:char   !detail bank branch
+     field=dtlbranchdig:char   !detail bank branch digit
+end-procedure Setup-Array
+
+!***************************************************************************
+begin-procedure Fill-Array
+!#debug show '** Procedure: Fill-Array **'
+!***************************************************************************
+add 1 to #element
+if $Name2 <> ' '
+    let $NameC   = $Name1 || ' ' || $Name2 || ' ' || $Name3
+else
+    let $NameC   = $Name1 || ' ' || $Name3
+end-if
+let $NameC       = replace($NameC,'  ',' ')
+do format-name ($NameC, 40, $NameC)
+!let $arrNameC    = $NameC
+let $arrAddrC    = substr($Address1, 1, 40)
+let $arrAddrC    = substr($Address1, 1, (40-(LENGTH($num)+1)))|| ' '||$num
+let $AddrCompl   = substr(rtrim($Address2, ' '), 1, 16)
+!let $AddrCompl   = substr(rtrim($num,' ') || ' ' || rtrim($Address2, ' '), 1, 16)
+let $Postal      = replace($Postal,'-','')
+let $Postal      = replace($Postal,' ','')
+do format-name ($MNameF, 40, $MNameF)
+let $arrMNameC   = $MNameF
+let $CBO         = replace($CBO,'-','')
+let $CBO         = substr($CBO,1,6)
+let $TermDtD     = substr($TermDt,9, 2)
+let $TermDtM     = substr($TermDt,6, 2)
+let $TermDt4Y    = substr($TermDt,1, 4)
+let $BirthDtD    = substr($BirthDt,9, 2)
+let $BirthDtM    = substr($BirthDt,6, 2)
+let $BirthDt4Y   = substr($BirthDt,1, 4)
+let $arrHireDt   = $HireDtD || $HireDtM || $HireDt4Y
+let $arrTermDt   = $TermDtD || $TermDtM || $TermDt4Y
+let $arrBirtDt   = $BirthDtD || $BirthDtM || $BirthDt4Y
+let $PhoneSD     = substr($Phone,3, 8)
+let $PhoneDDD    = substr($Phone,1, 2)
+
+do fill ($Postal,8,'0',$Postal)
+do fill ($PISPASEP,11,' ',$PISPASEP)
+do fill ($CTPS,8,'0',$CTPS)
+do fill ($CTPSSerie,5,'0',$CTPSSerie)
+do fill ($CBO,6,'0',$CBO)
+do fill ($PhoneDDD,2,' ',$PhoneDDD)
+do fill ($PhoneSD,8,' ',$PhoneSD)
+do fill ($EducationLvl,2,'0',$EducationLvl)
+
+let $mvar2 = replace($mvar2,'.','')
+do fill ($mvar2,10,'0',$mvar2)
+let $mvar1 = replace($mvar1,'.','')
+do fill ($mvar1,10,'0',$mvar1)
+let $mvar = replace($mvar,'.','')
+do fill ($mvar,10,'0',$mvar)
+
+put $Nmbr8        -   !header inscr type CNPJ or CEI
+    $Nmbr9        -      !header inscr id
+    $CPF          -      !detail CPF
+    $arrNameC     -      !detail employee's name
+    $arrAddrC     -      !detail address
+    $AddrCompl    -      !detail complementary address i.e number
+    $Postal       -      !detail zip code
+    $State        -      !detail state
+    $PhoneDDD     -      !detail phone number DDD
+    $PhoneSD      -      !detail phone number
+    $arrMNameC    -      !detail employee's mother name
+    $PISPASEP     -      !detail PIS/PASEP
+    $CTPS         -      !detail CTPS number
+    $CTPSSerie    -      !detail CTPS series
+    $CTPSState    -      !detail CTPS state
+    $CBO          -      !detail CBO
+    $arrHireDt    -      !detail hiring date
+    $arrTermDt    -      !detail termination date
+    $Sex          -      !detail gender
+    $EducationLvl -      !detail degree level
+    $arrBirtDt    -      !detail birht date
+    $Weekly_Rate  -      !detail worked hours
+    $mvar2        -      !detail antepenultimate salary
+    $mvar1        -      !detail penultimate salary
+    $mvar         -      !detail last salary
+    '00'          -      !detail worked months
+    '0'           -      !detail last six salaries received
+    $Indem        -      !detail indemnified salary
+    '000'         -      !detail bank code
+    '0000'        -      !detail bank branch
+    '0'           -      !detail bank branch digit
+into UnemplReg (#element)
+end-procedure Fill-Array
+
+!***************************************************************************
+begin-procedure Sort-Array
+!#debug show '** Procedure: Sort-Array **'
+!***************************************************************************
+let #ARRmax  = {MAX_DETAIL}
+let #aux1 = 0
+
+while #aux1 < #ARRmax
+   let #aux2 = #aux1 + 1
+
+   get $a1_hdrtype               -
+       $a1_hdrid                 -
+       $a1_dtlcpf                -
+       $a1_dtlname               -
+       $a1_dtladdress            -
+       $a1_dtladdrcompl          -
+       $a1_dtlzip                -
+       $a1_dtlstate              -
+       $a1_dtlddd                -
+       $a1_dtlphone              -
+       $a1_dtlmothernm           -
+       $a1_dtlpispasep           -
+       $a1_dtlctpsnbr            -
+       $a1_dtlctpsseries         -
+       $a1_dtlctpsstate          -
+       $a1_dtlcbo                -
+       $a1_dtlhiredt             -
+       $a1_dtltermdt             -
+       $a1_dtlgender             -
+       $a1_dtldegrlvl            -
+       $a1_dtlbirthdt            -
+       $a1_dtlwrkhours           -
+       $a1_dtlantepenult         -
+       $a1_dtlpenult             -
+       $a1_dtllast               -
+       $a1_dtlwrkmonths          -
+       $a1_dtlsixsal             -
+       $a1_dtlindem              -
+       $a1_dtlbnkcd              -
+       $a1_dtlbnkbranch          -
+       $a1_dtlbranchdig          -
+       from UnemplReg (#aux1)    -
+       hdrtype                   -
+       hdrid                     -
+       dtlcpf                    -
+       dtlname                   -
+       dtladdress                -
+       dtladdrcompl              -
+       dtlzip                    -
+       dtlstate                  -
+       dtlddd                    -
+       dtlphone                  -
+       dtlmothernm               -
+       dtlpispasep               -
+       dtlctpsnbr                -
+       dtlctpsseries             -
+       dtlctpsstate              -
+       dtlcbo                    -
+       dtlhiredt                 -
+       dtltermdt                 -
+       dtlgender                 -
+       dtldegrlvl                -
+       dtlbirthdt                -
+       dtlwrkhours               -
+       dtlantepenult             -
+       dtlpenult                 -
+       dtllast                   -
+       dtlwrkmonths              -
+       dtlsixsal                 -
+       dtlindem                  -
+       dtlbnkcd                  -
+       dtlbnkbranch              -
+       dtlbranchdig 
+   
+   if isblank($a1_hdrtype) = 1
+      break
+   end-if
+
+   while #aux2 < #ARRmax
+
+      get $a2_hdrtype               -
+          $a2_hdrid                 -
+          $a2_dtlcpf                -
+          $a2_dtlname               -
+          $a2_dtladdress            -
+          $a2_dtladdrcompl          -
+          $a2_dtlzip                -
+          $a2_dtlstate              -
+          $a2_dtlddd                -
+          $a2_dtlphone              -
+          $a2_dtlmothernm           -
+          $a2_dtlpispasep           -
+          $a2_dtlctpsnbr            -
+          $a2_dtlctpsseries         -
+          $a2_dtlctpsstate          -
+          $a2_dtlcbo                -
+          $a2_dtlhiredt             -
+          $a2_dtltermdt             -
+          $a2_dtlgender             -
+          $a2_dtldegrlvl            -
+          $a2_dtlbirthdt            -
+          $a2_dtlwrkhours           -
+          $a2_dtlantepenult         -
+          $a2_dtlpenult             -
+          $a2_dtllast               -
+          $a2_dtlwrkmonths          -
+          $a2_dtlsixsal             -
+          $a2_dtlindem              -
+          $a2_dtlbnkcd              -
+          $a2_dtlbnkbranch          -
+          $a2_dtlbranchdig          -
+          from UnemplReg (#aux2)    -
+          hdrtype                   -
+          hdrid                     -
+          dtlcpf                    -
+          dtlname                   -
+          dtladdress                -
+          dtladdrcompl              -
+          dtlzip                    -
+          dtlstate                  -
+          dtlddd                    -
+          dtlphone                  -
+          dtlmothernm               -
+          dtlpispasep               -
+          dtlctpsnbr                -
+          dtlctpsseries             -
+          dtlctpsstate              -
+          dtlcbo                    -
+          dtlhiredt                 -
+          dtltermdt                 -
+          dtlgender                 -
+          dtldegrlvl                -
+          dtlbirthdt                -
+          dtlwrkhours               -
+          dtlantepenult             -
+          dtlpenult                 -
+          dtllast                   -
+          dtlwrkmonths              -
+          dtlsixsal                 -
+          dtlindem                  -
+          dtlbnkcd                  -
+          dtlbnkbranch              -
+          dtlbranchdig 
+
+      if isblank($a2_hdrtype) = 1
+         break
+      end-if
+
+      if  ($a1_hdrtype > $a2_hdrtype)
+      or  ($a1_hdrtype = $a2_hdrtype
+      and  $a1_hdrid > $a2_hdrid)
+
+          put $a1_hdrtype               -
+              $a1_hdrid                 -
+              $a1_dtlcpf                -
+              $a1_dtlname               -
+              $a1_dtladdress            -
+              $a1_dtladdrcompl          -
+              $a1_dtlzip                -
+              $a1_dtlstate              -
+              $a1_dtlddd                -
+              $a1_dtlphone              -
+              $a1_dtlmothernm           -
+              $a1_dtlpispasep           -
+              $a1_dtlctpsnbr            -
+              $a1_dtlctpsseries         -
+              $a1_dtlctpsstate          -
+              $a1_dtlcbo                -
+              $a1_dtlhiredt             -
+              $a1_dtltermdt             -
+              $a1_dtlgender             -
+              $a1_dtldegrlvl            -
+              $a1_dtlbirthdt            -
+              $a1_dtlwrkhours           -
+              $a1_dtlantepenult         -
+              $a1_dtlpenult             -
+              $a1_dtllast               -
+              $a1_dtlwrkmonths          -
+              $a1_dtlsixsal             -
+              $a1_dtlindem              -
+              $a1_dtlbnkcd              -
+              $a1_dtlbnkbranch          -
+              $a1_dtlbranchdig          -
+              into UnemplReg (#aux2)    -
+              hdrtype                   -
+              hdrid                     -
+              dtlcpf                    -
+              dtlname                   -
+              dtladdress                -
+              dtladdrcompl              -
+              dtlzip                    -
+              dtlstate                  -
+              dtlddd                    -
+              dtlphone                  -
+              dtlmothernm               -
+              dtlpispasep               -
+              dtlctpsnbr                -
+              dtlctpsseries             -
+              dtlctpsstate              -
+              dtlcbo                    -
+              dtlhiredt                 -
+              dtltermdt                 -
+              dtlgender                 -
+              dtldegrlvl                -
+              dtlbirthdt                -
+              dtlwrkhours               -
+              dtlantepenult             -
+              dtlpenult                 -
+              dtllast                   -
+              dtlwrkmonths              -
+              dtlsixsal                 -
+              dtlindem                  -
+              dtlbnkcd                  -
+              dtlbnkbranch              -
+              dtlbranchdig 
+  
+          put $a2_hdrtype               -
+              $a2_hdrid                 -
+              $a2_dtlcpf                -
+              $a2_dtlname               -
+              $a2_dtladdress            -
+              $a2_dtladdrcompl          -
+              $a2_dtlzip                -
+              $a2_dtlstate              -
+              $a2_dtlddd                -
+              $a2_dtlphone              -
+              $a2_dtlmothernm           -
+              $a2_dtlpispasep           -
+              $a2_dtlctpsnbr            -
+              $a2_dtlctpsseries         -
+              $a2_dtlctpsstate          -
+              $a2_dtlcbo                -
+              $a2_dtlhiredt             -
+              $a2_dtltermdt             -
+              $a2_dtlgender             -
+              $a2_dtldegrlvl            -
+              $a2_dtlbirthdt            -
+              $a2_dtlwrkhours           -
+              $a2_dtlantepenult         -
+              $a2_dtlpenult             -
+              $a2_dtllast               -
+              $a2_dtlwrkmonths          -
+              $a2_dtlsixsal             -
+              $a2_dtlindem              -
+              $a2_dtlbnkcd              -
+              $a2_dtlbnkbranch          -
+              $a2_dtlbranchdig          -
+              into UnemplReg (#aux1)    -
+              hdrtype                   -
+              hdrid                     -
+              dtlcpf                    -
+              dtlname                   -
+              dtladdress                -
+              dtladdrcompl              -
+              dtlzip                    -
+              dtlstate                  -
+              dtlddd                    -
+              dtlphone                  -
+              dtlmothernm               -
+              dtlpispasep               -
+              dtlctpsnbr                -
+              dtlctpsseries             -
+              dtlctpsstate              -
+              dtlcbo                    -
+              dtlhiredt                 -
+              dtltermdt                 -
+              dtlgender                 -
+              dtldegrlvl                -
+              dtlbirthdt                -
+              dtlwrkhours               -
+              dtlantepenult             -
+              dtlpenult                 -
+              dtllast                   -
+              dtlwrkmonths              -
+              dtlsixsal                 -
+              dtlindem                  -
+              dtlbnkcd                  -
+              dtlbnkbranch              -
+              dtlbranchdig 
+  
+          let $a1_hdrtype       = $a2_hdrtype
+          let $a1_hdrid         = $a2_hdrid
+          let $a1_dtlcpf        = $a2_dtlcpf
+          let $a1_dtlname       = $a2_dtlname
+          let $a1_dtladdress    = $a2_dtladdress
+          let $a1_dtladdrcompl  = $a2_dtladdrcompl
+          let $a1_dtlzip        = $a2_dtlzip
+          let $a1_dtlstate      = $a2_dtlstate
+          let $a1_dtlddd        = $a2_dtlddd
+          let $a1_dtlphone      = $a2_dtlphone
+          let $a1_dtlmothernm   = $a2_dtlmothernm
+          let $a1_dtlpispasep   = $a2_dtlpispasep
+          let $a1_dtlctpsnbr    = $a2_dtlctpsnbr
+          let $a1_dtlctpsseries = $a2_dtlctpsseries
+          let $a1_dtlctpsstate  = $a2_dtlctpsstate
+          let $a1_dtlcbo        = $a2_dtlcbo
+          let $a1_dtlhiredt     = $a2_dtlhiredt
+          let $a1_dtltermdt     = $a2_dtltermdt
+          let $a1_dtlgender     = $a2_dtlgender
+          let $a1_dtldegrlvl    = $a2_dtldegrlvl
+          let $a1_dtlbirthdt    = $a2_dtlbirthdt
+          let $a1_dtlwrkhours   = $a2_dtlwrkhours
+          let $a1_dtlantepenult = $a2_dtlantepenult
+          let $a1_dtlpenult     = $a2_dtlpenult
+          let $a1_dtllast       = $a2_dtllast
+          let $a1_dtlwrkmonths  = $a2_dtlwrkmonths
+          let $a1_dtlsixsal     = $a2_dtlsixsal
+          let $a1_dtlindem      = $a2_dtlindem
+          let $a1_dtlbnkcd      = $a2_dtlbnkcd
+          let $a1_dtlbnkbranch  = $a2_dtlbnkbranch
+          let $a1_dtlbnkbranch  = $a2_dtlbnkbranch
+ 
+      end-if
+      let #aux2 = #aux2 + 1
+   end-while
+
+   let #aux1 = #aux1 + 1
+end-while
+
+end-procedure
+
+!***************************************************************************
+begin-procedure Open-File
+!#debug show '** Open-File **'
+!***************************************************************************
+let $InstanceId = to_char(#prcs_process_instance)
+
+if $OutType = '4' 
+   let $filename = '{FILEPREFIX}' || 'SD_' || $InstanceId || '_' || $Estabid_SD || '.SD' || '{FILESUFFIX}'
+else
+   let $filename = '{FILEPREFIX}' || 'SD_' || $InstanceId || '.SD' || '{FILESUFFIX}'
+end-if
+
+if #count_Emplid > 0 
+
+#debug show '    filename: ' $filename
+open $filename as 1 for-writing record=300:fixed status=#filestat
+if #filestat != 0
+   display 'Erro na abertura do arquivo de saída :' noline
+   display $filename noline
+   display '. Terminando o programa.'
+   stop quiet
+end-if
+
+End-If
+end-procedure Open-File
+
+!***************************************************************************
+begin-procedure Write-File
+!#debug show '** Write-File **'
+!***************************************************************************
+move 0    to #arrLen
+move 0    to #requests
+move ' '  to $currfld02
+
+if $OutType = '4'
+   let $Estabid_SD = UnemplReg.hdrid(0)
+   do Open-File
+end-if
+
+while #arrLen <= {MAX_DETAIL}
+   let $filefld01 = UnemplReg.hdrtype(#arrLen)        !header inscr type CNPJ or CEI
+   let $filefld02 = UnemplReg.hdrid(#arrLen)          !header inscr id
+   
+   if $currfld02 = ' '
+      if isblank($filefld01) = 1
+         break
+      end-if   
+      do Write-Header
+      let $currfld02 = $filefld02
+   end-if
+
+   if $filefld02 <> $currfld02
+      do Write-Trailler
+      let $Estabid_SD = $filefld02
+      move ' ' to $currfld02
+      move 0   to #requests
+      if $OutType = '4'
+         close 1
+         if isblank($filefld01) <> 1
+            do Open-File
+         end-if
+      end-if
+   else
+      if isblank($filefld01) = 1
+         break
+      end-if   
+      let $filefld04 = UnemplReg.dtlcpf(#arrLen)         !detail CPF
+      let $filefld05 = UnemplReg.dtlname(#arrLen)        !detail employee's name
+      let $filefld06 = UnemplReg.dtladdress(#arrLen)     !detail address
+      let $filefld07 = UnemplReg.dtladdrcompl(#arrLen)   !detail complementary address i.e number
+      let $filefld08 = UnemplReg.dtlzip(#arrLen)         !detail zip code
+      let $filefld09 = UnemplReg.dtlstate(#arrLen)       !detail state
+      let $filefld10 = UnemplReg.dtlddd(#arrLen)         !detail phone regional code
+      let $filefld11 = UnemplReg.dtlphone(#arrLen)       !detail phone number
+      let $filefld12 = UnemplReg.dtlmothernm(#arrLen)    !detail employee's mother name
+      let $filefld13 = UnemplReg.dtlpispasep(#arrLen)    !detail PIS/PASEP
+      let $filefld14 = UnemplReg.dtlctpsnbr(#arrLen)     !detail CTPS number
+      let $filefld15 = UnemplReg.dtlctpsseries(#arrLen)  !detail CTPS series
+      let $filefld16 = UnemplReg.dtlctpsstate(#arrLen)   !detail CTPS state
+      let $filefld17 = UnemplReg.dtlcbo(#arrLen)         !detail CBO
+      let $filefld18 = UnemplReg.dtlhiredt(#arrLen)      !detail hiring date
+      let $filefld19 = UnemplReg.dtltermdt(#arrLen)      !detail termination date
+      let $filefld20 = UnemplReg.dtlgender(#arrLen)      !detail gender
+      let $filefld21 = UnemplReg.dtldegrlvl(#arrLen)     !detail degree level
+      let $filefld22 = UnemplReg.dtlbirthdt(#arrLen)     !detail birht date
+      let $filefld23 = UnemplReg.dtlwrkhours(#arrLen)    !detail worked hours
+      let $filefld24 = UnemplReg.dtlantepenult(#arrLen)  !detail antepenultimate salary
+      let $filefld25 = UnemplReg.dtlpenult(#arrLen)      !detail penultimate salary
+      let $filefld26 = UnemplReg.dtllast(#arrLen)        !detail last salary
+      let $filefld27 = UnemplReg.dtlwrkmonths(#arrLen)   !detail worked months '00'
+      let $filefld28 = UnemplReg.dtlsixsal(#arrLen)      !detail last six salaries received '0'
+      let $filefld29 = UnemplReg.dtlindem(#arrLen)       !detail indemnified salary
+      let $filefld30 = UnemplReg.dtlbnkcd(#arrLen)       !detail bank code
+      let $filefld31 = UnemplReg.dtlbnkbranch(#arrLen)   !detail bank branch
+      let $filefld32 = UnemplReg.dtlbranchdig(#arrLen)   !detail bank branch digit
+      do Write-Detail
+   
+      add 1 to #requests
+      add 1 to #arrLen
+   end-if
+end-while
+
+end-procedure Write-File
+
+!***************************************************************************
+begin-procedure Write-Header
+!#debug show '** Write-Header **'
+!***************************************************************************
+let $hdrfiller = rpad(' ', 280, ' ')
+
+write 1 from '00':2         -
+             $filefld01:1   -
+             $filefld02:14  -
+             '001':3        -
+             $hdrfiller:280
+end-procedure Write-Header
+
+!***************************************************************************
+begin-procedure Write-Detail
+!#debug show '** Write-Detail **'
+!***************************************************************************
+let $dtlfiller = rpad(' ', 28, ' ')
+
+write 1 from '01':2        -
+             $filefld04:11 -
+             $filefld05:40 -
+             $filefld06:40 -
+             $filefld07:16 -
+             $filefld08:8  - !detail zip code
+             $filefld09:2  - !detail state
+             $filefld10:2  - !detail phone regional code
+             $filefld11:8  - !detail phone number
+             $filefld12:40 - !detail employee's mother name
+             $filefld13:11 - !detail PIS/PASEP
+             $filefld14:8  - !detail CTPS number
+             $filefld15:5  - !detail CTPS series
+             $filefld16:2  - !detail CTPS state
+             $filefld17:6  - !detail CBO
+             $filefld18:8  - !detail hiring date
+             $filefld19:8  - !detail termination date
+             $filefld20:1  - !detail gender
+             $filefld21:2  - !detail degree level
+             $filefld22:8  - !detail birht date
+             $filefld23:2  - !detail worked hours
+             $filefld24:10 - !detail antepenultimate salary
+             $filefld25:10 - !detail penultimate salary
+             $filefld26:10 - !detail last salary
+             $filefld27:2  - !detail worked months '00'
+             $filefld28:1  - !detail last six salaries received '0'
+             $filefld29:1  - !detail indemnified salary
+             $filefld30:3  - !detail bank code
+             $filefld31:4  - !detail bank branch
+             $filefld32:1  - !detail bank branch digit
+             $dtlfiller:28
+end-procedure Write-Detail
+
+!***************************************************************************
+begin-procedure Write-Trailler
+!#debug show '** Write-Trailler **'
+!***************************************************************************
+let $trlfiller = rpad(' ', 293, ' ')
+let $total_req = to_char(#requests)
+do fill ($total_req,5,'0',$total_req)
+
+if $filefld02 = ''
+   close 1
+   open $filename as 1 for-APPEND record=300:fixed_nolf
+end-if
+
+write 1 from '99':2         -
+             $total_req:5   -
+             $trlfiller:293
+
+end-procedure Write-Trailler
+
+!**********************************************************************
+begin-procedure format-name($NameIn, #Length, :$NameOut)
+!**********************************************************************
+let #lenNameIn = length($NameIn)
+let #i         = length($NameIn)
+let #endpos    = 0
+let $NameOut   = ''
+while #lenNameIn > #Length
+    let $dstchar = substr($NameIn, #i, 1)
+    let #blanksN = isblank($dstchar)
+    if #blanksN = 1
+       if #endpos = 0
+      let #endpos    = #i
+  let #i         = #i - 1
+       else
+      let #begpos    = #i + 1
+      let #remain    = #lenNameIn - #endpos + 1
+      let $NameIn    = substr($NameIn, 1, #begpos) || substr($NameIn, #endpos, #remain)
+      let #lenNameIn = length($NameIn)
+  let #endpos    = 0
+  if #lenNameIn < 41
+     break
+  end-if
+       end-if  
+    else   
+       let #i = #i - 1
+    end-if
+end-while
+let $NameIn  = replace($NameIn,'.',' ')
+let $NameIn  = replace($NameIn,'''',' ')
+let $NameOut = $NameIn
+end-procedure format-name
+
+!**********************************************************************
+begin-procedure issue-error-msg ($InfoType,$EmplidRef)
+!**********************************************************************
+evaluate $InfoType
+if $_warned = 'N'
+   display 'Os funcionários mencionados nas mensagens de erro abaixo ' noline
+   display 'não terão seus registros incluídos no arquivo eletrônico ' noline
+   display 'de Seguro Desemprego até que as informações sejam corrigidas.'   
+   let $_warned = 'Y'
+end-if
+when = 'EFFDT'
+   display '* Dados da Carteira de Trabalho do funcionário ' noline
+   display $EmplidRef                                        noline
+   display ' não estão cadastrados.'
+when = 'MTRNAME'
+   display '* Nome da mãe do funcionário '      noline
+   display $EmplidRef                           noline
+   display ' não está cadastrado.'
+when = 'CBO'
+   display '* Código CBO do funcionário '      noline
+   display $EmplidRef                          noline
+   display ' não está cadastrado.'
+when = 'PISPASEP'
+   display '* PIS-PASEP do funcionário ' noline
+   display $EmplidRef                    noline
+   display ' não está cadastrado.'
+when = 'CTPS'
+   display '* Número da Carteira de Trabalho do funcionário ' noline
+   display $EmplidRef                                         noline
+   display ' não está cadastrado.'
+when = 'CPF'
+   display '* CPF do funcionário ' noline
+   display $EmplidRef              noline
+   display ' não está cadastrado.'
+when = 'HIREDT'
+   display '* Data de Admissão do funcionário ' noline
+   display $EmplidRef                           noline
+   display ' não está cadastrada.'
+when = 'TERMDT'
+   display '* Data de Demissão do funcionário ' noline
+   display $EmplidRef                           noline
+   display ' não está cadastrada.'
+when = 'BIRTHDT'
+   display '* Data de Nascimento do funcionário ' noline
+   display $EmplidRef                             noline
+   display ' não está cadastrada.'
+when = 'GENDER'
+   display '* Sexo do funcionário '  noline
+   display $EmplidRef                noline
+   display ' não está cadastrado.'
+when = 'EDUCATIONLVL'
+   display '* Escolaridade do funcionário '  noline
+   display $EmplidRef                        noline
+   display ' não está cadastrada.'
+when = 'WORKHR'
+   display '* Horas Semanais do funcionário '  noline
+   display $EmplidRef                          noline
+   display ' não estão cadastradas.'
+when = 'LASTSALARY'
+   display '* Último salário pago ao funcionário '  noline
+   display $EmplidRef                               noline
+   display ' não encontrado.'
+when = 'ADDRESS'
+   display '* Endereço do funcionário '  noline
+   display $EmplidRef                    noline
+   display ' não encontrado.'
+when = 'ADDRNUM'
+   display '* Número do logradouro do funcionário '  noline
+   display $EmplidRef                                noline
+   display ' não encontrado.'   
+end-evaluate
+! let $_errorExists = 'Y'
+
+end-procedure issue-error-msg
+
+!*****************************
+Begin-Procedure FILL_LEADING ( $StringIn, $FillChar , #FinalLen, $Direction, :$SringOut )
+#debugx show '** FILL_LEADING **'
+!*****************************
+  Let $FieldIni = Ltrim(Rtrim($StringIn,' '), ' ')
+  Let #FieldLen = LENGTH($FieldIni)
+  Let #SPACES = #FinalLen - #FieldLen
+
+  Let #CONT = 1
+  Let $SringOut = ''
+  WHILE #CONT <= #SPACES
+    Let $SringOut = $SringOut || $FillChar
+    Add 1 TO #CONT
+  End-WHILE
+
+Evaluate $Direction
+When = 'L'
+  Let $SringOut = $SringOut || $FieldIni
+Break
+When = 'R'
+  Let $SringOut = $FieldIni || $SringOut
+Break
+When-Other
+  show 'FILL_LEADING Direction value not valid (L,R) current:' $Direction
+End-Evaluate
+End-Procedure FILL_LEADING
+
+
+Begin-Procedure OnlyNumbers($StrNbrs, :$Result, :$Changed)
+#debugx show 'Procedure: OnlyNumbers'
+
+    Let #i = 1
+    Let $Result = ''
+    Let $Changed = 'N'
+    Let #StrSize = Length($StrNbrs)
+
+    While #i <= #StrSize
+        Let $test = Substr($StrNbrs, #i, 1)
+        Find $test In '1234567890' 0 #findPos
+        #debugx show '$test :' $test '   #findPos:' #findPos
+        If #findPos >= 0
+            !Only Add valid digits
+            Let $Result = $Result || $test
+        Else
+            !Invalid char found
+            Let $Changed = 'Y'
+        End-if
+    Add 1 to #i
+    End-while
+End-Procedure OnlyNumbers
+
+!******************************************************************************
+Begin-Procedure GetPhoneBRA ($FullPhone, :$PhoneDDI, :$PhoneDDD, :$Phone, :$PhoneRamal)
+! #debug show 'Procedure: GetPhoneBRA'
+!******************************************************************************
+  Let $PhoneDDI      = '0'
+  Let $PhoneDDD      = '0'
+  Let $Phone         = '0'
+  Let $PhoneRamal    = '0'
+  Let #i             = 1
+  Let #DotNumber     = 0
+  Let #SizeFullPhone = Length($FullPhone)
+  Let $CleanPhone    = ''
+  Let #PosDot1       = 0
+  Let #PosDot2       = 0
+  Let #PosDot3       = 0
+  !Clean Phone
+  While #i <= #SizeFullPhone
+    Let $Test = Substr($FullPhone,#i,1)
+    If $Test >= '0' And $Test <= '9' OR $Test = '.'
+          Let $CleanPhone = $CleanPhone || $Test
+    End-If
+    Add 1 to #i
+  End-While
+
+  Let #SizeCleanPhone = Length($CleanPhone)
+  Let #i = 1
+
+  !Find dots positions
+  While #i <= #SizeCleanPhone
+    Let $Test = Substr($CleanPhone,#i,1)
+    If $Test = '.'
+      If #PosDot1 > 0 AND #PosDot2 > 0
+        Let #PosDot3 = #i
+      End-If
+      If #PosDot1 > 0 AND #PosDot3 = 0
+              Let #PosDot2 = #i
+      End-If
+      If #PosDot2 = 0 AND #PosDot3 = 0
+              Let #PosDot1 = #i
+      End-if
+      add 1 to #DotNumber
+    End-If
+    Add 1 to #i
+  End-While
+  ! #debugX show '#PosDot1   :' #PosDot1
+  ! #debugX show '#PosDot2   :' #PosDot2
+  ! #debugX show '#PosDot3   :' #PosDot3
+  ! #debugX show '#DotNumber :' #DotNumber
+
+  Evaluate #DotNumber
+    When = 0
+      !Only phone
+      Let $Phone = $CleanPhone
+      Break
+    When = 1
+      !Maybe DDD.phone or phone.Ramal
+      If #PosDot1 <= 4
+        !DDD.Phone
+        Let $PhoneDDD   = Substr($CleanPhone,1           , #PosDot1 - 1)
+        Let $Phone      = Substr($CleanPhone,#PosDot1 + 1, #SizeCleanPhone)
+      Else
+        !Phone.Ramal
+        Let $Phone      = Substr($CleanPhone,1           , #PosDot1 - 1)
+        Let $PhoneRamal = Substr($CleanPhone,#PosDot1 + 1, #SizeCleanPhone)
+      End-If
+      Break
+    When = 2
+      !Maybe DDD.Phone.Ramal or DDI.DDD.Phone
+      If (#PosDot2 - #PosDot1) > 5
+        !DDD.Phone.Ramal
+        Let $PhoneDDD   = Substr($CleanPhone, 1           , #PosDot1 - 1)
+        Let $Phone      = Substr($CleanPhone, #PosDot1 + 1, (#PosDot2 - #PosDot1) - 1)
+        Let $PhoneRamal = Substr($CleanPhone,#PosDot2 + 1, #SizeCleanPhone)
+      Else
+        !DDI.DDD.Phone
+        Let $PhoneDDI   = Substr($CleanPhone,1           , #PosDot1 - 1)
+        Let $PhoneDDD   = Substr($CleanPhone,#PosDot1 + 1, (#PosDot2 - #PosDot1) - 1)
+        Let $Phone      = Substr($CleanPhone,#PosDot2 + 1, #SizeCleanPhone)
+      End-If
+
+      Break
+    When = 3
+      !Must be DDI.DDD.Phone.Ramal
+      Let $PhoneDDI   = Substr($CleanPhone, 1           , #PosDot1 - 1)
+      Let $PhoneDDD   = Substr($CleanPhone, #PosDot1 + 1, (#PosDot2 - #PosDot1) - 1)
+      Let $Phone      = Substr($CleanPhone, #PosDot2 + 1, (#PosDot3 - #PosDot2) - 1)
+      Let $PhoneRamal = Substr($CleanPhone, #PosDot3 + 1, #SizeCleanPhone)
+      Break
+  End-Evaluate
+  Let #X = Length($Phone)
+  Let #Y = Length($PhoneDDD)
+
+  If Substr($PhoneDDD,1,1) = '0'
+      Let $PhoneDDD = Substr($PhoneDDD,2,#Y)
+      Let #Y = Length($PhoneDDD)
+  End-If
+
+  !If #X > 8
+  !  Let $Phone = Substr($Phone, 1,8)
+  If #X > 9
+    Let $Phone = Substr($Phone, 1,9)
+  End-If
+
+  If #Y > 2
+    Let $PhoneDDD = Substr($PhoneDDD, 1,2)
+  End-If
+End-Procedure GetPhoneBRA
+
+
+!**************************************
+#include 'reset.sqc'     !Reset Printer procedure
+#include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#include 'datetime.sqc'  !Routines for date and time formatting
+#include 'number.sqc'    !Routines to format numbers
+#include 'stdapi.sqc'    !Update Process API
+#include 'datemath.sqc'
+#include 'hrsecty.sqc'   !Get SQR Security parameters

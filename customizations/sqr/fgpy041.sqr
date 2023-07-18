@@ -1,0 +1,3006 @@
+!***********************************************************************
+!  FGPY041:  Treasury Interface Bulk File(s) and Report                *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2014, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2014/10/14:11:23:52                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  103                                                 !
+!                                                                      *
+!***********************************************************************
+#include 'setenv.sqc'    !Set environment
+#Include 'setup31.sqc'   !Printer and page-size initialization
+
+begin-setup
+
+    declare-variable
+
+        date    $temp_date
+
+    end-declare
+
+end-setup
+
+begin-report
+
+    do Init-Report
+
+    do Process-File-Sequence
+
+    do Retrieve-Agency-Data
+
+    do Open-Treasury-Files
+
+    do Generate-Interface-Files
+
+    do Update-Schedule-Definition
+
+    do Update-Pay-Calendar
+
+    do Delete-Run-Controls
+
+    do Commit-Transaction
+
+    do Stdapi-Term
+
+end-report
+
+begin-heading 9
+#Include 'stdhdg03.sqc'
+   print '                 '        (4,1,17)
+   print 'Payroll Office #:'        (5,1,17)
+   print $agency_loc_code           (5,+1,8)
+   print 'Date Payroll Paid:'       (6,1,18)
+   print &CAL.CHECK_DT              (6,+1,12)
+   print 'Payroll Period Ending'    (7,1,22)
+   print &CAL.PAY_END_DT            (7,+1,12)
+   print 'Agency '                  (9,1,7)   underline
+   print 'Schedule Prefix'          (9,+2,15) underline
+   print 'Schedule Code'            (9,+2,13) underline
+   print 'Schedule Sequence'        (9,+2,17) underline
+   print 'Transactions in Schedule' (9,+2,24) underline
+   print 'Transaction Count'        (9,+2,17) underline
+   print 'Transaction Total'        (9,+9,17) underline
+
+end-heading
+
+!**************************
+begin-procedure Init-Report
+!**************************
+
+  move 'FGPY041' to $ReportID
+  move 'Treasury Interface Bulk File Report' to $ReportTitle
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+
+  do Stdapi-Init
+
+  if $Prcs_Process_Instance      = ''
+
+    input $schedule_prefix maxlen=10 'Enter Schedule Prefix' type=char
+    uppercase $schedule_prefix
+
+  else
+
+    do select-schedule-prefix
+
+    display '   Process Parameters : '
+    display '              Schedule Prefix    -  ' noline
+    display $schedule_prefix
+
+    do select-heading-dates
+    do reset-schd-trailer-variables
+    do reset-file-trailer-variables
+
+    let $jul_ddd   = datetostr(datenow(),'DDD')
+
+  end-if
+
+end-procedure       !Init-Report
+
+!*************************************
+begin-procedure select-schedule-prefix
+!*************************************
+
+begin-select
+
+RCP.GVT_SCHED_PREFIX
+SD.RUN_ID
+SD.COMPANY
+SD.GVT_ECS_RFC_INDIC
+SG.GVT_SCHED_CODE
+SG.GVT_SCHED_PROC_IND
+SG.GVT_INPUT_SYSTEM
+
+   let $schedule_prefix          = rtrim(&RCP.GVT_SCHED_PREFIX, ' ')
+   let $lpad_prefix              = lpad($schedule_prefix,10,'0')
+
+   let $run_id                   = rtrim(&SD.RUN_ID, ' ')
+   let $company                  = upper(rtrim(&SD.COMPANY, ' '))
+   let $RFC_code                 = upper(&SD.GVT_ECS_RFC_INDIC)
+
+   let $schedule_code            = &SG.GVT_SCHED_CODE
+
+   evaluate $schedule_code
+
+       when = 'A'
+          let $salchk_input      = rtrim(&SG.GVT_INPUT_SYSTEM, ' ')
+          let $create_salchk     = 'Y'
+          break
+
+       when = 'B'
+          let $saleft_input      = rtrim(&SG.GVT_INPUT_SYSTEM, ' ')
+          let $create_saleft     = 'Y'
+          break
+
+       when = 'C'
+          let $mischk_input      = rtrim(&SG.GVT_INPUT_SYSTEM, ' ')
+          let $create_mischk     = 'Y'
+          break
+
+       when = 'D'
+          let $miseft_input      = rtrim(&SG.GVT_INPUT_SYSTEM, ' ')
+          let $create_miseft     = 'Y'
+          break
+
+   end-evaluate
+
+FROM PS_RUNCTL_FGPY041  RCP,
+     PS_GVT_SCHED_DEFN  SD,
+     PS_GVT_SCHED_GROUP SG
+WHERE RCP.OPRID                  = $Prcs_OprID
+AND   RCP.RUN_CNTL_ID            = $Prcs_Run_Cntl_ID
+AND   RCP.GVT_SCHED_PREFIX       = SD.GVT_SCHED_PREFIX
+AND   SD.GVT_SCHED_PREFIX        = SG.GVT_SCHED_PREFIX
+AND   SG.GVT_SCHED_PROC_IND      = 'Y'
+
+end-select
+
+end-procedure       !select-schedule-prefix
+
+!***********************************
+begin-procedure select-heading-dates
+!***********************************
+
+begin-select loops=1
+
+CAL.COMPANY
+CAL.PAYGROUP
+CAL.PAY_END_DT
+CAL.CHECK_DT
+
+    let $check_date              =  &CAL.CHECK_DT
+
+FROM PS_PAY_CALENDAR CAL
+WHERE CAL.COMPANY                = $company
+AND   CAL.RUN_ID                 = $run_id
+ORDER BY CAL.PAYGROUP asc
+
+end-select
+
+end-procedure       !select-heading-dates
+
+!************************************
+begin-procedure Process-File-Sequence
+!************************************
+
+if $create_salchk = 'Y'
+   let $file_code = 'A'                          !schedule code for SalChk
+   do find-last-file-sequence
+   let #file_seq = #file_seq + 1
+   do Format-Number(#file_seq,  $salchk_file_seq, '0009')
+   do update-last-file-sequence
+end-if
+
+if $create_saleft = 'Y'
+   let $file_code = 'B'                          !schedule code for SalEft
+   do find-last-file-sequence
+   let #file_seq = #file_seq + 1
+   do Format-Number(#file_seq,  $saleft_file_seq, '0009')
+   do update-last-file-sequence
+end-if
+
+if $create_mischk = 'Y'
+   let $file_code = 'C'                          !schedule code for MisChk
+   do find-last-file-sequence
+   let #file_seq = #file_seq + 1
+   do Format-Number(#file_seq,  $mischk_file_seq, '0009')
+   do update-last-file-sequence
+end-if
+
+if $create_miseft = 'Y'
+   let $file_code = 'D'                          !schedule code for MisEft
+   do find-last-file-sequence
+   let #file_seq = #file_seq + 1
+   do Format-Number(#file_seq,  $miseft_file_seq, '0009')
+   do update-last-file-sequence
+end-if
+
+do Commit-Transaction
+
+end-procedure       !Process-File-Sequence
+
+!**************************************
+begin-procedure find-last-file-sequence
+!**************************************
+
+begin-select
+
+UC.GVT_LAST_FILE_SEQ
+
+   let #file_seq                 = &UC.GVT_LAST_FILE_SEQ
+
+FROM PS_GVT_PAM_USER_DT UC
+WHERE UC.GVT_SCHED_CODE          = $file_code
+
+end-select
+
+end-procedure       !find-last-file-sequence
+
+!****************************************
+begin-procedure update-last-file-sequence
+!****************************************
+
+BEGIN-SQL
+
+   UPDATE PS_GVT_PAM_USER_DT
+
+      SET GVT_LAST_FILE_SEQ      = #file_seq
+
+   WHERE GVT_SCHED_CODE          = $file_code
+
+END-SQL
+
+end-procedure       !update-last-file-sequence
+
+!***********************************
+begin-procedure Retrieve-Agency-Data
+!***********************************
+
+begin-select
+
+INTFC.COMPANY
+INTFC.GVT_DESCR70
+INTFC.CONTACT_PHONE
+INTFC.GVT_AGY_LOC_CODE
+INTFC.GVT_AGY_ID
+INTFC.GVT_ADDRESS1
+INTFC.GVT_ADDRESS_CITY
+INTFC.GVT_ADDRESS_STATE
+INTFC.GVT_ADDRESS_ZIP
+
+    let $agency_descr            = upper(&INTFC.GVT_DESCR70)
+    let $agency_phone            = upper(&INTFC.CONTACT_PHONE)
+    let $agency_loc_code         = upper(&INTFC.GVT_AGY_LOC_CODE)
+    let $agency_id               = upper(&INTFC.GVT_AGY_ID)
+    let $agency_address1         = upper(&INTFC.GVT_ADDRESS1)
+    let $agency_addr_city        = upper(&INTFC.GVT_ADDRESS_CITY)
+    let $agency_addr_state       = upper(&INTFC.GVT_ADDRESS_STATE)
+    let $zip_5                   = substr(&INTFC.GVT_ADDRESS_ZIP,1,5)
+    let $zip_4                   = substr(&INTFC.GVT_ADDRESS_ZIP,7,4)
+    let $agency_zip_code         = $zip_5||$zip_4
+
+FROM  PS_GVT_INTRFC_INFO INTFC
+
+WHERE INTFC.COMPANY              = $company
+AND   INTFC.EFFDT                = (SELECT MAX(INTFC1.EFFDT)
+                                    FROM PS_GVT_INTRFC_INFO INTFC1
+                                    WHERE INTFC1.COMPANY = INTFC.COMPANY
+                                    AND   INTFC1.EFFDT  <= $AsOfToday)
+
+end-select
+
+end-procedure       !Retrieve-Agency-Data
+
+!**********************************
+begin-procedure Open-Treasury-Files
+!**********************************
+
+!****** Open SALCHK File
+if $create_salchk = 'Y'
+   let $salchk_file = 'FROXK.' || ltrim(rtrim($agency_id, ' '), ' ') ||
+                      '.' ||     'SPR.' || 'CHK' || '.' || 'SALARY' ||
+                      '.D' || $jul_ddd || $salchk_file_seq || '.TXT'
+   let $salchk_output_file = '{IMPORTPREFIX}' || $salchk_file
+
+   open $salchk_output_file as 1 for-writing record=850:fixed
+end-if
+
+!****** Open SALEFT File
+if $create_saleft = 'Y'
+   let $saleft_file = 'FROXK.' || ltrim(rtrim($agency_id, ' '), ' ') ||
+                      '.' ||     'SPR.' || 'EFT' || '.' || 'SALARY' ||
+                      '.D' || $jul_ddd || $saleft_file_seq || '.TXT'
+   let $saleft_output_file = '{IMPORTPREFIX}' || $saleft_file
+
+   open $saleft_output_file as 2 for-writing record=850:fixed
+end-if
+
+!****** Open MISCHK File
+if $create_mischk = 'Y'
+   let $mischk_file = 'FROXK.' || ltrim(rtrim($agency_id, ' '), ' ') ||
+                      '.' ||     'SPR.' || 'CHK' || '.' || 'MISC' ||
+                      '.D' || $jul_ddd || $mischk_file_seq || '.TXT'
+   let $mischk_output_file = '{IMPORTPREFIX}' || $mischk_file
+
+   open $mischk_output_file as 3 for-writing record=850:fixed
+end-if
+
+!****** Open MISEFT File
+if $create_miseft = 'Y'
+   let $miseft_file = 'FROXK.' || ltrim(rtrim($agency_id, ' '), ' ') ||
+                      '.' ||     'SPR.' || 'EFT' || '.' || 'MISC' ||
+                      '.D' || $jul_ddd || $miseft_file_seq || '.TXT'
+   let $miseft_output_file = '{IMPORTPREFIX}' || $miseft_file
+
+   open $miseft_output_file as 4 for-writing record=850:fixed
+end-if
+
+end-procedure       !Open-Treasury-Files
+
+!***************************************
+begin-procedure Generate-Interface-Files
+!***************************************
+
+if $create_salchk = 'Y'
+   let $processing_tran = 'net check'
+   let $processing_code = 'A'
+   let $OrderBy1 = 'ORDER BY SRCC.GVT_SCHED_PREFIX, SRCC.GVT_SCHED_CODE, SRCC.GVT_SCHED_SEQ, '
+   let $OrderBy2 = 'SDTL.GVT_PYMNT_SEQ'
+   let $OrderByClause   = $OrderBy1 || $OrderBy2
+   display ' '
+   display '   Processing Salary Check File        ' noline
+   display $salchk_file
+   do process-salary
+end-if
+
+if $create_mischk = 'Y'
+   let $processing_code = 'C'
+   let $OrderBy1 = 'ORDER BY VRCC.GVT_SCHED_PREFIX, VRCC.GVT_SCHED_CODE, VRCC.GVT_SCHED_SEQ, '
+   let $OrderBy2 = 'SUM_VW.GVT_PYMNT_SEQ'
+   let $OrderByClause   = $OrderBy1 || $OrderBy2
+   display ' '
+   display '   Processing Miscellaneous Check File ' noline
+   display $mischk_file
+   do process-vendor
+end-if
+
+if $create_saleft = 'Y'
+   let $processing_tran = 'net EFT'
+   let $processing_code = 'B'
+   let $OrderBy1 = 'ORDER BY SRCC.GVT_SCHED_PREFIX, SRCC.GVT_SCHED_CODE, SRCC.GVT_SCHED_SEQ, '
+   let $OrderBy2 = 'SDTL.BANK_CD, SDTL.ACCOUNT_NUM'
+   let $OrderByClause   = $OrderBy1 || $OrderBy2
+   display ' '
+   display '   Processing Salary EFT File          ' noline
+   display $saleft_file
+   do process-salary
+end-if
+
+if $create_miseft = 'Y'
+   let $processing_code = 'D'
+   let $OrderBy1 = 'ORDER BY VRCC.GVT_SCHED_PREFIX, VRCC.GVT_SCHED_CODE, VRCC.GVT_SCHED_SEQ, '
+   let $OrderBy2 = 'SUM_VW.BANK_CD, SUM_VW.ACCOUNT_NUM'
+   let $OrderByClause   = $OrderBy1 || $OrderBy2
+   display ' '
+   display '   Processing Miscellaneous EFT File   ' noline
+   display $miseft_file
+   do process-vendor
+end-if
+
+end-procedure       !Generate-Interface-Files
+
+!*****************************
+begin-procedure process-salary
+!*****************************
+
+let #prior_sched_seq             = 0
+do reset-country-variables
+
+begin-select
+
+SRCC.GVT_SCHED_PREFIX
+SRCC.GVT_SCHED_CODE
+SRCC.GVT_SCHED_SEQ
+SRCC.GVT_ECS_REQ_PAY_DT
+SDTL.GVT_PYMNT_SEQ
+STAS.GVT_TAS_GWA
+SBETC.GVT_TAS_SP
+SBETC.GVT_TAS_ATA
+SBETC.GVT_TAS_AID
+SBETC.GVT_TAS_BPOA
+SBETC.GVT_TAS_EPOA
+SBETC.GVT_TAS_A
+SBETC.GVT_TAS_MAIN
+SBETC.GVT_TAS_SUB
+SBETC.GVT_BETC_CD
+SBETC.GVT_PYMT_OR_CLLCTN
+SBETC.GVT_ADJUSTMENT
+SDTL.GVT_CHECK_REF_NO
+SDTL.PAGE_NUM
+SDTL.LINE_NUM
+SDTL.SEPCHK
+SDTL.BANK_CD
+SDTL.ACCOUNT_NUM
+SDTL.ACCOUNT_TYPE
+SDTL.GVT_CR_REMIT_AMT
+SDTL.GVT_DR_REMIT_AMT
+
+   do reset-common-variables
+   do reset-check-variables
+   do reset-address-variables
+   do reset-TAS-BETC-variables
+
+   let #sched_seq                = &SRCC.GVT_SCHED_SEQ
+   let $seq_pymnt_dt             = &SRCC.GVT_ECS_REQ_PAY_DT
+   let #pymnt_seq                = &SDTL.GVT_PYMNT_SEQ
+   let #check_ref                = &SDTL.GVT_CHECK_REF_NO
+
+   let #check_page_nbr           = &SDTL.PAGE_NUM
+   let #check_line_nbr           = &SDTL.LINE_NUM
+   let #check_sepchk             = &SDTL.SEPCHK
+   let $routing_id_number        = rtrim(&SDTL.BANK_CD, ' ')
+   let $account_number           = rtrim(&SDTL.ACCOUNT_NUM, ' ')
+   let $account_code             = rtrim(&SDTL.ACCOUNT_TYPE, ' ')
+
+   if $account_code = 'C'
+      let $transaction_cd  = '22'
+   else
+      let $transaction_cd  = '32'
+   end-if
+
+   let #CR_amount                = &SDTL.GVT_CR_REMIT_AMT
+   let #DR_amount                = &SDTL.GVT_DR_REMIT_AMT
+   let #amount                   = #DR_amount - #CR_amount
+
+   let $tas_sp                   = &SBETC.GVT_TAS_SP
+   let $tas_ata                  = &SBETC.GVT_TAS_ATA
+   let $tas_aid                  = &SBETC.GVT_TAS_AID
+   let $tas_bpoa                 = &SBETC.GVT_TAS_BPOA
+   let $tas_epoa                 = &SBETC.GVT_TAS_EPOA
+   let $tas_a                    = &SBETC.GVT_TAS_A
+   let $tas_main                 = &SBETC.GVT_TAS_MAIN
+   let $tas_sub                  = &SBETC.GVT_TAS_SUB
+   let $tas_betc                 = &SBETC.GVT_BETC_CD
+   let $Pymnt_Coll               = &SBETC.GVT_PYMT_OR_CLLCTN
+   let $IsAdjustment             = &SBETC.GVT_ADJUSTMENT
+
+   if ($Pymnt_Coll = 'P' and $IsAdjustment = 'N') or
+      ($Pymnt_Coll = 'C' and $IsAdjustment = 'Y')
+      let $is_credit             = '0'
+   end-if
+
+   if ($Pymnt_Coll = 'P' and $IsAdjustment = 'Y') or
+      ($Pymnt_Coll = 'C' and $IsAdjustment = 'N')
+      let $is_credit             = '1'
+   end-if
+
+   if #sched_seq <> #prior_sched_seq
+
+      do Format-Number(#sched_seq, $schedule_seq, '009')
+      let $schedule              = $lpad_prefix || $processing_code || $schedule_seq
+
+      do process-new-sched-seq
+
+      move #sched_seq to #prior_sched_seq
+
+   end-if
+
+   do Format-Number(#pymnt_seq, $payment_seq, '000009')
+   let $payment_id = $schedule || $payment_seq
+
+   do find-paycheck-data
+
+   if $processing_code = 'A'
+      do format-CHK-data
+   else
+      do format-EFT-data
+   end-if
+
+   do format-TAS-BETC-data
+
+FROM PS_RC_FGPY041_SCHD SRCC,
+     PS_GVT_PAM_SAL_DTL SDTL,
+     PS_GVT_TAS_GWA_VW  STAS,
+     PS_GVT_BETC_DEFN   SBETC
+WHERE SRCC.OPRID                 = $Prcs_OprID
+AND   SRCC.RUN_CNTL_ID           = $Prcs_Run_Cntl_ID
+AND   SRCC.GVT_SCHED_PREFIX      = $schedule_prefix
+AND   SRCC.GVT_SCHED_CODE        = $processing_code
+AND   SDTL.GVT_SCHED_PREFIX      = SRCC.GVT_SCHED_PREFIX
+AND   SDTL.GVT_SCHED_CODE        = SRCC.GVT_SCHED_CODE
+AND   SDTL.GVT_SCHED_SEQ         = SRCC.GVT_SCHED_SEQ
+AND   SDTL.GVT_DR_REMIT_AMT      > SDTL.GVT_CR_REMIT_AMT
+AND   SDTL.GVT_DR_REMIT_AMT      > 0
+AND   STAS.GVT_TAS_GWA           = SDTL.GVT_TAS_GWA
+AND   SBETC.GVT_TAS_SP           = STAS.GVT_TAS_SP
+AND   SBETC.GVT_TAS_ATA          = STAS.GVT_TAS_ATA
+AND   SBETC.GVT_TAS_AID          = STAS.GVT_TAS_AID
+AND   SBETC.GVT_TAS_BPOA         = STAS.GVT_TAS_BPOA
+AND   SBETC.GVT_TAS_EPOA         = STAS.GVT_TAS_EPOA
+AND   SBETC.GVT_TAS_A            = STAS.GVT_TAS_A
+AND   SBETC.GVT_TAS_MAIN         = STAS.GVT_TAS_MAIN
+AND   SBETC.GVT_TAS_SUB          = STAS.GVT_TAS_SUB
+AND   SBETC.GVT_BETC_CD          = SDTL.GVT_BETC_CD
+[$OrderByClause]
+
+end-select
+
+   do process-last-sched-seq
+
+   display '   Process completed.'
+
+end-procedure       !process-salary
+
+!*********************************
+begin-procedure find-paycheck-data
+!*********************************
+
+begin-select
+
+SCR.GVT_SCHED_PREFIX
+SCR.GVT_CHECK_REF_NO
+SCR.COMPANY
+SCR.PAYGROUP
+SCR.PAY_END_DT
+SCR.OFF_CYCLE
+SCHK.PAGE_NUM
+SCHK.LINE_NUM
+SCHK.SEPCHK
+SCHK.EMPLID
+SCHK.EMPL_RCD
+SCHK.SSN
+SCHK.PAYCHECK_NAME
+SCHK.COUNTRY
+SCHK.ADDRESS1
+SCHK.ADDRESS2
+SCHK.ADDRESS3
+SCHK.ADDRESS4
+SCHK.CITY
+SCHK.STATE
+SCHK.POSTAL
+
+    let $check_emplid            = rtrim(&SCHK.EMPLID,' ')
+    let #check_empl_rcd_nbr      = &SCHK.EMPL_RCD
+    let $check_ssn               = rtrim(&SCHK.SSN,' ')
+    let $check_paycheck_name     = rtrim(&SCHK.PAYCHECK_NAME,' ')
+    let $country                 = rtrim(&SCHK.COUNTRY,' ')
+    let $state_cd                = rtrim(&SCHK.STATE,' ')
+
+    if #sched_seq >= 900                         ! employees with foreign address
+
+        do foreign-address-test
+
+        if $country = 'BEL' or
+           $country = 'NLD'
+            let $address1        = upper(rtrim(&SCHK.ADDRESS2,' '))
+            let $address2        = upper(rtrim(&SCHK.ADDRESS3,' '))
+            let $address3        = upper(rtrim(&SCHK.ADDRESS4,' '))
+        else
+            let $address1        = upper(rtrim(&SCHK.ADDRESS1,' '))
+            let $address2        = upper(rtrim(&SCHK.ADDRESS2,' '))
+            let $address3        = upper(rtrim(&SCHK.ADDRESS3,' '))
+        end-if
+
+        let $city                = upper(rtrim(&SCHK.CITY, ' '))
+        let $state_name          = upper($state_descr)
+        let $state_cd            = ' '
+        let $zip_code            = rtrim(&SCHK.POSTAL,' ')
+        let $country_name        = upper($country_descr)
+
+    else                                         ! employees with domestic address
+
+        let $address1            = upper(rtrim(&SCHK.ADDRESS1,' '))
+        let $address2            = upper(rtrim(&SCHK.ADDRESS2,' '))
+        let $address3            = upper(rtrim(&SCHK.ADDRESS3,' '))
+        let $address4            = upper(rtrim(&SCHK.ADDRESS4,' '))
+        let $city                = upper(rtrim(&SCHK.CITY,' '))
+        let $state_cd            = rtrim(&SCHK.STATE,' ')
+        let $zip_5               = substr(&SCHK.POSTAL,1,5)
+        let $zip_4               = substr(&SCHK.POSTAL,7,4)
+        let $zip_code            = $zip_5||$zip_4
+
+    end-if
+
+FROM PS_GVT_SCHED_REF SCR,
+     PS_PAY_CHECK SCHK
+WHERE SCR.GVT_SCHED_PREFIX       = $schedule_prefix
+AND   SCR.GVT_CHECK_REF_NO       = #check_ref
+AND   SCR.COMPANY                = SCHK.COMPANY
+AND   SCR.PAYGROUP               = SCHK.PAYGROUP
+AND   SCR.PAY_END_DT             = SCHK.PAY_END_DT
+AND   SCR.OFF_CYCLE              = SCHK.OFF_CYCLE
+AND   SCHK.PAGE_NUM              = #check_page_nbr
+AND   SCHK.LINE_NUM              = #check_line_nbr
+AND   SCHK.SEPCHK                = #check_sepchk
+
+end-select
+
+end-procedure       !find-paycheck-data
+
+!*****************************
+begin-procedure process-vendor
+!*****************************
+
+let #prior_sched_seq             = 0
+do reset-country-variables
+
+begin-select
+
+VRCC.GVT_SCHED_PREFIX
+VRCC.GVT_SCHED_CODE
+VRCC.GVT_SCHED_SEQ
+VRCC.GVT_ECS_REQ_PAY_DT
+SUM_VW.GVT_PYMNT_SEQ
+SUM_VW.GVT_SCHED_REC_TYPE
+SUM_VW.BANK_CD
+SUM_VW.ACCOUNT_NUM
+SUM_VW.ACCOUNT_TYPE
+SUM_VW.GVT_CR_REMIT_AMT
+SUM_VW.GVT_DR_REMIT_AMT
+
+   do reset-common-variables
+
+   let #sched_seq                = &VRCC.GVT_SCHED_SEQ
+   let $seq_pymnt_dt             = &VRCC.GVT_ECS_REQ_PAY_DT
+   let #pymnt_seq                = &SUM_VW.GVT_PYMNT_SEQ
+   let $rec_type                 = &SUM_VW.GVT_SCHED_REC_TYPE
+   let $routing_id_number        = rtrim(&SUM_VW.BANK_CD, ' ')
+   let $account_number           = rtrim(&SUM_VW.ACCOUNT_NUM, ' ')
+   let $account_code             = rtrim(&SUM_VW.ACCOUNT_TYPE, ' ')
+
+   if $account_code = 'C'
+      let $transaction_cd  = '22'
+   else
+      let $transaction_cd  = '32'
+   end-if
+
+   let #CR_amount                = &SUM_VW.GVT_CR_REMIT_AMT
+   let #DR_amount                = &SUM_VW.GVT_DR_REMIT_AMT
+   let #amount                   = #DR_amount - #CR_amount
+
+   if #sched_seq <> #prior_sched_seq
+
+      do Format-Number(#sched_seq, $schedule_seq, '009')
+      let $schedule              = $lpad_prefix || $processing_code || $schedule_seq
+
+      do process-new-sched-seq
+
+      move #sched_seq to #prior_sched_seq
+
+   end-if
+
+   do Format-Number(#pymnt_seq, $payment_seq, '000009')
+   let $payment_id = $schedule || $payment_seq
+
+   evaluate $rec_type
+
+       when = 'D'
+            do find-ded-payee
+            break
+
+       when = 'G'
+            do find-garn-payee
+            break
+
+       when = 'T'
+            do find-tax-payee
+            break
+
+   end-evaluate
+
+   if $processing_code = 'C'
+      do format-CHK-data
+   else
+      do format-EFT-data
+   end-if
+
+   do find-TAS-BETC-data
+
+FROM PS_RC_FGPY041_SCHD VRCC,
+     PS_GVT_VEN_SUM_VW  SUM_VW
+WHERE VRCC.OPRID                  = $Prcs_OprID
+AND   VRCC.RUN_CNTL_ID            = $Prcs_Run_Cntl_ID
+AND   VRCC.GVT_SCHED_PREFIX       = $schedule_prefix
+AND   VRCC.GVT_SCHED_CODE         = $processing_code
+AND   SUM_VW.GVT_SCHED_PREFIX     = VRCC.GVT_SCHED_PREFIX
+AND   SUM_VW.GVT_SCHED_CODE       = VRCC.GVT_SCHED_CODE
+AND   SUM_VW.GVT_SCHED_SEQ        = VRCC.GVT_SCHED_SEQ
+AND   SUM_VW.GVT_DR_REMIT_AMT     > SUM_VW.GVT_CR_REMIT_AMT
+AND   SUM_VW.GVT_DR_REMIT_AMT     > 0
+[$OrderByClause]
+
+end-select
+
+   do process-last-sched-seq
+
+   display '   Process completed.'
+
+end-procedure       !process-vendor
+
+!*****************************
+begin-procedure find-ded-payee
+!*****************************
+
+begin-select
+
+DED_VW.GVT_SCHED_PREFIX
+DED_VW.GVT_SCHED_CODE
+DED_VW.GVT_SCHED_SEQ
+DED_VW.GVT_PYMNT_SEQ
+DED_VW.GVT_SCHED_REC_TYPE
+DED_VW.PLAN_TYPE
+DED_VW.DEDCD
+DED_VW.GVT_DED_DIST_CD
+DED_VW.GVT_REPORTING_CD
+DED_VW.GVT_PYMNT_RTNG
+DED_VW.GVT_PYMNT_SUMM
+
+   do reset-ded-variables
+
+   let $dedcd                    = rtrim(&DED_VW.DEDCD,' ')
+   let $dist_code                = rtrim(&DED_VW.GVT_DED_DIST_CD,' ')
+   let $reporting_cd             = rtrim(&DED_VW.GVT_REPORTING_CD,' ')
+   let $pymnt_routing            = rtrim(&DED_VW.GVT_PYMNT_RTNG,' ')
+   let $pymnt_summary            = rtrim(&DED_VW.GVT_PYMNT_SUMM,' ')
+
+   if $pymnt_routing = 'D'                       ! FGPY040 will only allow routing values D and E
+
+      do find-ded-dist-payee
+
+      if $pymnt_summary = 'D'                    ! FGPY040 will only allow summary values D and E
+
+         if $processing_code = 'C'
+            let $processing_tran = 'ded dist check'
+         else
+            let $processing_tran = 'ded dist EFT'
+         end-if
+
+      else
+
+         if $processing_code = 'C'
+            let $processing_tran = 'ded check'
+         else
+            let $processing_tran = 'ded EFT'
+         end-if
+
+      end-if
+
+   else                                          ! FGPY040 will only allow routing values D and E
+
+      do find-genl-ded-payee
+
+      if $processing_code = 'C'
+         let $processing_tran    = 'ded check'
+      else
+         let $processing_tran    = 'ded EFT'
+      end-if
+
+   end-if
+
+from PS_GVT_VEN_DED_VW DED_VW
+
+WHERE DED_VW.GVT_SCHED_PREFIX    = $schedule_prefix
+AND   DED_VW.GVT_SCHED_CODE      = $processing_code
+AND   DED_VW.GVT_SCHED_SEQ       = #sched_seq
+AND   DED_VW.GVT_PYMNT_SEQ       = #pymnt_seq
+AND   DED_VW.GVT_SCHED_REC_TYPE  = 'D'
+
+end-select
+
+end-procedure       !find-ded-payee
+
+!**********************************
+begin-procedure find-ded-dist-payee
+!**********************************
+
+begin-select
+
+DIST_ADDR.DEDCD,
+DIST_ADDR.GVT_DED_DIST_CD,
+DIST_ADDR.GVT_PYMNT_METHOD,
+DIST_ADDR.GVT_PAYEE_ID_NO,
+DIST_ADDR.GVT_PAYEE_NAME,
+DIST_ADDR.GVT_CHK_NAME,
+DIST_ADDR.GVT_ADDRESS1,
+DIST_ADDR.GVT_ADDRESS2,
+DIST_ADDR.GVT_ADDRESS_CITY,
+DIST_ADDR.GVT_ADDRESS_STATE,
+DIST_ADDR.GVT_ADDRESS_ZIP
+
+   do reset-address-variables
+
+   let $address1                 = upper(rtrim(&DIST_ADDR.GVT_ADDRESS1,' '))
+   let $address2                 = upper(rtrim(&DIST_ADDR.GVT_ADDRESS2,' '))
+   let $city                     = upper(rtrim(&DIST_ADDR.GVT_ADDRESS_CITY,' '))
+   let $state_cd                 = substr(&DIST_ADDR.GVT_ADDRESS_STATE,1,2)
+   let $zip_5                    = substr(&DIST_ADDR.GVT_ADDRESS_ZIP,1,5)
+   let $zip_4                    = substr(&DIST_ADDR.GVT_ADDRESS_ZIP,7,4)
+   let $zip_code                 = $zip_5||$zip_4
+
+FROM  PS_GVT_DED_DIST DIST_ADDR
+
+WHERE DIST_ADDR.DEDCD            = $dedcd
+AND   DIST_ADDR.GVT_DED_DIST_CD  = $dist_code
+AND   DIST_ADDR.EFF_STATUS       = 'A'
+AND   DIST_ADDR.EFFDT            = (SELECT MAX(DIST_ADDR1.EFFDT)
+                                    FROM  PS_GVT_DED_DIST DIST_ADDR1
+                                    WHERE DIST_ADDR1.DEDCD           = DIST_ADDR.DEDCD
+                                    AND   DIST_ADDR1.GVT_DED_DIST_CD = DIST_ADDR.GVT_DED_DIST_CD
+                                    AND   DIST_ADDR1.EFFDT          <= $AsOfToday)
+
+end-select
+
+end-procedure       !find-ded-dist-payee
+
+!**********************************
+begin-procedure find-genl-ded-payee
+!**********************************
+
+begin-select
+
+DDTL.GVT_SCHED_PREFIX
+DDTL.GVT_SCHED_CODE
+DDTL.GVT_SCHED_SEQ
+DDTL.GVT_PYMNT_SEQ
+DDTL.GVT_SCHED_REC_TYPE
+DDTL.PAGE_NUM
+DDTL.LINE_NUM
+DDTL.SEPCHK
+DCR.GVT_CHECK_REF_NO
+DCR.COMPANY
+DCR.PAYGROUP
+DCR.PAY_END_DT
+DCR.OFF_CYCLE
+DCHK.EMPLID
+DCHK.EMPL_RCD
+DCHK.SSN
+DCHK.PAYCHECK_NAME
+GENL_DEDUCT.DEDCD
+GENL_DEDUCT.GVT_DED_DIST_CD
+GENL_DEDUCT.GVT_PYMNT_METHOD
+GENL_DEDUCT.GVT_PAYEE_ID_NO
+GENL_DEDUCT.GVT_PAYEE_NAME
+GENL_DEDUCT.GVT_CHK_NAME
+GENL_DEDUCT.GVT_ADDRESS1
+GENL_DEDUCT.GVT_ADDRESS2
+GENL_DEDUCT.GVT_ADDRESS_CITY
+GENL_DEDUCT.GVT_ADDRESS_STATE
+GENL_DEDUCT.GVT_ADDRESS_ZIP
+
+   do reset-check-variables
+   do reset-address-variables
+
+   let $check_emplid             = rtrim(&DCHK.EMPLID,' ')
+   let #check_empl_rcd_nbr       = &DCHK.EMPL_RCD
+   let $check_ssn                = rtrim(&DCHK.SSN,' ')
+   let $check_paycheck_name      = rtrim(&DCHK.PAYCHECK_NAME,' ')
+
+
+   let $address1                 = upper(rtrim(&GENL_DEDUCT.GVT_ADDRESS1,' '))
+   let $address2                 = upper(rtrim(&GENL_DEDUCT.GVT_ADDRESS2,' '))
+   let $city                     = upper(rtrim(&GENL_DEDUCT.GVT_ADDRESS_CITY,' '))
+   let $state_cd                 = substr(&GENL_DEDUCT.GVT_ADDRESS_STATE,1,2)
+   let $zip_5                    = substr(&GENL_DEDUCT.GVT_ADDRESS_ZIP,1,5)
+   let $zip_4                    = substr(&GENL_DEDUCT.GVT_ADDRESS_ZIP,7,4)
+   let $zip_code                 = $zip_5||$zip_4
+
+FROM PS_GVT_PAM_VEN_DTL DDTL,
+     PS_GVT_SCHED_REF   DCR,
+     PS_PAY_CHECK       DCHK,
+     PS_GENL_DEDUCTION  GENL_DEDUCT
+WHERE DDTL.GVT_SCHED_PREFIX      = $schedule_prefix
+AND   DDTL.GVT_SCHED_CODE        = $processing_code
+AND   DDTL.GVT_SCHED_SEQ         = #sched_seq
+AND   DDTL.GVT_PYMNT_SEQ         = #pymnt_seq
+AND   DDTL.GVT_SCHED_REC_TYPE    = 'D'
+AND   DCR.GVT_SCHED_PREFIX       = DDTL.GVT_SCHED_PREFIX
+AND   DCR.GVT_CHECK_REF_NO       = DDTL.GVT_CHECK_REF_NO
+AND   DCR.COMPANY                = DCHK.COMPANY
+AND   DCR.PAYGROUP               = DCHK.PAYGROUP
+AND   DCR.PAY_END_DT             = DCHK.PAY_END_DT
+AND   DCR.OFF_CYCLE              = DCHK.OFF_CYCLE
+AND   DCHK.PAGE_NUM              = DDTL.PAGE_NUM
+AND   DCHK.LINE_NUM              = DDTL.LINE_NUM
+AND   DCHK.SEPCHK                = DDTL.SEPCHK
+AND   GENL_DEDUCT.EMPLID         = DCHK.EMPLID
+AND   GENL_DEDUCT.COMPANY        = DCHK.COMPANY
+AND   GENL_DEDUCT.DEDCD          = $dedcd
+AND   GENL_DEDUCT.EFFDT          = (SELECT MAX(GENL_DEDUCT1.EFFDT)
+                                   FROM  PS_GENL_DEDUCTION GENL_DEDUCT1
+                                   WHERE GENL_DEDUCT1.EMPLID    = GENL_DEDUCT.EMPLID
+                                   AND   GENL_DEDUCT1.COMPANY   = GENL_DEDUCT.COMPANY
+                                   AND   GENL_DEDUCT1.DEDCD     = GENL_DEDUCT.DEDCD
+                                   AND   GENL_DEDUCT1.EFFDT    <= DCHK.PAY_END_DT)
+
+end-select
+
+end-procedure       !find-genl-ded-payee
+
+!******************************
+begin-procedure find-garn-payee
+!******************************
+
+begin-select
+
+GDTL.GVT_SCHED_PREFIX
+GDTL.GVT_SCHED_CODE
+GDTL.GVT_SCHED_SEQ
+GDTL.GVT_PYMNT_SEQ
+GDTL.GVT_SCHED_REC_TYPE
+GARN_VW.GARNID
+GDTL.PAGE_NUM
+GDTL.LINE_NUM
+GDTL.SEPCHK
+GCR.GVT_CHECK_REF_NO
+GCR.COMPANY
+GCR.PAYGROUP
+GCR.PAY_END_DT
+GCR.OFF_CYCLE
+GCHK.EMPLID
+GCHK.EMPL_RCD
+GCHK.SSN
+GCHK.PAYCHECK_NAME
+GARN_SPEC.GVT_PYMNT_METHOD
+GARN_SPEC.GARN_PAYEE_NAME
+GARN_SPEC.GVT_CHK_NAME
+GARN_SPEC.GVT_ADDRESS1
+GARN_SPEC.GVT_ADDRESS2
+GARN_SPEC.GVT_ADDRESS_CITY
+GARN_SPEC.GVT_ADDRESS_STATE
+GARN_SPEC.GVT_ADDRESS_ZIP
+GARN_SPEC.GVT_ADDRESS_CNTRY
+GARN_SPEC.GVT_PAYEE_ID_NO
+GARN_SPEC.GVT_PAYEE_NAME
+GARN_SPEC.COURT_DOC_ID
+GARN_SPEC.COURT_DOC_ID2
+GARN_SPEC.GARN_TYPE
+GARN_SPEC.CASE_IDENTIFIER
+GARN_SPEC.FIPS_CODE
+GARN_SPEC.EFT_REMIT_STATE
+
+   do reset-check-variables
+   do reset-address-variables
+
+   let $check_pay_end_dt         = &GCR.PAY_END_DT
+   let $check_emplid             = rtrim(&GCHK.EMPLID,' ')
+   let #check_empl_rcd_nbr       = &GCHK.EMPL_RCD
+   let $check_ssn                = rtrim(&GCHK.SSN,' ')
+   let $check_paycheck_name      = rtrim(&GCHK.PAYCHECK_NAME,' ')
+
+
+   let $address1                 = upper(rtrim(&GARN_SPEC.GVT_ADDRESS1,' '))
+   let $address2                 = upper(rtrim(&GARN_SPEC.GVT_ADDRESS2,' '))
+   let $city                     = upper(rtrim(&GARN_SPEC.GVT_ADDRESS_CITY,' '))
+   let $state_cd                 = substr(&GARN_SPEC.GVT_ADDRESS_STATE,1,2)
+   let $zip_5                    = substr(&GARN_SPEC.GVT_ADDRESS_ZIP,1,5)
+   let $zip_4                    = substr(&GARN_SPEC.GVT_ADDRESS_ZIP,7,4)
+   let $zip_code                 = $zip_5||$zip_4
+
+   let $court_doc1               = upper(rtrim(&GARN_SPEC.COURT_DOC_ID,' '))
+   let $court_doc2               = upper(rtrim(&GARN_SPEC.COURT_DOC_ID2,' '))
+
+   if $processing_code = 'C'
+      let $processing_tran = 'garn check'
+   else
+      let $processing_tran = 'garn EFT'
+      let $garn_payee_name = rtrim(&GARN_SPEC.GARN_PAYEE_NAME,' ')
+      do find-garn-payee-id-no
+   end-if
+
+FROM PS_GVT_PAM_VEN_DTL GDTL,
+     PS_GVT_VEN_GARN_VW GARN_VW,
+     PS_GVT_SCHED_REF   GCR,
+     PS_PAY_CHECK       GCHK,
+     PS_GVT_GARN_SPEC   GARN_SPEC
+WHERE GDTL.GVT_SCHED_PREFIX      = $schedule_prefix
+AND   GDTL.GVT_SCHED_CODE        = $processing_code
+AND   GDTL.GVT_SCHED_SEQ         = #sched_seq
+AND   GDTL.GVT_PYMNT_SEQ         = #pymnt_seq
+AND   GDTL.GVT_SCHED_REC_TYPE    = 'G'
+AND   GARN_VW.GVT_SCHED_PREFIX   = GCR.GVT_SCHED_PREFIX
+AND   GARN_VW.GVT_SCHED_CODE     = GDTL.GVT_SCHED_CODE
+AND   GARN_VW.GVT_SCHED_SEQ      = GDTL.GVT_SCHED_SEQ
+AND   GARN_VW.GVT_PYMNT_SEQ      = GDTL.GVT_PYMNT_SEQ
+AND   GARN_VW.GVT_SCHED_REC_TYPE = GDTL.GVT_SCHED_REC_TYPE
+AND   GCR.GVT_SCHED_PREFIX       = GDTL.GVT_SCHED_PREFIX
+AND   GCR.GVT_CHECK_REF_NO       = GDTL.GVT_CHECK_REF_NO
+AND   GCR.COMPANY                = GCHK.COMPANY
+AND   GCR.PAYGROUP               = GCHK.PAYGROUP
+AND   GCR.PAY_END_DT             = GCHK.PAY_END_DT
+AND   GCR.OFF_CYCLE              = GCHK.OFF_CYCLE
+AND   GCHK.PAGE_NUM              = GDTL.PAGE_NUM
+AND   GCHK.LINE_NUM              = GDTL.LINE_NUM
+AND   GCHK.SEPCHK                = GDTL.SEPCHK
+AND   GARN_SPEC.EMPLID           = GCHK.EMPLID
+AND   GARN_SPEC.COMPANY          = $company
+AND   GARN_SPEC.GARNID           = GARN_VW.GARNID
+
+end-select
+
+end-procedure       !find-garn-payee
+
+!************************************
+begin-procedure find-garn-payee-id-no
+!************************************
+
+begin-select
+
+GARN_PAYEE.GVT_PAYEE_ID_NO
+
+from PS_GVT_GARN_PAYEE GARN_PAYEE
+where GARN_PAYEE.GARN_PAYEE_NAME = $garn_payee_name
+
+end-select
+
+end-procedure       !find-garn-payee-id-no
+
+!*****************************
+begin-procedure find-tax-payee
+!*****************************
+
+begin-select
+
+TAX_VW.GVT_SCHED_PREFIX
+TAX_VW.GVT_SCHED_CODE
+TAX_VW.GVT_SCHED_SEQ
+TAX_VW.GVT_PYMNT_SEQ
+TAX_VW.GVT_SCHED_REC_TYPE
+ROUTE_TAX.COMPANY
+ROUTE_TAX.STATE
+ROUTE_TAX.LOCALITY
+ROUTE_TAX.GVT_TAXPAYER_ID
+ROUTE_TAX.GVT_TAX_TYPE
+ROUTE_TAX.GVT_TAX_PERIOD
+ROUTE_TAX.GVT_TXP_AMT_1_IND
+ROUTE_TAX.GVT_TXP_AMT_1_SUMM
+ROUTE_TAX.GVT_TXP_AMT_2_IND
+ROUTE_TAX.GVT_TXP_AMT_2_SUMM
+ROUTE_TAX.GVT_TXP_AMT_3_IND
+ROUTE_TAX.GVT_TXP_AMT_3_SUMM
+ROUTE_TAX.GVT_TXP_VERIF
+ROUTE_TAX.GVT_PYMNT_METHOD
+ROUTE_TAX.GVT_PAYEE_ID_NO
+ROUTE_TAX.GVT_PAYEE_NAME
+ROUTE_TAX.GVT_CHK_NAME
+ROUTE_TAX.GVT_ADDRESS1
+ROUTE_TAX.GVT_ADDRESS2
+ROUTE_TAX.GVT_ADDRESS_CITY
+ROUTE_TAX.GVT_ADDRESS_STATE
+ROUTE_TAX.GVT_ADDRESS_ZIP
+ROUTE_TAX.GVT_ADDRESS_CNTRY
+
+   do reset-address-variables
+
+   let $address1                 = upper(rtrim(&ROUTE_TAX.GVT_ADDRESS1,' '))
+   let $address2                 = upper(rtrim(&ROUTE_TAX.GVT_ADDRESS2,' '))
+   let $city                     = upper(rtrim(&ROUTE_TAX.GVT_ADDRESS_CITY,' '))
+   let $state_cd                 = substr(&ROUTE_TAX.GVT_ADDRESS_STATE,1,2)
+   let $zip_5                    = substr(&ROUTE_TAX.GVT_ADDRESS_ZIP,1,5)
+   let $zip_4                    = substr(&ROUTE_TAX.GVT_ADDRESS_ZIP,7,4)
+   let $zip_code                 = $zip_5||$zip_4
+
+   if $processing_code = 'C'
+      let $processing_tran = 'tax check'
+   else
+      let $processing_tran = 'tax EFT'
+   end-if
+
+FROM  PS_GVT_VEN_TAX_VW  TAX_VW,
+      PS_GVT_TAX_ROUTING ROUTE_TAX
+
+WHERE TAX_VW.GVT_SCHED_PREFIX    = $schedule_prefix
+AND   TAX_VW.GVT_SCHED_CODE      = $processing_code
+AND   TAX_VW.GVT_SCHED_SEQ       = #sched_seq
+AND   TAX_VW.GVT_PYMNT_SEQ       = #pymnt_seq
+AND   TAX_VW.GVT_SCHED_REC_TYPE  = 'T'
+AND   ROUTE_TAX.COMPANY          = $company
+AND   ROUTE_TAX.STATE            = TAX_VW.STATE
+AND   ROUTE_TAX.LOCALITY         = TAX_VW.LOCALITY
+AND   ROUTE_TAX.EFF_STATUS       = 'A'
+AND   ROUTE_TAX.EFFDT            = (SELECT MAX(ROUTE_TAX1.EFFDT)
+                                   FROM   PS_GVT_TAX_ROUTING ROUTE_TAX1
+                                   WHERE  ROUTE_TAX1.COMPANY    = ROUTE_TAX.COMPANY
+                                   AND    ROUTE_TAX1.STATE      = ROUTE_TAX.STATE
+                                   AND    ROUTE_TAX1.LOCALITY   = ROUTE_TAX.LOCALITY
+                                   AND    ROUTE_TAX1.EFFDT      <= $AsOfToday)
+
+end-select
+
+end-procedure       !find-tax-payee
+
+!*********************************
+begin-procedure find-TAS-BETC-data
+!*********************************
+
+begin-select
+
+VENTAS.GVT_SCHED_PREFIX
+VENTAS.GVT_SCHED_CODE
+VENTAS.GVT_SCHED_SEQ
+VENTAS.GVT_PYMNT_SEQ
+VENTAS.GVT_SCHED_REC_TYPE
+VENTAS.GVT_TAS_GWA
+VBETC.GVT_TAS_SP
+VBETC.GVT_TAS_ATA
+VBETC.GVT_TAS_AID
+VBETC.GVT_TAS_BPOA
+VBETC.GVT_TAS_EPOA
+VBETC.GVT_TAS_A
+VBETC.GVT_TAS_MAIN
+VBETC.GVT_TAS_SUB
+VBETC.GVT_BETC_CD
+VBETC.GVT_PYMT_OR_CLLCTN
+VBETC.GVT_ADJUSTMENT
+VENTAS.GVT_CR_REMIT_AMT
+VENTAS.GVT_DR_REMIT_AMT
+
+   do reset-TAS-BETC-variables
+
+   let $tas_sp                   = &VBETC.GVT_TAS_SP
+   let $tas_ata                  = &VBETC.GVT_TAS_ATA
+   let $tas_aid                  = &VBETC.GVT_TAS_AID
+   let $tas_bpoa                 = &VBETC.GVT_TAS_BPOA
+   let $tas_epoa                 = &VBETC.GVT_TAS_EPOA
+   let $tas_a                    = &VBETC.GVT_TAS_A
+   let $tas_main                 = &VBETC.GVT_TAS_MAIN
+   let $tas_sub                  = &VBETC.GVT_TAS_SUB
+   let $tas_betc                 = &VBETC.GVT_BETC_CD
+   let $Pymnt_Coll               = &VBETC.GVT_PYMT_OR_CLLCTN
+   let $IsAdjustment             = &VBETC.GVT_ADJUSTMENT
+
+   if ($Pymnt_Coll = 'P' and $IsAdjustment = 'N') or
+      ($Pymnt_Coll = 'C' and $IsAdjustment = 'Y')
+      let $is_credit = '0'
+      let #amount                = &VENTAS.GVT_DR_REMIT_AMT
+   end-if
+
+   if ($Pymnt_Coll = 'P' and $IsAdjustment = 'Y') or
+      ($Pymnt_Coll = 'C' and $IsAdjustment = 'N')
+      let $is_credit = '1'
+      let #amount                = &VENTAS.GVT_CR_REMIT_AMT
+   end-if
+
+   multiply 100 times #amount
+   do Format-Number(#amount, $payment_amount, '0000000009')
+
+   do format-TAS-BETC-data
+
+FROM PS_GVT_PAM_VEN_SUM VENTAS,
+     PS_GVT_TAS_GWA_VW  VTAS,
+     PS_GVT_BETC_DEFN   VBETC
+WHERE VENTAS.GVT_SCHED_PREFIX    = $schedule_prefix
+AND   VENTAS.GVT_SCHED_CODE      = $processing_code
+AND   VENTAS.GVT_SCHED_SEQ       = #sched_seq
+AND   VENTAS.GVT_PYMNT_SEQ       = #pymnt_seq
+AND   VENTAS.GVT_SCHED_REC_TYPE  = $rec_type
+AND  (VENTAS.GVT_CR_REMIT_AMT    <> 0
+   OR VENTAS.GVT_DR_REMIT_AMT    <> 0)
+AND   VTAS.GVT_TAS_GWA           = VENTAS.GVT_TAS_GWA
+AND   VBETC.GVT_TAS_SP           = VTAS.GVT_TAS_SP
+AND   VBETC.GVT_TAS_ATA          = VTAS.GVT_TAS_ATA
+AND   VBETC.GVT_TAS_AID          = VTAS.GVT_TAS_AID
+AND   VBETC.GVT_TAS_BPOA         = VTAS.GVT_TAS_BPOA
+AND   VBETC.GVT_TAS_EPOA         = VTAS.GVT_TAS_EPOA
+AND   VBETC.GVT_TAS_A            = VTAS.GVT_TAS_A
+AND   VBETC.GVT_TAS_MAIN         = VTAS.GVT_TAS_MAIN
+AND   VBETC.GVT_TAS_SUB          = VTAS.GVT_TAS_SUB
+AND   VBETC.GVT_BETC_CD          = VENTAS.GVT_BETC_CD
+
+end-select
+
+end-procedure       !find-TAS-BETC-data
+
+!************************************
+begin-procedure process-new-sched-seq
+!************************************
+
+evaluate $processing_code
+
+   when = 'A'
+
+       let #outputfile                   = 1
+
+       if #prior_sched_seq = 0
+
+           let $print_first_schedule     = 'Y'
+           let $prior_seq_pymnt_dt       = $seq_pymnt_dt
+           let $input_system             = $salchk_input
+           let $payment_type             = 'SALARY'
+
+           let #salchk_file_rec_count    = #salchk_file_rec_count    + 2     ! for records 'H ' and '11'
+
+           do CHK-file-headers
+
+       else
+           let #schedule_count           = #salchk_schd_pymnt_count
+           let #schedule_amount          = #salchk_schd_pymnt_amount
+
+           let #salchk_file_rec_count    = #salchk_file_rec_count    + 2     ! for records 'T ' and '11'
+           let #salchk_file_pymnt_count  = #salchk_file_pymnt_count  + #salchk_schd_pymnt_count
+           let #salchk_file_pymnt_amount = #salchk_file_pymnt_amount + #salchk_schd_pymnt_amount
+
+           do Format-Number(#salchk_schd_pymnt_count, $schd_pymnt_count, '00000009')
+           multiply 100 times #salchk_schd_pymnt_amount
+           do Format-Number(#salchk_schd_pymnt_amount, $schd_pymnt_amount, '000000000000009')
+
+           do CHK-sched-seq-changed
+
+           let $prior_seq_pymnt_dt       = $seq_pymnt_dt
+
+       end-if
+       break
+
+   when = 'B'
+
+       let #outputfile                   = 2
+
+       if #prior_sched_seq = 0
+
+           let $print_first_schedule     = 'Y'
+           let $prior_seq_pymnt_dt       = $seq_pymnt_dt
+           let $input_system             = $saleft_input
+           let $payment_type             = 'SALARY'
+           let $SEC_code                 = 'PPD'
+
+           let #saleft_file_rec_count    = #saleft_file_rec_count    + 2     ! for records 'H ' and '11'
+
+           do EFT-file-headers
+
+       else
+           let #schedule_count           = #saleft_schd_pymnt_count
+           let #schedule_amount          = #saleft_schd_pymnt_amount
+
+           let #saleft_file_rec_count    = #saleft_file_rec_count    + 2     ! for records 'T ' and '11'
+           let #saleft_file_pymnt_count  = #saleft_file_pymnt_count  + #saleft_schd_pymnt_count
+           let #saleft_file_pymnt_amount = #saleft_file_pymnt_amount + #saleft_schd_pymnt_amount
+
+           do Format-Number(#saleft_schd_pymnt_count, $schd_pymnt_count, '00000009')
+           multiply 100 times #saleft_schd_pymnt_amount
+           do Format-Number(#saleft_schd_pymnt_amount, $schd_pymnt_amount, '000000000000009')
+
+           do EFT-sched-seq-changed
+
+           let $prior_seq_pymnt_dt       = $seq_pymnt_dt
+
+       end-if
+       break
+
+   when = 'C'
+
+       let #outputfile                   = 3
+
+       if #prior_sched_seq = 0
+
+           let $print_first_schedule     = 'Y'
+           let $prior_seq_pymnt_dt       = $seq_pymnt_dt
+           let $input_system             = $mischk_input
+           let $payment_type             = 'MISCELLANEOUS'
+
+           let #mischk_file_rec_count    = #mischk_file_rec_count    + 2     ! for records 'H ' and '11'
+
+           do CHK-file-headers
+
+       else
+           let #schedule_count           = #mischk_schd_pymnt_count
+           let #schedule_amount          = #mischk_schd_pymnt_amount
+
+           let #mischk_file_rec_count    = #mischk_file_rec_count    + 2     ! for records 'T ' and '11'
+           let #mischk_file_pymnt_count  = #mischk_file_pymnt_count  + #mischk_schd_pymnt_count
+           let #mischk_file_pymnt_amount = #mischk_file_pymnt_amount + #mischk_schd_pymnt_amount
+
+           do Format-Number(#mischk_schd_pymnt_count, $schd_pymnt_count, '00000009')
+           multiply 100 times #mischk_schd_pymnt_amount
+           do Format-Number(#mischk_schd_pymnt_amount, $schd_pymnt_amount, '000000000000009')
+
+           do CHK-sched-seq-changed
+
+           let $prior_seq_pymnt_dt       = $seq_pymnt_dt
+
+       end-if
+       break
+
+   when = 'D'
+
+       let #outputfile                   = 4
+
+       if #prior_sched_seq = 0
+
+           let $print_first_schedule     = 'Y'
+           let $prior_seq_pymnt_dt       = $seq_pymnt_dt
+           let $input_system             = $miseft_input
+           let $payment_type             = 'MISCELLANEOUS'
+           let $SEC_code                 = 'PPD'
+
+           let #miseft_file_rec_count    = #miseft_file_rec_count    + 2     ! for records 'H ' and '11'
+
+           do EFT-file-headers
+
+       else
+           let #schedule_count           = #miseft_schd_pymnt_count
+           let #schedule_amount          = #miseft_schd_pymnt_amount
+
+           let #miseft_file_rec_count    = #miseft_file_rec_count    + 2     ! for records 'T ' and '11'
+           let #miseft_file_pymnt_count  = #miseft_file_pymnt_count  + #miseft_schd_pymnt_count
+           let #miseft_file_pymnt_amount = #miseft_file_pymnt_amount + #miseft_schd_pymnt_amount
+
+           do Format-Number(#miseft_schd_pymnt_count, $schd_pymnt_count, '00000009')
+           multiply 100 times #miseft_schd_pymnt_amount
+           do Format-Number(#miseft_schd_pymnt_amount, $schd_pymnt_amount, '000000000000009')
+
+           do EFT-sched-seq-changed
+
+           let $prior_seq_pymnt_dt       = $seq_pymnt_dt
+
+       end-if
+       break
+
+   end-evaluate
+
+end-procedure       !process-new-sched-seq
+
+!*************************************
+begin-procedure process-last-sched-seq
+!*************************************
+
+evaluate $processing_code
+
+   when = 'A'
+
+       let #outputfile               = 1
+
+       let #salchk_file_rec_count    = #salchk_file_rec_count    + 2     ! for records 'T ' and 'E '
+       let #salchk_file_pymnt_count  = #salchk_file_pymnt_count  + #salchk_schd_pymnt_count
+       let #salchk_file_pymnt_amount = #salchk_file_pymnt_amount + #salchk_schd_pymnt_amount
+
+       let #schedule_count           = #salchk_schd_pymnt_count
+       let #schedule_amount          = #salchk_schd_pymnt_amount
+
+       let #file_count               = #salchk_file_pymnt_count
+       let #file_amount              = #salchk_file_pymnt_amount
+
+       do Format-Number(#salchk_schd_pymnt_count, $schd_pymnt_count, '00000009')
+       multiply 100 times #salchk_schd_pymnt_amount
+       do Format-Number(#salchk_schd_pymnt_amount, $schd_pymnt_amount, '000000000000009')
+
+       do Format-Number(#salchk_file_rec_count, $file_rec_count, '000000000000000009')
+       do Format-Number(#salchk_file_pymnt_count, $file_pymnt_count, '000000000000000009')
+       multiply 100 times #salchk_file_pymnt_amount
+       do Format-Number(#salchk_file_pymnt_amount, $file_pymnt_amount, '000000000000000009')
+
+       if #file_count > 0
+          do file-trailers
+       else
+          display '   *** File ' noline
+          display $salchk_file noline
+          display ' is empty. ***'
+       end-if
+
+       close 1
+       break
+
+   when = 'B'
+
+       let #outputfile               = 2
+
+       let #saleft_file_rec_count    = #saleft_file_rec_count    + 2     ! for records 'T ' and 'E '
+       let #saleft_file_pymnt_count  = #saleft_file_pymnt_count  + #saleft_schd_pymnt_count
+       let #saleft_file_pymnt_amount = #saleft_file_pymnt_amount + #saleft_schd_pymnt_amount
+
+       let #schedule_count           = #saleft_schd_pymnt_count
+       let #schedule_amount          = #saleft_schd_pymnt_amount
+
+       let #file_count               = #saleft_file_pymnt_count
+       let #file_amount              = #saleft_file_pymnt_amount
+
+       do Format-Number(#saleft_schd_pymnt_count, $schd_pymnt_count, '00000009')
+       multiply 100 times #saleft_schd_pymnt_amount
+       do Format-Number(#saleft_schd_pymnt_amount, $schd_pymnt_amount, '000000000000009')
+
+       do Format-Number(#saleft_file_rec_count, $file_rec_count, '000000000000000009')
+       do Format-Number(#saleft_file_pymnt_count, $file_pymnt_count, '000000000000000009')
+       multiply 100 times #saleft_file_pymnt_amount
+       do Format-Number(#saleft_file_pymnt_amount, $file_pymnt_amount, '000000000000000009')
+
+       if #file_count > 0
+          do file-trailers
+       else
+          display '   *** File ' noline
+          display $saleft_file noline
+          display ' is empty. ***'
+       end-if
+
+       close 2
+       break
+
+   when = 'C'
+
+       let #outputfile               = 3
+
+       let #mischk_file_rec_count    = #mischk_file_rec_count    + 2     ! for records 'T ' and 'E '
+       let #mischk_file_pymnt_count  = #mischk_file_pymnt_count  + #mischk_schd_pymnt_count
+       let #mischk_file_pymnt_amount = #mischk_file_pymnt_amount + #mischk_schd_pymnt_amount
+
+       let #schedule_count           = #mischk_schd_pymnt_count
+       let #schedule_amount          = #mischk_schd_pymnt_amount
+
+       let #file_count               = #mischk_file_pymnt_count
+       let #file_amount              = #mischk_file_pymnt_amount
+
+       do Format-Number(#mischk_schd_pymnt_count, $schd_pymnt_count, '00000009')
+       multiply 100 times #mischk_schd_pymnt_amount
+       do Format-Number(#mischk_schd_pymnt_amount, $schd_pymnt_amount, '000000000000009')
+
+       do Format-Number(#mischk_file_rec_count, $file_rec_count, '000000000000000009')
+       do Format-Number(#mischk_file_pymnt_count, $file_pymnt_count, '000000000000000009')
+       multiply 100 times #mischk_file_pymnt_amount
+       do Format-Number(#mischk_file_pymnt_amount, $file_pymnt_amount, '000000000000000009')
+
+       if #file_count > 0
+          do file-trailers
+       else
+          display '   *** File ' noline
+          display $mischk_file noline
+          display ' is empty. ***'
+       end-if
+
+       close 3
+       break
+
+   when = 'D'
+
+       let #outputfile               = 4
+
+       let #miseft_file_rec_count    = #miseft_file_rec_count    + 2     ! for records 'T ' and 'E '
+       let #miseft_file_pymnt_count  = #miseft_file_pymnt_count  + #miseft_schd_pymnt_count
+       let #miseft_file_pymnt_amount = #miseft_file_pymnt_amount + #miseft_schd_pymnt_amount
+
+       let #schedule_count           = #miseft_schd_pymnt_count
+       let #schedule_amount          = #miseft_schd_pymnt_amount
+
+       let #file_count               = #miseft_file_pymnt_count
+       let #file_amount              = #miseft_file_pymnt_amount
+
+       do Format-Number(#miseft_schd_pymnt_count, $schd_pymnt_count, '00000009')
+       multiply 100 times #miseft_schd_pymnt_amount
+       do Format-Number(#miseft_schd_pymnt_amount, $schd_pymnt_amount, '000000000000009')
+
+       do Format-Number(#miseft_file_rec_count, $file_rec_count, '000000000000000009')
+       do Format-Number(#miseft_file_pymnt_count, $file_pymnt_count, '000000000000000009')
+       multiply 100 times #miseft_file_pymnt_amount
+       do Format-Number(#miseft_file_pymnt_amount, $file_pymnt_amount, '000000000000000009')
+
+       if #file_count > 0
+          do file-trailers
+       else
+          display '   *** File ' noline
+          display $miseft_file noline
+          display ' is empty. ***'
+       end-if
+
+       close 4
+       break
+
+   end-evaluate
+
+end-procedure       !process-last-sched-seq
+
+!******************************
+begin-procedure format-EFT-data
+!******************************
+
+    evaluate $processing_tran
+
+    when = 'net EFT'
+
+        let #outputfile                      = 2
+
+        let #saleft_schd_pymnt_count         = #saleft_schd_pymnt_count  + 1     ! for writing file
+        let #saleft_schd_pymnt_amount        = #saleft_schd_pymnt_amount + #amount
+
+        let #saleft_net_count                = #saleft_net_count         + 1     ! for printing report
+        let #saleft_net_amount               = #saleft_net_amount        + #amount
+
+        let #saleft_file_rec_count           = #saleft_file_rec_count    + 1     ! for record '02'
+
+        multiply 100 times #amount
+        do Format-Number(#amount, $payment_amount, '0000000009')
+
+        let $payee_id_number                 = $check_ssn
+        let $name                            = substr($check_paycheck_name,1,35)
+        do rotate-name
+        let $payee_name1                     = upper($name)
+        let $payment_type_cd                 = ' '
+        let $top_offset                      = '0'
+        let $tin_indicator                   = '1'
+        let $payee_id1                       = $check_ssn
+
+        BREAK
+
+
+    when = 'ded EFT'
+
+        let #outputfile                      = 4
+
+        let #miseft_schd_pymnt_count         = #miseft_schd_pymnt_count  + 1     ! for writing file
+        let #miseft_schd_pymnt_amount        = #miseft_schd_pymnt_amount + #amount
+
+        let #miseft_other_count              = #miseft_other_count       + 1     ! for printing report
+        let #miseft_other_amount             = #miseft_other_amount      + #amount
+
+        let #miseft_file_rec_count           = #miseft_file_rec_count    + 1     ! for record '02'
+
+        multiply 100 times #amount
+        do Format-Number(#amount, $payment_amount, '0000000009')
+
+        if $pymnt_routing = 'D' and $pymnt_summary = 'E'
+           let $payee_id_number              = rtrim(&DIST_ADDR.GVT_PAYEE_ID_NO,' ')
+           let $payee_name1                  = rtrim(&DIST_ADDR.GVT_PAYEE_NAME,' ')
+        else
+           let $payee_id_number              = $check_ssn
+           let $name                         = substr($check_paycheck_name,1,35)
+           do rotate-name
+           let $payee_name1                  = upper($name)
+        end-if
+
+        let $payment_type_cd                 = ' '
+        let $top_offset                      = '0'
+        let $tin_indicator                   = ' '
+        let $payee_id1                       = ' '
+
+        BREAK
+
+
+    when = 'ded dist EFT'
+
+        let #outputfile                      = 4
+
+        let #miseft_schd_pymnt_count         = #miseft_schd_pymnt_count  + 1     ! for writing file
+        let #miseft_schd_pymnt_amount        = #miseft_schd_pymnt_amount + #amount
+
+        evaluate $reporting_cd                                                   ! for printing report
+
+        when = 'CF'
+
+            let #miseft_charity_count        = #miseft_charity_count     + 1
+            let #miseft_charity_amount       = #miseft_charity_amount    + #amount
+
+            break
+
+        when = 'UN'
+
+            let #miseft_union_count          = #miseft_union_count       + 1
+            let #miseft_union_amount         = #miseft_union_amount      + #amount
+
+            break
+
+        when-other
+
+            let #miseft_other_count          = #miseft_other_count       + 1
+            let #miseft_other_amount         = #miseft_other_amount      + #amount
+
+            break
+
+        end-evaluate
+
+        let #miseft_file_rec_count           = #miseft_file_rec_count    + 1     ! for record '02'
+
+        multiply 100 times #amount
+        do Format-Number(#amount, $payment_amount, '0000000009')
+
+        let $payee_id_number                 = rtrim(&DIST_ADDR.GVT_PAYEE_ID_NO,' ')
+        let $payee_name1                     = rtrim(&DIST_ADDR.GVT_PAYEE_NAME,' ')
+        let $payment_type_cd                 = ' '
+        let $top_offset                      = '0'
+        let $tin_indicator                   = ' '
+        let $payee_id1                       = ' '
+
+        BREAK
+
+
+    when = 'garn EFT'
+
+        let #outputfile                      = 4
+
+        let #miseft_schd_pymnt_count         = #miseft_schd_pymnt_count  + 1     ! for writing file
+        let #miseft_schd_pymnt_amount        = #miseft_schd_pymnt_amount + #amount
+
+        let #miseft_garn_count               = #miseft_garn_count        + 1     ! for printing report
+        let #miseft_garn_amount              = #miseft_garn_amount       + #amount
+
+        let #miseft_file_rec_count           = #miseft_file_rec_count    + 1     ! for record '02'
+
+        multiply 100 times #amount
+        do Format-Number(#amount, $payment_amount, '0000000009')
+
+        let $payee_id_number                 = rtrim(&GARN_PAYEE.GVT_PAYEE_ID_NO,' ')
+        let $payee_name1                     = rtrim(&GARN_SPEC.GVT_PAYEE_NAME,' ')
+        let $payment_type_cd                 = ' '
+        let $top_offset                      = '0'
+        let $tin_indicator                   = ' '
+        let $payee_id1                       = ' '
+
+        if &GARN_SPEC.GARN_TYPE = 'C'
+
+           do format-garn-addendum
+           let #miseft_file_rec_count        = #miseft_file_rec_count    + 1     ! for record '03'
+
+        end-if
+
+        BREAK
+
+
+    when = 'tax EFT'
+
+        let #outputfile                      = 4
+
+        let #miseft_schd_pymnt_count         = #miseft_schd_pymnt_count  + 1     ! for writing file
+        let #miseft_schd_pymnt_amount        = #miseft_schd_pymnt_amount + #amount
+
+        let #miseft_tax_count                = #miseft_tax_count         + 1     ! for printing report
+        let #miseft_tax_amount               = #miseft_tax_amount        + #amount
+
+        let #miseft_file_rec_count           = #miseft_file_rec_count    + 2     ! for records '02' and '03'
+
+        multiply 100 times #amount
+        do Format-Number(#amount, $payment_amount, '0000000009')
+
+        let $payee_id_number                 = rtrim(&ROUTE_TAX.GVT_PAYEE_ID_NO,' ')
+        let $payee_name1                     = rtrim(&ROUTE_TAX.GVT_PAYEE_NAME,' ')
+        let $payment_type_cd                 = ' '
+        let $top_offset                      = '0'
+        let $tin_indicator                   = ' '
+        let $payee_id1                       = ' '
+
+        do format-tax-addendum
+
+        BREAK
+
+    end-evaluate
+
+    do write-EFT-data
+
+    if $addenda = 'Y'
+       do write-EFT-addendum-03
+       let $addenda = 'N'
+    end-if
+
+end-procedure       !format-EFT-data
+
+!***********************************
+begin-procedure format-garn-addendum
+!***********************************
+
+    let $addenda               = 'Y'
+    let $ded01                 = ''
+    let $ded02                 = ''
+    let $ded03                 = ''
+    let $ded04                 = ''
+    let $ded05                 = ''
+    let $ded06                 = ''
+    let $ded07                 = ''
+    let $ded08                 = ''
+    let $ded09                 = ''
+    let $ded10                 = ''
+
+    let $temp_date             = $check_date                                     !calendar check date
+
+    let $ded                   = 'DED'
+    let $ded01                 = 'CS'
+    let $ded02                 = substr(rtrim(&GARN_SPEC.CASE_IDENTIFIER,' '),1,20)
+    let $ded03                 = datetostr($temp_date,'YYMMDD')
+    do Format-Number(#amount, $ded04, '0000000009')
+    let $ded05                 = rtrim($check_ssn,' ')
+
+    do get-garn-job-fields
+
+    evaluate &GJ.GVT_ELIG_FEHB
+
+        when = 'CC'
+        when = 'PER'
+        when = 'TAP'
+        when = 'TSV'
+            let $ded06         = 'Y'                                             !medical support indicator
+            break
+        when = 'NE'
+            let $ded06         = 'N'                                             !medical support indicator
+            break
+        when-other
+            let $ded06         = 'N'                                             !medical support indicator
+            break
+
+    end-evaluate
+
+    let $ded07                 = substr(upper($check_paycheck_name),1,10)        !non custodial parent name
+    let $ded08                 = substr(rtrim(&GARN_SPEC.FIPS_CODE,' '),1,7)     !fipps code
+
+    evaluate &GJ.EMPL_STATUS
+
+        when = 'D'
+        when = 'R'
+        when = 'S'
+        when = 'T'
+            let $ded09         = 'Y'                                             !emp termination ind
+            break
+        when-other
+            let $ded09         = 'N'                                             !emp termination ind
+            break
+
+    end-evaluate
+
+let $addendum_info             = ''
+
+if isblank($ded09)
+
+   if isblank($ded08)
+
+      if isblank($ded07)   !field 7 and 8 and 9 are blank
+
+         let $addendum_info = upper($ded)||'*'||upper($ded01)||'*'||upper($ded02)||'*'||upper($ded03)||'*'||upper($ded04)||'*'||upper($ded05)||'*'||upper($ded06)||'***\'
+
+      else                 !field 8 and 9 are blank
+
+         let $addendum_info = upper($ded)||'*'||upper($ded01)||'*'||upper($ded02)||'*'||upper($ded03)||'*'||upper($ded04)||'*'||upper($ded05)||'*'||upper($ded06)||'*'||upper($ded07)||'**\'
+
+      end-if
+
+   else
+
+      if isblank($ded07)   !field 7 and 9 are blank
+
+         let $addendum_info = upper($ded)||'*'||upper($ded01)||'*'||upper($ded02)||'*'||upper($ded03)||'*'||upper($ded04)||'*'||upper($ded05)||'*'||upper($ded06)||'**'||upper($ded08)||'*\'
+
+      else                 !field 9 is blank
+
+         let $addendum_info = upper($ded)||'*'||upper($ded01)||'*'||upper($ded02)||'*'||upper($ded03)||'*'||upper($ded04)||'*'||upper($ded05)||'*'||upper($ded06)||'*'||upper($ded07)||'*'||upper($ded08)||'*\'
+
+     end-if
+
+   end-if
+
+else
+
+   if isblank($ded08)
+
+      if isblank($ded07)   !field 7 and 8 are blank
+
+         let $addendum_info = upper($ded)||'*'||upper($ded01)||'*'||upper($ded02)||'*'||upper($ded03)||'*'||upper($ded04)||'*'||upper($ded05)||'*'||upper($ded06)||'***'||upper($ded09)||'\'
+
+      else                 !field 8 is blank
+
+         let $addendum_info = upper($ded)||'*'||upper($ded01)||'*'||upper($ded02)||'*'||upper($ded03)||'*'||upper($ded04)||'*'||upper($ded05)||'*'||upper($ded06)||'*'||upper($ded07)||'**'||upper($ded09)||'\'
+
+      end-if
+
+   else
+
+      if isblank($ded07)   !field 7 is blank
+
+         let $addendum_info = upper($ded)||'*'||upper($ded01)||'*'||upper($ded02)||'*'||upper($ded03)||'*'||upper($ded04)||'*'||upper($ded05)||'*'||upper($ded06)||'**'||upper($ded08)||'*'||upper($ded09)||'\'
+
+      else                 !all 9 fields have a value
+
+         let $addendum_info = upper($ded)||'*'||upper($ded01)||'*'||upper($ded02)||'*'||upper($ded03)||'*'||upper($ded04)||'*'||upper($ded05)||'*'||upper($ded06)||'*'||upper($ded07)||'*'||upper($ded08)||'*'||upper($ded09)||'\'
+
+      end-if
+
+   end-if
+
+end-if
+
+end-procedure       !format-garn-addendum
+
+!**********************************
+begin-procedure get-garn-job-fields
+!**********************************
+
+BEGIN-SELECT
+
+GJ.EMPL_STATUS
+GJ.GVT_ELIG_FEHB
+
+FROM PS_GVT_JOB GJ
+WHERE GJ.EMPLID   = $check_emplid
+AND   GJ.EMPL_RCD = #check_empl_rcd_nbr
+AND   GJ.EFFDT    = (SELECT MAX(GJ1.EFFDT)
+                     FROM PS_GVT_JOB GJ1
+                     WHERE GJ1.EMPLID          = GJ.EMPLID
+                     AND   GJ1.EMPL_RCD        = GJ.EMPL_RCD
+                     AND   GJ1.EFFDT          <= $check_pay_end_dt)
+AND   GJ.EFFSEQ   = (SELECT MAX(GJ2.EFFSEQ)
+                     FROM PS_GVT_JOB GJ2
+                     WHERE GJ2.EMPLID          = GJ.EMPLID
+                     AND   GJ2.EMPL_RCD        = GJ.EMPL_RCD
+                     AND   GJ2.EFFDT           = GJ.EFFDT)
+END-SELECT
+
+end-procedure       !get-garn-job-fields
+
+!**********************************
+begin-procedure format-tax-addendum
+!**********************************
+
+let $addenda               = 'Y'
+let $txp01                 = ''
+let $txp02                 = ''
+let $txp03                 = ''
+let $txp04                 = ''
+let $txp05                 = ''
+let $txp06                 = ''
+let $txp07                 = ''
+let $txp08                 = ''
+let $txp09                 = ''
+let $txp10                 = ''
+
+do set-period-end-date
+
+let $txp                   = 'TXP'
+let $txp01                 = &ROUTE_TAX.GVT_TAXPAYER_ID
+let $txp02                 = &ROUTE_TAX.GVT_TAX_TYPE
+let $txp10                 = &ROUTE_TAX.GVT_TXP_VERIF
+
+let $txp04                 = &ROUTE_TAX.GVT_TXP_AMT_1_IND
+do Format-Number(#amount, $txp05, '0000000009')
+
+if &ROUTE_TAX.GVT_TXP_AMT_2_IND <> ''
+
+    let $txp06             = &ROUTE_TAX.GVT_TXP_AMT_2_IND
+    do Format-Number(#amount, $txp07, '0000000009')
+
+end-if
+
+if &ROUTE_TAX.GVT_TXP_AMT_3_IND <> ''
+
+    let $txp08             = &ROUTE_TAX.GVT_TXP_AMT_3_IND
+    do Format-Number(#amount, $txp09, '0000000009')
+
+end-if
+
+let $addendum_info         = ''
+
+if isblank($txp08)
+
+    if isblank($txp06)
+
+        if isblank($txp10)
+
+            let $addendum_info = upper($txp)||'*'||upper($txp01)||'*'||upper($txp02)||'*'||upper($txp03)||'*'||upper($txp04)||'*'||upper($txp05)||'******\'
+
+        else
+
+            let $addendum_info = upper($txp)||'*'||upper($txp01)||'*'||upper($txp02)||'*'||upper($txp03)||'*'||upper($txp04)||'*'||upper($txp05)||'*****'||upper($txp10)||'\'
+
+        end-if
+
+    else
+
+        if isblank($txp10)
+
+            let $addendum_info = upper($txp)||'*'||upper($txp01)||'*'||upper($txp02)||'*'||upper($txp03)||'*'||upper($txp04)||'*'||upper($txp05)||'*'||upper($txp06)||'*'||upper($txp07)||'****\'
+
+        else
+
+            let $addendum_info = upper($txp)||'*'||upper($txp01)||'*'||upper($txp02)||'*'||upper($txp03)||'*'||upper($txp04)||'*'||upper($txp05)||'*'||upper($txp06)||'*'||upper($txp07)||'***'||upper($txp10)||'\'
+
+        end-if
+
+    end-if
+
+else
+
+    if isblank($txp10)
+
+        let $addendum_info = upper($txp)||'*'||upper($txp01)||'*'||upper($txp02)||'*'||upper($txp03)||'*'||upper($txp04)||'*'||upper($txp05)||'*'||upper($txp06)||'*'||upper($txp07)||'*'||upper($txp08)||'*'||upper($txp09)||'**\'
+
+    else
+
+        let $addendum_info = upper($txp)||'*'||upper($txp01)||'*'||upper($txp02)||'*'||upper($txp03)||'*'||upper($txp04)||'*'||upper($txp05)||'*'||upper($txp06)||'*'||upper($txp07)||'*'||upper($txp08)||'*'||upper($txp09)||'*'||
+                             upper($txp10)
+
+    end-if
+
+end-if
+
+end-procedure       !format-tax-addendum
+
+!**********************************
+begin-procedure set-period-end-date
+!**********************************
+
+do Format-DateTime($check_date, $work_check_date, {DEFCMP}, '', '')
+
+evaluate &ROUTE_TAX.GVT_TAX_PERIOD
+
+when = 'P'
+
+    let $txp03 = substr($work_check_date,3,2)||substr($work_check_date,5,2)||substr($work_check_date,7,2)
+    BREAK
+
+when = 'M'
+
+    let $txp_month = substr($work_check_date,5,2)
+
+    if $txp_month  = '02'
+
+        let $txp_days = '28'
+
+    else
+
+       if $txp_month  = '04' or
+          $txp_month  = '06' or
+          $txp_month  = '09' or
+          $txp_month  = '11'
+
+           let $txp_days = '30'
+
+       else
+
+           let $txp_days = '31'
+
+       end-if
+
+    end-if
+
+    let $txp03 = substr($work_check_date,3,2)||$txp_month||$txp_days
+
+    BREAK
+
+when = 'Q'
+
+    let $txp_month = substr($work_check_date,5,2)
+
+    if $txp_month  > '09'
+
+        let $txp_days  = '31'
+        let $txp_month = '12'
+
+    else
+
+       if $txp_month > '06'
+
+           let $txp_days  = '30'
+           let $txp_month = '09'
+
+       else
+
+           if $txp_month > '03'
+
+               let $txp_days  = '30'
+               let $txp_month = '06'
+
+           else
+
+               let $txp_days  = '31'
+               let $txp_month = '03'
+
+           end-if
+
+       end-if
+
+    end-if
+
+    let $txp03 = substr($work_check_date,3,2)||$txp_month||$txp_days
+
+    BREAK
+
+when = 'S'
+
+    let $txp_month = substr($work_check_date,5,2)
+
+    if $txp_month  > '06'
+
+        let $txp_days  = '31'
+        let $txp_month = '12'
+
+    else
+
+        let $txp_days  = '30'
+        let $txp_month = '06'
+
+    end-if
+
+    let $txp03 = substr($work_check_date,3,2)||$txp_month||$txp_days
+
+    BREAK
+
+when-other
+
+    let $txp_month = '12'
+    let $txp_days  = '31'
+
+    let $txp03 = substr($work_check_date,3,2)||$txp_month||$txp_days
+
+    BREAK
+
+end-evaluate
+
+end-procedure       !set-period-end-date
+
+!********************************
+begin-procedure format-CHK-data
+!********************************
+
+    evaluate $processing_tran
+
+    when = 'net check'
+
+        let #outputfile                      = 1
+
+        let #salchk_schd_pymnt_count         = #salchk_schd_pymnt_count  + 1     ! for writing file
+        let #salchk_schd_pymnt_amount        = #salchk_schd_pymnt_amount + #amount
+
+        let #salchk_net_count                = #salchk_net_count         + 1     ! for printing report
+        let #salchk_net_amount               = #salchk_net_amount        + #amount
+
+        let #salchk_file_rec_count           = #salchk_file_rec_count    + 1     ! for record '12'
+        multiply 100 times #amount
+        do Format-Number(#amount, $payment_amount, '0000000009')
+
+        let $payee_id_number                 = $check_ssn
+        let $name                            = substr($check_paycheck_name,1,35)
+        do rotate-name
+        let $payee_name1                     = upper($name)
+        let $payment_type_cd                 = ' '
+        let $top_offset                      = '0'
+        let $check_text1                     = ' '
+        let $check_text2                     = ' '
+        let $tin_indicator                   = '1'
+        let $payee_id1                       = $check_ssn
+
+        BREAK
+
+
+    when = 'ded check'
+
+        let #outputfile                      = 3
+
+        let #mischk_schd_pymnt_count         = #mischk_schd_pymnt_count  + 1     ! for writing file
+        let #mischk_schd_pymnt_amount        = #mischk_schd_pymnt_amount + #amount
+
+        let #mischk_other_count              = #mischk_other_count       + 1     ! for printing report
+        let #mischk_other_amount             = #mischk_other_amount      + #amount
+
+        let #mischk_file_rec_count           = #mischk_file_rec_count    + 1     ! for record '12'
+
+        multiply 100 times #amount
+        do Format-Number(#amount, $payment_amount, '0000000009')
+
+        if $pymnt_routing = 'D' and  $pymnt_summary = 'E'
+           let $payee_id_number              = rtrim(&DIST_ADDR.GVT_PAYEE_ID_NO,' ')
+           let $payee_name1                  = rtrim(&DIST_ADDR.GVT_CHK_NAME,' ')
+        else
+           let $payee_id_number              = $check_ssn
+           let $payee_name1                  = rtrim(&GENL_DEDUCT.GVT_CHK_NAME,' ')
+        end-if
+
+        let $payment_type_cd                 = ' '
+        let $top_offset                      = '0'
+        let $check_text1                     = ' '
+        let $check_text2                     = ' '
+        let $tin_indicator                   = ' '
+        let $payee_id1                       = ' '
+
+        BREAK
+
+
+    when = 'ded dist check'
+
+        let #outputfile                      = 3
+
+        let #mischk_schd_pymnt_count         = #mischk_schd_pymnt_count  + 1     ! for writing file
+        let #mischk_schd_pymnt_amount        = #mischk_schd_pymnt_amount + #amount
+
+        evaluate $reporting_cd                                                   ! for printing report
+
+        when = 'CF'
+
+            let #mischk_charity_count        = #mischk_charity_count     + 1
+            let #mischk_charity_amount       = #mischk_charity_amount    + #amount
+
+            break
+
+        when = 'UN'
+
+            let #mischk_union_count          = #mischk_union_count       + 1
+            let #mischk_union_amount         = #mischk_union_amount      + #amount
+
+            break
+
+        when-other
+
+            let #mischk_other_count          = #mischk_other_count       + 1
+            let #mischk_other_amount         = #mischk_other_amount      + #amount
+
+            break
+
+        end-evaluate
+
+        let #mischk_file_rec_count           = #mischk_file_rec_count    + 1     ! for record '12'
+
+        multiply 100 times #amount
+        do Format-Number(#amount, $payment_amount, '0000000009')
+
+        let $payee_id_number                 = rtrim(&DIST_ADDR.GVT_PAYEE_ID_NO,' ')
+        let $payee_name1                     = rtrim(&DIST_ADDR.GVT_CHK_NAME,' ')
+        let $payment_type_cd                 = ' '
+        let $top_offset                      = '0'
+        let $check_text1                     = ' '
+        let $check_text2                     = ' '
+        let $tin_indicator                   = ' '
+        let $payee_id1                       = ' '
+
+        BREAK
+
+
+    when = 'garn check'
+
+        let #outputfile                      = 3
+
+        let #mischk_schd_pymnt_count         = #mischk_schd_pymnt_count  + 1     ! for writing file
+        let #mischk_schd_pymnt_amount        = #mischk_schd_pymnt_amount + #amount
+
+        let #mischk_garn_count               = #mischk_garn_count        + 1     ! for printing report
+        let #mischk_garn_amount              = #mischk_garn_amount       + #amount
+
+        let #mischk_file_rec_count           = #mischk_file_rec_count    + 1     ! for record '12'
+
+        multiply 100 times #amount
+        do Format-Number(#amount, $payment_amount, '0000000009')
+
+        let $payee_id_number                 = $check_ssn
+        let $payee_name1                     = rtrim(&GARN_SPEC.GVT_CHK_NAME,' ')
+        let $payment_type_cd                 = ' '
+        let $top_offset                      = '0'
+        let $check_text1                     = $court_doc1
+        let $check_text2                     = $court_doc2
+        let $tin_indicator                   = ' '
+        let $payee_id1                       = ' '
+
+        BREAK
+
+
+    when = 'tax check'
+
+        let #outputfile                      = 3
+
+        let #mischk_schd_pymnt_count         = #mischk_schd_pymnt_count  + 1     ! for writing file
+        let #mischk_schd_pymnt_amount        = #mischk_schd_pymnt_amount + #amount
+
+        let #mischk_tax_count                = #mischk_tax_count         + 1     ! for printing report
+        let #mischk_tax_amount               = #mischk_tax_amount        + #amount
+
+        let #mischk_file_rec_count           = #mischk_file_rec_count    + 1     ! for record '12'
+
+        multiply 100 times #amount
+        do Format-Number(#amount, $payment_amount, '0000000009')
+
+        let $payee_id_number                 = rtrim(&ROUTE_TAX.GVT_PAYEE_ID_NO,' ')
+        let $payee_name1                     = rtrim(&ROUTE_TAX.GVT_CHK_NAME,' ')
+        let $payment_type_cd                 = ' '
+        let $top_offset                      = '0'
+        let $check_text1                     = ' '
+        let $check_text2                     = ' '
+        let $tin_indicator                   = ' '
+        let $payee_id1                       = ' '
+
+        BREAK
+
+    end-evaluate
+
+    do write-CHK-data
+
+end-procedure       !format-CHK-data
+
+!***********************************
+begin-procedure format-TAS-BETC-data
+!***********************************
+
+    evaluate $processing_tran
+
+    when = 'net check'
+        let #salchk_file_rec_count           = #salchk_file_rec_count    + 1     ! for record 'G '
+        BREAK
+
+    when = 'net EFT'
+        let #saleft_file_rec_count           = #saleft_file_rec_count    + 1     ! for record 'G '
+        BREAK
+
+    when = 'ded check'
+    when = 'garn check'
+    when = 'ded dist check'
+    when = 'tax check'
+        let #mischk_file_rec_count           = #mischk_file_rec_count    + 1     ! for record 'G '
+        BREAK
+
+    when = 'ded EFT'
+    when = 'garn EFT'
+    when = 'ded dist EFT'
+    when = 'tax EFT'
+        let #miseft_file_rec_count           = #miseft_file_rec_count    + 1     ! for record 'G '
+
+        BREAK
+
+    end-evaluate
+
+    do write-TAS-BETC-data
+
+end-procedure       !format-TAS-BETC-data
+
+!*******************************
+begin-procedure CHK-file-headers
+!*******************************
+
+do write-file-header
+do write-CHK-header
+
+end-procedure       !CHK-file-headers
+
+!********************************
+begin-procedure EFT-file-headers
+!********************************
+
+do write-file-header
+do write-EFT-header
+
+end-procedure       !EFT-file-headers
+
+!************************************
+begin-procedure CHK-sched-seq-changed
+!************************************
+
+do write-schedule-trailer
+do print-schedule
+do update-schedule-control
+do write-CHK-header
+do reset-schd-trailer-variables
+
+end-procedure       !CHK-sched-seq-changed
+
+!************************************
+begin-procedure EFT-sched-seq-changed
+!************************************
+
+do write-schedule-trailer
+do print-schedule
+do update-schedule-control
+do write-EFT-header
+do reset-schd-trailer-variables
+
+end-procedure       !EFT-sched-seq-changed
+
+!****************************
+begin-procedure file-trailers
+!****************************
+
+do write-schedule-trailer
+do print-schedule
+do update-schedule-control
+do write-file-trailer
+do print-file
+do reset-file-trailer-variables
+
+end-procedure       !file-trailers
+
+!********************************
+begin-procedure write-file-header
+!********************************
+
+let $record_code   = 'H '
+let $spr_version   = '500'
+
+write #outputfile from $record_code:2
+                       $input_system:40
+                       $spr_version:3
+                       $blanks_805:805
+
+end-procedure       !write-file-header
+
+!*******************************
+begin-procedure write-CHK-header
+!*******************************
+
+let $record_code   = '11'
+
+write #outputfile from $record_code:2
+                       $schedule:14
+                       $payment_type:25
+                       $agency_loc_code:8
+                       $blanks_9:9
+                       $enclosure_code:10        ! blanks, not supported
+                       $blanks_782:782
+
+end-procedure       !write-CHK-header
+
+!*******************************
+begin-procedure write-EFT-header
+!*******************************
+
+let $record_code   = '01'
+
+write #outputfile from $record_code:2
+                       $agency_id:4
+                       $schedule:14
+                       $payment_type:25
+                       $SEC_code:3
+                       $agency_loc_code:8
+                       $blank:1
+                       $federal_EIN:10           ! blanks, not supported
+                       $blanks_783:783
+
+end-procedure       !write-EFT-header
+
+!*****************************
+begin-procedure write-CHK-data
+!*****************************
+
+let $record_code   = '12'
+
+write #outputfile from $record_code:2
+                       $payee_id_number:16
+                       $payment_amount:10
+                       $payment_type_cd:1
+                       $top_offset:1
+                       $payee_name1:35
+                       $address1:35
+                       $address2:35
+                       $address3:35
+                       $address4:35
+                       $city:27
+                       $state_name:10
+                       $state_cd:2
+                       $zip_code:10
+                       $blanks_17:17
+                       $country_name:40
+                       $consular_cd:3            ! blanks, not supported
+                       $check_text1:55
+                       $check_text2:55
+                       $payee_id2:9              ! blanks, not supported
+                       $payee_name2:35           ! blanks, not supported
+                       $payment_id:20
+                       $blanks_150:150
+                       $payee_id1:9
+                       $blanks_50:50
+                       $tin_indicator:1
+                       $blanks_152:152
+
+end-procedure       !write-CHK-data
+
+!*****************************
+begin-procedure write-EFT-data
+!*****************************
+
+let $record_code   = '02'
+
+write #outputfile from $record_code:2
+                       $payee_id_number:16
+                       $payment_amount:10
+                       $payment_type_cd:1
+                       $top_offset:1
+                       $payee_name1:35
+                       $address1:35
+                       $address2:35
+                       $city:27
+                       $state_name:10
+                       $state_cd:2
+                       $zip_code:10
+                       $country_2char:2
+                       $routing_id_number:9
+                       $account_number:17
+                       $transaction_cd:2
+                       $payee_id_number2:9       ! blanks, not supported
+                       $payee_name2:35           ! blanks, not supported
+                       $payment_id:20
+                       $blanks_100:100
+                       $payee_id1:9
+                       $tin_indicator:1
+                       $blanks_462:462
+
+end-procedure       !write-EFT-data
+
+!************************************
+begin-procedure write-EFT-addendum-03
+!************************************
+
+let $record_code   = '03'
+
+write #outputfile from $record_code:2
+                       $payment_id:20
+                       $addendum_info:80
+                       $blanks_748:748
+
+end-procedure       !write-EFT-addendum-03
+
+!**********************************
+begin-procedure write-TAS-BETC-data
+!**********************************
+
+let $record_code   = 'G '
+
+write #outputfile from $record_code:2
+                       $payment_id:20
+                       $tas_sp:2
+                       $tas_ata:3
+                       $tas_aid:3
+                       $tas_bpoa:4
+                       $tas_epoa:4
+                       $tas_a:1
+                       $tas_main:4
+                       $tas_sub:3
+                       $tas_betc:8
+                       $payment_amount:10
+                       $is_credit:1
+                       $blanks_785:785
+
+end-procedure       !write-TAS_BETC-data
+
+!*************************************
+begin-procedure write-schedule-trailer
+!*************************************
+
+let $record_code   = 'T '
+
+write #outputfile from $record_code:2
+                       $blanks_10:10
+                       $schd_pymnt_count:8
+                       $blanks_3:3
+                       $schd_pymnt_amount:15
+                       $blanks_812:812
+
+end-procedure       !write-schedule-trailer
+
+!*********************************
+begin-procedure write-file-trailer
+!*********************************
+
+let $record_code   = 'E '
+
+write #outputfile from $record_code:2
+                       $file_rec_count:18
+                       $file_pymnt_count:18
+                       $file_pymnt_amount:18
+                       $blanks_794:794
+
+end-procedure       !write-file-trailer
+
+!*****************************
+begin-procedure print-schedule
+!*****************************
+
+evaluate $processing_code
+
+    when = 'A'
+
+        if  $print_first_schedule = 'Y'
+
+            let $print_first_schedule  = 'N'
+            print $company             (+1,2)
+            print $schedule_prefix     (,13)
+            do get-schedule-code-XLAT
+            print $code_name           (,28)
+            print #prior_sched_seq     (,49)   edit bb9
+
+        else
+            print #prior_sched_seq     (+2,49) edit bb9
+
+        end-if
+
+        print 'Net Pay'                (,61)
+        print #salchk_net_count        (,93)   edit 999,999,999
+        print #salchk_net_amount       (,106)  edit 9,999,999,999,999,999.99
+        print 'Schedule Total'         (+1,61)
+        print #schedule_count          (,93)   edit 999,999,999
+        print #schedule_amount         (,106)  edit 9,999,999,999,999,999.99
+
+        break
+
+
+    when = 'B'
+
+        if  $print_first_schedule = 'Y'
+
+            let $print_first_schedule  = 'N'
+            print $company             (+1,2)
+            print $schedule_prefix     (,13)
+            do get-schedule-code-XLAT
+            print $code_name           (,28)
+            print #prior_sched_seq     (,49)   edit bb9
+
+        else
+            print #prior_sched_seq     (+2,49) edit bb9
+
+        end-if
+
+        print 'Net Pay'                (,61)
+        print #saleft_net_count        (,93)   edit 999,999,999
+        print #saleft_net_amount       (,106)  edit 9,999,999,999,999,999.99
+        print 'Schedule Total'         (+1,61)
+        print #schedule_count          (,93)   edit 999,999,999
+        print #schedule_amount         (,106)  edit 9,999,999,999,999,999.99
+
+        break
+
+
+    when = 'C'
+
+        if  $print_first_schedule = 'Y'
+
+            let $print_first_schedule  = 'N'
+            print $company             (+1,2)
+            print $schedule_prefix     (,13)
+            do get-schedule-code-XLAT
+            print $code_name           (,28)
+            print #prior_sched_seq     (,49)   edit bb9
+
+        else
+            print #prior_sched_seq     (+2,49) edit bb9
+
+        end-if
+
+        print 'Garnishments'           (,61)
+        print #mischk_garn_count       (,93)   edit 999,999,999
+        print #mischk_garn_amount      (,106)  edit 9,999,999,999,999,999.99
+        print 'Charity'                (+1,61)
+        print #mischk_charity_count    (,93)   edit 999,999,999
+        print #mischk_charity_amount   (,106)  edit 9,999,999,999,999,999.99
+        print 'Union Dues'             (+1,61)
+        print #mischk_union_count      (,93)   edit 999,999,999
+        print #mischk_union_amount     (,106)  edit 9,999,999,999,999,999.99
+        print 'Tax Payments'           (+1,61)
+        print #mischk_tax_count        (,93)   edit 999,999,999
+        print #mischk_tax_amount       (,106)  edit 9,999,999,999,999,999.99
+        print 'Other Deductions'       (+1,61)
+        print #mischk_other_count      (,93)   edit 999,999,999
+        print #mischk_other_amount     (,106)  edit 9,999,999,999,999,999.99
+        print 'Schedule Total'         (+1,61)
+        print #schedule_count          (,93)   edit 999,999,999
+        print #schedule_amount         (,106)  edit 9,999,999,999,999,999.99
+
+        break
+
+
+    when = 'D'
+
+        if  $print_first_schedule = 'Y'
+
+            let $print_first_schedule  = 'N'
+            print $company             (+1,2)
+            print $schedule_prefix     (,13)
+            do get-schedule-code-XLAT
+            print $code_name           (,28)
+            print #prior_sched_seq     (,49)   edit bb9
+
+        else
+            print #prior_sched_seq     (+2,49) edit bb9
+
+        end-if
+
+        print 'Garnishments'           (,61)
+        print #miseft_garn_count       (,93)   edit 999,999,999
+        print #miseft_garn_amount      (,106)  edit 9,999,999,999,999,999.99
+        print 'Charity'                (+1,61)
+        print #miseft_charity_count    (,93)   edit 999,999,999
+        print #miseft_charity_amount   (,106)  edit 9,999,999,999,999,999.99
+        print 'Union Dues'             (+1,61)
+        print #miseft_union_count      (,93)   edit 999,999,999
+        print #miseft_union_amount     (,106)  edit 9,999,999,999,999,999.99
+        print 'Tax Payments'           (+1,61)
+        print #miseft_tax_count        (,93)   edit 999,999,999
+        print #miseft_tax_amount       (,106)  edit 9,999,999,999,999,999.99
+        print 'Other Deductions'       (+1,61)
+        print #miseft_other_count      (,93)   edit 999,999,999
+        print #miseft_other_amount     (,106)  edit 9,999,999,999,999,999.99
+        print 'Schedule Total'         (+1,61)
+        print #schedule_count          (,93)   edit 999,999,999
+        print #schedule_amount         (,106)  edit 9,999,999,999,999,999.99
+
+        break
+
+end-evaluate
+
+end-procedure       !print-schedule
+
+!*************************************
+begin-procedure get-schedule-code-XLAT
+!*************************************
+
+begin-select
+XLAT.FIELDNAME
+XLAT.FIELDVALUE
+
+   let $FieldName          = &XLAT.FIELDNAME
+   let $FieldValue         = &XLAT.FIELDVALUE
+   do Read-Translate-Table
+   let $xlat_name          = rtrim(upper($XlatShortName), ' ')
+   let $code_name          = $FieldValue || '-' || $xlat_Name
+
+FROM  PSXLATITEM XLAT
+WHERE XLAT.FIELDNAME       = 'GVT_SCHED_CODE'
+AND   XLAT.FIELDVALUE      = $processing_code
+AND   XLAT.EFFDT           = (SELECT MAX(EFFDT)
+                              FROM  PSXLATITEM XLAT1
+                              WHERE XLAT1.FIELDNAME   = XLAT.FIELDNAME
+                              AND   XLAT1.FIELDVALUE  = XLAT.FIELDVALUE
+                              AND   XLAT1.EFFDT       <= $AsOfToday)
+AND   XLAT.EFF_STATUS      = 'A'
+
+end-select
+
+end-procedure        !get-schedule-code-XLAT
+
+!*************************
+begin-procedure print-file
+!*************************
+
+evaluate $processing_code
+
+    when = 'A'
+
+        print 'File Name:'             (+2,2)
+        print $salchk_file             (,14)
+        print 'File Total'             (,61)
+        print #file_count              (,93)   edit 999,999,999
+        print #file_amount             (,106)  edit 9,999,999,999,999,999.99
+        print ' '                      (+2,1)
+
+        break
+
+
+    when = 'B'
+
+        print 'File Name:'             (+2,2)
+        print $saleft_file             (,14)
+        print 'File Total'             (,61)
+        print #file_count              (,93)   edit 999,999,999
+        print #file_amount             (,106)  edit 9,999,999,999,999,999.99
+        print ' '                      (+2,1)
+
+        break
+
+
+    when = 'C'
+
+        print 'File Name:'             (+2,2)
+        print $mischk_file             (,14)
+        print 'File Total'             (,61)
+        print #file_count              (,93)   edit 999,999,999
+        print #file_amount             (,106)  edit 9,999,999,999,999,999.99
+        print ' '                      (+2,1)
+
+        break
+
+
+    when = 'D'
+
+        print 'File Name:'             (+2,2)
+        print $miseft_file             (,14)
+        print 'File Total'             (,61)
+        print #file_count              (,93)   edit 999,999,999
+        print #file_amount             (,106)  edit 9,999,999,999,999,999.99
+        print ' '                      (+2,1)
+
+        break
+
+end-evaluate
+
+end-procedure       !print-file
+
+!**************************************
+begin-procedure update-schedule-control
+!**************************************
+
+BEGIN-SQL
+
+UPDATE PS_GVT_SCHED_CNTRL
+SET    GVT_ECS_REQ_PAY_DT  = $prior_seq_pymnt_dt,
+       GVT_ECS_GEN_DT      = $AsOfToday,
+       GVT_TOTAL_COUNT     = #schedule_count,
+       GVT_TOTAL_AMT       = #schedule_amount
+WHERE  GVT_SCHED_PREFIX    = $schedule_prefix
+AND    GVT_SCHED_CODE      = $processing_code
+AND    GVT_SCHED_SEQ       = #prior_sched_seq
+
+END-SQL
+
+end-procedure       !update-schedule-control
+
+!*****************************************
+begin-procedure Update-Schedule-Definition
+!*****************************************
+
+BEGIN-SQL
+
+UPDATE PS_GVT_SCHED_DEFN
+
+SET    GVT_SCHED_STATUS    = '3'
+
+WHERE  GVT_SCHED_PREFIX    = $schedule_prefix
+AND    GVT_SCHED_STATUS    = '2'
+
+END-SQL
+
+end-procedure       !Update-Schedule-Definition
+
+!**********************************
+begin-procedure Update-Pay-Calendar
+!**********************************
+
+BEGIN-SQL
+
+    UPDATE PS_PAY_CALENDAR
+
+    SET    GVT_TRES_RUN    = 'Y'
+
+    WHERE  RUN_ID = $run_id
+
+END-SQL
+
+end-procedure       !Update-Pay-Calendar
+
+!**********************************
+begin-procedure Delete-Run-Controls
+!**********************************
+
+BEGIN-SQL
+
+    DELETE FROM PS_RUNCTL_FGPY041
+
+    WHERE OPRID            = $Prcs_OprID
+    AND   RUN_CNTL_ID      = $Prcs_Run_Cntl_ID
+
+END-SQL
+
+BEGIN-SQL
+
+    DELETE FROM PS_RC_FGPY041_SCHD
+
+    WHERE OPRID            = $Prcs_OprID
+    AND   RUN_CNTL_ID      = $Prcs_Run_Cntl_ID
+
+END-SQL
+
+end-procedure       !Delete-Run-Controls
+
+!*******************************************
+begin-procedure reset-schd-trailer-variables
+!*******************************************
+
+let #salchk_schd_pymnt_count     = 0
+let #salchk_schd_pymnt_amount    = 0
+let #saleft_schd_pymnt_count     = 0
+let #saleft_schd_pymnt_amount    = 0
+let #mischk_schd_pymnt_count     = 0
+let #mischk_schd_pymnt_amount    = 0
+let #miseft_schd_pymnt_count     = 0
+let #miseft_schd_pymnt_amount    = 0
+let #schedule_count              = 0
+let #schedule_amount             = 0
+let #salchk_net_count            = 0
+let #salchk_net_amount           = 0
+let #saleft_net_count            = 0
+let #saleft_net_amount           = 0
+let #mischk_garn_count           = 0
+let #mischk_garn_amount          = 0
+let #mischk_charity_count        = 0
+let #mischk_charity_amount       = 0
+let #mischk_union_count          = 0
+let #mischk_union_amount         = 0
+let #mischk_tax_count            = 0
+let #mischk_tax_amount           = 0
+let #mischk_other_count          = 0
+let #mischk_other_amount         = 0
+let #miseft_garn_count           = 0
+let #miseft_garn_amoun           = 0
+let #miseft_charity_count        = 0
+let #miseft_charity_amount       = 0
+let #miseft_union_count          = 0
+let #miseft_union_amount         = 0
+let #miseft_tax_count            = 0
+let #miseft_tax_amount           = 0
+let #miseft_other_count          = 0
+let #miseft_other_amount         = 0
+
+end-procedure       !reset-schd-trailer-variables
+
+!*******************************************
+begin-procedure reset-file-trailer-variables
+!*******************************************
+
+let #salchk_file_rec_count       = 0
+let #salchk_file_pymnt_count     = 0
+let #salchk_file_pymnt_amount    = 0
+let #saleft_file_rec_count       = 0
+let #saleft_file_pymnt_count     = 0
+let #saleft_file_pymnt_amount    = 0
+let #mischk_file_rec_count       = 0
+let #mischk_file_pymnt_count     = 0
+let #mischk_file_pymnt_amount    = 0
+let #miseft_file_rec_count       = 0
+let #miseft_file_pymnt_count     = 0
+let #miseft_file_pymnt_amount    = 0
+let #file_count                  = 0
+let #file_amount                 = 0
+
+end-procedure       !reset-file-trailer-variables
+
+!**********************************
+begin-procedure reset-common-variables
+!**********************************
+
+let #CR_amount                   = 0
+let #DR_amount                   = 0
+let #amount                      = 0
+let $routing_id_number           = ''
+let $account_number              = ''
+let $account_code                = ''
+let $transaction_cd              = ''
+
+end-procedure       !reset-common-variables
+
+!************************************
+begin-procedure reset-check-variables
+!************************************
+
+let $check_emplid                = ''
+let #check_empl_rcd_nbr          = 0
+let $check_ssn                   = ''
+let $check_paycheck_name         = ''
+
+end-procedure       !reset-check-variables
+
+!**********************************
+begin-procedure reset-ded-variables
+!**********************************
+
+let $dedcd                       = ''
+let $dist_code                   = ''
+let $reporting_cd                = ''
+let $pymnt_routing               = ''
+let $pymnt_summary               = ''
+
+end-procedure       !reset-check-variables
+
+!**************************************
+begin-procedure reset-country-variables
+!**************************************
+
+let $prior_country               = ''
+let $country                     = ''
+let $country_descr               = ''
+let $country_name                = ''
+let $country_2char               = ''
+
+end-procedure       !reset-country-variables
+
+!**************************************
+begin-procedure reset-address-variables
+!**************************************
+
+let $address1                    = ''
+let $address2                    = ''
+let $address3                    = ''
+let $address4                    = ''
+let $zip_code                    = ''
+let $city                        = ''
+let $state_cd                    = ''
+let $state_descr                 = ''
+let $state_name                  = ''
+
+end-procedure       !reset-address-variables
+
+!***************************************
+begin-procedure reset-TAS-BETC-variables
+!***************************************
+
+let $tas_sp                      = ''
+let $tas_ata                     = ''
+let $tas_aid                     = ''
+let $tas_bpoa                    = ''
+let $tas_epoa                    = ''
+let $tas_a                       = ''
+let $tas_main                    = ''
+let $tas_sub                     = ''
+let $tas_betc                    = ''
+let $is_credit                   = ''
+let $tas_total                   = ''
+
+end-procedure       !reset-TAS-BETC-variables
+
+!***********************************
+begin-procedure foreign-address-test
+!***********************************
+
+    if $country <> $prior_country
+        do get-country-code
+        move $country               to $prior_country
+        move &COUNTRY.DESCR         to $country_descr
+        move &COUNTRY.COUNTRY_2CHAR to $country_2char
+    end-if
+
+    if $state_cd <> ''
+        do get-state-code
+        move &STATE.DESCR           to $state_descr
+    end-if
+
+end-procedure       !foreign-address-test
+
+!*******************************
+begin-procedure get-country-code
+!*******************************
+  let $Record_found        = 'N'
+
+begin-select
+
+COUNTRY.COUNTRY_2CHAR
+COUNTRY.DESCR
+
+  let $Record_found        = 'Y'
+
+FROM PS_COUNTRY_TBL COUNTRY
+
+WHERE COUNTRY.COUNTRY      = $country
+
+end-select
+
+ if $Record_found          = 'N'
+   show ' Country code : ' $country ' doesn''t exist in Country table.'
+   stop
+ end-if
+
+end-procedure       !get-country-code
+
+!*****************************
+begin-procedure get-state-code
+!*****************************
+  let $Record_found        = 'N'
+
+begin-select
+
+STATE.DESCR
+
+  let $Record_found        = 'Y'
+
+FROM  PS_STATE_NAMES_TBL  STATE
+
+WHERE STATE.COUNTRY        = $country
+  AND STATE.STATE          = $state_cd
+
+end-select
+
+ if $Record_found          = 'N'
+   show ' State code State : ' $state_cd ', Country : ' $country ' doesn''t exist in State table.'
+   stop
+ end-if
+
+end-procedure       !get-state-code
+
+#Include 'reset.sqc'     !Reset printer
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'readxlat.sqc'  !Read-Translate-Table procedure
+#Include 'curdttim.sqc'  !Routines to get current date/time
+#include 'rotname1.sqc'  !Routine to reformat name
+#Include 'stdapi.sqc'    !Routines to Update Run Status
+#Include 'tranctrl.sqc'  !Commit-Transaction

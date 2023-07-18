@@ -1,0 +1,1033 @@
+
+!************************************
+!*  FUSI_JOB.SQC                    *
+!************************************
+!***********************************************************************
+!                                                                      *
+!               Confidentiality Information:                           *
+!                                                                      *
+! This module is the confidential and proprietary information of       *
+! PeopleSoft, Inc.; it is not to be copied, reproduced, or transmitted *
+! in any form, by any means, in whole or in part, nor is it to be used *
+! for any purpose other than that for which it is expressly provided   *
+! without the written permission of PeopleSoft.                        *
+!                                                                      *
+! Copyright (c) 1988-2001 PeopleSoft, Inc. All Rights Reserved         *
+!                                                                      
+!----------------------------------------------------------------------
+!                                                                      
+!       $Release:                                                      
+!      $Revision:                                                      
+!    $Version-ID:                                                      
+!                                                                      *
+!***********************************************************************
+
+!*DEBUG FUSI0001.COD
+#include 'fpsys.sqc'
+#include 'fpjob.sqc'
+#include 'fpsalary.sqc'
+#Include 'fpparam.sqc'
+#define action_array_size 100
+#define fusi_action_stack_size 10
+#DEFINE FUSI_DT_NT_COMPARABLE
+#DEFINE NATIVE_DATE_LEN 10
+
+#DEFINE USER-PRE-CHG
+
+begin-procedure fusi-init ($emplid, #empl_rcd, $dt_nt_start_date) !*
+  !* initializing data for a new emplid JOB fusion
+
+#debug print 'fusi-init (' (+1,1)
+#debug print $emplid ()
+#debug print ',' ()
+#debug print #empl_rcd ()
+#debug print ',' ()
+#debug print $dt_nt_start_date ()
+#debug print ')' ()
+
+
+!global variable initialization
+let $_fusi_emplid   = $emplid
+let #_fusi_empl_rcd = #empl_rcd
+let $_fusi_dt_nt_start_date = $dt_nt_start_date
+
+
+let #_fusi_first = 1
+
+!initialising JOB default values from PSRECFIELD, first time only
+if (#_fusi_first_pass = 0)
+
+  #debug print 'fusi-init.first_pass' (+1,1)
+
+  !creating action array, has to be in a no-parameter procedure
+  do fusi-init-array
+
+  let #_fusi_first_pass = 1
+
+!activation trace file
+#ifdef debug
+let  #_fic_debug   = 1
+!PS970611
+!let  $_fic_debug   = '{FILEPREFIX}' || 'TRACEDAT2.TXT' || '{FILESUFFIX}'
+let  $_fic_debug   = '{tempdir}IF##FILEID##.TRC'
+!PS970611
+open $_fic_debug  as #_fic_debug
+FOR-WRITING
+RECORD=1000:FIXED
+#end-if
+
+end-if
+
+!***take EMPL_RCD into account
+
+!deleting JOB rows newer than start_date
+print '***take EMPL_RCD into account to delete JOB rows newer than start_date' (+3,1)
+print '' (+3,)
+
+let $_sql-statement = $_ReportID || ',init-fusion-job,Delete,JOB'
+!- 8.3 begin-SQL On-Error=SQL-Error
+!- 8.3 delete from PS_JOB
+!- 8.3 where  EMPLID    =  $emplid
+!- 8.3 and    EFFDT     >= {DATEIN-PREFIX}$dt_nt_start_date{DATEIN-SUFFIX}
+!- 8.3 and    EMPL_RCD  =  #empl_rcd
+!- 8.3 end-SQL
+
+!SH 10/10/2000
+!deleting FPA_CI_JOB
+let $_sql-statement = $_ReportID || ',init-fusion-job,Delete,FPA_CI_JOB'
+begin-SQL On-Error=SQL-Error
+delete from PS_FPA_CI_JOB
+where  EMPLID    =  $emplid
+and    EMPL_RCD  =  #empl_rcd
+end-SQL
+
+
+!SH 10/10/2000
+!deleting FPA_CI_COMP
+let $_sql-statement = $_ReportID || ',init-fusion-job,Delete,FPA_CI_COMP'
+begin-SQL On-Error=SQL-Error
+delete from PS_FPA_CI_COMP
+where  EMPLID    =  $emplid
+and    EMPL_RCD  =  #empl_rcd
+end-SQL
+
+
+
+
+#IFNDEF FUSI_WORK_TABLE
+!initializing array index upper limit
+let #_action_array_upper = 0
+
+
+!selecting significant actions on component tables
+do fusi-select-action($_fusi_emplid, #_fusi_empl_rcd, $_fusi_dt_nt_start_date)
+
+!sorting the action_array
+do fusi-sort-action
+#END-IF
+
+end-procedure
+
+#IFDEF FUSI_WORK_TABLE
+begin-procedure fusi-clear-work-table !*
+  !* deletes all data from FPMWORKTABLE
+
+let $sql-statement = $ReportID || ',init-fusion-job,Delete,FPMWORKTABLE'
+
+begin-SQL On-Error=SQL-Error
+delete from PS_FPMWORKTABLE
+end-SQL
+
+end-procedure
+#END-IF
+
+
+
+begin-procedure fusi-init-array !*
+  !* creating action_array
+
+create-array name=fusi_action_stack size={fusi_action_stack_size}
+field=action:char:4
+
+!SH - 10/16 include action_reason
+create-array name=fusi_action_reason size={fusi_action_stack_size}
+field=action_reason:char:4
+
+
+#IFNDEF FUSI_WORK_TABLE
+
+!array where fusi-select-action puts its selects
+create-array name=nosort_action_array size={action_array_size}
+field=effdt:char:{NATIVE_DATE_LEN}
+field=effseq:number
+field=action:char:4
+field=recname:char:18
+field=sorted:number
+
+!array where fusi-loop-action gets its values, sorted by fusi-sort-action
+create-array name=action_array size={action_array_size}
+field=effdt:char:{NATIVE_DATE_LEN}
+field=effseq:number
+field=action:char:4
+field=recname:char:18
+
+#END-IF
+
+end-procedure
+
+
+begin-procedure fusion-job($emplid, #empl_rcd, $dt_nt_start_date, $sysdatetime, $oprid) !*
+  !* main procedure for job fusioning
+
+#debug print 'fusion-job (' (+1,1)
+#debug print $emplid ()
+#debug print ',' ()
+#debug print #empl_rcd ()
+#debug print ',' ()
+#debug print $dt_nt_start_date ()
+#debug print ')' ()
+
+!initializing variables, including first-time variables and selecting relevant
+!action
+do fusi-init($emplid, #empl_rcd, $dt_nt_start_date)
+
+#debug print '#_action_array_upper :' (+1,1)
+#debug print  #_action_array_upper ()
+
+#debug print 'calling fusi-loop-action' (+1,1)
+
+
+!main processing loop on relevant actions, modifies job
+do fusi-loop-action
+
+#debug print 'end fusi-loop-action' (+1,1)
+
+end-procedure
+
+#IFDEF FUSI_WORK_TABLE
+begin-procedure fusi-insert-action-worktable ($emplid, #empl_rcd, $dt_nt_EFFDT, #EFFSEQ, $ACTION, $ACTION_REASON, $RECNAME) !*
+  !* AREA:  inserts actions into the FUSI_WORK_TABLE
+
+#debug print 'fusi-insert-action-worktable (' (+1,1)
+#debug print $emplid ()
+#debug print ',' ()
+#debug print #empl_rcd ()
+#debug print ',' ()
+#debug print $dt_nt_EFFDT ()
+#debug print ',' ()
+#debug print #EFFSEQ ()
+#debug print ',' ()
+#debug print $ACTION ()
+#debug print ',' ()
+#debug print $ACTION_REASON ()
+#debug print ',' ()
+#debug print $RECNAME ()
+#debug print ')' ()
+
+let $_sql-statement = $_ReportID || ',fusi-insert-action-worktable,Insert,'
+begin-SQL On-Error=SQL-Error
+insert into PS_FPMWORKTABLE
+(EMPLID,
+EMPL_RCD,
+EFFDT,
+EFFSEQ,
+ACTION,
+ACTION_REASON,
+RECNAME)
+VALUES
+($EMPLID,
+#EMPL_RCD,
+{DATEIN-PREFIX}$dt_nt_EFFDT{DATEIN-SUFFIX},
+#EFFSEQ,
+$ACTION,
+$ACTION_REASON,
+$RECNAME)
+end-SQL
+
+end-procedure
+#END-IF
+
+#IFNDEF FUSI_WORK_TABLE
+
+begin-procedure fusi-insert-action ($EFFDT, #EFFSEQ, $ACTION, $RECNAME)!*
+  !* memorizing a fetched action
+  !* the calling program does not "know" the actual implementation, so
+  !* the sorted array processing is hidden and can be modified
+
+let #_action_array_upper = #_action_array_upper + 1
+#debug print 'fusi-insert-action (' (+1,1)
+#debug print $EFFDT   ()
+#debug print ',' ()
+#debug print #EFFSEQ  (,,3) edit 99
+#debug print ',' ()
+#debug print $ACTION  (,,3)
+#debug print ',' ()
+#debug print $RECNAME (,,20)
+#debug print ' at '   ()
+#debug print #_action_array_upper (,,3) edit 99
+#debug print ')' ()
+
+
+let $_fusi_insert_EFFDT    = $EFFDT
+let #_fusi_insert_EFFSEQ   = #EFFSEQ
+let $_fusi_insert_ACTION   = $ACTION
+let $_fusi_insert_RECNAME  = $RECNAME
+
+do fusi-insert-action-internal
+
+end-procedure
+
+
+begin-procedure fusi-insert-action-internal !*
+  !* inserting into the actual array
+  !* specific to this sorted array processing
+
+put $fusi_insert_effdt #fusi_insert_effseq $fusi_insert_action $fusi_insert_recname into nosort_action_array (#action_array_upper) effdt effseq action recname
+
+
+end-procedure
+
+
+begin-procedure fusi-sort-action !*
+  !* sorting the fusi-arrays
+!#action_array_upper
+
+!*** obviously, a more efficient sort would be beneficient
+!***This one leads to N x N/2 average shuffles where N is the amount of entries
+!***in the fusi_array table
+!***Could we dispense with a sorted array, but use a sorted fetch?  Gain?
+
+#ifdef debug
+print 'fusi-sort-action.non sorted array' (+1,1)
+let #fusi_sort_sort_pos = 1
+while (#fusi_sort_sort_pos <= #action_array_upper)
+  get $fusi_sort_effdt #fusi_sort_effseq $fusi_sort_action $fusi_sort_recname #fusi_sort_sorted from nosort_action_array (#fusi_sort_sort_pos) effdt effseq action recname sorted
+  print #fusi_sort_sort_pos (+1,1,4) edit 99
+  print $fusi_sort_effdt   (,,11)
+  print #fusi_sort_effseq  (,,4)     edit 99
+  print $fusi_sort_action  (,,4)
+  print $fusi_sort_recname (,,20)
+  let #fusi_sort_sort_pos = #fusi_sort_sort_pos + 1
+end-while
+print 'fusi-sort-action.end of non sorted array' (+1,1)
+#end-if
+
+#debugt print 'fusi-sort-action.outer loop' (+1,1)
+let #fusi_sort_sorted_index = 1
+while (#fusi_sort_sorted_index <= #action_array_upper)
+
+  let #fusi_sort_min_pos  = 0
+  let #fusi_sort_sort_pos = 1
+
+    #debugt print 'spos'  (+1,1,4)
+    #debugt print 'effdt' (,,11)
+    #debugt print 'effs'  (,,5)
+    #debugt print 'acti'  (,,5)
+    #debugt print 'rec '  (,,20)
+    #debugt print 'sort'  (,,5)
+    #debugt print 'mini'  (,,5)
+
+  while (#fusi_sort_sort_pos <= #action_array_upper)
+    get $fusi_sort_effdt #fusi_sort_effseq $fusi_sort_action $fusi_sort_recname #fusi_sort_sorted from nosort_action_array (#fusi_sort_sort_pos) effdt effseq action recname sorted
+    #debugt print #fusi_sort_sort_pos (+1,1,4) edit 99
+    #debugt print $fusi_sort_effdt   (,,11)
+    #debugt print #fusi_sort_effseq  (,,5)     edit 99
+    #debugt print $fusi_sort_action  (,,5)
+    #debugt print $fusi_sort_recname (,,20)
+    #debugt print #fusi_sort_sorted  (,,5)     edit 99
+    #debugt print #fusi_sort_min_pos (,,5)     edit 99
+    if (#fusi_sort_sorted = 0) !is it sorted yet?
+      if (#fusi_sort_min_pos = 0) !no question, this is our first possible minimum
+        #debugt print 'assign because no minima yet' (+1,5)
+        let $fusi_sort_effdt_min    =   $fusi_sort_effdt
+        let #fusi_sort_effseq_min   =   #fusi_sort_effseq
+        let $fusi_sort_action_min   =   $fusi_sort_action
+        let $fusi_sort_recname_min  =   $fusi_sort_recname
+        let #fusi_sort_min_pos      =   #fusi_sort_sort_pos
+      else
+        #IFDEF FUSI_DT_NT_COMPARABLE !can we directly compare nt_dt dates?  OK for SQLBase
+        if ($fusi_sort_effdt < $fusi_sort_effdt_min)
+          #debugt print 'assign because effdt smaller' (+1,5)
+
+        #ELSE
+        !*** add do Format-DateTime($dt_nt_,$dt_cmp,'CMP','',''), compare CMP dates
+        #END-IF
+          !next possible minimum
+          let $fusi_sort_effdt_min    =   $fusi_sort_effdt
+          let #fusi_sort_effseq_min   =   #fusi_sort_effseq
+          let $fusi_sort_action_min   =   $fusi_sort_action
+          let $fusi_sort_recname_min  =   $fusi_sort_recname
+          let #fusi_sort_min_pos      =   #fusi_sort_sort_pos
+        else
+          if ($fusi_sort_effdt = $fusi_sort_effdt_min)
+            if (#fusi_sort_effseq < #fusi_sort_effseq_min)
+              #debugt print 'assign because effseq smaller' (+1,5)
+              let $fusi_sort_effdt_min    =   $fusi_sort_effdt
+              let #fusi_sort_effseq_min   =   #fusi_sort_effseq
+              let $fusi_sort_action_min   =   $fusi_sort_action
+              let $fusi_sort_recname_min  =   $fusi_sort_recname
+              let #fusi_sort_min_pos      =   #fusi_sort_sort_pos
+            else
+              if (#fusi_sort_effseq = #fusi_sort_effseq_min)
+              else
+                if ($fusi_sort_action < $fusi_sort_action_min)
+                  #debugt print 'assign because action smaller' (+1,5)
+                  let $fusi_sort_effdt_min    =   $fusi_sort_effdt
+                  let #fusi_sort_effseq_min   =   #fusi_sort_effseq
+                  let $fusi_sort_action_min   =   $fusi_sort_action
+                  let $fusi_sort_recname_min  =   $fusi_sort_recname
+                  let #fusi_sort_min_pos      =   #fusi_sort_sort_pos
+                else
+                  if ($fusi_sort_action = $fusi_sort_action_min)
+                    if ($fusi_sort_recname < $fusi_sort_recname_min)
+                      #debugt print 'assign because recname smaller' (+1,5)
+                      let $fusi_sort_effdt_min    =   $fusi_sort_effdt
+                      let #fusi_sort_effseq_min   =   #fusi_sort_effseq
+                      let $fusi_sort_action_min   =   $fusi_sort_action
+                      let $fusi_sort_recname_min  =   $fusi_sort_recname
+                      let #fusi_sort_min_pos      =   #fusi_sort_sort_pos
+                    end-if !recname compare
+                  end-if   !action compare =
+                end-if   !action compare <
+              end-if     !effseq compare =
+            end-if     !effseq compare  <
+          end-if       !effdt  compare  =
+        end-if       !effdt  compare  <
+      end-if         !#fusi_sort_min_pos = 0?
+    end-if           !#fusi_sort_sorted  = 0?
+    let #fusi_sort_sort_pos = #fusi_sort_sort_pos + 1
+  end-while
+  !OK, we now take the minimum found and put it at the first free position of the
+  !sorted array
+  get $fusi_sort_effdt #fusi_sort_effseq $fusi_sort_action $fusi_sort_recname #fusi_sort_sorted from nosort_action_array (#fusi_sort_min_pos) effdt effseq action recname sorted
+  put $fusi_sort_effdt #fusi_sort_effseq $fusi_sort_action $fusi_sort_recname into action_array (#fusi_sort_sorted_index) effdt effseq action recname
+
+  #debugt print 'fusi-sort-action.tranfer from #fusi_sort_min_pos : ' (+1,1)
+  #debugt print #fusi_sort_min_pos (,,4)
+  #debugt print ' to #fusi_sort_sorted_index : ' ()
+  #debugt print #fusi_sort_sorted_index ()
+
+
+  !flag the minimum tranferred as sorted
+  put 1 into nosort_action_array (#fusi_sort_min_pos) sorted
+  let #fusi_sort_sorted_index = #fusi_sort_sorted_index + 1
+end-while
+
+#ifdef debug
+print 'fusi-sort-action.resulting sorted array' (+1,1)
+let #fusi_sort_sorted_index = 1
+while (#fusi_sort_sorted_index <= #action_array_upper)
+  get $fusi_sort_effdt #fusi_sort_effseq $fusi_sort_action $fusi_sort_recname from action_array (#fusi_sort_sorted_index) effdt effseq action recname
+  let #fusi_sort_sorted_index = #fusi_sort_sorted_index + 1
+
+  print #fusi_sort_sorted_index (+1,1,4) edit 99
+  print $fusi_sort_effdt   (,,11)
+  print #fusi_sort_effseq  (,,4) edit 99
+  print $fusi_sort_action  (,,4)
+  print $fusi_sort_recname (,,20)
+end-while
+#end-if
+
+
+end-procedure
+
+#END-IF
+
+begin-procedure CHANGE-AFTER !*
+  !* flushing data on the last info read
+
+  #debug print 'CHANGE-AFTER.fusi-flush' (+1,1)
+  if (#flag_data_to_process = 1)
+    do fusi-flush
+    !watch out!  you can get multiple change-afters due to EMPLID, EMPL_RCD breaks
+    !only one should trigger a flush
+    let #flag_data_to_process = 0
+  end-if
+
+end-procedure
+
+begin-procedure CHANGE-BEFORE !*
+  !* initializing data on a new emplid or empl_rcd
+  !* purging existing jobs (for that emplid, empl_rcd) that are dated after
+  !* the start_date
+
+let $fusi_emplid      = &FUSI_ACTION_EMPLID2
+let #fusi_empl_rcd    = &FUSI_ACTION_EMPL_RCD2
+let $fusi_dt_nt_effdt = &FUSI_ACTION_EFFDT2
+
+!SH 19/06/1997 reinitialize offset
+let #fusi_action_offset = 0
+let #fusi_action_stack  = 0
+!SH 19/06/1997
+
+let #fusi_first = 1
+
+!SH 19/06/1997 ignore emplid/empl_rcd when action is 999
+let #fusi_ignore = 0
+
+!- 8.3 let $_sql-statement = $_ReportID || ',init-fusion-job,Delete,JOB'
+!- 8.3 begin-SQL On-Error=SQL-Error
+!- 8.3 delete from PS_JOB
+!- 8.3 where  EMPLID    =  $fusi_emplid
+!- 8.3 and    EMPL_RCD  =  #fusi_empl_rcd
+!- 8.3 and    EFFDT     >= {DATEIN-PREFIX}$fusi_dt_nt_effdt{DATEIN-SUFFIX}
+!- 8.3 end-SQL
+
+!SH 10/10/2000
+!deleting FPA_CI_JOB
+let $_sql-statement = $_ReportID || ',init-fusion-job,Delete,FPA_CI_JOB'
+begin-SQL On-Error=SQL-Error
+delete from PS_FPA_CI_JOB
+where  EMPLID    =  $fusi_emplid
+and    EMPL_RCD  =  #fusi_empl_rcd
+end-SQL
+
+
+!SH 10/10/2000
+!deleting FPA_CI_COMP
+let $_sql-statement = $_ReportID || ',init-fusion-job,Delete,FPA_CI_COMP'
+begin-SQL On-Error=SQL-Error
+delete from PS_FPA_CI_COMP
+where  EMPLID    =  $fusi_emplid
+and    EMPL_RCD  =  #fusi_empl_rcd
+end-SQL
+
+
+end-procedure
+
+begin-procedure fusi-select-worktable !*
+ !* main processing loop on relevant actions, modifies job
+
+
+!activation trace file
+#ifdef debug
+let  #fic_debug   = 1
+let  $fic_debug   = '{FILEPREFIX}' || 'TRACEDAT2.TXT' || '{FILESUFFIX}'
+open $fic_debug  as #fic_debug
+FOR-WRITING
+RECORD=1000:FIXED
+#end-if
+
+
+#debug print 'entering FPMWORKTABLE select' (+1,1)
+
+let #flag_data_to_process = 0
+
+let $sql-statement = $ReportID || ',fusi-select-worktable,Select,PS_FPMWORKTABLE'
+begin-select On-Error=SQL-Error
+EMPLID    &FUSI_ACTION_EMPLID2    () ON-BREAK PRINT=NEVER LEVEL=1 BEFORE=CHANGE-BEFORE AFTER=CHANGE-AFTER
+EMPL_RCD  &FUSI_ACTION_EMPL_RCD2  () ON-BREAK PRINT=NEVER LEVEL=1 BEFORE=CHANGE-BEFORE AFTER=CHANGE-AFTER
+{DATEOUT-PREFIX}EFFDT{DATEOUT-SUFFIX} &FUSI_ACTION_EFFDT2
+  let $fusi_dt_nt_effdt = &FUSI_ACTION_EFFDT2
+  let #flag_data_to_process = 1
+EFFSEQ &FUSI_ACTION_EFFSEQ2
+  let #fusi_effseq = &FUSI_ACTION_EFFSEQ2
+ACTION &FUSI_ACTION2
+  let $fusi_action = &FUSI_ACTION2
+ACTION_REASON &FUSI_ACTION_REASON2
+  let $fusi_action_reason = &FUSI_ACTION_REASON2
+RECNAME &FUSI_RECNAME2
+  #ifdef debug
+    print 'FUSI_ACTION_EMPLID2 :'   (+1,1)
+    print &FUSI_ACTION_EMPLID2    (,,11)
+    print &FUSI_ACTION_EMPL_RCD2  (,,2) edit 99
+    print &FUSI_ACTION_EFFDT2  (,,10)
+    print &FUSI_ACTION_EFFSEQ2  (,,2) edit 99
+    print &FUSI_ACTION2  (,,3)
+    print &FUSI_ACTION_REASON2  (,,3)
+    print &FUSI_RECNAME2 (,,20)
+
+
+  #end-if
+
+  let $fusi_recname  = rtrim(&FUSI_RECNAME2,' ')
+  #debug print 'do          fusi-process-action' (+1,1)
+  !SH 19/06/1997 ignore emplid/empl_rcd when action is 999
+  if  #fusi_ignore = 0
+    do  fusi-process-action
+  end-if
+  #debug print 'return from fusi-process-action' (+1,1)
+
+from  PS_FPMWORKTABLE
+order by EMPLID, EMPL_RCD, EFFDT, EFFSEQ, ACTION, RECNAME
+end-select
+
+
+!only flush if there is something to write
+!if (#flag_data_to_process = 1)
+!  #debug print 'forced fusi-flush' (+1,1)
+!  do fusi-flush
+!end-if
+
+end-procedure
+
+
+begin-procedure fusi-loop-action !*
+ !* main processing loop on relevant actions, modifies job
+
+#IFNDEF FUSI_WORK_TABLE
+let #action_array_index = 1
+let #fusi_first = 1
+while #action_array_index <= #action_array_upper
+
+  get $fusi_dt_nt_effdt #fusi_effseq $fusi_action $fusi_recname from action_array (#action_array_index) effdt effseq action recname
+  #debug print 'fusi-loop-action.$fusi_dt_nt_effdt :' (+1,1)
+  #debug print $fusi_dt_nt_effdt ()
+  #debug print '                 #fusi_effseq      :' (+1,1)
+  #debug print #fusi_effseq ()   edit 99
+  #debug print '                 $fusi_action      :' (+1,1)
+  #debug print $fusi_action ()
+  #debug print '                 $fusi_recname     :' (+1,1)
+  #debug print $fusi_recname ()
+
+
+  let #fusi_effdt_break = 0
+  do  fusi-process-action
+  let #action_array_index = #action_array_index + 1
+
+end-while
+
+let #fusi_effdt_break = 1
+!only flush if there is something to write
+if (#action_array_upper != 0)
+  #debug print 'fusi-loop-actionj.forced fusi-flush' (+1,1)
+  do fusi-flush
+end-if
+
+
+#ELSE
+
+#debug print 'entering FPMWORKTABLE select' (+1,1)
+
+let #flag_data_to_process = 0
+
+begin-select
+{DATEOUT-PREFIX}EFFDT{DATEOUT-SUFFIX} &FUSI_ACTION_EFFDT
+  let $fusi_dt_nt_effdt = &FUSI_ACTION_EFFDT
+  let #flag_data_to_process = 1
+EFFSEQ &FUSI_ACTION_EFFSEQ
+  let #fusi_effseq = &FUSI_ACTION_EFFSEQ
+ACTION &FUSI_ACTION
+  let $fusi_action = &FUSI_ACTION
+ACTION_REASON &FUSI_ACTION_REASON
+  let $fusi_action_reason = &FUSI_ACTION_REASON
+RECNAME &FUSI_RECNAME
+  let $fusi_recname  = rtrim(&FUSI_RECNAME,' ')
+  #debug print 'do          fusi-process-action' (+1,1)
+  do  fusi-process-action
+  #debug print 'return from fusi-process-action' (+1,1)
+
+from  PS_FPMWORKTABLE
+where EMPLID = $fusi_emplid
+AND   EFFDT  >= {DATEIN-PREFIX}$dt_nt_start_date{DATEIN-SUFFIX}
+order by EFFDT, EFFSEQ, ACTION, RECNAME
+end-select
+
+
+!only flush if there is something to write
+if (#flag_data_to_process = 1)
+  #debug print 'fusi-loop-action.forced fusi-flush' (+1,1)
+  do fusi-flush
+end-if
+
+#END-IF
+
+end-procedure
+
+begin-procedure fusi-process-action !*
+  !* main procedure for handling individual changes
+
+#debug print 'fusi-process-action (' (+1,1)
+#debug print 'fusi_first        :'   (+1,1,20)
+#debug print  #fusi_first            () edit 99
+#debug print 'fusi_dt_nt_effdt  :'   (+1,1,20)
+#debug print $fusi_dt_nt_effdt       ()
+#debug print 'fusi_effdt_prev   :'   (+1,1,20)
+#debug print $fusi_effdt_prev        ()
+#debug print 'fusi_effseq       :'   (+1,1,20)
+#debug print #fusi_effseq            () edit 99
+#debug print '#fusi_effseq_prev :'   (+1,1,20)
+#debug print #fusi_effseq_prev       () edit 99
+#debug print '$fusi_action      :'   (+1,1,20)
+#debug print $fusi_action            ()
+#debug print '$fusi_action_prev :'   (+1,1,20)
+#debug print $fusi_action_prev       ()
+#debug print '$fusi_action_reason :' (+1,1,20)
+#debug print $fusi_action_reason     ()
+#debug print '$fusi_actn_rsn_prev :'   (+1,1,20)
+#debug print $fusi_actn_rsn_prev       ()
+
+
+if (#fusi_first != 1)
+  if ($fusi_dt_nt_effdt != $fusi_effdt_prev)
+    #debug print 'date break.fusi-flush' (+1,5)
+    let #fusi_effdt_break = 1
+    do fusi-flush
+
+    !setting the effseq offset counter back to 0, since the date has changed
+    let #fusi_action_offset = 0
+    let #fusi_action_stack  = 0
+    else
+      if (#fusi_effseq != #fusi_effseq_prev)
+        #debug print 'effseq break.fusi-flush' (+1,5)
+        do fusi-flush
+        let #fusi_action_stack  = 0
+      else
+        if ($fusi_action != $fusi_action_prev)
+          #debug print 'action break' (+1,5)
+          !keeping track of the action for later redundant insertions into the JOB
+          !(each action has its own effseq).  See also fusi_effseq_offset.
+          let #fusi_action_stack = #fusi_action_stack + 1
+          put $fusi_action_prev into fusi_action_stack (#fusi_action_stack) action
+          put $fusi_actn_rsn_prev into fusi_action_reason (#fusi_action_stack) action_reason
+        end-if
+      end-if
+  end-if
+else
+ !SH 19/06/1997 ignore emplid/empl_rcd when action is 999
+ if $fusi_action = '999'
+    let #fusi_ignore = 1
+    goto end_proc
+ end-if
+ do  fusi-select-JOB($fusi_emplid, #fusi_empl_rcd, $fusi_dt_nt_effdt)
+ !SH 14/08/1997
+ do  fusi-select-JOB_JR($fusi_emplid, #fusi_empl_rcd, $fusi_dt_nt_effdt)
+ let #fusi_first = 0
+end-if
+
+do fusi-fusion-JOB($fusi_emplid, #fusi_empl_rcd, $fusi_dt_nt_effdt, #fusi_effseq, $fusi_recname)
+
+let $fusi_effdt_prev  = $fusi_dt_nt_effdt
+let #fusi_effseq_prev = #fusi_effseq
+let $fusi_action_prev = $fusi_action
+let $fusi_actn_rsn_prev = $fusi_action_reason
+
+end_proc:
+
+end-procedure fusi-process-action
+
+begin-procedure fusi-flush  !*
+  !*
+
+#debug print 'fusi-flush' (+1,5)
+
+!getting employee status associated with last action
+!begin-select
+!EMPL_STATUS &FUSI_EMPL_STATUS
+!  let $fusi_empl_status = &FUSI_EMPL_STATUS
+!from PS_FPMACTION_TBL
+!where ACTION = $fusi_action_prev
+!AND EFFDT =
+!  (SELECT MAX(EFFDT)
+!   from PS_FPMACTION_TBL
+!   where ACTION = $fusi_action_prev
+!   and  EFFDT <= $AsOfDate
+!  )
+!end-select
+
+!first, using the effseq offset counter to offset the effseq, if necessary
+!the effseq offset counter is used to keep track of how many extra effseqs have
+!been  generated by the fusion mechanism, in addition to the effseqs on component
+!tables
+
+!tables w.o. effseq can come with a pseudo-effseq of -1
+!this has to be corrected to an insertion effseq of 0
+!(impacts subsequent insertions as well)
+
+if (#fusi_effseq_prev = -1)
+  let #fusi_action_offset = 1
+end-if
+
+let #fusi_effseq_ins = #fusi_effseq_prev + #fusi_action_offset
+
+#IFDEF USER-PRE-CHG
+  do user-pre-chg($fusi_emplid, #fusi_empl_rcd, $fusi_effdt_prev, #fusi_effseq_ins, $fusi_action_prev)
+  do Build-MCOP
+#END-IF
+
+
+do fusi-insert-fpa_ci_job($fusi_emplid, #fusi_empl_rcd, $fusi_effdt_prev, #fusi_effseq_ins,
+        $fusi_action_prev, $fusi_actn_rsn_prev, $sysdatetime, $oprid)
+!SH 14/08/1997
+!8.3 do fusi-insert-JOB_JR($fusi_emplid, #fusi_empl_rcd, $fusi_effdt_prev, #fusi_effseq_ins,
+!8.3         $fusi_action_prev, $fusi_actn_rsn_prev, $sysdatetime, $oprid)
+
+
+#IFDEF USER-POST-CHG
+  do user-post-chg($fusi_emplid, #fusi_empl_rcd, $dt_nt_effdt, #effseq, $action)
+#END-IF
+
+!- 8.3 do fusi-set-FP_ROW_END_DT($fusi_emplid, #fusi_empl_rcd, $fusi_effdt_prev, #fusi_effseq_ins)
+
+let #fusi_action_index = 1
+
+while (#fusi_action_index <= #fusi_action_stack)
+  get $fusi_action_ins from fusi_action_stack (#fusi_action_index) action
+  get $fusi_actn_rsn_ins from fusi_action_reason (#fusi_action_index) action_reason
+  let #fusi_action_offset = #fusi_action_offset + 1
+  let #fusi_effseq_ins = #fusi_effseq_prev +  #fusi_action_offset
+
+
+  #IFDEF USER-PRE-CHG
+     do user-pre-chg($fusi_emplid, #fusi_empl_rcd, $fusi_effdt_prev, #fusi_effseq_ins, $fusi_action_prev)
+     do Build-MCOP
+  #END-IF
+
+  
+  do fusi-insert-fpa_ci_job($fusi_emplid, #fusi_empl_rcd, $fusi_effdt_prev, #fusi_effseq_ins,
+        $fusi_action_ins, $fusi_actn_rsn_ins, $sysdatetime, $oprid)
+  !SH 14/08/1997
+  !8.3 do fusi-insert-JOB_JR($fusi_emplid, #fusi_empl_rcd, $fusi_effdt_prev, #fusi_effseq_ins,
+  !8.3       $fusi_action_ins, $fusi_actn_rsn_ins, $sysdatetime, $oprid)
+
+  !- 8.3 do fusi-set-FP_ROW_END_DT($fusi_emplid, #fusi_empl_rcd, $fusi_effdt_prev, #fusi_effseq_ins)
+
+  let #fusi_action_index = #fusi_action_index + 1
+end-while
+
+end-procedure   fusi-flush
+
+#IFNDEF FUSI_WORK_TABLE
+
+begin-procedure fusi-insert-action-no-effseq ($fusi_dt_nt_effdt, $fusi_action, $fusi_recname) !*
+  !* assignment of a pseudo-effseq on tables w.o. effseq, either 0 or less
+  !* CALLS an procedure w.o. parameters, as this relies on processing nosort_action_array
+
+#debug print 'fusi-insert-action-no-effseq (' (+1,1)
+#debug print $fusi_dt_nt_effdt ()
+#debug print ',' ()
+#debug print $fusi_action ()
+#debug print ',' ()
+#debug print $fusi_recname ()
+#debug print ')' ()
+
+
+let $_dt_nt_effdt_0001  = $fusi_dt_nt_effdt
+let $_fusi_action_0001  = $fusi_action
+let $_fusi_recname_0001 = $fusi_recname
+
+do fusi-insert-action-no-effseq-internal
+
+
+end-procedure
+
+
+begin-procedure fusi-insert-action-no-effseq-internal !*
+  !* actual assignment of the pseudo-effseq
+
+!first thing:  is there another event, coming from a table w effseq
+!w effseq = 0 and action, effdt the same?
+
+let #action_array_upper = #action_array_upper + 1
+let #min_effseq    = 0
+let #flag_assigned = 0
+
+#debug print 'fusi-insert-action-no-effseq-internal' (+1,1)
+let #fusi_sort_sort_pos = 1
+while (#fusi_sort_sort_pos <= #action_array_upper)
+  get $fusi_sort_effdt #fusi_sort_effseq $fusi_sort_action  from nosort_action_array (#fusi_sort_sort_pos) effdt effseq action
+
+  #debug print $fusi_sort_effdt   (+1,1,11)
+  #debug print #fusi_sort_effseq  (,,4)     edit 99
+  #debug print $fusi_sort_action  (,,4)
+
+  if ($dt_nt_effdt_0001 = $fusi_sort_effdt) and (#fusi_sort_effseq <= 0)
+    !on that date it's either a component table w. effseq of 0 or
+    !it's another table w.o. effseq
+
+    if ($fusi_action_0001 = $fusi_sort_action)
+      !the action matches:
+      !OK for assignment to pseudo-effseq.
+      !The modifications in the record being processed need to be applied at this effseq
+
+      put $dt_nt_effdt_0001 #fusi_sort_effseq $fusi_action_0001 $fusi_recname_0001 into nosort_action_array (#action_array_upper) effdt effseq action recname
+      let #flag_assigned = 1
+      #debug print 'inserted w. pseudo-effseq: ' (+1,1)
+      #debug print #fusi_sort_effseq () edit 99
+
+      break
+    end-if
+  end-if
+
+  let #fusi_sort_sort_pos = #fusi_sort_sort_pos + 1
+
+end-while
+
+!have we inserted the action with an effseq associated with another event?
+if (#flag_assigned = 0)
+  !no, so we'll insert it at effseq = - 1 for that date
+
+  put $dt_nt_effdt_0001 -1 $fusi_action_0001 $fusi_recname_0001 into nosort_action_array (#action_array_upper) effdt effseq action recname
+  #debug print 'inserted w. pseudo-effseq: -1' (+1,1)
+
+end-if
+
+print 'fusi-sort-action.end of non sorted array' (+1,1)
+
+end-procedure
+
+#END-IF
+
+
+begin-procedure fusi-set-FP_ROW_END_DT($emplid, #empl_rcd, $dt_nt_effdt, #effseq) !*
+  !*setting FP_ROW_END_DT for the row BEFORE the row in parameter
+
+if (#effseq > 0)
+  let #effseq_upd = #effseq - 1
+  !previous row is at current date, so its end date is the current date
+  do fusi-upd-FP_ROW_END_DT($emplid, #empl_rcd, $dt_nt_effdt, #effseq_upd, $dt_nt_effdt)
+else
+  !previous row, at some previous date, is set to the current date
+  !the date is set back one day inside this function, because there's not
+  !always preceding data (case of HIR)
+  do fusi-set-FP_ROW_END_DT-prev($emplid, #empl_rcd, $dt_nt_effdt)
+end-if
+
+end-procedure
+
+begin-procedure fusi-upd-FP_ROW_END_DT($emplid, #empl_rcd, $dt_nt_effdt, #effseq, $dt_nt_fp_row_end_dt) !*
+  !* updating FP_ROW_END_DT for a given JOB row
+
+#debug print 'fusi-upd-FP_ROW_END_DT(' (+1,1)
+#debug print $emplid (,)
+#debug print ',' (,)
+#debug print #empl_rcd (,) edit 99
+#debug print ',' (,)
+#debug print $dt_nt_effdt (,)
+#debug print ',' (,)
+#debug print #effseq (,) edit 99
+#debug print ',' (,)
+#debug print $dt_nt_fp_row_end_dt ()
+#debug print ')' (,)
+
+
+let $_sql-statement = $_ReportID || ',fusi-set-FP_ROW_END_DT-current,Update,JOB_JR'
+begin-SQL On-Error=SQL-Error
+!SH 14/08/1997
+Update PS_JOB_JR
+set    FP_ROW_END_DT = {DATEIN-PREFIX}$dt_nt_fp_row_end_dt{DATEIN-SUFFIX}
+where  EMPLID        = $emplid
+and    EMPL_RCD      = #empl_rcd
+and    EFFDT         = {DATEIN-PREFIX}$dt_nt_effdt{DATEIN-SUFFIX}
+and    EFFSEQ        = #effseq
+end-SQL
+
+end-procedure
+
+begin-procedure fusi-set-FP_ROW_END_DT-prev($emplid, #empl_rcd, $dt_nt_effdt) !*
+  !* updating FP_ROW_END_DT for a JOB row at some previous date
+
+let #num_rows = 0
+
+let $_sql-statement = $_ReportID || ',fusi-set-FP_ROW_END_DT-current,select,JOB_JR'
+begin-select On-Error=SQL-Error
+!SH 14/08/1997
+{DATEOUT-PREFIX}EFFDT{DATEOUT-SUFFIX} &TGT_EFFDT
+EFFSEQ &TGT_EFFSEQ
+  let #num_rows = 1
+from   PS_JOB_JR J
+where  EMPLID       = $emplid
+and    EMPL_RCD     = #empl_rcd
+and    EFFDT        =
+  (select max(EFFDT)
+   from  PS_JOB_JR J2
+   where J2.EMPLID    = J.EMPLID
+   and   J2.EMPL_RCD  = J.EMPL_RCD
+   and   J2.EFFDT     < {DATEIN-PREFIX}$dt_nt_effdt{DATEIN-SUFFIX})
+and    EFFSEQ       =
+  (select max(EFFSEQ)
+   from  PS_JOB_JR J3
+   where J3.EMPLID = J.EMPLID
+   and   J3.EMPL_RCD = J.EMPL_RCD
+   and   J3.EFFDT = J.EFFDT)
+end-select
+
+
+if (#num_rows = 1)
+  !calculating the day before
+
+
+  do Convert-To-DTU-Date($dt_nt_effdt, $dtu_date)
+  do dtu-subtract-days($dtu_date, 1, $dtu_eve)
+  do Convert-From-DTU-Date($dtu_eve, $dt_nt_eve)
+
+  do fusi-upd-FP_ROW_END_DT($emplid, #empl_rcd, &TGT_EFFDT, &TGT_EFFSEQ, $dt_nt_eve)
+end-if
+
+end-procedure
+
+
+begin-procedure fusi-insert-action-worktable-no-effseq ($emplid, #empl_rcd, $dt_nt_EFFDT, $ACTION, $ACTION_REASON, $recname)
+  !* AREA:  inserts actions into the FUSI_WORK_TABLE for component tables w.o. EFFSEQ
+
+#debug print 'fusi-insert-action-worktable-no-effseq (' (+1,1)
+#debug print $emplid ()
+#debug print ',' ()
+#debug print #empl_rcd ()
+#debug print ',' ()
+#debug print $dt_nt_EFFDT ()
+#debug print ',' ()
+#debug print $ACTION ()
+#debug print ',' ()
+#debug print $RECNAME ()
+#debug print ')' ()
+
+!first thing:  is there another event, coming from a table w effseq
+!where effseq = 0 and action, effdt the same?
+
+let #num_rows = 0
+!let #PSEUDO_EFFSEQ = -1
+let #PSEUDO_EFFSEQ = 0
+
+let $_sql-statement = $_ReportID || ',fusi-insert-action-worktable-no-effseq,Select,FPMWORKTABLE'
+begin-select On-Error=SQL-Error
+1
+#ifdef debug
+EMPLID (+1,3,11)
+EMPL_RCD (,,2) edit 99
+{DATEOUT-PREFIX}EFFDT{DATEOUT-SUFFIX}  (,+1,11)
+ACTION (,,3)
+ACTION_REASON (,,3)
+EFFSEQ (,,2) edit 99
+RECNAME (,+1,)
+#end-if
+  let #PSEUDO_EFFSEQ = 0
+from   PS_FPMWORKTABLE
+where  EMPLID    = $emplid
+and    EMPL_RCD  = #empl_rcd
+and    EFFDT     = {DATEIN-PREFIX}$dt_nt_EFFDT{DATEIN-SUFFIX}
+and    ACTION    = $action
+and    ACTION_REASON = $action_reason
+and    EFFSEQ    = 0
+end-select
+
+#debug print '#PSEUDO_EFFSEQ :' (+1,3)
+#debug print #PSEUDO_EFFSEQ  (,) edit 99
+
+
+
+let $_sql-statement = $_ReportID || ',fusi-insert-action-worktable-no-effseq,Insert,FPMWORKTABLE'
+begin-SQL On-Error=SQL-Error
+insert into PS_FPMWORKTABLE
+(EMPLID,
+EMPL_RCD,
+EFFDT,
+EFFSEQ,
+ACTION,
+ACTION_REASON,
+RECNAME)
+VALUES
+($EMPLID,
+#EMPL_RCD,
+{DATEIN-PREFIX}$dt_nt_EFFDT{DATEIN-SUFFIX},
+#PSEUDO_EFFSEQ,
+$ACTION,
+$ACTION_REASON,
+$RECNAME)
+end-SQL
+
+
+end-procedure
+
+
+!*DEBUG FUSI0001.COD

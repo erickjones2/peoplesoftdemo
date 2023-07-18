@@ -1,0 +1,1699 @@
+!***********************************************************************
+!  GPDEAZ01:   AZ Refund List                                          *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!
+! Copyright (C) 1988, 2014, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!          $Date:  2014/06/30:05:15:26                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  102                                                 !
+!                                                                      *
+!***********************************************************************
+! changes:
+! whu06-890b5 created new report based on ku01
+!
+!
+#define gpdeversionstamp '===FUNCTIONAL UPDATE STAMP: 20060613-1430 wdu06-890b6==='
+! #define debug
+! wdu06-890b6 fixed column 2 to add taxfree amounts
+! wdu06-890b6  limit the parttime gross to 90% BBG for field#9
+!
+!
+#include 'setenv.sqc' !set environment
+
+
+!*****************************************************************************
+begin-PROGRAM
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Report
+  do Process-Main
+  do Stdapi-Term
+end-PROGRAM
+
+
+
+begin-heading 10  FOR-REPORTS   =  (report2)
+!
+! heading for the report
+!
+    alter-printer
+    font= 4
+    point-size = 7.2
+
+    ! notice: if we can have differing values for Pay_Entity, then we must use the 
+    !         last-row-version as an input here!
+    do Get-Payentity-Data($Ctl_PayEntity, $Ctl_Curr_Pay_End_DT, $hdr_abr_Payentity_name,
+      $hdr_abr_Payentity_street,$hdr_abr_Payentity_street2,$hdr_abr_Payentity_street3,
+      $hdr_PoBox,$hdr_abr_Payentity_zip_city,$Nation,$Post,$Cit)
+
+    !do HeadingInfos
+    do CX_StandardHeaderBox
+
+    ! switch back the font to body text.
+    alter-printer
+    font= 3
+    point-size =13
+end-heading
+
+
+
+
+
+
+
+begin-procedure bodybox
+    alter-printer
+    font= 4
+    point-size =13
+    
+    let #BoxLine1 = #currLineV        !14
+    let #BoxLine2 = #BoxLine1 +1
+    let #BoxLine3 = #BoxLine2 +1
+    let #BoxLine4 = #BoxLine3 +1
+    !
+    graphic (#BoxLine2,1,182) box 3 1 12
+    graphic (#BoxLine1,#vline1,3) vert-line 1
+    
+    graphic (#BoxLine1,#vline2,3) vert-line 1
+    graphic (#BoxLine1,#vline3,3) vert-line 1       !
+    graphic (#BoxLine1,#vline4,3) vert-line 1
+    graphic (#BoxLine1,#vline5,3) vert-line 1
+    graphic (#BoxLine1,#vline6,3) vert-line 1
+    graphic (#BoxLine1,#vline7,3) vert-line 1        ! after Stkl
+    
+    graphic (#BoxLine1,#vline8,3) vert-line 1
+    graphic (#BoxLine1,#vline9,3) vert-line 1
+    graphic (#BoxLine1,#vline10,3) vert-line 1
+    graphic (#BoxLine1,#vline11,3) vert-line 1
+    
+    print 'Lfd.'     (#BoxLine2,2)  bold
+    print 'Nr.'      (#BoxLine3,2)  bold
+    
+    print 'Name, Vorname'        (#BoxLine2,#txtpos1) bold
+!    print 'Versicherungsnummer'  (#BoxLine3,#txtpos1) bold
+    print '1a-Brutto TZ'     (#BoxLine2,#txtpos2) bold
+    print '1b-davon 100%'        (#BoxLine2,#txtpos3) bold
+    print '2-Netto TZ'         (#BoxLine2,#txtpos4) bold
+    print '3-Aufst.20%'      (#BoxLine2,#txtpos5) bold
+    print '4-Zw.Summe'       (#BoxLine2,#txtpos6) bold
+    print '5-bish.Brutto'       (#BoxLine2,#txtpos7) bold
+    print '6-Mindestnetto'      (#BoxLine2,#txtpos8) bold
+    print '7-zus.Aufst.'      (#BoxLine2,#txtpos9) bold
+    print '8-Aufstockung'        (#BoxLine2,#txtpos10) bold
+    
+    
+    ! #Line 2
+    print '9-90% bish.Br.'       (#BoxLine3,#txtpos2) bold
+    print '10-UB-Fall'       (#BoxLine3,#txtpos3) bold
+    print '10-UB-Betrag'       (#BoxLine3,#txtpos4) bold
+    print '11-UB-Beitrag'       (#BoxLine3,#txtpos5) bold
+    print '12-Erstattung'       (#BoxLine3,#txtpos6) bold
+    
+end-procedure
+!**************************************************************************
+
+
+
+
+
+begin-procedure Init-Report
+    do Stdapi-Init
+    do Get-ReqParam
+    
+    ! wdu jw2005 modified 890 file handling
+    let $outputdir = $sqr-report
+    
+    do GetFileExtension($RQ.OUTDESTFORMAT, $FileExtension)
+    do GetOutputDir($RUNLOCATION,$OUTDESTTYPE,$OUTDEST,$outputdir)
+    
+    #debug show 'outputdir: ' $outputdir
+    #debug show 'fileextension: ' $FileExtension
+    
+    ! wdu-04b4 changed for customer process: 
+    ! begin runcontrol data
+    ! If no oprid or runcontrol was passed on the commandline, then ask for it.
+    ! After that, fetch functional data from the runcontrol.
+    ! The input of functional values is no longer supported.
+    if $prcs_process_instance = ''
+        input $PRCS_OPRID 'OPRID '
+        input $PRCS_RUN_CNTL_ID 'RUNCONTROL '
+        ! wdu05b6: 'input $outputdir' requested by customer
+        input $outputdir
+        do Get-Report-Parameters
+        ! always override language settings
+        let $LANGUAGE_CD = 'GER'
+        let $CURR_LANGUAGE_CD = 'GER'
+    else
+        do Get-Report-Parameters
+    end-if
+    ! end runcontrol data  
+    
+    
+    move 'GPDEAZ01' to $ReportID
+    do Init_Report_Translation ($ReportID, $language_cd)
+    do Append_Report_Translation ('GPDEGLOB')
+    do Report-Translation
+    !let $ReportTitle = $TITLE1 || ' ' || rtrim($Ctl_Year,' ')
+end-procedure
+!*****************************************************************************
+
+
+
+
+begin-setup
+  #include 'setupdb.sqc'
+  declare-layout report2
+    paper-size    = (19,11.69)
+    orientation   = LANDSCAPE
+    line-height   = 14
+    max-columns   = 188
+    left-margin   = .4
+    bottom-margin = .15
+    top-margin    = 0.4
+  end-declare
+  declare-report report2
+    layout = report2
+  end-declare
+end-setup
+!*****************************************************************************
+
+
+
+
+begin-procedure Process-Main
+    show {gpdeversionstamp}
+    ! wdu05-881b8: backport of MVS changes from 891
+    if $prcs_process_instance <> ''
+        ! wdu89mp1: filename too long for mvs, removed process-instance in name for this
+#ifdef MVS
+        let $SqrName = 'GPDEAZ01'
+#else
+        let $SqrName = 'GPDEAZ01_' || $prcs_process_instance
+#endif     
+    else
+        let $SqrName = 'GPDEAZ01'
+    end-if
+
+    ! process instance for temp tables (preparation for new logic)
+    let #ReportProcessInstance = 3
+    
+    do Get_Type_Options
+
+    !
+    ! employee independent inits
+    !
+    let $MinusNull = '-0' || $SDecimal || '00'
+    let $PlusNull = '0' || $SDecimal || '00'
+   
+    do Get_VersionNr
+
+    ! start the reporting
+    do PrepareRowData
+    do KugReport
+
+#ifdef debug
+#else    
+    ! clear temp tables except in debug mode
+    do FinalCleanup
+#endif
+end-procedure
+
+
+
+
+
+
+
+!***********************************************************************!
+! Report                                                                !
+!***********************************************************************!
+begin-procedure KugReport
+! main procedure for the printing of the list
+!
+! expected runcontrol parameters:
+! $Ctl_PayEntity            
+! $Ctl_Curr_Pay_End_DT      =calculated in
+!
+    ! init vars for vertical lines in boxes
+    let #vline0    = 1
+    let #vline1    = 9
+    let #vline2    = 48
+    let #vline3    = 63
+    let #vline4    = 78 
+    let #vline5    = 93
+    let #vline6    = 108
+    let #vline7    = 123
+    let #vline8    = 138
+    let #vline9    = 153
+    let #vline10   = 168
+    let #vline11   = 168
+    ! associated text positions  
+    let #txtpos0 = #vline0 + 1
+    let #txtpos1 = #vline1 + 1
+    let #txtpos2 = #vline2 + 1
+    let #txtpos3 = #vline3 + 1
+    let #txtpos4 = #vline4 + 1
+    let #txtpos5 = #vline5 + 1
+    let #txtpos6 = #vline6 + 1
+    let #txtpos7 = #vline7 + 1
+    let #txtpos8 = #vline8 + 1
+    let #txtpos9 = #vline9 + 1
+    let #txtpos10 = #vline10 + 1
+    let #txtpos11 = #vline11 + 1
+    let #txtpos12 = #vline12 + 1
+    
+    ! get headerstring which only depends on $Ctl_Curr_Pay_End_DT
+    do getHeaderDateString
+    
+    ! override the language for country specific statutory report
+    let $curr_language_cd = 'GER'
+    
+    use-report report2
+    let $reportdir = $outputdir || $SqrName || $FileExtension || '{FILESUFFIX}'
+    new-report $reportdir
+    
+    !redundant?
+    use-report report2
+    alter-printer
+    font= 4
+    point-size =13
+    
+    do Print_Employee_Data
+end-procedure
+
+
+
+
+
+begin-procedure Print_Employee_Data
+! main select here
+    let #counter = 0        ! row counter per group 
+    let #currLineN = 0
+    let #currLineV = 0
+    let #TempCol = 1
+    
+    ! BREAK detection
+    let $lastPeriodEnd = ' '
+    let $lastStammNummer = '-none-'
+    let #makePageBreak = 0
+    
+    ! Sums
+    let #pageSumItem = 0
+    let #groupSumItem = 0
+    
+    ! Events
+    let #eventGroupChanged = 0           ! Change of Stammnummer coming up
+    let #eventFirstRow = 1              ! First row of the page
+Begin-Select
+K1.EMPLID
+K1.CAL_RUN_ID
+K1.EMPL_RCD
+K1.GP_PAYGROUP
+K1.CAL_ID
+K1.ORIG_CAL_RUN_ID
+K1.RSLT_SEG_NUM
+K1.SEG_END_DT
+K1.SLICE_END_DT
+K1.GPDE_BL_TYPE
+K1.PAY_ENTITY
+K1.PRD_END_DT
+K1.GPDE_AL_CPAY_ENDDT
+K1.BEGIN_DT
+K1.GPDE_AZ_IMODEL1
+K1.GPDE_AZ_IMODEL2
+!
+K1.GPDE_AZ_RP_ELG_BON
+K1.GPDE_AZ_RP_ELG_FIL
+K1.GPDE_AZ_RP_ELG_MAR
+K1.GPDE_AZ_ELG_LINE10
+!
+K1.GPDE_AZ_RP_001_11
+K1.GPDE_AZ_RP_001_12
+K1.GPDE_AZ_RP_001_53
+K1.GPDE_AZ_RP_001_63
+K1.GPDE_AZ_RP_002_11
+K1.GPDE_AZ_RP_002_12
+K1.GPDE_AZ_RP_002_14
+K1.GPDE_AZ_RP_002_17
+K1.GPDE_AZ_RP_002_19
+K1.GPDE_AZ_RP_002_21
+K1.GPDE_AZ_RP_002_22
+K1.GPDE_AZ_RP_002_28
+K1.GPDE_AZ_RP_002_68
+K1.GPDE_AZ_RP_003_11
+K1.GPDE_AZ_RP_003_12
+K1.GPDE_AZ_RP_003_15
+K1.GPDE_AZ_RP_003_21
+K1.GPDE_AZ_RP_003_22
+K1.GPDE_AZ_RP_003_31
+K1.GPDE_AZ_RP_003_32
+K1.GPDE_AZ_RP_003_36
+K1.GPDE_AZ_RP_003_41
+K1.GPDE_AZ_RP_003_42
+K1.GPDE_AZ_RP_003_46
+K1.GPDE_AZ_RP_003_ATD
+K1.GPDE_AZ_RP_BBG_ATD
+K1.GPDE_AZ_RP_BBG_MON
+K1.GPDE_AZ_RP_MBBG_AT
+K1.GPDE_AZ_RP_MRVB_AT
+K1.GPDE_AZ_RP_003_CUR
+K1.GPDE_AZ_RP_003_FRM
+K1.GPDE_AZ_RP_003_GOA
+K1.GPDE_AZ_RP_003_LIM
+K1.GPDE_AZ_RP_003_REA
+K1.GPDE_AZ_RP_003_TDA
+K1.GPDE_AZ_RP_M003_13
+K1.GPDE_AZ_RP_M003_15
+K1.GPDE_AZ_RP_M003_23
+K1.GPDE_AZ_RP_M003_31
+K1.GPDE_AZ_RP_M003_32
+K1.GPDE_AZ_RP_M003_CR
+!
+NM1.NAME
+NM1.LAST_NAME
+NM1.FIRST_NAME
+    ! --- informational fields ---
+    ! note: the #counter should only incremented when we really print a line
+
+    let $RowType = &K1.GPDE_BL_TYPE 
+    
+! +    let $KUG_Stammnummer = rtrim(&K1.GPDE_KU_ID_NUM,' ')
+! +    if ( $KUG_Stammnummer <> $lastStammNummer )
+! +        #debug show 'force begin of a new page (KUG_Stammnummer)'
+! +        let #makePageBreak = 1
+! +        let #eventGroupChanged = 1
+! +    end-if
+
+! +    let $K1.GPDE_DV_RVNR = &K1.GPDE_DV_RVNR
+
+    let $Emplid = rtrim(&K1.EMPLID,' ')
+    let $EmplRcd = &K1.EMPL_RCD
+   
+    let $K1.PRD_END_DT = &K1.PRD_END_DT
+!    if ( $K1.PRD_END_DT <> $lastPeriodEnd )
+!        #debug show 'force begin of a new page (K1.PRD_END_DT)'
+!        let #makePageBreak = 1
+!    end-if
+
+    ! parameter for row-date output
+    !--let $SegmentDate = &K1.GPDE_AL_CPAY_ENDDT
+    let $SegmentDate = &K1.PRD_END_DT
+    do MakeRowDate      ! returns: $RowDateText  in format: MM.YY neu/alt
+    
+    #debug show 'Progressinfo: ' $Emplid ' / ' $KUG_Stammnummer ' / ' $lastStammNummer ' - ' $hdr_functional_subtitle
+    
+    let $NM1.NAME = rtrim(&NM1.NAME,' ')
+    
+! uncomment this if emplid should be printed
+    ! debug: add Emplid
+    let $NM1.NAME = $NM1.NAME || ', ' || $Emplid
+
+    ! -- when name is printed in regular font we need to truncate at length 28
+    if length($NM1.NAME) > 41
+        let $NM1.NAME = substr($NM1.NAME,1,41)
+    end-if
+    
+    ! ------- assign/convert/calculate PRINT-FIELDS --------------------
+    ! calculate and format values
+    do PrepareAzLine
+    
+    ! print only if we have RV gross
+    if #PFIELD_1A <> 0    
+        ! show 'printing ' &K1.EMPLID
+        let #counter = #counter + 1
+        do Format-Number(#counter,$counter,'B9999')
+        !
+        do PrintAzLine
+    end-if
+    !
+    !
+    ! the headinginfo issue:
+    ! when a change is detected, then the new values are already loaded into the variables,
+    ! but the page is not yet printed. 
+    ! At this moment the heading is called and prints the values for the new row
+    ! for the data of the old page.
+    ! That is the reason why we need to keep the last-copies of all variables that are
+    ! printed in the heading.
+    !
+    ! If we do not provide PAY_ENTITY as mandatory input, then we need to manage it too
+    let $lastStammNummer = $KUG_Stammnummer
+    let $hdr_functional_subtitle = $lastStammNummer
+    let $lastPeriodEnd = &K1.GPDE_AL_CPAY_ENDDT
+    !
+    ! if we had a break, it was evaluated and is no longer valid
+    let #makePageBreak = 0
+    
+from PS_GPDE_RP_AZ1_WRK K1
+,PS_NAMES NM1
+WHERE NM1.EMPLID=K1.EMPLID
+AND NM1.NAME_TYPE = (select NMTVW.NAME_TYPE from PS_GPDE_NMTYPE1_VW NMTVW where NMTVW.EMPLID = NM1.EMPLID AND NMTVW.EFFDT =
+                                ( select MAX(NMTVW2.EFFDT) from  PS_GPDE_NMTYPE1_VW NMTVW2
+                                       where NMTVW2.EMPLID = NMTVW.EMPLID
+                                         AND NMTVW2.EFFDT <= $Ctl_Curr_Pay_End_DT))
+AND K1.PAY_ENTITY = $Ctl_PayEntity
+AND K1.PROCESS_INSTANCE = #ReportProcessInstance
+!no: AND K1.GPDE_AL_CPAY_ENDDT = $Ctl_Curr_Pay_End_DT
+ORDER BY K1.PAY_ENTITY,NM1.NAME,K1.PRD_END_DT DESC,K1.GPDE_BL_TYPE,K1.SLICE_END_DT 
+!--,K1.GPDE_AL_CPAY_ENDDT
+End-Select
+
+    !
+    ! --- general cleanup ---
+    !
+    if #counter = 0
+        show 'Es wurden keine Daten zu den Eingaben gefunden.'
+    end-if
+    
+    ! print the last footer, unless we have a new page 
+    ! 
+    !
+    if #eventFirstRow = 0
+        let #eventGroupChanged = 1   ! pending change of value to nothing
+        do ManagePrintPageSum
+        ! report totals here
+    end-if
+end-procedure
+
+
+
+
+begin-procedure PrepareAzLine
+! -------------------------------
+! assign values to output fields
+! format output fields
+! -------------------------------
+    ! Bruttoaufstockung
+    let #PFIELD_1A   = &K1.GPDE_AZ_RP_003_11 + &K1.GPDE_AZ_RP_003_12
+    let #PFIELD_1B   = #PFIELD_1A - &K1.GPDE_AZ_RP_001_11 - &K1.GPDE_AZ_RP_001_12
+    ! wdu06-890b6 changed #PFIELD_2  from 17 to 19-63 to add taxfree amounts 
+    let #PFIELD_2    = &K1.GPDE_AZ_RP_002_19 - &K1.GPDE_AZ_RP_001_63
+    let #PFIELD_3    = &K1.GPDE_AZ_RP_001_63
+    let #PFIELD_4   = &K1.GPDE_AZ_RP_002_19
+    ! Mindestnetto
+    let #PFIELD_5    = &K1.GPDE_AZ_RP_003_21 + &K1.GPDE_AZ_RP_003_22
+    let #PFIELD_6    = &K1.GPDE_AZ_RP_002_28
+    let #PFIELD_7    = &K1.GPDE_AZ_RP_002_68
+    let #PFIELD_8    = &K1.GPDE_AZ_RP_001_63 + &K1.GPDE_AZ_RP_002_68
+    ! RV Unterschiedsbetrag
+    !
+    ! Field 9 is the Base for Fulltime Calculation = parttime+DAs
+    ! Field 9:  Field 10 calced before field 9 because we need it
+    let #PFIELD_10   = &K1.GPDE_AZ_RP_003_31 + &K1.GPDE_AZ_RP_003_32 +&K1.GPDE_AZ_RP_003_36
+    !let #PFIELD_9    = #PFIELD_1A + #PFIELD_10
+    ! wdu06-890b6  limit the parttime gross to 90% BBG for field#9
+    let #AtzLimit = &K1.GPDE_AZ_RP_BBG_MON * 0.90
+    if #PFIELD_1A > #AtzLimit 
+        let #PFIELD_9 = #AtzLimit + #PFIELD_10
+    else
+        let #PFIELD_9 = #PFIELD_1A + #PFIELD_10
+    end-if
+    
+    ! Field 10: a) normal  b) mit Mehrarbeit  c) mit EGA 
+    ! the amount remains the same, but we indicate the functional case
+    let $PFIELD_10_FLG = 'a)'
+
+    if  ( &K1.GPDE_AZ_RP_003_15 <> 0 )
+        ! overtime pay
+        let $PFIELD_10_FLG = 'b)'
+    end-if
+    if  ( &K1.GPDE_AZ_RP_ELG_BON = 'Y' or &K1.GPDE_AZ_RP_ELG_MAR ='Y' )
+        ! Marchclause or Bonus eligible
+        let $PFIELD_10_FLG = 'c)'
+    end-if
+
+
+    
+    let #PFIELD_11   = &K1.GPDE_AZ_RP_003_41 + &K1.GPDE_AZ_RP_003_42 +&K1.GPDE_AZ_RP_003_46
+    let #PFIELD_12 = #PFIELD_11 + #PFIELD_8
+
+    do Format-Number( #PFIELD_1A, $PFIELD_1A,'B99,999.99')
+    do Format-Number( #PFIELD_1B, $PFIELD_1B,'B99,999.99')
+    do Format-Number( #PFIELD_2, $PFIELD_2,'B99,999.99')
+    do Format-Number( #PFIELD_3, $PFIELD_3,'B99,999.99')
+    do Format-Number( #PFIELD_4, $PFIELD_4,'B99,999.99')
+    do Format-Number( #PFIELD_5, $PFIELD_5,'B99,999.99')
+    do Format-Number( #PFIELD_6, $PFIELD_6,'B99,999.99')
+    do Format-Number( #PFIELD_7, $PFIELD_7,'B99,999.99')
+    do Format-Number( #PFIELD_8, $PFIELD_8,'B99,999.99')
+    do Format-Number( #PFIELD_9, $PFIELD_9,'B99,999.99')
+    do Format-Number( #PFIELD_10, $PFIELD_10,'B99,999.99')
+    do Format-Number( #PFIELD_11, $PFIELD_11,'B99,999.99')
+    do Format-Number( #PFIELD_12, $PFIELD_12,'B99,999.99')
+    !let $PFIELD_10_FLG
+end-procedure
+
+
+
+
+
+
+begin-procedure PrintAzLine
+    ! print KUG line
+    
+    ! prepare the check for a new page because the page was full
+    let #mm = 4 + #current-line
+    
+    ! check if we need a new page because of data content
+    if #makePageBreak > 0
+        ! page break needed because of a datachange
+        ! we only do it when this is NOT the first row on the page
+        if #eventFirstRow = 0
+            ! we have a functional BREAK
+            ! trick to force a new page: simulate we have printed enough for the page
+            let #mm = 1000
+        end-if
+    end-if
+    
+    if #mm > 55
+        ! we need a new page because the page is full
+            ! but first finish the page before, this way we get a sum not on every page
+            do ManagePrintPageSum
+        new-page
+        #debug show 'new page at emplid=' $Emplid
+        let #eventFirstRow = 1
+    end-if
+    
+    ! some line arithmetics
+    let #currLineV = -10 + #current-line
+    let #currLineN = #currLineV + 1
+    if #currLineV <= 0
+        let #currLineV = 1
+        let #currLineN = 2
+    end-if
+    
+    if #eventFirstRow > 0
+        ! we have hit an empty page body, paint the column headings
+        let #eventFirstRow = 0
+        do bodybox
+        let #currLineN = #currLineN + 4
+        let #currLineV = #currLineV + 4
+        let #TempCol = #TempCol + 4
+    end-if
+    
+    let #TempCol = 1 + #currLineV
+    
+    !show 'current line N ' #currLineN
+    !show 'current line V ' #currLineV
+    !show 'TempCol  ' #TempCol
+    
+    graphic (#currLineN,1,182) box 3 1
+    graphic (#currLineV,#vline1,3) vert-line 1
+    
+    graphic (#currLineV,#vline2,3) vert-line 1
+    graphic (#currLineV,#vline3,3) vert-line 1
+    graphic (#currLineV,#vline4,3) vert-line 1          ! after hours
+    graphic (#currLineV,#vline5,3) vert-line 1
+    graphic (#currLineV,#vline6,3) vert-line 1
+    graphic (#currLineV,#vline7,3) vert-line 1         ! after Stkl
+    
+    graphic (#currLineV,#vline8,3) vert-line 1
+    graphic (#currLineV,#vline9,3) vert-line 1
+    graphic (#currLineV,#vline10,3) vert-line 1
+    graphic (#currLineV,#vline11,3) vert-line 1
+    
+    alter-printer
+    font = 3
+    point-size = 16
+    !  ---  Line#1  ---
+    
+    print $counter                (#TempCol,2)
+
+    !print $RowDateText            (#TempCol,+3)  ! 9 chars
+    
+    ! -- name in smaller font
+    alter-printer
+    font = 4
+    point-size = 12
+    
+    print $NM1.NAME               (#TempCol,+3)
+    alter-printer
+    font = 3
+    point-size = 16
+    
+    ! -------------------- numeric values ------------------
+    !print 'Kug:'                  (#TempCol,48)
+    !print $K1.GPDE_KU_HKUGSUM     (#TempCol,48)
+
+    ! Line#1: fields up to 8
+    !print ' ' (#TempCol,+6)
+    ! stews of 15
+    print $PFIELD_1A (#TempCol,#txtpos2)
+    print $PFIELD_1B (#TempCol,#txtpos3)
+    print $PFIELD_2 (#TempCol,#txtpos4)
+    print $PFIELD_3 (#TempCol,#txtpos5)
+    print $PFIELD_4 (#TempCol,#txtpos6)
+    print $PFIELD_5 (#TempCol,#txtpos7)
+    print $PFIELD_6 (#TempCol,#txtpos8)
+    print $PFIELD_7 (#TempCol,#txtpos9)
+    print $PFIELD_8 (#TempCol,#txtpos10)
+
+    
+    
+    ! ----  Line#2  ----
+    let #TempCol = 1 + #TempCol
+    alter-printer
+    font = 4
+    point-size = 13
+    ! data
+    
+    alter-printer
+    font = 3
+    point-size = 16
+    
+    ! -- VSNR also in smaller font (like name)
+    alter-printer
+    font = 4
+    point-size = 12
+!    print 'VSNR: '                (#TempCol,10)
+!    let $K1.GPDE_DV_RVNR = '--dummy--'
+!    print $K1.GPDE_DV_RVNR        (#TempCol,+1)
+
+    alter-printer
+    font = 3
+    point-size = 16
+    
+    !print $K1.GPDE_KU_HWAG        (#TempCol,48)
+    ! ---
+    !print ' ' (#TempCol,47)
+    print $PFIELD_9 (#TempCol,#txtpos2)
+    print $PFIELD_10_FLG (#TempCol,#txtpos3)
+    print $PFIELD_10 (#TempCol,#txtpos4)
+    print $PFIELD_11 (#TempCol,#txtpos5)
+    print $PFIELD_12 (#TempCol,#txtpos6)
+
+    
+    ! ----  Line#3  ----
+    alter-printer
+    font = 4
+    point-size = 12
+    let #TempCol = 1 + #TempCol
+    print $RowDateText             (#TempCol,38)
+    ! --  print $ChangeFlag              (#TempCol,#txtpos2) 
+    
+    
+    ! --- update the sums after the values were printed ---
+    let #pageSumItem = #pageSumItem + #PFIELD_12  
+    !
+    
+    ! clean up
+    alter-printer
+    font = 3
+    point-size = 16
+    
+NoPr2Kug:
+end-procedure
+!*************************************************************************************
+
+
+
+
+
+
+begin-procedure ManagePrintPageSum
+! print the page sum and update the total sum
+! this is called BEFORE the current line is printed
+!
+    ! --- graphics for the Sums ---
+    ! we reuse last used #TempCol 
+    let #TempCol = #TempCol + 1         ! add an empty line
+    let #thisLine1 = #TempCol
+    let #thisLine2 = #TempCol +1
+    let #tempw = #vline7 - #vline4
+    let #SumPos = #txtpos6 - 1          ! sum is wider than items
+    let #SumVbarPos = #SumPos - 2
+    graphic (#thisLine2,#vline4,#tempw) box 2 1
+!    graphic (#thisLine1,#SumVbarPos,2) vert-line 1
+    ! ---
+    
+    let #TempCol = #TempCol + 1
+    ! switch font, typewriter: font=3   proportional: font=4     
+        alter-printer
+        font = 4
+        point-size = 13
+    
+    print 'Alle Beträge in Euro'       (#TempCol,#txtpos0)
+     
+    do Format-Number(#pageSumItem,$pageSumItem,'999,999.99')
+    print 'Summe Erstattung Seite'           (#TempCol,#txtpos4)
+    ! switch font, typewriter: font=3   proportional: font=4     
+        alter-printer
+        font = 3
+        point-size = 16
+    print $pageSumItem                  (#TempCol,#SumPos)
+    ! switch font, typewriter: font=3   proportional: font=4     
+        alter-printer
+        font = 4
+        point-size = 13
+ 
+    !
+    ! --- Manage Total
+    let #groupSumItem = #groupSumItem + #pageSumItem
+    let #pageSumItem = 0
+    !
+    !
+    let #TempCol = #TempCol + 1
+   
+    if  #eventGroupChanged = 1
+        ! a new Stammnummer is coming up, print final sum
+        let #eventGroupChanged = 0
+        !
+        do Format-Number(#groupSumItem,$groupSumItem,'999,999.99')
+        print 'Gesamtsumme Erstattung'     (#TempCol,#txtpos4)
+        ! switch font, typewriter: font=3   proportional: font=4     
+            alter-printer
+            font = 3
+            point-size = 16
+        print $groupSumItem                  (#TempCol,#SumPos)
+
+        ! reset the group sum
+        let #groupSumItem = 0
+    else
+        ! normal page change with intermediate sum
+        do Format-Number(#groupSumItem,$groupSumItem,'999,999.99')
+        print 'Zwischensumme Erstattung'   (#TempCol,#txtpos4)
+        ! switch font, typewriter: font=3   proportional: font=4     
+            alter-printer
+            font = 3
+            point-size = 16
+        print $groupSumItem                  (#TempCol,#SumPos)
+        !
+    end-if    
+end-procedure
+
+
+
+! #############
+! #############
+! ############# UTILS
+! #############
+! #############
+!**********************************************************************
+begin-procedure Get_VersionNr
+begin-select
+VERS.GPDE_VERSION_NR
+VERS.NAME
+from PS_GPDE_VERSION VERS
+end-select
+let $VersionsNr = rtrim(&VERS.GPDE_VERSION_NR,' ')
+let $Bezeichn   = rtrim(&VERS.NAME, ' ')
+end-procedure
+!**********************************************************************
+
+
+
+
+
+!************************************************************************
+begin-procedure Get-ReqParam
+Begin-Select
+RQ.PRCSINSTANCE
+RQ.PRCSTYPE
+RQ.PRCSNAME
+RQ.RUNLOCATION
+RQ.OPSYS
+RQ.DBTYPE
+RQ.DBNAME
+RQ.OPRID
+RQ.BEGINDTTM
+RQ.ENDDTTM
+RQ.RUNSTATUS
+RQ.RUNCNTLID
+RQ.OUTDESTTYPE
+RQ.OUTDESTFORMAT
+RQ.TIMEZONE
+RQ.SERVERNAMERUN
+! wdu jw2005--file handling
+OD.PRCSOUTPUTDIR
+OD.OUTDEST
+FROM PSPRCSPARMS OD , PSPRCSRQST  RQ
+WHERE OD.PRCSINSTANCE  = RQ.PRCSINSTANCE
+AND   RQ.PRCSINSTANCE = #prcs_process_instance
+
+End-Select
+  let $OUTDEST       = rtrim(&OD.OUTDEST,' ')
+  let $RQ.OUTDESTTYPE = rtrim(&RQ.OUTDESTTYPE,' ')
+  let $RQ.OUTDESTFORMAT = rtrim(&RQ.OUTDESTFORMAT,' ')
+  let $Process_Inst  = to_char(&RQ.PRCSINSTANCE)
+! wdu jw2005--file handling
+  move 'RUNLOCATION'  to $FieldName
+  move &RQ.RUNLOCATION to $FieldValue
+  do Read-Translate-Table
+  let $RUNLOCATION = rtrim(ltrim($XlatlongName,' '),' ')
+  
+  move 'OUTDESTTYPE'  to $FieldName
+  move &RQ.OUTDESTTYPE to $FieldValue
+  do Read-Translate-Table
+  let $OUTDESTTYPE = rtrim(ltrim($XlatlongName,' '),' ')
+  move 'OUTDESTFORMAT'  to $FieldName
+  move &RQ.OUTDESTFORMAT to $FieldValue
+  do Read-Translate-Table
+  let $OUTDESTFORMAT = rtrim(ltrim($XlatlongName,' '),' ')
+  evaluate $RQ.OUTDESTFORMAT
+  when = '1'
+    let $OUTDESTFORM = 'PDF'
+    break
+  when = '2'
+    let $OUTDESTFORM = 'PDF'
+    break
+  when = '3'
+    let $OUTDESTFORM = 'CSV'
+    break
+  when = '4'
+    let $OUTDESTFORM = 'HP'
+    break
+  when = '5'
+    let $OUTDESTFORM = 'HTM'
+    break
+  when = '6'
+    let $OUTDESTFORM = 'LP'
+    break
+  when = '7'
+    let $OUTDESTFORM = 'WKS'
+    break
+  when = '8'
+    let $OUTDESTFORM = 'XLS'
+    break
+  when = '9'
+    let $OUTDESTFORM = 'DOC'
+    break
+  when = '10'
+    let $OUTDESTFORM = 'PS'
+    break
+  when = '11'
+    let $OUTDESTFORM = 'RPT'
+    break
+  when = '12'
+    let $OUTDESTFORM = 'RTF'
+    break
+  when = '13'
+    let $OUTDESTFORM = 'SPF'
+    break
+  when = '14'
+    let $OUTDESTFORM = 'TXT'
+    break
+  when = '15'
+    let $OUTDESTFORM = 'PDF'
+    break
+  when = '16'
+    let $OUTDESTFORM = 'PDF'
+    break
+  when-other
+    let $OUTDESTFORM = 'PDF'
+    break
+  end-evaluate
+end-procedure
+
+
+
+
+
+!****************************************************************************
+Begin-Procedure Report-Translation
+  do Get_Field_Information ('GPDEGLOB', 'EMPLID',        $HD_EMPLID, #CW)
+  do Get_Field_Information ('GPDEGLOB', 'BIRTHDATE',     $HD_BIRTHDT,#CW)
+  do Get_Field_Information ('GPDEGLOB', 'HIRE_DT',       $HD_HIREDT, #CW)
+  do Get_Field_Information ('GPDEGLOB', 'TERMINATION_DT',$HD_TERMDT, #CW)
+  do Get_Field_Information ('GPDEGLOB', 'PRINTCLASS',    $PRINTCLASS,#CW)
+  do Get_Field_Information ('GPDEGLOB', 'AMOUNT_SPEC',         $AMOUNT_SPEC,#CW)
+  do Get_Field_Information ('GPDEGLOB', 'EURO',        $EUROCHAR,     #CW)
+  
+  ! specific labels for the AZ report
+  do Get_Field_Information ('GPDEAZ01', 'FLD_1A',  $PFIELD_1A_T, #CW)
+  
+end-Procedure
+
+
+
+!****************************************************************************************
+begin-procedure Get_Type_Options
+let $Name_Type       = ''
+let $Addr_Type       = ''
+let $Phone_Type      = ''
+let $Email_Type      = ''
+let $BirthName_Type  = ''
+begin-select distinct
+INST.NAME_TYPE
+INST.ADDRESS_TYPE
+INST.PHONE_TYPE
+INST.E_ADDR_TYPE
+INST.GPDE_BIRTH_NM_TYPE
+   let $Name_Type      = &INST.NAME_TYPE
+   let $Addr_Type      = &INST.ADDRESS_TYPE
+   let $Phone_Type     = &INST.PHONE_TYPE
+   let $Email_Type     = &INST.E_ADDR_TYPE
+   let $BirthName_Type = &INST.GPDE_BIRTH_NM_TYPE
+from PS_GPDE_AL_INSTALL INST
+end-select
+end-procedure
+
+
+
+begin-procedure CX_StandardHeaderBox
+!
+!  Print a standard Header Box for the Report GPDETX03
+!
+#debug show 'CX_StandardHeaderBox Stamm=' $hdr_functional_subtitle
+
+! -- display $SeitenNr
+
+    let $AMOUNT_SPEC1 = $AMOUNT_SPEC || ' ' || $sav_CurrencyA
+    !do Get_Job_Position
+    let $HD_Title1 = 'ATZ Abrechnungsliste  ' || $HeaderDateString 
+    !let $HD_Title2 = 'Anlage zum Leistungsantrag'
+    let $HD_Title2 = ' '
+    
+    alter-printer
+    font= 4
+    point-size =28
+    print $HD_Title1        (1,1) bold
+    
+    alter-printer
+    font= 4
+    point-size =20
+    print $HD_Title2        (3,1) bold
+    
+    alter-printer
+    font= 4
+    point-size =16
+
+    graphic (5,1,182) horz-line 10
+    !(horizontal line was printed)
+    ! ---
+       
+
+    ! --- right header block with date/pagenum/version ---
+    alter-printer
+    font= 4
+    point-size =13
+
+    print 'Seite :'               (1,132)
+    print '['                     (1,140)
+    if #page-count < 10
+    print #page-count          (0,0) edit 9
+    else
+    print #page-count          (0,0) edit 99
+    end-if
+    print ']'                     (0,0)
+    do Format-DateTime($AsOfToday, $hdr_abr_header_date, {DEFDATE}, '', '')
+    print 'Datum :'               (2,132)
+    print $hdr_abr_header_date    (2,140)
+    !
+    ! Version number
+    let $Bemerk = $Bezeichn || ' ' || $VersionsNr
+    print $Bemerk (3,132)
+    ! ---
+
+    
+    ! --- employer address line below headline ---
+    !
+    let $HD_Firma = $hdr_abr_Payentity_name
+    let $HD_Strasse = $hdr_abr_Payentity_street
+    let $HD_Ort = $hdr_abr_Payentity_zip_city
+    let $HD_BetrNr =  $GPDE_DO_BTNR
+    !
+    let $temp_str = rtrim($HD_Firma,' ') || ',  ' ||rtrim($HD_Strasse,' ') || ',  ' ||rtrim($HD_Ort,' ')
+    ! print bigger
+    alter-printer
+    font= 4
+    point-size =16 
+    print $temp_str          (5,1) bold
+    ! ---
+
+
+    ! --- report specific heading text below the header line ---
+    
+    ! print 'Subtitle : '    (8,1) bold
+    ! print $hdr_functional_subtitle        (8,30) bold
+    ! ---
+
+
+    !switch back font
+    alter-printer
+    font= 4
+    point-size =13
+end-procedure
+
+
+
+
+
+
+begin-procedure Get-PayEntity-Data($payentity, $curr_pay_end_dt, :$PayentityName,
+                :$PayentityStreet,:$PayentityStreet2,:$PayentityStreet2,:$PoBox,
+                :$PayentityZipCity,:$Nation,:$Post,:$Cit)
+let $PayentityName    = ' '
+let $PayentityStreet  = ' '
+let $PayentityStreet2 = ' '
+let $PayentityStreet3 = ' '
+let $PoBox = ' '
+let $PayentityZipCity = ' '
+let $Nation = ' '
+let $Post = ' '
+let $Cit = ' '
+begin-SELECT
+CP.DESCR
+CT.ADDRESS1
+CT.ADDRESS2
+CT.ADDRESS3
+CT.ADDRESS4
+CT.CITY
+CT.POSTAL
+CT.COUNTRY
+  let $PayentityName = rtrim(&CP.DESCR,' ')
+  let $PayentityStreet = rtrim(&CT.ADDRESS1,' ')
+  let $PayentityStreet2 = rtrim(&CT.ADDRESS2,' ')
+  let $PayentityStreet3 = rtrim(&CT.ADDRESS3,' ')
+  let $PoBox = rtrim(&CT.ADDRESS4,' ')
+  let $Nation = rtrim(&CT.COUNTRY,' ')
+  let $Post = rtrim(&CT.POSTAL,' ')
+  let $Cit = rtrim(&CT.CITY,' ')
+  let $PayentityZipCity = rtrim(&CT.POSTAL,' ') || ' ' || rtrim(&CT.CITY,' ')
+FROM  PS_GP_PYENT CP, PS_GP_PYENT_DTL CT
+WHERE CP.PAY_ENTITY = CT.PAY_ENTITY
+AND   CP.PAY_ENTITY = $payentity
+AND   CT.EFFDT = (SELECT MAX(EFFDT) FROM   PS_GP_PYENT_DTL CT1
+      WHERE  CT1.PAY_ENTITY = CT.PAY_ENTITY AND  CT1.EFFDT  <= $curr_pay_end_dt)
+end-SELECT
+end-procedure
+
+
+begin-procedure get-values
+! a callback from some sqc, do not remove
+end-procedure
+
+
+
+
+
+begin-procedure PrepareRowData
+! prepare the current('C') and before('B') rows from the WA
+!
+show 'processing data for :' $Ctl_Curr_Pay_End_DT
+
+! We need pay information for the current calculation and the version before that
+! for each CAL_ID which was handled (retro+current) in the current calculation.
+!
+! We may not have rows in GPDE_RP_AZ01 for both periods, so we need another
+! record as driver table (GPDE_RP_0001)
+!
+do CreateRowDriver
+
+begin-sql
+DELETE FROM PS_GPDE_RP_AZ1_WRK  WHERE PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+
+! ------------ get current calculation data including retro as 'C'
+! 'N' is similar to 'C' but means, that no old version exists
+
+begin-sql
+INSERT INTO PS_GPDE_RP_AZ1_WRK (
+PROCESS_INSTANCE
+,EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,SEG_END_DT
+,SLICE_END_DT
+,GPDE_BL_TYPE
+,PAY_ENTITY
+,PRD_END_DT
+,GPDE_AL_CPAY_ENDDT
+,BEGIN_DT
+,GPDE_AZ_IMODEL1
+,GPDE_AZ_IMODEL2
+,GPDE_AZ_RP_ELG_BON
+,GPDE_AZ_RP_ELG_FIL
+,GPDE_AZ_RP_ELG_MAR
+,GPDE_AZ_ELG_LINE10
+,GPDE_AZ_RP_001_11
+,GPDE_AZ_RP_001_12
+,GPDE_AZ_RP_001_53
+,GPDE_AZ_RP_001_63
+,GPDE_AZ_RP_002_11
+,GPDE_AZ_RP_002_12
+,GPDE_AZ_RP_002_14
+,GPDE_AZ_RP_002_17
+,GPDE_AZ_RP_002_19
+,GPDE_AZ_RP_002_21
+,GPDE_AZ_RP_002_22
+,GPDE_AZ_RP_002_28
+,GPDE_AZ_RP_002_68
+,GPDE_AZ_RP_003_11
+,GPDE_AZ_RP_003_12
+,GPDE_AZ_RP_003_15
+,GPDE_AZ_RP_003_21
+,GPDE_AZ_RP_003_22
+,GPDE_AZ_RP_003_31
+,GPDE_AZ_RP_003_32
+,GPDE_AZ_RP_003_36
+,GPDE_AZ_RP_003_41
+,GPDE_AZ_RP_003_42
+,GPDE_AZ_RP_003_46
+,GPDE_AZ_RP_003_ATD
+,GPDE_AZ_RP_BBG_ATD
+,GPDE_AZ_RP_BBG_MON
+,GPDE_AZ_RP_MBBG_AT
+,GPDE_AZ_RP_MRVB_AT
+,GPDE_AZ_RP_003_CUR
+,GPDE_AZ_RP_003_FRM
+,GPDE_AZ_RP_003_GOA
+,GPDE_AZ_RP_003_LIM
+,GPDE_AZ_RP_003_REA
+,GPDE_AZ_RP_003_TDA
+,GPDE_AZ_RP_M003_13
+,GPDE_AZ_RP_M003_15
+,GPDE_AZ_RP_M003_23
+,GPDE_AZ_RP_M003_31
+,GPDE_AZ_RP_M003_32
+,GPDE_AZ_RP_M003_CR
+)
+SELECT 
+D1.PROCESS_INSTANCE
+,K1.EMPLID
+,K1.CAL_RUN_ID
+,K1.EMPL_RCD
+,K1.GP_PAYGROUP
+,K1.CAL_ID
+,K1.ORIG_CAL_RUN_ID
+,K1.RSLT_SEG_NUM
+,K1.SEG_END_DT
+,K1.SLICE_END_DT
+,D1.GPDE_BL_TYPE
+,K1.PAY_ENTITY
+,K1.PRD_END_DT
+,K1.GPDE_AL_CPAY_ENDDT
+,K1.BEGIN_DT
+,K1.GPDE_AZ_IMODEL1
+,K1.GPDE_AZ_IMODEL2
+,K1.GPDE_AZ_RP_ELG_BON
+,K1.GPDE_AZ_RP_ELG_FIL
+,K1.GPDE_AZ_RP_ELG_MAR
+,K1.GPDE_AZ_ELG_LINE10
+,K1.GPDE_AZ_RP_001_11
+,K1.GPDE_AZ_RP_001_12
+,K1.GPDE_AZ_RP_001_53
+,K1.GPDE_AZ_RP_001_63
+,K1.GPDE_AZ_RP_002_11
+,K1.GPDE_AZ_RP_002_12
+,K1.GPDE_AZ_RP_002_14
+,K1.GPDE_AZ_RP_002_17
+,K1.GPDE_AZ_RP_002_19
+,K1.GPDE_AZ_RP_002_21
+,K1.GPDE_AZ_RP_002_22
+,K1.GPDE_AZ_RP_002_28
+,K1.GPDE_AZ_RP_002_68
+,K1.GPDE_AZ_RP_003_11
+,K1.GPDE_AZ_RP_003_12
+,K1.GPDE_AZ_RP_003_15
+,K1.GPDE_AZ_RP_003_21
+,K1.GPDE_AZ_RP_003_22
+,K1.GPDE_AZ_RP_003_31
+,K1.GPDE_AZ_RP_003_32
+,K1.GPDE_AZ_RP_003_36
+,K1.GPDE_AZ_RP_003_41
+,K1.GPDE_AZ_RP_003_42
+,K1.GPDE_AZ_RP_003_46
+,K1.GPDE_AZ_RP_003_ATD
+,K1.GPDE_AZ_RP_BBG_ATD
+,K1.GPDE_AZ_RP_BBG_MON
+,K1.GPDE_AZ_RP_MBBG_AT
+,K1.GPDE_AZ_RP_MRVB_AT
+,K1.GPDE_AZ_RP_003_CUR
+,K1.GPDE_AZ_RP_003_FRM
+,K1.GPDE_AZ_RP_003_GOA
+,K1.GPDE_AZ_RP_003_LIM
+,K1.GPDE_AZ_RP_003_REA
+,K1.GPDE_AZ_RP_003_TDA
+,K1.GPDE_AZ_RP_M003_13
+,K1.GPDE_AZ_RP_M003_15
+,K1.GPDE_AZ_RP_M003_23
+,K1.GPDE_AZ_RP_M003_31
+,K1.GPDE_AZ_RP_M003_32
+,K1.GPDE_AZ_RP_M003_CR
+FROM PS_GPDE_RP_AZ01 K1
+,PS_GPDE_RP_KU_DRV D1
+WHERE K1.PAY_ENTITY = $Ctl_PayEntity
+AND K1.EMPLID = D1.EMPLID
+AND K1.CAL_RUN_ID = D1.CAL_RUN_ID
+AND K1.EMPL_RCD = D1.EMPL_RCD
+AND K1.GP_PAYGROUP = D1.GP_PAYGROUP
+AND K1.CAL_ID = D1.CAL_ID
+AND K1.ORIG_CAL_RUN_ID = D1.ORIG_CAL_RUN_ID
+! no: --AND K1.RSLT_SEG_NUM = D1.RSLT_SEG_NUM
+AND K1.SEG_END_DT = D1.SEG_END_DT
+AND K1.PRD_END_DT = D1.PRD_END_DT
+AND K1.PAY_ENTITY = D1.PAY_ENTITY
+AND K1.GPDE_AL_CPAY_ENDDT = D1.GPDE_AL_CPAY_ENDDT
+AND D1.GPDE_BL_TYPE IN  ('C','N')
+AND D1.PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+
+
+! ------------ get previous (=before) row for each current calculation row as 'B'
+
+begin-sql
+INSERT INTO PS_GPDE_RP_AZ1_WRK (
+PROCESS_INSTANCE
+,EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,SEG_END_DT
+,SLICE_END_DT
+,GPDE_BL_TYPE
+,PAY_ENTITY
+,PRD_END_DT
+,GPDE_AL_CPAY_ENDDT
+,BEGIN_DT
+,GPDE_AZ_IMODEL1
+,GPDE_AZ_IMODEL2
+,GPDE_AZ_RP_ELG_BON
+,GPDE_AZ_RP_ELG_FIL
+,GPDE_AZ_RP_ELG_MAR
+,GPDE_AZ_ELG_LINE10
+,GPDE_AZ_RP_001_11
+,GPDE_AZ_RP_001_12
+,GPDE_AZ_RP_001_53
+,GPDE_AZ_RP_001_63
+,GPDE_AZ_RP_002_11
+,GPDE_AZ_RP_002_12
+,GPDE_AZ_RP_002_14
+,GPDE_AZ_RP_002_17
+,GPDE_AZ_RP_002_19
+,GPDE_AZ_RP_002_21
+,GPDE_AZ_RP_002_22
+,GPDE_AZ_RP_002_28
+,GPDE_AZ_RP_002_68
+,GPDE_AZ_RP_003_11
+,GPDE_AZ_RP_003_12
+,GPDE_AZ_RP_003_15
+,GPDE_AZ_RP_003_21
+,GPDE_AZ_RP_003_22
+,GPDE_AZ_RP_003_31
+,GPDE_AZ_RP_003_32
+,GPDE_AZ_RP_003_36
+,GPDE_AZ_RP_003_41
+,GPDE_AZ_RP_003_42
+,GPDE_AZ_RP_003_46
+,GPDE_AZ_RP_003_ATD
+,GPDE_AZ_RP_BBG_ATD
+,GPDE_AZ_RP_BBG_MON
+,GPDE_AZ_RP_MBBG_AT
+,GPDE_AZ_RP_MRVB_AT
+,GPDE_AZ_RP_003_CUR
+,GPDE_AZ_RP_003_FRM
+,GPDE_AZ_RP_003_GOA
+,GPDE_AZ_RP_003_LIM
+,GPDE_AZ_RP_003_REA
+,GPDE_AZ_RP_003_TDA
+,GPDE_AZ_RP_M003_13
+,GPDE_AZ_RP_M003_15
+,GPDE_AZ_RP_M003_23
+,GPDE_AZ_RP_M003_31
+,GPDE_AZ_RP_M003_32
+,GPDE_AZ_RP_M003_CR
+)
+SELECT 
+D1.PROCESS_INSTANCE
+,K1.EMPLID
+,K1.CAL_RUN_ID
+,K1.EMPL_RCD
+,K1.GP_PAYGROUP
+,K1.CAL_ID
+,K1.ORIG_CAL_RUN_ID
+,K1.RSLT_SEG_NUM
+,K1.SEG_END_DT
+,K1.SLICE_END_DT
+,D1.GPDE_BL_TYPE
+,K1.PAY_ENTITY
+,K1.PRD_END_DT
+,K1.GPDE_AL_CPAY_ENDDT
+,K1.BEGIN_DT
+,K1.GPDE_AZ_IMODEL1
+,K1.GPDE_AZ_IMODEL2
+,K1.GPDE_AZ_RP_ELG_BON
+,K1.GPDE_AZ_RP_ELG_FIL
+,K1.GPDE_AZ_RP_ELG_MAR
+,K1.GPDE_AZ_ELG_LINE10
+,-K1.GPDE_AZ_RP_001_11
+,-K1.GPDE_AZ_RP_001_12
+,-K1.GPDE_AZ_RP_001_53
+,-K1.GPDE_AZ_RP_001_63
+,-K1.GPDE_AZ_RP_002_11
+,-K1.GPDE_AZ_RP_002_12
+,-K1.GPDE_AZ_RP_002_14
+,-K1.GPDE_AZ_RP_002_17
+,-K1.GPDE_AZ_RP_002_19
+,-K1.GPDE_AZ_RP_002_21
+,-K1.GPDE_AZ_RP_002_22
+,-K1.GPDE_AZ_RP_002_28
+,-K1.GPDE_AZ_RP_002_68
+,-K1.GPDE_AZ_RP_003_11
+,-K1.GPDE_AZ_RP_003_12
+,-K1.GPDE_AZ_RP_003_15
+,-K1.GPDE_AZ_RP_003_21
+,-K1.GPDE_AZ_RP_003_22
+,-K1.GPDE_AZ_RP_003_31
+,-K1.GPDE_AZ_RP_003_32
+,-K1.GPDE_AZ_RP_003_36
+,-K1.GPDE_AZ_RP_003_41
+,-K1.GPDE_AZ_RP_003_42
+,-K1.GPDE_AZ_RP_003_46
+,-K1.GPDE_AZ_RP_003_ATD
+,-K1.GPDE_AZ_RP_BBG_ATD
+,-K1.GPDE_AZ_RP_BBG_MON
+,-K1.GPDE_AZ_RP_MBBG_AT
+,-K1.GPDE_AZ_RP_MRVB_AT
+,-K1.GPDE_AZ_RP_003_CUR
+,-K1.GPDE_AZ_RP_003_FRM
+,-K1.GPDE_AZ_RP_003_GOA
+,-K1.GPDE_AZ_RP_003_LIM
+,-K1.GPDE_AZ_RP_003_REA
+,-K1.GPDE_AZ_RP_003_TDA
+,-K1.GPDE_AZ_RP_M003_13
+,-K1.GPDE_AZ_RP_M003_15
+,-K1.GPDE_AZ_RP_M003_23
+,-K1.GPDE_AZ_RP_M003_31
+,-K1.GPDE_AZ_RP_M003_32
+,-K1.GPDE_AZ_RP_M003_CR
+FROM PS_GPDE_RP_AZ01 K1
+,PS_GPDE_RP_KU_DRV D1
+WHERE K1.PAY_ENTITY = $Ctl_PayEntity
+AND K1.EMPLID = D1.EMPLID
+AND K1.CAL_RUN_ID = D1.CAL_RUN_ID
+AND K1.EMPL_RCD = D1.EMPL_RCD
+AND K1.GP_PAYGROUP = D1.GP_PAYGROUP
+AND K1.CAL_ID = D1.CAL_ID
+AND K1.ORIG_CAL_RUN_ID = D1.ORIG_CAL_RUN_ID
+! no: --AND K1.RSLT_SEG_NUM = D1.RSLT_SEG_NUM
+AND K1.SEG_END_DT = D1.SEG_END_DT
+AND K1.PRD_END_DT = D1.PRD_END_DT
+AND K1.PAY_ENTITY = D1.PAY_ENTITY
+AND K1.GPDE_AL_CPAY_ENDDT = D1.GPDE_AL_CPAY_ENDDT
+AND D1.GPDE_BL_TYPE = 'B'
+AND D1.PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+end-procedure
+
+
+
+
+begin-procedure MakeRowDate
+! in:  $SegmentDate
+! out: $RowSegDate      date in the format:  mm.yy
+! out: $RowTypeInd      an indicator for old/new/-
+! out: $RowDateText     date + indicator
+!
+   let #Date_Type1 = {DateType}
+   do ConvertToComponents($SegmentDate,$yy1a,$mm1a,$dd1a)
+   evaluate #Date_Type1
+   when = 2
+      let $RowSegDate = $yy1a || '{PTDateDelim}' || $mm1a
+      break
+   when-other
+      let $RowSegDate = $mm1a || '{PTDateDelim}' || $yy1a
+      break
+   end-evaluate
+   
+   if $RowType = 'B'
+        let $RowTypeInd = ' alt'
+   else 
+        if $RowType = 'C'
+            let $RowTypeInd = ' neu'
+        else
+            ! for 'N' do not print indicator and date
+            let $RowTypeInd = '    '
+            ! changed our mind: print date in any case
+            !let $RowSegDate = ' '
+        end-if
+   end-if
+
+   let $RowDateText = $RowSegDate || $RowTypeInd
+end-procedure
+
+
+
+
+
+begin-procedure CreateRowDriver
+! for now we are reusing the KUG table with another value of #ReportProcessInstance
+! (driver selection changed to EXISTS-clause)
+
+!-------------------------------------------------------
+! NOTICE: the driver is generic (does not depend on KUG)
+! it can be copied and reused for all delta reports.
+!-------------------------------------------------------
+! create a helper table with a row for the current and previous calculation.
+! we will use this later to find our rows from the KUG WA table
+!
+! GPDE_BL_TYPE
+! 'C'   current calculation
+! 'B'   before current calculation
+! 'R'   raw data, discarded later
+! 'N'   current calculation with no previous data
+!
+!
+begin-sql
+DELETE FROM PS_GPDE_RP_KU_DRV WHERE PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+! Find the current and the previous version for each calculation period
+! -- when the emplid ever had AZ in our PAY-entity
+! ==> raw driver
+begin-sql
+INSERT INTO PS_GPDE_RP_KU_DRV (
+ PROCESS_INSTANCE
+ ,EMPLID 
+ ,CAL_RUN_ID 
+ ,EMPL_RCD 
+ ,GP_PAYGROUP 
+ ,CAL_ID 
+ ,ORIG_CAL_RUN_ID 
+ ,RSLT_SEG_NUM 
+ ,SEG_END_DT 
+ ,PRD_END_DT 
+ ,PAY_ENTITY 
+ ,GPDE_AL_CPAY_ENDDT 
+ ,GPDE_BL_TYPE
+)
+SELECT
+ #ReportProcessInstance
+ ,A.EMPLID 
+ ,A.CAL_RUN_ID 
+ ,A.EMPL_RCD 
+ ,A.GP_PAYGROUP 
+ ,A.CAL_ID 
+ ,A.ORIG_CAL_RUN_ID 
+ ,A.RSLT_SEG_NUM 
+ ,A.SEG_END_DT 
+ ,A.PRD_END_DT 
+ ,A.PAY_ENTITY 
+ ,A.GPDE_AL_CPAY_ENDDT 
+ ,'R'
+  FROM PS_GPDE_RP_0001 A 
+where A.PAY_ENTITY = $Ctl_PayEntity
+AND (A.GPDE_AL_CPAY_ENDDT = (SELECT MAX(A2.GPDE_AL_CPAY_ENDDT) 
+      from PS_GPDE_RP_0001 A2
+      WHERE A2.EMPLID = A.EMPLID
+        !no: AND A2.CAL_RUN_ID = A.CAL_RUN_ID 
+        AND A2.EMPL_RCD = A.EMPL_RCD 
+        !no: AND A2.GP_PAYGROUP = A.GP_PAYGROUP 
+        AND A2.CAL_ID = A.CAL_ID
+        AND A2.GPDE_AL_CPAY_ENDDT < $Ctl_Curr_Pay_End_DT
+    )
+    OR A.GPDE_AL_CPAY_ENDDT = $Ctl_Curr_Pay_End_DT
+)
+AND EXISTS (
+    ! -- we create the driver for all emplids of the category
+    ! -- old driver:A.EMPLID IN (SELECT DISTINCT EMPLID FROM PS_GPDE_RP_AZ01 WHERE PAY_ENTITY=$Ctl_PayEntity)
+    SELECT 'X' FROM  PS_GPDE_RP_AZ01 R1
+    WHERE R1.PAY_ENTITY=$Ctl_PayEntity
+    AND R1.EMPLID=A.EMPLID
+    AND R1.EMPL_RCD=A.EMPL_RCD
+)
+end-sql
+
+! mark rows from the current calculation
+! these will always be printed if a KUG WA row exists.
+begin-sql
+UPDATE PS_GPDE_RP_KU_DRV SET GPDE_BL_TYPE='C' 
+WHERE GPDE_AL_CPAY_ENDDT = $Ctl_Curr_Pay_End_DT
+AND PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+
+! mark rows from previous periods only when:
+!   -- a row exists for the same calendar which is marked 'C'
+!
+begin-sql
+UPDATE PS_GPDE_RP_KU_DRV SET GPDE_BL_TYPE='B' 
+WHERE EXISTS (
+    SELECT 'X' FROM PS_GPDE_RP_KU_DRV DRV2
+    WHERE 0=0
+        AND DRV2.EMPLID = PS_GPDE_RP_KU_DRV.EMPLID 
+!no:    AND DRV2.CAL_RUN_ID = PS_GPDE_RP_KU_DRV.CAL_RUN_ID 
+        AND DRV2.EMPL_RCD = PS_GPDE_RP_KU_DRV.EMPL_RCD 
+!no:    AND DRV2.GP_PAYGROUP = PS_GPDE_RP_KU_DRV.GP_PAYGROUP 
+        AND DRV2.CAL_ID = PS_GPDE_RP_KU_DRV.CAL_ID 
+!no:     AND DRV2.ORIG_CAL_RUN_ID = PS_GPDE_RP_KU_DRV.ORIG_CAL_RUN_ID 
+!no:     AND DRV2.RSLT_SEG_NUM = PS_GPDE_RP_KU_DRV.RSLT_SEG_NUM 
+!no:     AND DRV2.SEG_END_DT = PS_GPDE_RP_KU_DRV.SEG_END_DT 
+        AND DRV2.PRD_END_DT = PS_GPDE_RP_KU_DRV.PRD_END_DT 
+        AND DRV2.PAY_ENTITY = PS_GPDE_RP_KU_DRV.PAY_ENTITY 
+!no:     AND DRV2.GPDE_AL_CPAY_ENDDT = PS_GPDE_RP_KU_DRV.GPDE_AL_CPAY_ENDDT 
+        AND DRV2.GPDE_BL_TYPE = 'C'
+        AND DRV2.PROCESS_INSTANCE = #ReportProcessInstance
+)
+AND GPDE_BL_TYPE='R' 
+AND PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+! Mark rows which are new and have no corresponding old row
+! these should be printed without "neu" label
+!
+begin-sql
+UPDATE PS_GPDE_RP_KU_DRV SET GPDE_BL_TYPE='N' 
+WHERE NOT EXISTS (
+    SELECT 'X' FROM PS_GPDE_RP_KU_DRV DRV2
+    WHERE 0=0
+        AND DRV2.EMPLID = PS_GPDE_RP_KU_DRV.EMPLID 
+!no:    AND DRV2.CAL_RUN_ID = PS_GPDE_RP_KU_DRV.CAL_RUN_ID 
+        AND DRV2.EMPL_RCD = PS_GPDE_RP_KU_DRV.EMPL_RCD 
+!no:    AND DRV2.GP_PAYGROUP = PS_GPDE_RP_KU_DRV.GP_PAYGROUP 
+        AND DRV2.CAL_ID = PS_GPDE_RP_KU_DRV.CAL_ID 
+!no:     AND DRV2.ORIG_CAL_RUN_ID = PS_GPDE_RP_KU_DRV.ORIG_CAL_RUN_ID 
+!no:     AND DRV2.RSLT_SEG_NUM = PS_GPDE_RP_KU_DRV.RSLT_SEG_NUM 
+!no:     AND DRV2.SEG_END_DT = PS_GPDE_RP_KU_DRV.SEG_END_DT 
+        AND DRV2.PRD_END_DT = PS_GPDE_RP_KU_DRV.PRD_END_DT 
+        AND DRV2.PAY_ENTITY = PS_GPDE_RP_KU_DRV.PAY_ENTITY 
+!no:     AND DRV2.GPDE_AL_CPAY_ENDDT = PS_GPDE_RP_KU_DRV.GPDE_AL_CPAY_ENDDT 
+        AND DRV2.GPDE_BL_TYPE = 'B'
+        AND DRV2.PROCESS_INSTANCE = #ReportProcessInstance
+)
+AND GPDE_BL_TYPE='C' 
+AND PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+end-procedure
+
+
+
+
+
+
+begin-procedure getHeaderDateString
+!
+!
+  do ConvertToComponents($Ctl_Curr_Pay_End_DT,$HD_yy,$HD_mm,$HD_dd)
+
+  evaluate $HD_mm
+    when = '01'
+      let $HD_Month_Name = 'Januar'
+      break
+    when = '02'
+      let $HD_Month_Name = 'Februar'
+      break
+    when = '03'
+      let $HD_Month_Name = 'März'
+      break
+    when = '04'
+      let $HD_Month_Name = 'April'
+      break
+    when = '05'
+      let $HD_Month_Name = 'Mai'
+      break
+    when = '06'
+      let $HD_Month_Name = 'Juni'
+      break
+    when = '07'
+      let $HD_Month_Name = 'Juli'
+      break
+    when = '08'
+      let $HD_Month_Name = 'August'
+      break
+    when = '09'
+      let $HD_Month_Name = 'September'
+      break
+    when = '10'
+      let $HD_Month_Name = 'Oktober'
+      break
+    when = '11'
+      let $HD_Month_Name = 'November'
+      break
+    when = '12'
+      let $HD_Month_Name = 'Dezember'
+      break
+    when-other
+      let $HD_Month_Name = 'XXXXXXX'
+      break
+  end-evaluate
+  
+  let $HeaderDateString = $HD_Month_Name || ' ' || $HD_yy
+  
+  #DEBUG show 'Month Name = ' $HD_Month_Name
+  #DEBUG show  '$HD_mm = ' $HD_mm
+end-procedure
+
+
+begin-procedure FinalCleanup
+
+begin-sql
+DELETE FROM PS_GPDE_RP_AZ1_WRK  WHERE PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+begin-sql
+DELETE FROM PS_GPDE_RP_KU_DRV WHERE PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+end-procedure
+
+
+!*************************************************************************
+#include 'number.sqc'    !routines to format numbers
+!#include 'gpdetx03.sqc'  !get run control parameter values
+#include 'gpdeut01.sqc'  !sqr strings table procedures
+#include 'gpdeut03.sqc'  !get ask report parameters
+#include 'gpdeut02.sqc'  !get ask report parameters
+#include 'gpdeut04.sqc'  !get pay entity data
+!#include 'gpdeut05.sqc'  !get employee address
+#include 'gpdeut06.sqc'  !get run control parameter values
+#include 'gpdeut07.sqc'  !get run control parameter values
+#include 'curdttim.sqc'  !get-current-datetime procedure
+#include 'datemath.sqc'  !function for date-calculation
+#include 'validdt.sqc'   !validate date routine
+#include 'readxlat.sqc'  !read-translate-table procedure
+#include 'datetime.sqc'  !routines for date and time formatting
+#include 'stdapi.sqc'    !routines to update run status
+#include 'sqrtrans.sqc'  !sqr strings table procedures
+!#include 'timemath.sqc'
+

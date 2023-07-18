@@ -1,0 +1,744 @@
+!-----------------------------------------------------------------------
+! Report Name: STOP011 - Repurchase Receipts
+!-----------------------------------------------------------------------
+!
+!
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:02:53:54                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!
+!-----------------------------------------------------------------------
+! Program Descr: Program prints an exercise receipt.  The report
+!                format depends on the specific exercise type.
+!-----------------------------------------------------------------------
+! Prompts:       Stock ID, Stock Plan ID, Emplid, From Date, Thru Date,
+!                Reprint Indicator, Process Group, Grant Nbr, Repurchase Nbr
+! Options:       None
+! Tables:        STOCK_TBL
+!                PERSON_ADDROTH
+!                PERSON_ADDRESS
+!                PERSON_NAME
+!                PERS_NID
+!                JOB
+!                TAX_LOCATION1
+!                ST_GRANT
+!                ST_OPTION_PLAN
+!                RUN_CNTL_ST
+!                ST_PRCS_GRP_DTL
+! Sorts:         STOCK_ID
+!                STOCK_PLAN
+!                NAME
+!-----------------------------------------------------------------------
+
+#include 'setenv.sqc'
+
+!-----------------------------------------------------------------------
+Begin-Setup
+
+  #include 'ptpsp125.sqc'               ! Portrait 125 Columns
+
+End-Setup
+
+!-----------------------------------------------------------------------
+! Procedure: Begin-Program
+! Descr:     Main Report procedure.
+!-----------------------------------------------------------------------
+Begin-Program
+
+  do Init-Report
+  do Build-where-Clause
+  do Expand-Process-Group                       !stprcgrp.sqc
+  do Main-Process 
+  do Reset
+  do Successful-EOJ
+
+  let $CurrentTime = datenow()
+  show 'Process ended at:   ' $SysDateTime
+
+End-Program
+
+!-----------------------------------------------------------------------
+! Procedure: Init-Report
+! Descr:     Report initialization procedure.  Set titles, parameters.
+!            This is called from the Begin-Program procedure.
+!-----------------------------------------------------------------------
+Begin-Procedure Init-Report
+
+  let $ReportID    = 'STOP011'
+  let $ReportTitle = $ReportTitle
+  let $PlanType    = 'O'   !option
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Define-Prcs-Vars
+  do Get-Run-Control-Parms
+
+  do Get-Report-Language    ! Procedure that decides the report language
+                            ! and then calls 'Report-Translation' procedure
+                            ! that reads the language dep. text.
+  let $AsOfDate = $AsOfToday
+
+  if $prcs_process_instance = ''
+    input $RC_Reprint_Prompt MAXLEN=1  'Reprint Prior Receipts Y/N?'                  Type=Char
+    uppercase $RC_Reprint_Prompt
+    !-------------------------------------------------!
+    !Keep asking for input if value is not 'Y' or 'N' !
+    !-------------------------------------------------!
+    while $RC_Reprint_Prompt <> 'Y' and $RC_Reprint_Prompt <> 'N' 
+       input $RC_Reprint_Prompt MAXLEN=1  'Reprint Prior Receipts Y/N'    Type=Char
+    end-while
+    input $RC_Stock_ID       MAXLEN=10 'Enter Stock ID or press enter for all'        Type=Char
+    input $RC_Stock_Plan     MAXLEN=10 'Enter Stock Plan ID or press enter for all'   Type=Char
+    input $RC_RunType        MAXLEN=1  'Run by Process Group ''P'' or Employee ''E''' Type=Char
+    uppercase $RC_RunType
+    while $RC_RunType <> 'P' and $RC_RunType <> 'E' 
+       input $RC_RunType        MAXLEN=1  'Run by Process Group ''P'' or Employee ''E''' Type=Char
+       uppercase $RC_RunType
+    end-while
+    if $RC_RunType = 'E'
+       input $RC_Emplid      MAXLEN=11 'Enter Emplid or press enter for all'          Type=Char
+       input $RC_RepurchNbr  MAXLEN=8  'Enter Repurchase Number or press enter to skip' Type=Char
+       input $RC_GrantNbr    MAXLEN=10 'Enter Grant Number or press enter to skip; if you entered a Repurchase number you must enter a grant number'    Type=Char
+    end-if
+    if $RC_RunType = 'P'
+       input $RC_PrcsGrp     MAXLEN=10 'Enter Procees Group or press enter for all'   Type=Char
+    end-if
+    uppercase $RC_Stock_ID
+    uppercase $RC_Stock_Plan
+    uppercase $RC_Emplid
+    uppercase $RC_PrcsGrp
+    uppercase $RC_GrantNbr
+    do Ask-From-Thru-Date
+    let $RC_FromDate = $FromDate
+    let $RC_ThruDate = $ThruDate
+  else
+    do Get-SQR-Parms                   ! Get Run Control Values
+    show 'From Date:      ' $RC_FromDate
+    show 'Thru Date:      ' $RC_ThruDate
+  end-if
+
+  let $RC_Stock_ID   = rtrim($RC_Stock_ID,' ')
+  let $RC_Stock_Plan = rtrim($RC_Stock_Plan,' ')
+  let $RC_Emplid     = rtrim($RC_Emplid,' ')
+  let $RC_Reprint    = rtrim($RC_Reprint_Prompt,' ')
+  let $RC_RunType    = rtrim($RC_RunType,' ')
+  let $RC_GrantNbr   = rtrim($RC_GrantNbr,' ')
+  let $RC_FromDate   = rtrim($RC_FromDate,' ')
+  let $RC_ThruDate   = rtrim($RC_ThruDate,' ')
+  let $RC_PrcsGrp    = rtrim($RC_PrcsGrp,' ')
+
+  show 'Reprint:        ' $RC_Reprint_Prompt
+  show 'Stock ID:       ' $RC_Stock_ID
+
+  if $RC_Stock_Plan <> ''
+    show 'Stock Plan:     ' $RC_Stock_Plan
+  end-if
+
+  if $RC_PrcsGrp <> ''
+    show 'Prcs Group:     ' $RC_PrcsGrp
+  end-if
+
+  if $RC_Emplid <> ''
+    show 'Emplid:         ' $RC_Emplid
+  end-if
+
+  if $RC_GrantNbr <> ''
+    show 'Grant Nbr:      ' $RC_GrantNbr
+  end-if
+
+  if #RC_RepurchNbr <> 0
+    show 'Repurchase Nbr: ' #RC_RepurchNbr
+  end-if
+
+  show ' '
+  let $CurrentTime = datenow()
+  show 'Process started at: ' $SysDateTime      !standard output info to sqr.log
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Report-Translation
+! Descr:     This procedure is used to read language-dependent text from
+!            the database.
+!-----------------------------------------------------------------------
+Begin-Procedure Report-Translation
+
+  do Init_Report_Translation ('STOCK',$language_cd)
+  do Append_Report_Translation ('STOP009')
+
+  do Get_Field_Information ('STOCK', 'NID',                $NidLbl,         #DW)
+  do Get_Field_Information ('STOCK', 'EMPLID',             $EmpIdLbl,       #DW)
+  do Get_Field_Information ('STOCK', 'GRANT_NBR',          $GrantNbrLbl,    #DW)
+  do Get_Field_Information ('STOCK', 'GRANT_DT',           $GrantDtLbl,     #DW)
+  do Get_Field_Information ('STOCK', 'GRANT_PRICE',        $GrantPriceLbl,  #DW)
+  do Get_Field_Information ('STOCK', 'ST_OPTION_TYPE',     $OptionTypeLbl,  #DW)
+  do Get_Field_Information ('STOCK', 'STOCK_PLAN',         $StPlanLbl,      #DW)
+  do Get_Field_Information ('STOCK', 'REPURCHASE_NBR',     $RepNbrLbl,      #DW)
+  do Get_Field_Information ('STOCK', 'REPURCHASE_DT',      $RepDtLbl,       #DW)
+  do Get_Field_Information ('STOCK', 'REPURCHASE_STATUS',  $RepStatusLbl,   #DW)
+  do Get_Field_Information ('STOCK', 'REPURCHASE_PRICE',   $RepPriceLbl,    #DW)
+  do Get_Field_Information ('STOCK', 'SHARES_REPURCHASED', $ShareRepLbl,    #DW)
+  do Get_Field_Information ('STOCK', 'REPURCHASE_REASON',  $RepReasonLbl,   #DW)
+  do Get_Field_Information ('STOCK', 'EMPL_RCD',           $EmplRcdLbl,     #DW)
+
+  do Get_Field_Information ('STOP009', 'STOP011',            $ReportTitle,    #DW)
+  do Get_Field_Information ('STOP009', 'PLEASE_RETAIN',      $ReportTitle2,   #DW)
+  do Get_Field_Information ('STOP009', 'OPTIONEE_INFO',      $OptioneeTitle,  #DW)
+  do Get_Field_Information ('STOP009', 'REPURCHASE_INFO',    $RepurchTitle,   #DW)
+  do Get_Field_Information ('STOP009', 'DEPTID',             $DeptLbl,        #DW)
+  do Get_Field_Information ('STOP009', 'LOCATION',           $LocnLbl,        #DW)
+  do Get_Field_Information ('STOP009', 'GRANT_INFO',         $GrantTitle,     #DW)
+  do Get_Field_Information ('STOP009', 'DISTRIB_ISSUE',      $DistIssueLbl,   #DW)
+  do Get_Field_Information ('STOP009', 'CALC_AMOUNT_DUE',    $CalcAmtDueLbl,  #DW)
+  do Get_Field_Information ('STOP009', 'AMT_DUE_OPTIONEE',   $DueOptioneeLbl, #DW)
+  do Get_Field_Information ('STOP009', 'ISSUE_INS_TITLE',    $IssueTitle,     #DW)
+  do Get_Field_Information ('STOP009', 'CONTROL_NBR',        $CntlNbrLbl,     #DW)
+  do Get_Field_Information ('STOP009', 'FEDERAL_EIN',        $FedEinLbl,      #DW)
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Build-where-Clause
+! Descr:   Construct portion of where clause, to be used in the main select,
+!          based on report parameters choosen.
+!-----------------------------------------------------------------------
+Begin-Procedure Build-where-Clause
+
+  let $SQLQuote        = ''''
+  let $WhereEmplid     = ''
+  let $WhereGrantNbr   = ''
+  let $WhereRepurchNbr = ''
+  let $WherePrcsGrp    = ''
+
+  if $RC_Stock_ID <> ''
+    let $WhereStockID   = ' and R.STOCK_ID  = '     || $SQLQuote || $RC_Stock_ID   || $SQLQuote
+  else
+    let $WhereStockID   = ''
+  end-if
+
+  if $RC_Stock_Plan <> ''
+    let $WhereStockPlan = ' and G.STOCK_PLAN  = '   || $SQLQuote || $RC_Stock_Plan || $SQLQuote
+  else
+    let $WhereStockPlan = ''
+  end-if
+
+  if $RC_FromDate <> ''
+    let $WhereFromDate  = ' and R.REPURCHASE_DT  >= ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+  else
+    let $WhereFromDate  = ''
+  end-if
+
+  if $RC_ThruDate <> ''
+    let $WhereThruDate  = ' and R.REPURCHASE_DT  <= ' || $SQLQuote || $RC_ThruDate   || $SQLQuote
+  else
+    let $WhereThruDate  = ''
+  end-if
+
+  if $RC_RunType = 'E'
+    if $RC_Emplid <> ''
+      let $WhereEmplid   = ' and R.EMPLID = '       || $SQLQuote || $RC_Emplid     || $SQLQuote
+    end-if
+    if $RC_GrantNbr <> ''
+      let $WhereGrantNbr = ' and G.GRANT_NBR = '    || $SQLQuote || $RC_GrantNbr   || $SQLQuote
+    end-if
+    if #RC_RepurchNbr <> 0
+      let $RC_RepurchNbr    = to_char(#RC_RepurchNbr)
+      let $WhereRepurchNbr  = ' and R.REPURCHASE_NBR = ' ||$RC_RepurchNbr
+    end-if
+  end-if
+
+  if $RC_PrcsGrp <> ''
+    let $WherePrcsGrp = ' and PG.PROCESS_GROUP = ' || $SQLQuote || $RC_PrcsGrp || $SQLQuote
+  end-if
+
+  if rtrim($RC_Reprint,' ') = 'N'
+    let $WhereReprint = ' and R.REPURCH_RECEIPT_DT IS NULL'
+  else
+    let $WhereReprint = ' and R.REPURCH_RECEIPT_DT IS NOT NULL'
+  end-if
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Main-Process
+! Descr:   Main report logic - select the fields for the report
+!-----------------------------------------------------------------------
+Begin-Procedure Main-Process
+
+  let $Print = 'N'
+  do Define-PrimJob-Clause('D',$AsOfToday, $PRIM_JOB_CLAUSE)
+
+Begin-Select
+
+A.COMPANY
+B.NAME
+C.NATIONAL_ID
+D.COMPANY
+E.COUNTRY
+G.GRANT_NBR
+G.EMPL_RCD
+G.GRANT_DT
+G.GRANT_PRICE
+G.ST_OPTION_TYPE
+G.STOCK_PLAN
+R.EMPLID
+R.STOCK_ID
+R.REPURCHASE_NBR
+R.REPURCHASE_DT
+R.REPURCHASE_STATUS
+R.REPURCHASE_PRICE
+R.TRANSFER_CNTL_NBR
+R.SHARES_REPURCHASED
+R.REPURCHASE_VALUE
+R.REPURCHASE_REASON
+
+  let $StockCompany      = rtrim(&a.company,' ')
+  let $Name              = rtrim(&b.name, ' ')
+  let $NationalId        = rtrim(&c.national_id, ' ')
+  let $JobCompany        = rtrim(&d.company,' ')
+  let $TaxCountry        = rtrim(&e.country,' ')
+  let $Emplid            = rtrim(&r.emplid, ' ')
+  let $StockId           = rtrim(&r.stock_id,' ')
+  let #RepurchaseNbr     = &r.repurchase_nbr
+  let $RepurchaseDt      = rtrim(&r.repurchase_dt, ' ')
+  let $RepurchaseStatus  = rtrim(&r.repurchase_status, ' ')
+  let #RepurchasePrice   = &r.repurchase_price
+  let #TransferCntlNbr   = &r.transfer_cntl_nbr
+  let #RepurchaseValue   = &r.repurchase_value
+  let $RepurchaseReason  = rtrim(&r.repurchase_reason, ' ')
+  let #SharesRepurchased = &r.shares_repurchased
+  let $GrantNbr         = rtrim(&g.grant_nbr, ' ')
+  let #Emplrcd          = &g.empl_rcd
+  let $GrantDt          = rtrim(&g.grant_dt, ' ')
+  let $StockPlan        = rtrim(&g.stock_plan,' ')
+  let #GrantPrice       = &g.grant_price
+  let $OptionType       = rtrim(&g.st_option_type,' ')
+
+  let $AddressType = 'MAIL'
+  do Get-Empl-Address
+  if $AddressFound = 'N'
+    let $AddressType = 'HOME'
+    do Get-Empl-Address
+  end-if
+
+  do Get-Other-Addr
+
+  let $EAddress1        = rtrim(&ADDRESS1_OTHER, ' ')
+  let $EAddress2        = rtrim(&ADDRESS2_OTHER, ' ')
+  let $EAddress3        = rtrim(&ADDRESS3_OTHER, ' ')
+  let $ECity            = rtrim(&CITY_OTHER, ' ')
+  let $EState           = rtrim(&STATE_OTHER, ' ')
+  let $EPostal          = rtrim(&POSTAL_OTHER, ' ')
+  let $ECountry         = rtrim(&COUNTRY_OTHER, ' ')
+
+  if $EAddress1 = ''
+     let $EAddress1    = rtrim(&person_address.address1, ' ')
+     let $EAddress2    = rtrim(&person_address.address2, ' ')
+     let $EAddress3    = rtrim(&person_address.address3, ' ')
+     let $ECity        = rtrim(&person_address.city, ' ')
+     let $EState       = rtrim(&person_address.state, ' ')
+     let $EPostal      = rtrim(&person_address.postal, ' ')
+     let $ECountry     = rtrim(&person_address.country, ' ')
+  end-if
+
+  if $JobCompany = $StockCompany
+    let $Company         = $JobCompany
+    do Get-Company-Info
+    let $CorporationName = $CDescr
+    let $CompanyName     = $CDescr
+  else
+    let $Company = $JobCompany
+    do Get-Company-Info
+    let $CompanyName     = $CDescr
+    let $Company = $StockCompany
+    do Get-Company-Info
+    let $CorporationName = $CDescr
+  end-if
+
+  do Print-Report
+  do Update-ReceiptDt
+  new-page
+
+from PS_STOCK_TBL        A,
+     PS_PERSON_NAME      B,
+     PS_PERS_NID         C,
+     PS_JOB              D,
+     PS_TAX_LOCATION1    E,
+     PS_ST_GRANT         G,
+     PS_ST_GRNT_REPURCH  R,
+     PS_R_PRCS_GRP_DTL   PG
+where A.STOCK_ID          = G.STOCK_ID
+  and G.EMPLID            = R.EMPLID
+  and G.STOCK_ID          = R.STOCK_ID
+  and G.GRANT_NBR         = R.GRANT_NBR
+  and D.EMPLID            = R.EMPLID
+  and D.EMPL_RCD          = [$PRIM_JOB_CLAUSE]
+  and D.EFFDT             = (SELECT MAX(EFFDT) from PS_JOB
+                             where EMPLID    = D.EMPLID
+                               and EMPL_RCD  = D.EMPL_RCD
+                               and EFFDT    <= $AsOfToday)
+  and D.EFFSEQ            = (SELECT MAX(EFFSEQ) from PS_JOB
+                             where EMPLID    = D.EMPLID
+                               and EMPL_RCD  = D.EMPL_RCD
+                               and EFFDT     = D.EFFDT)
+  and B.EMPLID            = R.EMPLID
+  and E.TAX_LOCATION_CD   = D.TAX_LOCATION_CD
+  and C.EMPLID            = R.EMPLID
+  and C.COUNTRY           = E.COUNTRY
+  and C.NATIONAL_ID_TYPE  = 'PR'
+  and R.REPURCHASE_STATUS = 'A'
+  and PG.COMPANY          = D.COMPANY
+  and PG.PAYGROUP         = D.PAYGROUP
+  and PG.REPORT_ID        = $ReportID
+  [$WhereFromDate]
+  [$WhereThruDate]
+  [$WhereStockID]
+  [$WhereStockPlan]
+  [$WhereEmplid]
+  [$WhereReprint]
+  [$WhereGrantNbr]
+  [$WhereRepurchNbr]
+  [$WherePrcsGrp]
+order by R.STOCK_ID,
+         G.STOCK_PLAN,
+         B.NAME
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Empl-Address
+! Descr:   Retrieves the Employee's Address
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Empl-Address
+
+  let $AddressFound = 'N'
+
+Begin-Select
+
+PERSON_ADDRESS.ADDRESS1
+PERSON_ADDRESS.ADDRESS2
+PERSON_ADDRESS.ADDRESS3
+PERSON_ADDRESS.CITY
+PERSON_ADDRESS.STATE
+PERSON_ADDRESS.POSTAL
+PERSON_ADDRESS.COUNTRY
+
+  let $AddressFound = 'Y'
+  let $EAddress1    = rtrim(&person_address.address1, ' ')
+  let $EAddress2    = rtrim(&person_address.address2, ' ')
+  let $EAddress3    = rtrim(&person_address.address3, ' ')
+  let $ECity        = rtrim(&person_address.city, ' ')
+  let $EState       = rtrim(&person_address.state, ' ')
+  let $EPostal      = rtrim(&person_address.postal, ' ')
+  let $ECountry     = rtrim(&person_address.country, ' ')
+
+from PS_PERSON_ADDRESS PERSON_ADDRESS
+where PERSON_ADDRESS.EMPLID       = $Emplid
+  and PERSON_ADDRESS.ADDRESS_TYPE = $AddressType
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Print-Report
+! Descr:   Prints and formats the Exercise Receipts
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Report
+
+  date-time () 'Day, Mon DD, YYYY  HH:MI PM' &PrintDate
+  print &PrintDate                                         ( 1,000,   ) center bold
+  print $ReportTitle                                       (+1,001,   ) center bold
+  print $ReportTitle2                                      (+1,001,041)
+
+  print $StockId                                           (+2,001,010)
+  print $CorporationName                                   (+1,001,030)
+  print $CAddress1                                         (+1,001,035)
+  if $CAddress2 <> ''
+    print $CAddress2                                       (+1,001,035)
+  end-if
+  if $CAddress3 <> ''
+    print $CAddress3                                       (+1,001,035)
+  end-if
+  if $CAddress1 <> ''
+    let $CityStZip = $CCity || ', ' || $CState || ' '
+    let #Length = Length($CPostal)
+    if $CCountry = 'USA'
+      if #Length = 5
+        let $Postal = edit($CPostal, 'XXXXX')
+      else
+        let $Postal = edit($CPostal, 'XXXXX-XXXX')
+      end-if
+    end-if
+    let $CityStZip = $CityStZip || $Postal
+    print $CityStZip                                       (+1,001,051)
+  end-if
+  let $CityStZip = ''
+  let $Postal    = ''
+  print $CCountry                                          (+1,001,003)
+  print $FedEinLbl                                         (+1,001,011)
+  print ':'                                                (  ,   ,001)
+  print &j.federal_ein                                     (  , +1,010) edit XX-XXXXXXX
+
+!--------------------------------------
+! Optionee Info
+!--------------------------------------
+  let #LineCnt     = 0                  ! Used for positioning the section
+  let #LineCnt2    = 0                  ! Will print the left column and then back up and print the right
+  let #AdvanceLine = 0
+  let #RevLine     = 0
+
+  print $OptioneeTitle                                     (14,001,020) underline
+  print $EmpIdLbl                                          (+1,001,006)
+  print ':'                                                (  ,   ,001)
+  print $Emplid                                            (  ,030,011)
+  print $NidLbl                                            (+1,001,003)
+  print ':'                                                (  ,   ,001)
+
+  evaluate $TaxCountry
+    when = 'USA'
+      print $NationalId                                    (  ,030,011)  edit XXX-XX-XXXX
+      break
+    when = 'CAN'
+      print $NationalId                                    (  ,030,013)  edit XXX-XXX-XXXXX
+      break
+    when-other
+      print $NationalId                                    (  ,030,020)
+      break
+  end-evaluate
+
+  do Rotate-Name
+  print $Name                                              (-1,075,045)
+  print $EAddress1                                         (+1,075,035)
+  if $EAddress2 <> ''
+    print $EAddress2                                       (+1,075,035)
+  end-if
+  if $EAddress3 <> ''
+    print $EAddress3                                       (+1,075,035)
+  end-if
+  if  rtrim($EAddress1,' ') <> ''
+    let $CityStZip = rtrim($ECity,' ') || ', ' || rtrim($EState,' ') || ' '
+    let #Length = Length($EPostal)
+    if $ECountry = 'USA'
+      if #Length = 5
+        let $EPostal = edit($EPostal, 'XXXXX')
+      else
+        let $EPostal = edit($EPostal, 'XXXXX-XXXX')
+      end-if
+    end-if
+    let $CityStZip = $CityStZip || $EPostal
+    print $CityStZip                                       (+1,075,050)
+  end-if
+  if $ECountry <> ''
+    print $ECountry                                        (+1,075,003)
+  end-if
+
+  let $CityStZip = ''
+  let $EPostal  = ''
+  let $ECountry = ''
+ 
+!--------------------------------------
+! Grant Information
+!--------------------------------------
+  print $GrantTitle                                        (22,001,017)  underline
+  print $GrantNbrLbl                                       (+1,001,012)
+  print ':'                                                (  ,   ,001)
+  print $GrantNbr                                          (  ,030,010)
+
+  print $EmplRcdLbl                                        (  ,045,009)
+  print ':'                                                (  ,   ,001)
+  print  #Emplrcd                                          (  , +1,002) edit 99
+
+
+  print $OptionTypeLbl                                     (  ,068,011)
+  print ':'                                                (  ,   ,001)
+  print $OptionType                                        (  ,095,004)
+  print $GrantDtLbl                                        (+1,001,010)
+  print ':'                                                (  ,   ,001)
+  do Format-DateTime ($GrantDt, $Date, {DEFDATE}, '', '')
+  print $Date                                              (  ,030,010)
+  print $StPlanLbl                                         (  ,068,013)
+  print ':'                                                (  ,   ,001)
+  print $StockPlan                                         (  ,095,010)
+  print $GrantPriceLbl                                     (+1,001,011)
+  print ':'                                                (  ,   ,001)
+  print #GrantPrice                                        (  ,031,022) edit $99,999,999,999.999999
+
+!--------------------------------------
+! Repurchase Information
+!--------------------------------------
+  print $RepurchTitle                                      (+3,001,040) underline
+  print $RepDtLbl                                          (+1,001,015)
+  print ':'                                                (  ,   ,001)
+  do Format-DateTime ($RepurchaseDt, $Date, {DEFDATE}, '', '')
+  print $Date                                              (  ,030,010)
+  print $RepNbrLbl                                         (  ,068,017)
+  print ':'                                                (  ,   ,001)
+  print #RepurchaseNbr                                     (  ,095,008) edit 99999999
+  let $FieldName  = 'REPURCHASE_STATUS'
+  let $FieldValue = $RepurchaseStatus
+  do Read-Translate-Table
+  let $Status = $XlatLongName
+  print $RepStatusLbl                                      (+1,001,017)
+  print ':'                                                (  ,   ,001)
+  print $Status                                            (  ,030,030)
+  print $RepPriceLbl                                       (  ,068,016)
+  print ':'                                                (  ,   ,001)
+  print #RepurchasePrice                                   (  ,095,022) edit $99,999,999,999.999999
+
+  let $FieldName  = 'REPURCHASE_REASON'
+  let $FieldValue = $RepurchaseReason
+  do Read-Translate-Table
+  let $Reason = $XlatLongName
+  print $RepReasonLbl                                      (+1,001,017)
+  print ':'                                                (  ,   ,001)
+  print $Reason                                            (  ,030,030)
+
+!--------------------------------
+! Distribution of Stock Issuance
+!--------------------------------
+  print $DistIssueLbl                                      (+3,001,040) underline
+  print $ShareRepLbl                                       (+1,001,018)
+  print ':'                                                (  ,   ,001)
+  print #SharesRepurchased                                 (  ,031,022) edit 999,999,999,999,999.99
+
+!-------------------------------
+! Calculation of Amount Due
+!-------------------------------
+  print $CalcAmtDueLbl                                     (+3,001,040) underline
+  print $ShareRepLbl                                       (+1,001,018)
+  print ':'                                                (  ,   ,001)
+  print #SharesRepurchased                                 (  ,031,022) edit 999,999,999,999,999.99
+  print $RepPriceLbl                                       (+1,001,016)
+  print ':'                                                (  ,   ,001)
+  print 'X'                                                (  ,029,001)
+  print #RepurchasePrice                                   (  ,031,22) edit $99,999,999,999,999.99
+  print '_'                                                (+1,030,023) fill
+  print $DueOptioneeLbl                                    (+1,001,019)
+  print ':'                                                (  ,   ,001)
+  print #RepurchaseValue                                   (  ,031,022) edit $99,999,999,999,999.99
+
+!--------------------------
+! Issuance Instructions
+!--------------------------
+  print $IssueTitle                                        (+3,001,040) center underline
+  print $CntlNbrLbl                                        (+2,001,014)
+  print ':'                                                (  ,   ,001)
+  print #TransferCntlNbr                                   (  ,030,007) edit 9999999
+  print $StPlanLbl                                         (+1,001,013)
+  print ':'                                                (  ,   ,001)
+  print $StockPlan                                         (  ,030,010)
+  print $ShareRepLbl                                       (+2,001,018)
+  print ':'                                                (  ,   ,001)
+  print #SharesRepurchased                                 (  ,031,022) edit 999,999,999,999,999.99
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Company-Info
+! Descr:   Retrieve the Company Name and Address
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Company-Info
+
+Begin-Select
+
+J.DESCR
+J.ADDRESS1
+J.ADDRESS2
+J.ADDRESS3
+J.ADDRESS4
+J.CITY
+J.STATE
+J.POSTAL
+J.COUNTRY
+J.FEDERAL_EIN
+
+  let $CDescr      = rtrim(&j.descr, ' ')
+  let $CAddress1   = rtrim(&j.address1, ' ')
+  let $CAddress2   = rtrim(&j.address2, ' ')
+  let $CAddress3   = rtrim(&j.address3, ' ')
+  let $CAddress4   = rtrim(&j.address4, ' ')
+  let $CCity       = rtrim(&j.city, ' ')
+  let $CState      = rtrim(&j.state, ' ')
+  let $CPostal     = rtrim(&j.postal, ' ')
+  let $CCountry    = rtrim(&j.country, ' ')
+
+from PS_COMPANY_TBL J
+where J.COMPANY    = $Company
+  and J.EFFDT      = (SELECT MAX(EFFDT) from PS_COMPANY_TBL JJ
+                       where JJ.COMPANY = J.COMPANY
+                         and JJ.EFFDT  <= $AsOfToday)
+  and J.EFF_STATUS = 'A'
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Update-ReceiptDt
+! Descr:   Updates the exercise receipt date to the date the report is run
+!-----------------------------------------------------------------------
+Begin-Procedure Update-ReceiptDt
+
+  let $Procedure = 'Update-ReceiptDt'
+  let $SQL-Statement = 'Procedure: ' || $Procedure
+
+Begin-Sql                           on-error = SQL-Error
+
+update PS_ST_GRNT_REPURCH
+   set REPURCH_RECEIPT_DT = $AsOfToday
+ where EMPLID         = $Emplid
+   and STOCK_ID       = $StockId
+   and GRANT_NBR      = $GrantNbr
+   and REPURCHASE_NBR = #RepurchaseNbr
+
+End-Sql
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! SQC Includes
+!-----------------------------------------------------------------------
+#include 'curdttim.sqc'                !Procedures: Get-Current-DateTime
+#include 'datetime.sqc'                !Procedures: Init-Datetime
+#include 'eoj.sqc'                     !End of Report Format
+#include 'number.sqc'                  !Procedures: Init-Number
+#include 'prcsapi.sqc'                 !Process Scheduler API
+#include 'prcsdef.sqc'                 !Update Process Open_Trans variable declaration
+#include 'reset.sqc'                   !Reset printer procedure
+#include 'strunctl.sqc'                !Stock Admin's Run Control Record
+#include 'getrplng.sqc'                !Gets the report language
+#include 'sqlerr.sqc'                  !SQL error processing
+#include 'getprimj.sqc'                !Builds dynamic where clause used to retrieve the primary job
+#include 'stprcgrp.sqc'                !Creates temp table with all combos for a process group
+#include 'rotname1.sqc'                !First Name, Last Name
+#include 'sqrtrans.sqc'
+#include 'readxlat.sqc'
+#include 'askftd.sqc' 
+#include 'datemath.sqc'
+#include 'getothad.sqc'

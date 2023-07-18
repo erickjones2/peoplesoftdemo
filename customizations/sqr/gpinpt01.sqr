@@ -1,0 +1,1077 @@
+!***********************************************************************
+!  GPINPT01:  Profession Tax Report                                                                                               *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2015, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2015/05/29:02:06:00                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  105                                                 !
+!                                                                      *
+!***********************************************************************
+!
+!***********************************************************************
+!                                                                      *
+! Global Payroll       Release 9                                       *
+!***********************************************************************
+!************************************************************************
+!                       Modification History                            *
+!                                                                       *
+!    Date       Incident                    Description                 *
+!  ----------- -----------               -----------------              *
+!  D/MM/YYYY                                                            *
+!                                                                       *
+!                                                                       *
+! 26/11/2007  1693718000      The SQR has been updated to print the     *
+!                             report correctly for Tamil Nadu.          *
+!                                                                       *
+! 06/May/2008  1705540002     The SQR has been modified to print the    *
+!                             establishment name from GPIN_REG_NAME     *
+!                             from the ESTAB_TBL_GPIN record.           *
+!                                                                       *
+!************************************************************************
+
+
+#include 'setenv.sqc'    !Set environment
+#include 'rellang.sqc'
+
+Begin-Setup
+  #Include 'ptset02.sqc'   ! Printer and page-size initialization
+End-Setup
+
+#define MaxColumns   13     ! Maximum number of Columns
+#define MaxRows      200    ! Maximum number of Rows that can be read from Report Setup
+#define ColumnWidth  12     ! Width of each column
+#define Column0      1      ! Column Starting Position
+#define Column1      2      !
+#define Column2      27
+#define Line1        3      !
+#define MaxLines     39     ! Maximum number of Lines per page
+#Define Ptax_Array   25
+
+
+!**********************************************************************
+Begin-Program
+!***********************************************************************
+  do Init-Report
+  do get-runcntl-details
+  do get-employees-tmp
+  do Stdapi-Term
+End-Program
+
+!***********************************************************************
+begin-procedure Init-Report
+!***********************************************************************
+   move 'GPINPT01' to $ReportID
+   do Init-DateTime
+   do Init-Number
+   do Get-Current-DateTime
+   do Stdapi-Init
+
+   let $language_cd = $CURR_LANGUAGE_CD
+
+   do Init_Report_Translation($ReportID, $language_cd)
+   do Append_Report_Translation($ReportID)
+
+   if $prcs_process_instance = ''
+
+   else
+     let #prcs_process_instance=To_number($prcs_process_instance)
+
+   end-if
+
+  Create-Array Name=Proftax Size = {Ptax_Array}
+    Field=pt_gross_wages:Number
+    Field=seq_num:Number
+    Field=no_of_employee:Number
+    Field=rate:Number
+    Field=amt_of_tax:Number
+    Field=empl_pt_ded:Number
+end-procedure
+
+!***********************************************************************
+begin-procedure get-runcntl-details
+!***********************************************************************
+Begin-Select
+RC.OPRID
+RC.RUN_CNTL_ID
+RC.LANGUAGE_CD
+RC.LANGUAGE_OPTION
+RC.ESTABID
+RC.ENTRY_TYPE_ID
+RC.PIN_NUM
+RC.CAL_RUN_ID
+RC.CAL_PRD_ID
+RC.GP_GENRPT_SORT_OPT
+RC.CURRENCY_CD
+RC.GB_GROUP_ID
+RC.GB_EFFDT
+RC.GB_REFINE_DATE
+RC.VERSIONGBQDM
+RC.GP_GENRPT_BLD_GRP
+RC.GPIN_REPORT_ID
+RC.BGN_DT
+RC.END_DT
+RC.CREATION_DT
+
+  LET $RC_ESTABID = &RC.ESTABID
+  LET $BEGIN-DT = &RC.BGN_DT
+  LET $END-DT = &RC.END_DT
+  LET #PIN1 = &RC.PIN_NUM
+
+  MOVE &RC.CREATION_DT TO $Creation_Dt 'DD/MM/YYYY'
+  let $Creation_Dt = ltrim(rtrim($Creation_Dt,' '),' ')
+
+  do Format-DateTime($END-DT,$Out,{DEFYMD},'','')
+
+  LET #Year = substr($Out,1,4)
+  do Format-Number(#Year,$Year,'9999')
+
+FROM
+       PS_GPIN_PR_RC RC
+WHERE
+       RC.OPRID       = $prcs_oprid
+AND    RC.RUN_CNTL_ID = $prcs_run_cntl_id
+END-SELECT
+end-procedure
+
+
+!*********************************************************************************
+BEGIN-PROCEDURE get-employees-tmp
+!*********************************************************************************
+let $sav_emplid = ''
+let #empl_pt_gross = 0
+let #empl_count = 0
+let #empl_pt_ded = 0
+let #grand_tot_tax = 0
+let #PT_GROSS_NTD = 0
+let #PT_GROSS_MTD = 0
+let #PT_GROSS_YTD = 0
+let #empl_pt_tn_ded = 0
+let #empl_pt_kl_ded = 0
+
+do Get-New-Framework-Switch
+
+do Get-Authority-Info
+do estab-details
+
+IF (Rtrim(Ltrim($STATE,' '),' ') <> 'DL' and $EnableNpt = 'N')   ! New PT Framework not enabled
+     Or ($EnableNpt <> 'N')
+
+  If $EnableNpt = 'N'   ! New PT Framework not enabled
+    do Get-Variables-Value
+    do get-bracket-data
+  end-if
+#debugd show 'Process Instance: ' #prcs_job_instance
+
+BEGIN-SELECT
+TMP.JOBINSTANCE
+TMP.EMPLID
+TMP.CAL_RUN_ID
+TMP.EMPL_RCD
+TMP.GP_PAYGROUP
+TMP.CAL_ID
+TMP.ORIG_CAL_RUN_ID
+TMP.RSLT_SEG_NUM
+TMP.RSLT_VER_NUM
+TMP.RSLT_REV_NUM
+TMP.GP_GENRPT_BREAK1
+TMP.GP_GENRPT_BREAK2
+TMP.PRD_BGN_DT
+TMP.PRD_END_DT
+    let $prd_end_dt = &tmp.prd_end_dt
+    Move &tmp.prd_end_dt To $prdenddt 'mm-dd-yyyy'
+    let $empid = &TMP.EMPLID
+    let $BREAK1 = &TMP.GP_GENRPT_BREAK1
+    let $BREAK2 = &TMP.GP_GENRPT_BREAK2
+
+
+    If $EnableNpt = 'N'   ! New PT Framework not enabled
+      if  $sav_Emplid <> &TMP.EMPLID
+        do get-employees-tmp3
+      end-if
+    else
+      let $District = ltrim(rtrim(&TMP.GP_GENRPT_BREAK2,' '),' ')
+      If $District = ''
+        let $District = ' '
+      end-if
+      If $sav_District <> $District
+        if $sav_District <> '' and #grand_tot_tax <> 0 ! *!*!*and $Print_state = 'Y'
+          do Rep_Header
+          do Print_Summary
+          do Print-Other-Details
+          new-page
+        end-if
+
+    ! *!*!*    do determine-print-rpt
+
+        #debugd show 'Print state? ' $Print_state
+        do GET-SLAB-DATA
+        let #grand_tot_tax = 0
+        let $sav_District = $District
+      end-if
+
+      #debugd show 'District: ' $sav_district '    Tax grand total: ' #grand_tot_tax  '  Print State: ' $Print_state
+      if  $sav_Emplid <> &TMP.EMPLID ! *!*!*and $Print_state = 'Y'
+        do get-employees-tmp3
+      end-if
+    end-if
+
+    let $sav_Emplid = &TMP.EMPLID
+
+
+From PS_GPIN_PR_TMP TMP
+WHERE TMP.JOBINSTANCE = #prcs_job_instance
+AND (($EnableNpt = 'N' AND (TMP.GP_GENRPT_BREAK1  = $RC_ESTABID or rtrim($STATE) = 'TN' or rtrim($STATE) = 'KL'))
+  OR ($EnableNpt <> 'N' AND TMP.GP_GENRPT_BREAK1  = $RC_ESTABID))
+ORDER BY TMP.GP_GENRPT_BREAK1, TMP.GP_GENRPT_BREAK2, TMP.EMPLID
+END-SELECT
+
+#debugd show 'District: ' $sav_district '    Tax grand total: ' #grand_tot_tax '  Print State: ' $Print_state
+if $EnableNpt = 'N'
+    Or ($EnableNpt <> 'N' and #grand_tot_tax <> 0) ! *!*!*and $Print_state = 'Y')
+  do Rep_Header
+  do Print_Summary
+  do Print-Other-Details
+end-if
+
+END-IF
+
+END-PROCEDURE
+
+
+!***********************************************************************
+!     Procedure:   Get-New-Framework-Switch
+!     Description: Procedure to get GP Variable PT VR ENABLE N PT value
+!                  to determine if new PT framework is enabled.
+!***********************************************************************
+begin-procedure Get-New-Framework-Switch
+#debug do Fin-Debug-Msg('Get-New-Framework-Switch')
+
+let $EnableNpt = 'N'
+
+BEGIN-SELECT
+V.CHARACTER_VALUE
+  let $EnableNpt = &V.CHARACTER_VALUE
+
+FROM PS_GP_VARIABLE V, PS_GP_PIN P
+WHERE V.PIN_NUM = P.PIN_NUM
+AND P.PIN_CODE = 'PT VR ENABLE N PT IND'
+AND V.EFFDT = (SELECT MAX(V2.EFFDT) FROM PS_GP_VARIABLE V2
+               WHERE V2.PIN_NUM = V.PIN_NUM
+                AND  V2.EFFDT <= $END-DT)
+END-SELECT
+
+#debugd show 'Enable PT new framework switch (Value different than ''N'' is enabled): ->' $EnableNpt '<-'
+
+end-procedure
+
+
+!***********************************************************************
+!     Procedure:   Get-Authority-Info
+!     Description: Procedure to get details of the person responsible
+!                  for deduction of tax.
+!***********************************************************************
+begin-procedure Get-Authority-Info
+
+BEGIN-SELECT DISTINCT
+E.EMPLID,
+NAMES.FIRST_NAME,
+NAMES.MIDDLE_NAME,
+NAMES.LAST_NAME
+
+    move &NAMES.FIRST_NAME   to $AuthName
+    let $AuthName = ltrim(rtrim($AuthName,' '),' ') ||' '|| ltrim(rtrim(&NAMES.MIDDLE_NAME,' '),' ')
+    let $AuthName = ltrim(rtrim($AuthName,' '),' ') ||' '|| ltrim(rtrim(&NAMES.LAST_NAME,' '),' ')
+
+from PS_ESTAB_TBL_GPIN E, PS_NAMES NAMES
+where E.ESTABID      = $RC_ESTABID
+AND   E.EFFDT        = (SELECT MAX(EFFDT) FROM PS_ESTAB_TBL_GPIN E1
+                         WHERE E1.ESTABID = E.ESTABID
+                         AND   E1.EFFDT   <= $END-DT)
+AND NAMES.EMPLID    = E.EMPLID
+AND NAMES.NAME_TYPE = 'PRI'
+AND NAMES.EFFDT     = (SELECT MAX(EFFDT) FROM PS_NAMES NAMES1
+                        WHERE NAMES1.EMPLID = NAMES.EMPLID
+                        AND  NAMES1.NAME_TYPE = NAMES.NAME_TYPE
+                        AND NAMES1.EFFDT <= $END-DT)
+END-SELECT
+
+end-procedure
+!***********************************************************************
+begin-procedure estab-details
+!***********************************************************************
+begin-select
+ESTAB.ESTABID
+ESTAB.ADDRESS1
+ESTAB.ADDRESS2
+ESTAB.ADDRESS3
+ESTAB.ADDRESS4
+ESTAB.CITY
+ESTAB.STATE
+ESTAB.POSTAL
+ESTAB.COUNTRY
+ESTIND.GPIN_REG_NAME
+ESTIND.GPIN_PT_NBR
+ESTIND.GPIN_PT_PTO_CIRCLE
+
+   let $DESCR=&ESTIND.GPIN_REG_NAME
+   let $ADD1=&ESTAB.ADDRESS1
+   let $ADD2=&ESTAB.ADDRESS2
+   let $ADD3=&ESTAB.ADDRESS3
+   let $ADD4=&ESTAB.ADDRESS4
+   let $CITY=&ESTAB.CITY
+   let $STATE=&ESTAB.STATE
+   let $PIN=&ESTAB.POSTAL
+   let $COUNTRY=&ESTAB.COUNTRY
+   let $GPIN_PT=&ESTIND.GPIN_PT_NBR
+   let $GPIN_PTO=&ESTIND.GPIN_PT_PTO_CIRCLE
+
+FROM PS_ESTAB_TBL ESTAB,
+     PS_ESTAB_TBL_GPIN ESTIND
+WHERE ESTAB.ESTABID= ESTIND.ESTABID
+AND   ESTAB.ESTABID=$RC_ESTABID
+AND   ESTAB.EFFDT=(SELECT MAX(X.EFFDT) FROM PS_ESTAB_TBL X
+                    WHERE X.ESTABID=ESTAB.ESTABID
+                   AND   X.EFFDT  <= $END-DT)
+AND ESTIND.EFFDT=(SELECT MAX(Y.EFFDT) FROM PS_ESTAB_TBL_GPIN Y
+                  WHERE Y.ESTABID=ESTIND.ESTABID
+                  AND   Y.EFFDT <= $END-DT)
+end-select
+
+begin-select
+ST.DESCR
+
+  let $STDESCR=&ST.DESCR
+
+FROM PS_STATE_TBL ST
+WHERE ST.COUNTRY=$COUNTRY
+AND   ST.STATE=$STATE
+end-select
+
+end-procedure
+
+!***********************************************************************
+Begin-Procedure Rep_Header
+!***********************************************************************
+  alter-printer  point-size=12  font=4
+
+if ltrim(rtrim($STDESCR,' '),' ') <> 'Delhi(UT)'
+print 'Return-cum-Chalan'   (2,64) bold
+print 'RETURN OF TAX PAYABLE BY EMPLOYER UNDER SUB-SECTION(1) OF SECTION 6-A OF THE PROF' (4,10) bold
+print 'TAX ON PROFESSION, TRADE, CALLINGS AND EMPLOYMENT ACT 1976.' (6,10) bold
+
+!print 'ON PROFESSION, TRADE, CALLINGS AND EMPLOYMENT ACT 1976.' (6,35) bold
+alter-printer  point-size=8 font=4
+Let #line = 8
+print 'State:' (#line,10,)
+print $STDESCR (#line,16,30)
+If $EnableNpt <> 'N'
+  print 'District: ' (#line,+40,)
+  print $DISDESCR (#line,+1,30)
+end-if
+add 2 to #line
+
+print 'Name and Address of the Employer:' (#line,10,) Bold
+print 'Return on Tax Payable for the month of:' (#line,108,) Bold wrap 32 2
+add 1 to #line
+let $DESCR = rtrim ($DESCR,' ')
+print $DESCR (#line,10)
+Do Get_Month
+print $ptmonth (#line,118)
+print $Year (#line,+1)
+print '' (,10)
+if isblank($ADD1) <> 1
+print  $ADD1 (+1,10)
+end-if
+if isblank($ADD2) <> 1
+print  $ADD2 (+1,10)
+end-if
+if isblank($ADD3) <> 1
+print  $ADD3 (+1,10)
+end-if
+if isblank($ADD4) <> 1
+print  $ADD4 (+1,10)
+end-if
+if isblank($city) <> 1
+print  $city (+1,10)
+end-if
+if isblank($state) <> 1
+let $state1 = ltrim(rtrim($state,' '),' ')||'-'||$PIN
+print  $state1 (+1,10)
+end-if
+if isblank($country) <> 1
+print  $country (+1,10)
+end-if
+add 2 to #line
+
+print 'Registration Certificate No.:' (#line,108) Bold
+add 1 to #line
+
+print  $GPIN_PT (#line,108)
+add 4 to #line
+alter-printer  point-size=8 font=4
+print 'PTO Circle Number:' (#line,108) Bold
+
+print  $GPIN_PTO (+1,108)
+ let #line  = 22
+print 'Number of Employees during the Month in respect of whom the tax is payable is as under :-'  (#line,12,)
+ add 3 to #line
+
+GRAPHIC (#line,10,130) BOX  18
+print 'Employees whose Monthly Salaries Or wages or Both are.' (#line,14) wrap 30 2
+GRAPHIC (24,45,18) VERT-LINE
+print 'Number of Employees' (#line,50) wrap 30 2
+GRAPHIC (24,76,18) VERT-LINE
+print 'Rate of Tax per month' (#line,81) wrap 30 2
+GRAPHIC (24,107,18) VERT-LINE
+print 'Amount of Tax deducted' (#line,112) wrap 30 2
+ add 1 to #line
+ print '(Rs)' (#line,120)
+ add 2 to #line
+GRAPHIC (#line,10,130) HORZ-LINE
+
+end-if
+
+End-Procedure
+
+!***********************************************************************
+Begin-Procedure Get_Month
+!***********************************************************************
+
+Extract $month from $prdenddt 0  2
+   Evaluate $month
+      When = '01'
+           Let $ptmonth = 'Jan'
+           break
+      When = '02'
+           Let $ptmonth = 'Feb'
+           break
+      When ='03'
+           Let $ptmonth = 'March'
+           break
+      When = '04'
+           Let $ptmonth = 'April'
+           break
+      When = '05'
+           Let $ptmonth = 'May'
+           break
+      When = '06'
+           Let $ptmonth = 'June'
+           break
+      When = '07'
+           Let $ptmonth = 'July'
+           break
+      When = '08'
+           Let $ptmonth = 'Aug'
+           break
+      When = '09'
+           Let $ptmonth = 'Sept'
+           break
+      When = '10'
+           Let $ptmonth = 'Oct'
+           break
+      When = '11'
+           Let $ptmonth = 'Nov'
+           break
+      When = '12'
+           Let $ptmonth = 'Dec'
+           break
+  End-Evaluate
+End-Procedure !Get_Month
+
+
+!***********************************************************************
+!     Procedure:   determine-print-rpt
+!     Description: Determines if the reporting month is a PT deduction
+!                  month for the state
+!***********************************************************************
+Begin-Procedure determine-print-rpt
+#debug do Fin-Debug-Msg('determine-print-rpt')
+
+Let $Print_state = 'Y'
+let $Deduc_Freq = ''
+
+Extract $month_dd from $prdenddt 0  2
+Let #month_dd = $month_dd
+
+BEGIN-SELECT
+PDX.EFFDT
+PDX.GPIN_PT_DEDUC_FREQ
+  let $PDX_EffDt = &PDX.EFFDT
+  let $Deduc_Freq = &PDX.GPIN_PT_DEDUC_FREQ
+
+FROM PS_GPIN_PT_TBL PDX
+Where PDX.STATE = $State
+and PDX.GPIN_PT_SLVL_VAL = $District
+and PDX.EFFDT =(SELECT MAX(PDX1.EFFDT) FROM PS_GPIN_PT_TBL PDX1
+             WHERE  PDX1.STATE = PDX.STATE
+             AND    PDX1.GPIN_PT_SLVL_VAL = PDX.GPIN_PT_SLVL_VAL
+             AND    PDX1.EFFDT <= $END-DT )
+and PDX.EFF_STATUS <> 'I'
+End-Select
+
+
+If $Deduc_Freq <> 'M'
+
+BEGIN-SELECT
+PD.GPIN_PT_DED_PRD
+  #debugd show 'Ded Freq: ' $Deduc_Freq '  state ded mo: ' &PD.GPIN_PT_DED_PRD ' (' #month_dd ')'
+  If &PD.GPIN_PT_DED_PRD = #month_dd
+    let $Print_state = 'Y'
+    exit-select
+  else
+    let $Print_state = 'N'
+  end-if
+  
+FROM PS_GPIN_PT_DED_PD PD
+Where PD.STATE = $State
+and PD.GPIN_PT_SLVL_VAL = $District
+and PD.EFFDT = $PDX_EffDt
+End-Select
+
+end-if
+
+#debugd show 'Print State: ' $Print_state
+
+End-Procedure !determine-print-rpt
+
+
+!***********************************************************************
+!     Procedure:   Get-Variables-Value
+!     Description: Procedure to extract value that are used to calculate
+!                  PT for Maharashtra state in the month of February.
+!***********************************************************************
+Begin-Procedure Get-Variables-Value
+
+Let #PT_RANGE = 0
+Let #PT_AMOUNT = 0
+Let $PT_MONTH = ''
+
+BEGIN-SELECT
+PIN.PIN_CODE,
+VR.MONETARY_VALUE,
+VR.DECIMAL_VALUE
+
+   Let $PT_VARIABLE_VAL = Ltrim(Rtrim(&PIN.PIN_CODE,' '),' ')
+
+   Evaluate $PT_VARIABLE_VAL
+     When = 'PT VR MH RANGE IND'
+        Let #PT_RANGE = &VR.MONETARY_VALUE
+        Break
+     When = 'PT VR MH ADDL AMT IND'
+        Let #PT_AMOUNT = &VR.MONETARY_VALUE
+        Break
+     When = 'PT VR MH MONTH IND'
+        Let $PT_MONTH = Ltrim(Rtrim(to_char(&VR.DECIMAL_VALUE),' '),' ')
+        if Length($PT_MONTH) <> 2
+            string '0' $PT_MONTH by '' into $PT_MONTH
+        end-if
+    Break
+    End-Evaluate
+
+FROM PS_GP_VARIABLE VR, PS_GP_PIN PIN
+WHERE VR.PIN_NUM = PIN.PIN_NUM
+AND VR.EFFDT = (SELECT MAX(VR1.EFFDT) FROM PS_GP_VARIABLE VR1
+                WHERE VR1.PIN_NUM = VR.PIN_NUM
+                AND VR1.EFFDT <= $END-DT)
+AND PIN.PIN_CODE IN ('PT VR MH RANGE IND','PT VR MH ADDL AMT IND','PT VR MH MONTH IND')
+End-Select
+
+end-procedure Get-Variables-Value
+
+!**************************************************************************
+Begin-procedure GET-BRACKET-DATA
+!***********************************************************************
+! Select State from Establishment Table
+Clear-Array Name=Proftax
+
+! Populate the Array
+let #i = 0
+let #val1 = 0
+let #max_array_size = 0
+Begin-Select
+A.DATA_KEY2_DEC
+A.SEQ_NUM5
+A.DATA_VAL1_DEC
+
+    Let #PT_Rate = &A.DATA_VAL1_DEC
+
+    If Ltrim(Rtrim($State,' '),' ') = 'MH' and Ltrim(Rtrim($month,' '),' ') = $PT_MONTH and &A.DATA_KEY2_DEC > #PT_RANGE
+        Let #PT_Rate = #PT_Rate + #PT_AMOUNT
+    Else
+        Let #PT_Rate = #PT_Rate
+    End-if
+
+      Put &A.DATA_KEY2_DEC
+          &A.SEQ_NUM5
+          #val1
+          #PT_Rate
+          #val1
+          0
+      into Proftax(#i)
+          pt_gross_wages
+          seq_num
+          no_of_employee
+          rate
+          amt_of_tax
+          empl_pt_ded
+      add 1 to #i
+      add 1 to #max_array_size
+
+From PS_GP_BRACKET_DTL A
+Where A.PIN_NUM = #PIN1
+AND A.DATA_KEY1 = $State
+and A.EFFDT =(SELECT MAX(A1.EFFDT) FROM PS_GP_BRACKET_DTL A1
+             WHERE  A1.PIN_NUM=A.PIN_NUM
+             AND    A1.EFFDT <=$END-DT )
+ORDER BY A.DATA_KEY2_DEC ASC
+End-Select
+End-Procedure
+
+
+
+
+!**************************************************************************
+Begin-procedure GET-SLAB-DATA
+!***********************************************************************
+#debug do Fin-Debug-Msg('GET-SLAB-DATA')
+
+Clear-Array Name=Proftax
+
+! Populate the Array
+let #i = 0
+let #max_array_size = 0
+
+#debugd show 'State: ' $State
+#debugd show 'District: *' $District '*'
+#debugd show 'As of dt: ' $END-DT
+
+
+begin-select
+DS.DESCR
+
+  let $DISDESCR = &DS.DESCR
+
+FROM PS_GPIN_DISTRT_TBL DS
+WHERE DS.STATE = $STATE
+ AND  DS.GPIN_DISTRICT_CD = $District
+end-select
+
+
+
+Begin-Select
+A.STATE
+A.GPIN_PT_SLVL_VAL
+A.EFFDT
+X.GPIN_PT_DEDUC_FREQ
+A.GPIN_PT_SLAB_MX_A
+A.GPIN_PT_SLAB_TAX
+
+  let $Deduc_Freq = &X.GPIN_PT_DEDUC_FREQ
+  
+  If #max_array_size < {Ptax_Array}
+
+    do get-slab-addtl-tax   ! Returns #slab_addtl_tax
+
+    #debugd show 'Gross Amt: ' &A.GPIN_PT_SLAB_MX_A
+    #debugd show 'Imposed Tax: ' &A.GPIN_PT_SLAB_TAX '   Additional tax: ' #slab_addtl_tax
+
+    Let #PT_Rate = &A.GPIN_PT_SLAB_TAX + #slab_addtl_tax
+    Put &A.GPIN_PT_SLAB_MX_A
+        0
+        0
+        #PT_Rate
+        0
+        0
+    into Proftax(#i)
+        pt_gross_wages
+        seq_num
+        no_of_employee
+        rate
+        amt_of_tax
+        empl_pt_ded
+    add 1 to #i
+    add 1 to #max_array_size
+  else
+    show '*********************************'
+    show 'Internal array capacity reached!! Capacity: ' {Ptax_Array}
+    show '*********************************'
+  end-if
+
+From PS_GPIN_PT_SLABS A, PS_GPIN_PT_TBL X
+Where X.STATE = $State
+and X.GPIN_PT_SLVL_VAL = $District
+and X.EFFDT =(SELECT MAX(X1.EFFDT) FROM PS_GPIN_PT_TBL X1
+             WHERE  X1.STATE = X.STATE
+             AND    X1.GPIN_PT_SLVL_VAL = X.GPIN_PT_SLVL_VAL
+             AND    X1.EFFDT <= $END-DT )
+and X.STATE = A.STATE
+and X.GPIN_PT_SLVL_VAL = A.GPIN_PT_SLVL_VAL
+and X.EFFDT = A.EFFDT
+and X.EFF_STATUS <> 'I' 
+ORDER BY A.STATE, A.GPIN_PT_SLVL_VAL, A.EFFDT DESC, A.GPIN_PT_SLAB_MX_A
+End-Select
+
+end-procedure ! GET-SLAB-DATA
+
+
+!**************************************************************************
+Begin-procedure get-slab-addtl-tax
+!***********************************************************************
+#debug do Fin-Debug-Msg('get-slab-addtl-tax')
+
+Extract $month_ded from $prdenddt 0  2
+Let #month_ded = $month_ded
+
+let #slab_addtl_tax = 0
+
+Begin-Select
+AD.STATE
+AD.GPIN_PT_SLVL_VAL
+AD.EFFDT
+AD.GPIN_PT_SLAB_MX_A
+AD.GPIN_PT_ADTAX_AMT
+
+  let #slab_addtl_tax = #slab_addtl_tax + &AD.GPIN_PT_ADTAX_AMT
+
+From PS_GPIN_PT_SLABS_A AD
+Where AD.STATE = $State
+and AD.GPIN_PT_SLVL_VAL = $District
+and AD.EFFDT = &A.EFFDT
+and (AD.GPIN_PT_SLAB_MX_A = &A.GPIN_PT_SLAB_MX_A OR AD.GPIN_PT_SLAB_MX_A = 0)
+and (AD.GPIN_PT_DED_PRD = 0 or AD.GPIN_PT_DED_PRD = #month_ded)
+End-Select
+
+end-procedure ! get-slab-addtl-tax
+
+
+!***********************************************************************
+begin-procedure get-employees-tmp3
+!***********************************************************************
+
+   let #empl_pt_gross=0
+   let #empl_pt_ded = 0
+   let #PT_GROSS_MTD = 0
+   let #PT_GROSS_NTD = 0
+   let #PT_GROSS_YTD = 0
+   let #empl_pt_tn_ded = 0
+   let #empl_pt_kl_ded = 0
+   let #j = 0
+   let #tmp_gross_wages = 0
+   let #tmp_seq_num = 0
+   let #tmp_num_empl = 0
+   let #tmp_rate = 0
+   let #tmp_amt_tax = 0
+
+   #debugd show 'Processing emplid: ' &TMP.EMPLID
+
+begin-select
+TMP3.EMPLID
+TMP3.GPIN_FLD_NAME
+TMP3.CALC_RSLT_VAL
+         let $tmp_fldname = ltrim(rtrim(&TMP3.GPIN_FLD_NAME,' '),' ')
+         evaluate $tmp_fldname
+         when = 'PT_GROSS_MTD'
+             let #PT_GROSS_MTD = &TMP3.CALC_RSLT_VAL
+             break
+
+         when = 'PT_GROSS_YTD'
+             let #PT_GROSS_YTD = &TMP3.CALC_RSLT_VAL
+             break
+
+         when = 'PT_GROSS_NTD'
+             let #PT_GROSS_NTD = &TMP3.CALC_RSLT_VAL
+             break
+
+         when = 'PT_GROSS'
+             If $EnableNpt = 'N'  ! New PT Framework not enabled
+               let #empl_pt_gross = &TMP3.CALC_RSLT_VAL
+             end-if
+             break
+         when = 'PT_GROSS_N'
+             If $EnableNpt <> 'N'
+               let #empl_pt_gross = &TMP3.CALC_RSLT_VAL
+             end-if
+             break
+
+         when = 'PT_DED'  ! Monthly deduction
+             let #empl_pt_ded = #empl_pt_ded + &TMP3.CALC_RSLT_VAL
+             break
+
+         when = 'PT_TN_DED'
+             let #empl_pt_tn_ded = &TMP3.CALC_RSLT_VAL
+             break
+         when = 'PT_KL_DED'
+             let #empl_pt_kl_ded = &TMP3.CALC_RSLT_VAL
+             break
+         end-evaluate
+
+FROM PS_GPIN_PR_TMP3 TMP3,PS_GPIN_PR_TMP TP
+WHERE TP.EMPLID = &TMP.EMPLID
+AND TP.JOBINSTANCE= &TMP.JOBINSTANCE
+AND TP.GP_GENRPT_BREAK1 = $BREAK1
+AND TP.GP_GENRPT_BREAK2 = $BREAK2
+AND TMP3.JOBINSTANCE =TP.JOBINSTANCE
+AND TMP3.EMPLID = TP.EMPLID
+AND TMP3.CAL_RUN_ID = TP.CAL_RUN_ID
+AND TMP3.EMPL_RCD = TP.EMPL_RCD
+AND TMP3.GP_PAYGROUP = TP.GP_PAYGROUP
+AND TMP3.CAL_ID = TP.CAL_ID
+AND TMP3.ORIG_CAL_RUN_ID = TP.ORIG_CAL_RUN_ID
+AND TMP3.RSLT_SEG_NUM = TP.RSLT_SEG_NUM
+AND TMP3.RSLT_VER_NUM = TP.RSLT_VER_NUM
+AND TMP3.RSLT_REV_NUM = TP.RSLT_REV_NUM
+AND (($EnableNpt = 'N' AND (TP.GP_GENRPT_BREAK1  = $RC_ESTABID or rtrim($STATE) = 'TN' or rtrim($STATE) = 'KL'))
+  OR ($EnableNpt <> 'N' AND (TP.GP_GENRPT_BREAK1  = $RC_ESTABID)))
+ORDER BY TMP3.EMPLID
+end-select
+
+!If $EnableNpt = 'N'   ! New PT Framework not enabled
+
+ let $t_state = rtrim($STATE, ' ')
+
+ if $t_state = 'TN' or $t_state = 'KL'  ! for tn / kl, add to empl count only if either pt gross > 0 or breaklevel is estabid.
+     let $i_emplid = &TMP.EMPLID
+     let $r_estab = ''
+     do GetEmplLastEstab($i_emplid, $t_state, $prd_end_dt, $r_estab)
+
+let $BREAK1 = ' '
+begin-select
+TMPBRK.GP_GENRPT_BREAK1
+    let $BREAK1 = &TMPBRK.GP_GENRPT_BREAK1
+From PS_GPIN_PR_TMP TMPBRK
+WHERE TMPBRK.JOBINSTANCE = #prcs_job_instance
+AND TMPBRK.GP_GENRPT_BREAK1  = $RC_ESTABID
+AND TMPBRK.EMPLID = $i_emplid 
+end-select
+     
+     
+     if ( #empl_pt_tn_ded <> 0  or 
+           rtrim($RC_ESTABID, ' ') = rtrim($BREAK1, ' ') ) and $t_state = 'TN' and rtrim($r_estab, ' ') = rtrim($RC_ESTABID, ' ')
+         do add-to-employee-count
+     end-if
+
+     if ( #empl_pt_kl_ded <> 0 or 
+           rtrim($RC_ESTABID, ' ') = rtrim($BREAK1, ' ') ) and $t_state = 'KL'  and rtrim($r_estab, ' ') = rtrim($RC_ESTABID, ' ')
+         do add-to-employee-count
+     end-if
+ else
+     do add-to-employee-count     
+ end-if
+!else
+! do add-to-employee-count     
+!end-if
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure add-to-employee-count
+!***********************************************************************
+#debug do Fin-Debug-Msg('add-to-employee-count')
+
+let #j = 0
+let #tmp_gross_wages = 0
+let #tmp_seq_num = 0
+let #tmp_num_empl = 0
+let #tmp_rate = 0
+let #tmp_amt_tax = 0
+while #j < {Ptax_Array}
+
+   get #tmp_gross_wages #tmp_seq_num #tmp_num_empl #tmp_rate #tmp_amt_tax #tmp_empl_pt_ded from Proftax(#j)
+   if #empl_pt_gross <= #tmp_gross_wages  ! !!! and #empl_pt_ded > 0 
+        let #tmp_empl_pt_ded = #tmp_empl_pt_ded + #empl_pt_ded
+        let #tmp_num_empl = #tmp_num_empl + 1
+        let #tmp_amt_tax = #tmp_amt_tax + #tmp_rate
+        #debugd show 'Empl. deduction: ' #tmp_empl_pt_ded '  Empl. Cnt: ' #tmp_num_empl ' Gross range: ' #empl_pt_gross '/' #tmp_gross_wages
+
+        let #grand_tot_tax = #grand_tot_tax  + #empl_pt_ded
+
+        put #tmp_num_empl #tmp_amt_tax #tmp_empl_pt_ded into Proftax(#j) no_of_employee amt_of_tax empl_pt_ded
+
+        break
+   end-if
+   let #j = #j + 1
+end-while
+
+end-procedure
+
+!**************************************************************************
+! Printing Salary Range and Rate
+!**************************************************************************
+Begin-Procedure Print_Summary
+!**************************************************************************
+#debug do Fin-Debug-Msg('Print_Summary')
+
+ alter-printer  point-size=8 font=4
+    let #j = 0
+    let #k = 0
+    let #ln = 29
+    let #min_wage = 0
+    let #tmp_gross_wages = 0
+    let #tmp_seq_num = 0
+    let #tmp_num_empl = 0
+    let #tmp_rate = 0
+    let #tmp_amt_tax = 0
+    ! *!*!*let #grand_tot_tax = 0
+    While #j <= #max_array_size
+
+       let #k = #j - 1
+       Get #tmp_gross_wages #tmp_seq_num #tmp_num_empl #tmp_rate #tmp_amt_tax #tmp_empl_pt_ded from Proftax(#j)
+
+       ! let #grand_tot_tax = #grand_tot_tax  + #tmp_amt_tax jjj
+       ! ! *!*!*let #grand_tot_tax = #grand_tot_tax  + #tmp_empl_pt_ded
+
+       let $pt_gw_max = edit(#tmp_gross_wages,'99,99,99,99,999')
+       if #j = 0
+           let #min_wage = 0.00
+           let $pt_gw_min = edit(#min_wage,'99,99,99,999')
+       else
+           Get #min_wage from Proftax(#k) pt_gross_wages
+           let #min_wage = #min_wage + 1
+           let $pt_gw_min = edit(#min_wage,'99,99,99,999')
+       end-if
+
+       if #tmp_num_empl > 0
+          Let $geval =  $pt_gw_min || ' to ' || $pt_gw_max
+          print $geval (#ln,12)
+          print #tmp_num_empl (#ln,52,12) edit 999999
+          print #tmp_rate  (,80)  edit 99,999.99
+          ! print #tmp_amt_tax (#ln,110) edit 99,99,99,999.99 
+          print #tmp_empl_pt_ded (#ln,110) edit 99,99,99,999.99
+          add 2 to #ln
+       end-if
+
+       Add 1 to #j
+    End-While
+    print 'Total tax: '  (44,95)
+    print #grand_tot_tax (,108)     edit 99,999,999.99
+End-Procedure
+
+!************************************************************************
+Begin-Procedure Print-Other-Details
+!************************************************************************
+#debug do Fin-Debug-Msg('Print-Other-Details')
+
+    let $authority_name = 'I,'
+    if rtrim($AuthName,' ') = ''
+        let $authority_name = rtrim($authority_name,' ') || ' ' ||  '______________________'
+    else
+        let $authority_name = rtrim($authority_name,' ') || ' ' || rtrim($AuthName,' ')
+    end-if
+
+    let $authority_name = rtrim($authority_name,' ') || ' ' || 'solemnly declare that the above statements are true to the best of my knowledge and belief.'
+
+    let $Place = 'Place:'
+
+    if rtrim($CITY,' ') = ''
+        let $Place = rtrim($Place,' ') || ' ' ||  '______________________'
+    else
+        let $Place = rtrim($Place,' ') || ' ' || rtrim($CITY,' ')
+    end-if
+
+    let $Date = 'Date:'
+    if rtrim($Creation_Dt,' ') = ''
+        let $Date = rtrim($Date,' ') || ' ' ||  '______________________'
+    else
+        let $Date = rtrim($Date,' ') || ' ' || rtrim($Creation_Dt,' ')
+    end-if
+
+new-page
+
+print 'Add: Simple Interest payable (if any) on  ' (6,10,)
+print 'the above amount at 2% per month ' (7,10)
+print 'or part thereof(Vide Sec II(2) of the Act.)' (8,10)
+
+print 'Grand Total                                             Rs.' (13,10)
+print #grand_tot_tax (13,50)     edit 99,999,999.99
+GRAPHIC (13,50,30) HORZ-LINE
+
+print 'Amount Paid under Challan No.'  (20,10)
+GRAPHIC (20,37,27) HORZ-LINE
+print 'Cheque No.' (20,65)
+GRAPHIC (20,76,20) HORZ-LINE
+print 'Dated'      (20,97)
+GRAPHIC (20,102,20) HORZ-LINE
+print 'Name of the Bank' (23,10)
+GRAPHIC (23,27,60) HORZ-LINE
+print 'I certify that all the employees who are liable to pay the tax in my employment during the period of return have been covered by' (30,10)
+print 'the foregoing particulars. I also certify that the necessary revision in the amount of tax deductible from the salary or wages'(32,10)
+print ' of the employees on account of variations in the salary or wages earned by them has been made where ever necessary.'(34,10)
+print $authority_name (40,10) wrap 129 2
+print $Place (45,10)
+print 'Signature of the Employer' (45,50)
+GRAPHIC (45,75,20) HORZ-LINE
+print $Date  (50,10)
+
+print 'Status' (50,50)
+GRAPHIC (50,60,20) HORZ-LINE
+End-Procedure
+
+
+begin-procedure GetEmplLastEstab ($in_emplid, $in_state, $in_effdt, :$r_estab)
+#debug do Fin-Debug-Msg('GetEmplLastEstab')
+
+let $r_estab = ''
+begin-select
+A.ESTABID
+
+    let $r_estab = &A.ESTABID
+from PS_GPIN_TDS_GEN A where 
+    A.EMPLID = $in_emplid and 
+    A.STATE = $in_state and
+    A.EFFDT = (select MAX(EFFDT) from PS_GPIN_TDS_GEN D where D.EMPLID = A.EMPLID and D.STATE = $in_state AND D.EFFDT <= $in_effdt)
+end-select
+
+End-Procedure
+
+!*************************************************************************************************************
+
+!---------------------------------------------------!
+! Debug Msg                                                          !
+!--------------------------------------------------------------------!
+begin-procedure Fin-Debug-Msg($procedure_name)
+   display ' '
+   display '----------------------------------'
+   display $procedure_name
+   #debugt date-time () {Native-DateTime} &SysDateTime
+   #debugt move &SysDateTime to $SysDateTime
+   #debugt show 'TIMING, ' $procedure_name ', ' $SysDateTime
+   display ' '
+end-procedure ! Fin-Debug-Msg
+
+
+
+#include 'gprnctl1.sqc'  !Get run control parameter values
+#include 'stdapi.sqc'    !Routines to update run status
+#Include 'sqrtrans.sqc'
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'useprntr.sqc'
+#Include 'datemath.sqc'
+#include 'readxlat.sqc'
+
+
+

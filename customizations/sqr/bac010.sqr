@@ -1,0 +1,361 @@
+!***********************************************************************
+!  BAC010:  ACA 1095-C Consent Status Report                           *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2016, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  24477797                                            !
+!                                                                      *
+!***********************************************************************
+
+#Include 'setenv.sqc'  !Set environment
+
+Begin-Setup
+  #Include 'ptpsp125.sqc'
+End-Setup
+
+!***********************************************************************
+Begin-Program
+!***********************************************************************
+  do Init-Report
+  do StdAPI-Term
+End-Program
+
+
+!***********************************************************************
+Begin-Procedure Init-Report
+!***********************************************************************
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do StdAPI-Init
+
+  move 'BAC010' to $ReportID
+  move 'ACA Form Consent Change Report' to $ReportTitle
+
+  do Initialize
+  do Standard-Initialization
+
+End-Procedure
+
+
+!***********************************************************************
+Begin-Procedure Initialize
+!***********************************************************************
+
+  if IsBlank($prcs_process_instance)
+    do Ask-From-Thru-Date
+  else
+    do Select-Parameters
+  end-if
+
+  let $priorALEmember = ' '
+
+End-Procedure
+
+
+!***********************************************************************
+Begin-Heading 8
+!***********************************************************************
+
+#Include 'stdhdg01.sqc'
+
+  if $ALEmember <> $priorALEmember
+    do Get-ALE-Member
+    move $ALEmember to $priorALEmember
+  end-if
+
+  print 'ALE Member:'      (3,1,11)
+  print $ALEmember         (0,13)
+  print $ALEdescr          (0,20)
+
+  if not IsBlank(&ACA.FROMDATE)
+     print 'From:' (+1,1)
+     move 1 to $Year4
+     do Format-DateTime($FromDate, $out, {DEFDATE}, '', '')
+     print $out            (0,+1)
+     print 'To:'           (0,+1)
+     move 1 to $Year4
+     do Format-DateTime($ThruDate, $out, {DEFDATE}, '', '')
+     print $out            (0,+1)
+  else
+     print 'As of:'        (+1,1)
+     move 1 to $Year4
+     do Format-DateTime($ThruDate, $out, {DEFDATE}, '', '')
+     print $out            (0,+1)
+  end-if
+
+  evaluate $ConsentStatus
+    when = 'A'
+      let $Category_Desc = 'Consent Summary'
+      let $DateDesc      = 'Date'
+      break
+    when = 'C'
+      let $Category_Desc = 'Consent Granted'
+      let $DateDesc      = 'Date Received'
+      break
+    when = 'R'
+      let $Category_Desc = 'Consent Reset'
+      let $DateDesc      = 'Reset Date'
+      break
+    when = 'W'
+      let $Category_Desc = 'Consent Withdrawn'
+      let $DateDesc      = 'Withdrawn Date'
+      break
+    when-other
+      break
+  end-evaluate
+
+  print $Category_Desc       (+2) center
+  print 'Employee Name'      (+2,1)
+  print 'ID'                 (0,50)
+  print $DateDesc            (0,70)
+
+  if $ConsentStatus = 'A'
+     print 'Consent Status'  (0,90)
+  end-if
+
+End-Heading
+
+
+!***********************************************************************
+Begin-Procedure Report
+!***********************************************************************
+
+Begin-SELECT DISTINCT
+
+C.ACA_ALE_MEMBER   ()   On-Break
+                        PRINT=NEVER
+                        LEVEL=1
+                        PROCEDURE=ALE-Member-Change
+  move &C.ACA_ALE_Member to $ALEmember
+
+N.NAME_PSFORMAT                   (+1,1)
+
+A.EMPLID                          (0,50)
+A.EFFDT
+
+  do Format-DateTime(&A.EFFDT, $out, {DEFDATE}, '', '')
+  print $out                      (0,70)
+
+
+A.ACA_SS_CON_CURRENT
+
+  if $ConsentStatus = 'A'
+     move 'ACA_SS_CON_CURRENT'  to $Fieldname
+     move &A.ACA_SS_CON_CURRENT to $Fieldvalue
+     do Read-Translate-Table
+     print $XlatShortName         (0,90)
+  end-if
+
+  add 1 to #EmpTotal
+
+FROM  PS_ACA_CONSENT_DTL  A,
+      PS_PERSON_NAME      N,
+      PS_JOB              J,
+      PS_ACA_CMPY_TBL     C
+
+WHERE A.EFFDT = (SELECT MAX(A1.EFFDT)
+                  FROM  PS_ACA_CONSENT_DTL A1
+                 WHERE  A1.EMPLID  = A.EMPLID
+                   AND  A1.EFFDT  >= $FromDate
+                   AND  A1.EFFDT  <= $ThruDate)
+  AND A.EFFSEQ = (SELECT MAX(A2.EFFSEQ)
+                  FROM  PS_ACA_CONSENT_DTL A2
+                 WHERE  A2.EMPLID = A.EMPLID
+                   AND  A2.EFFDT  = A.EFFDT)
+[$SelectStatus]
+
+  AND N.EMPLID = A.EMPLID
+  AND J.EMPLID = A.EMPLID
+
+  AND J.EFFDT = (SELECT MAX(J1.EFFDT)
+                  FROM  PS_JOB J1
+                 WHERE  J1.EMPLID   = J.EMPLID
+                   AND  J1.EMPL_RCD = J.EMPL_RCD
+                   AND  J1.EFFDT   <= $ThruDate)
+  AND J.EFFSEQ = (SELECT MAX(J1.EFFSEQ)
+                  FROM  PS_JOB J1
+                 WHERE  J1.EMPLID   = J.EMPLID
+                   AND  J1.EMPL_RCD = J.EMPL_RCD
+                   AND  J1.EFFDT    = J.EFFDT)
+
+  AND C.COMPANY   = J.COMPANY
+
+ORDER BY C.ACA_ALE_MEMBER ASC,
+         N.NAME_PSFORMAT ASC,
+         A.EMPLID ASC
+
+End-SELECT
+
+  if #EmpTotal > 0
+     move 'Y' to $End
+     do ALE-Member-Change
+  else
+     do No-Data-Found
+  end-if
+
+End-Procedure
+
+!***********************************************************************
+Begin-Procedure ALE-Member-Change
+!***********************************************************************
+
+  move 0 to #level
+
+  do Format-Number(#EmpTotal, $out, '999,999,999,999')
+  print 'Total no. of employees: '   (+3,1)
+  print $out                         (0,25)
+
+  move 0 to #EmpTotal
+
+  if ($End = 'Y')
+     do Reset
+  end-if
+
+  new-page
+
+End-Procedure
+
+!***********************************************************************
+Begin-Procedure No-Data-Found
+!***********************************************************************
+
+  evaluate $ConsentStatus
+    when = 'A'
+      let $NoDataMsg = '******  No employees have provided/reset/withdrawn consent  ******'
+      break
+    when = 'C'
+      let $NoDataMsg = '******  No employees have provided consent  ******'
+      break
+    when = 'R'
+      let $NoDataMsg = '******  No employees have reset consent  ******'
+      break
+    when = 'W'
+      let $NoDataMsg = '******  No employees have withdrawn consent  ******'
+      break
+    when-other
+      let $NoDataMsg = '******  No employees were selected  ******'
+      break
+  end-evaluate
+
+  print $NoDataMsg           (+5) center
+  do Reset
+
+End-Procedure
+
+!***********************************************************************
+begin-procedure Select-Parameters
+!***********************************************************************
+
+  let $err-statement = 'BAC010, Select Error - Select-Parameters'
+  let $SelectStatus  = ' '
+
+begin-SELECT On-Error=SQL-Statement-Error
+ACA.FROMDATE
+ACA.THRUDATE
+ACA.ACA_CONS_STATUS
+
+  let $FromDate      = &ACA.FROMDATE
+  let $ThruDate      = &ACA.THRUDATE
+  let $ConsentStatus = &ACA.ACA_CONS_STATUS
+
+FROM  PS_ACA_RC_BAC010 ACA
+WHERE ACA.OPRID       = $Prcs_OprID
+  AND ACA.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-SELECT
+
+  if $FromDate = ''
+     Do Format-DateTime('01/01/1900', $FromDate, {DEFMDY},'','native')
+  end-if
+
+  if $ThruDate = ''
+     let $ThruDate = $AsOfToday
+  end-if
+
+  let $AsOfDate = $AsOfToday
+
+  if $ConsentStatus <> 'A'
+     let $SelectStatus = 'AND A.ACA_SS_CON_CURRENT = ''' || $ConsentStatus || ''''
+  end-if
+
+end-procedure
+
+!***********************************************************************
+begin-procedure SQL-Statement-Error
+!***********************************************************************
+
+  if #SQL-Status <> 0
+    display 'SQL-Statement-Error '
+    display $err-statement
+    display ' Error: ' noline
+    display $SQL-error
+    display ' SQL Status: ' noline
+    display #SQL-Status
+    do Rollback-Transaction
+    do Commit-Transaction
+    stop
+  end-if
+
+end-procedure
+
+!*******************************!
+begin-procedure Get-ALE-Member
+!*******************************!
+
+  if rtrim($ALEmember,' ') = ''
+    move '' to $ALEdescr
+    goto GetALEmemberExit
+  end-if
+
+begin-SELECT
+ALE.ACA_DESCR
+
+FROM  PS_ACA_ALE_TBL ALE
+WHERE ALE.ACA_ALE_MEMBER = $ALEmember
+  AND ALE.EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM   PS_ACA_ALE_TBL
+       WHERE  ACA_ALE_MEMBER = $ALEmember
+         AND  EFFDT         <= $AsOfDate)
+  AND ALE.EFF_STATUS = 'A'
+
+end-SELECT
+
+     let $ALEdescr = rtrim(&ALE.ACA_DESCR,' ')
+
+GetALEmemberExit:
+
+end-procedure
+
+!***********************************************************************
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date AND time formatting
+#Include 'benftd.sqc'    !Ask-As-Of-Date procedure
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'readxlat.sqc'  !Read-Translate-Table procedure
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'stdinit.sqc'   !Standard-Initialization procedure
+!***********************************************************************

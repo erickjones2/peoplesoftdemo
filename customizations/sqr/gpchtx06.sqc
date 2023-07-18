@@ -1,0 +1,1295 @@
+!***********************************************************************
+! GPCHTX06.SQC:  Fetching SQC for Report                               *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!
+! Copyright (C) 1988, 2018, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!       $Release:  HR92                                                !
+!           $Bug:  27807408                                            !
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get-Data
+ #Debug show '-> Get-Data'
+
+  let $begin_time = datenow()
+  do Get_Type_Options($Name_Type,$Addr_Type,$Phone_Type,$Email_Type,$BirthName_Type,$Security_Type)
+  if $Security_Type = 'N'
+        let $Record_Security    = ''
+        let $Security_Where     = ''
+        let $SecurityClause     = ''
+        let $Security_Effdt     = ''
+  else
+        !if $Security_Type = 'Y'
+        !    do CreateSecurityMapping  ! To insert Security Data
+        !end-if
+  
+        let $Record_Security    =  ', PS_GPCH_RP_FAST_VW SCRTY'
+        let $Security_Where     =  ' AND SCRTY.OPRID = ''' || $prcs_oprid || ''' AND SS.EMPLID = SCRTY.EMPLID AND SS.EMPL_RCD = SCRTY.EMPL_RCD'
+        let $SecurityClause     =  $SecurityClause
+        let $Security_Effdt     =  'AND SCRTY.EFFDT = (select max(SCRTY1.EFFDT) from PS_GPCH_RP_FAST_VW SCRTY1
+                                                       where SCRTY.EMPLID = SCRTY1.EMPLID
+                                                         and SCRTY.EMPL_RCD = SCRTY1.EMPL_RCD
+                                                         and SCRTY1.OPRID = ''' || $prcs_oprid || '''
+                                                         and SCRTY1.EFFDT <= PS.GPCH_AL_CPAY_ENDDT )'
+   end-if
+
+  do Overide_Cu_Security
+
+  let $Delete_tx61 = 'Y'
+  let $Zero_Cal_Id = 'N'
+
+    let $RC_Emplid_Record = ' '
+
+  let $Emplid_Criteria_TX06   = $Emplid_Criteria_PS
+  let $Emplid_Criteria_TX06_A = $Emplid_Criteria_PS
+
+  if #count_Emplid > 10
+    let $Emplid_Criteria_TX06 = 'AND PS.EMPLID = RC.EMPLID ' ||
+                                'AND RC.OPRID = ''' || $Prcs_Oprid || '''' ||
+                                'AND RC.RUN_CNTL_ID = ''' || $Prcs_Run_Cntl_Id || ''''
+    let $Emplid_Criteria_TX06_A = 'AND A.EMPLID = RC.EMPLID ' ||
+                                'AND RC.OPRID = ''' || $Prcs_Oprid || '''' ||
+                                'AND RC.RUN_CNTL_ID = ''' || $Prcs_Run_Cntl_Id || ''''
+    let $RC_Emplid_Record = ', PS_GPCH_RC_EMPLID RC '
+  end-if
+
+  do Get-Parent-Pin         ! To Select Parent Pin Numbers for Components (Base,Units,Rate etc.)
+
+  do Get-CalRunId           ! To Select Delta Data
+
+  do Get-CalRunId-Calid     ! To Select Current Data
+
+  do Get-Zero-Rows          ! To Select Current and Delta Zero rows
+   
+  do Get_Emplid_Streams_Delete  ! To Delete Percent and Rate via Streams 
+
+  !do Get_Distinct_Emplid 
+
+  !if $Security_Type = 'Y'
+  !  let $DELETE_REC_NAME = 'PS_GPCHRPSEC_TMP'
+  !  do  Delete-REC
+  !end-if
+  
+  let $end_time = datenow()
+  
+ #Debug show '<- Get-Data'
+end-procedure  Get-Data
+
+!**************************************************
+!Begin-Procedure CreateSecurityMapping
+!#Debug show '-> CreateSecurityMapping'
+!
+!let $DELETE_REC_NAME = 'PS_GPCHRPSEC_TMP'
+!do  Delete-REC
+!    
+!Begin-Sql on-error=give_warning
+!INSERT INTO PS_GPCHRPSEC_TMP(PROCESS_INSTANCE,OPRID,EMPLID,EMPL_RCD,EFFDT)
+!SELECT DISTINCT [$prcs_process_instance],SEC.OPRID,SEC.EMPLID,SEC.EMPL_RCD,SEC.EFFDT
+!FROM PS_GPCH_RP_FAST_VW SEC WHERE SEC.OPRID = $prcs_oprid
+!End-Sql
+!
+!#ifdef ORACLE
+!Begin-Sql on-error=give_warning
+!commit
+!End-Sql
+!#endif
+!
+!end-procedure  CreateSecurityMapping
+!
+!**************************************************
+Begin-Procedure Get-Zero-Rows
+#Debug show '-> Get-Zero-Rows'
+
+  let $Delete_tx61           = 'N'
+  let $Zero_Cal_Id           = 'Y'
+
+  if #count_Zero <> 0
+     let $Zero_Pin_Criteria_SS  = ' AND SS.PIN_NUM IN ( ' || $Zero-String || ')'
+  else
+     let $Zero_Pin_Criteria_SS  = ' AND 1 = 2 '
+  end-if
+  #Debug Show $Zero_Pin_Criteria_SS
+
+  do Delete-Records         ! To Delete Previous Reports Data
+  do Get-Parent-Pin         ! To Select Parent Pin Numbers for Components (Base,Units,Rate etc.)
+  do Get-CalRunId           ! To Select Delta Data
+  do Get-CalRunId-Calid     ! To Select Current Data
+
+#Debug show '<- Get-Zero-Rows'
+End-Procedure Get-Zero-Rows
+!**************************************************
+begin-procedure Get-Parent-Pin
+#Debug show '-> Get-Parent-Pin'
+
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTX064_TMP(PROCESS_INSTANCE,GPCH_RC_REPORTNAME,PIN_PARENT_NUM,PIN_NUM,EFF_STATUS,
+ENTRY_TYPE_ELEM,GPCH_AL_OVERRIDE,GPCH_AL_SIGNVALUE,GPCH_BL_PR_ORDER,GPCH_BL_PR_GROUP,GPCH_BL_PR_CALC,
+GPCH_BL_PR_BASE,GPCH_BL_PR_RATE,GPCH_BL_PR_UNITS,GPCH_BL_PR_PERCENT,GPCH_BL_PR_SUM)
+SELECT
+[$prcs_process_instance],
+PA.GPCH_RC_REPORTNAME,
+PAS.PIN_PARENT_NUM,
+PA.PIN_NUM,
+PA.EFF_STATUS ,
+PA.ENTRY_TYPE_ELEM ,
+PA.GPCH_AL_OVERRIDE,
+PA.GPCH_AL_SIGNVALUE,
+PA.GPCH_BL_PR_ORDER,
+PA.GPCH_BL_PR_GROUP,
+PA.GPCH_BL_PR_CALC ,
+PA.GPCH_BL_PR_BASE ,
+PA.GPCH_BL_PR_RATE ,
+PA.GPCH_BL_PR_UNITS  ,
+PA.GPCH_BL_PR_PERCENT ,
+PA.GPCH_BL_PR_SUM
+FROM PS_GPCH_BL_PRINT PA , PS_GP_PIN PAS
+WHERE PA.PIN_NUM=PAS.PIN_NUM
+AND PA.GPCH_RC_REPORTNAME = $Ctl_Print
+AND PAS.PIN_PARENT_NUM <> 0
+
+End-Sql
+
+#Debug show '<- Get-Parent-Pin'
+End-procedure Get-Parent-Pin
+!**************************************************
+begin-procedure Get-CalRunId-Calid
+#Debug show '-> Get-CalRunId-Calid' $Rpt_Start_Dt ' , ' $Rpt_End_Dt  ' , ' $PR_Pay_Entity
+
+ Do Append-Log ('Cal_Run_ID and Cal_id For Earning and Deductions', ' ')
+
+ let $DELETE_REC_NAME = 'PS_GPCHTX062_TMP'
+ do  Delete-REC
+
+begin-SELECT DISTINCT
+PR.CAL_RUN_ID  &PR.CAL_RUN_ID
+PR.CAL_ID      &PR.CAL_ID
+
+   let $CAL_RUN_ID = rtrim(&PR.CAL_RUN_ID,' ')
+   let $CAL_ID     = rtrim(&PR.CAL_ID,' ')
+
+   do Append-Log ($CAL_RUN_ID,$CAL_ID)
+
+   do Fetch-Current-Rows  !Fetching Current Data
+
+   FROM PS_GP_CAL_RUN PRS,PS_GP_CAL_RUN_DTL PR
+WHERE PRS.CAL_RUN_ID = PR.CAL_RUN_ID
+AND   PR.PRD_BGN_DT >= $Rpt_Start_Dt
+AND   PR.PRD_END_DT <= $Rpt_End_Dt
+AND  (PRS.RUN_FINALIZED_IND='Y' OR PRS.RUN_OPEN_IND='Y')
+AND   PR.CALC_TYPE   = 'P'
+AND   PR.PAY_ENTITY  = $PR_Pay_Entity
+ORDER BY PR.CAL_RUN_ID,PR.CAL_ID
+end-SELECT
+
+     do Get-Current-Bind-Variables     !Select Current Rows
+     Do Append-Log(' ',' ')
+     Do Append-Log('----------------------------- ' , '------------------------------' )
+#Debug show '<- Get-CalRunId-Calid'
+End-procedure Get-CalRunId-Calid
+!**************************************************
+begin-procedure Get-CalRunId
+#Debug show '-> Get-CalRunId'
+
+   Do Append-Log ('Cal_Run_id for Delta', ' ')
+
+   #Debug show  $Rpt_Start_Dt ' , ' $Rpt_End_Dt  ' , ' $PR_Pay_Entity
+begin-SELECT DISTINCT
+
+TM.CAL_RUN_ID  &TM.CAL_RUN_ID
+TM.PRD_END_DT  &TM.PRD_END_DT
+
+   let $FF_GPCH_AL_CPAY_ENDDT = &TM.PRD_END_DT
+   let $FF_GPCH_AL_CPAY_ENDDT = '''' || $FF_GPCH_AL_CPAY_ENDDT || ''''
+
+   let $CAL_RUN_ID = rtrim(&TM.CAL_RUN_ID,' ')
+
+   Do Append-Log (' ',$CAL_RUN_ID)
+
+   let $DELETE_REC_NAME = 'PS_GPCHTX062_TMP'
+   do  Delete-REC
+
+   if $Zero_Cal_Id  = 'Y'
+      do Get-Positive-Rows-Zero
+      do Get-Negative-Rows-Zero
+   else
+      do Get-Positive-Rows
+      do Get-Negative-Rows
+   end-if
+
+   do Get-Sum-Posi-Nega
+
+FROM PS_GP_CAL_RUN TRS,PS_GP_CAL_RUN_DTL TM
+
+WHERE TRS.CAL_RUN_ID  = TM.CAL_RUN_ID
+AND   TM.PRD_BGN_DT >= $Rpt_Start_Dt
+AND   TM.PRD_END_DT <= $Rpt_End_Dt
+AND  (TRS.RUN_FINALIZED_IND='Y' OR TRS.RUN_OPEN_IND='Y')
+AND   TM.CALC_TYPE   = 'P'
+AND   TM.PAY_ENTITY  = $PR_Pay_Entity
+
+end-SELECT
+
+     if  $PR_Year_Option = 'N'  ! If monthly report is requested
+         let $Rpt_End_Dt    = $Ctl_Curr_Pay_End_Dt
+     end-if
+
+     do Get-Delta-Bind-Variables
+
+     Do Append-Log(' ',' ')
+     Do Append-Log('----------------------------- ' , '------------------------------' )
+#Debug show '<- Get-CalRunId'
+End-procedure Get-CalRunId
+
+
+!**************************************************
+begin-procedure Fetch-Current-Rows
+#Debug show '<- Fetch-Current-Rows  '  $CAL_RUN_ID  ' , ' $Zero_Pin_Criteria_SS
+
+#Debug show 'Security: ' $Record_Security ' , ' $Security_Where ' , ' $SecurityClause ' , ' $Security_Effdt
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTX062_TMP(PROCESS_INSTANCE,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,RSLT_SEG_NUM,
+INSTANCE,PIN_NUM,SLICE_BGN_DT,SLICE_END_DT,PAY_ENTITY,PRD_END_DT,GPCH_AL_CPAY_ENDDT,CALC_RSLT_VAL,
+BASE_RSLT_VAL,RATE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL)
+#ifdef ORACLE
+SELECT /*+ INDEX(PS PS_GPCH_RP_0001)*/ [$prcs_process_instance],
+#else
+SELECT [$prcs_process_instance],
+#endif
+SS.EMPLID,SS.CAL_RUN_ID,SS.EMPL_RCD,SS.GP_PAYGROUP,SS.CAL_ID,SS.RSLT_SEG_NUM,SS.INSTANCE,SS.PIN_NUM,
+SS.SLICE_BGN_DT,SS.SLICE_END_DT,PS.PAY_ENTITY,PS.PRD_END_DT,PS.GPCH_AL_CPAY_ENDDT,SS.CALC_RSLT_VAL,
+SS.BASE_RSLT_VAL,SS.RATE_RSLT_VAL,SS.UNIT_RSLT_VAL,SS.PCT_RSLT_VAL
+FROM PS_GPCH_RP_0001 PS ,PS_GPCH_BL_PRINT D ,PS_GP_RSLT_ERN_DED SS
+     [$RC_Emplid_Record]  [$Record_Security]
+WHERE  PS.EMPLID            = SS.EMPLID
+AND    PS.CAL_RUN_ID        = SS.CAL_RUN_ID
+AND    PS.EMPL_RCD          = SS.EMPL_RCD
+AND    PS.GP_PAYGROUP       = SS.GP_PAYGROUP
+AND    PS.CAL_ID            = SS.CAL_ID
+AND    PS.RSLT_SEG_NUM      = SS.RSLT_SEG_NUM
+AND    PS.CAL_RUN_ID        = $CAL_RUN_ID
+AND    PS.CAL_ID            = $CAL_ID
+AND    D.PIN_NUM            = SS.PIN_NUM
+AND    D.GPCH_RC_REPORTNAME = $Ctl_Print
+AND    D.EFF_STATUS         = 'A'
+[$Security_Where]
+[$SecurityClause]
+[$Security_Effdt]
+[$Emplid_Criteria_TX06]
+[$PayEntity_Crit_PS]
+[$Paygroup_Crit_PS]
+[$Dept_Crit_PS]
+[$Location_Crit_PS]
+[$Zero_Pin_Criteria_SS]  ! To deselect pins with zeros
+[$Company_Criteria_PS]
+[$BusinessUnit_Crit_PS]
+End-Sql
+
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '-> Fetch-Current-Rows '
+end-procedure Fetch-Current-Rows
+!**************************************************
+begin-procedure Get-Current-Data
+#Debug show '-> Get-Current-Data '  $CURRENT_VAL
+
+Begin-Sql on-error=give_warning
+
+INSERT INTO PS_GPCHTX061_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,PIN_NUM,RSLT_SEG_NUM,INSTANCE,SLICE_END_DT,
+PRD_END_DT,GPCH_AL_CPAY_ENDDT,CALC_RSLT_VAL)
+SELECT SS.PROCESS_INSTANCE,SS.EMPLID,SS.EMPL_RCD,[$CURRENT_NUM],SS.RSLT_SEG_NUM,SS.INSTANCE,SS.SLICE_END_DT,SS.PRD_END_DT,SS.GPCH_AL_CPAY_ENDDT,[$CURRENT_VAL]
+FROM   PS_GPCHTX062_TMP SS , [$CURRENT_REC]
+WHERE  [$CURRENT_PIN]
+AND    SS.PROCESS_INSTANCE   = #prcs_process_instance
+AND    SS.PRD_END_DT         = SS.GPCH_AL_CPAY_ENDDT
+AND    D.GPCH_RC_REPORTNAME  = $Ctl_Print
+AND    D.EFF_STATUS          = 'A'
+[$CURRENT_AMT]
+GROUP BY SS.PROCESS_INSTANCE,SS.EMPLID,SS.EMPL_RCD,[$CURRENT_NUM],SS.RSLT_SEG_NUM,SS.INSTANCE,SS.SLICE_END_DT,SS.PRD_END_DT,SS.GPCH_AL_CPAY_ENDDT
+
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '<- Get-Current-Data'
+end-procedure Get-Current-Data
+!**************************************************
+begin-procedure Get-Positive-Rows
+#Debug show '<- Get-Positive-Rows  '  $CAL_RUN_ID
+
+#Debug show 'Security: ' $Record_Security ' , ' $Security_Where ' , ' $SecurityClause ' , ' $Security_Effdt
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTX062_TMP(PROCESS_INSTANCE,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,RSLT_SEG_NUM,
+INSTANCE,PIN_NUM,SLICE_BGN_DT,SLICE_END_DT,PAY_ENTITY,PRD_END_DT,GPCH_AL_CPAY_ENDDT,CALC_RSLT_VAL,
+BASE_RSLT_VAL,RATE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL)
+#ifdef ORACLE
+Select /*+ INDEX(PS PS_GPCH_RP_0001)*/ [$prcs_process_instance],
+#else
+Select [$prcs_process_instance],
+#endif
+SS.EMPLID,SS.CAL_RUN_ID,SS.EMPL_RCD,SS.GP_PAYGROUP,SS.CAL_ID,SS.RSLT_SEG_NUM,SS.INSTANCE,SS.PIN_NUM,
+SS.SLICE_BGN_DT,SS.SLICE_END_DT,PS.PAY_ENTITY,PS.PRD_END_DT,PS.GPCH_AL_CPAY_ENDDT,SS.CALC_RSLT_VAL,
+SS.BASE_RSLT_VAL,SS.RATE_RSLT_VAL,SS.UNIT_RSLT_VAL,SS.PCT_RSLT_VAL
+FROM PS_GPCH_RP_0001 PS ,PS_GPCH_BL_PRINT D ,PS_GP_RSLT_ERN_DED SS ,PS_GP_RSLT_DELTA DL
+  [$RC_Emplid_Record]  [$Record_Security]
+WHERE  PS.EMPLID            = DL.EMPLID
+AND    PS.CAL_RUN_ID        = DL.CAL_RUN_ID
+AND    PS.EMPL_RCD          = DL.EMPL_RCD
+AND    PS.GP_PAYGROUP       = DL.GP_PAYGROUP
+AND    PS.CAL_ID            = DL.CAL_ID
+AND    PS.RSLT_SEG_NUM      = DL.RSLT_SEG_NUM
+AND    DL.EMPLID            = SS.EMPLID
+AND    DL.CAL_RUN_ID        = SS.CAL_RUN_ID
+AND    DL.EMPL_RCD          = SS.EMPL_RCD
+AND    DL.GP_PAYGROUP       = SS.GP_PAYGROUP
+AND    DL.CAL_ID            = SS.CAL_ID
+AND    DL.RSLT_SEG_NUM      = SS.RSLT_SEG_NUM
+AND    DL.PIN_NUM           = SS.PIN_NUM
+AND    DL.CAL_RUN_ID        = $CAL_RUN_ID
+AND    D.PIN_NUM            = DL.PIN_NUM
+AND    D.GPCH_RC_REPORTNAME = $Ctl_Print
+AND    D.EFF_STATUS         = 'A'
+AND    DL.FORWARD_IND       = 'N'
+[$Security_Where]
+[$SecurityClause]
+[$Security_Effdt]
+[$Emplid_Criteria_TX06]
+[$PayEntity_Crit_PS]
+[$Paygroup_Crit_PS]
+[$Dept_Crit_PS]
+[$Location_Crit_PS]
+[$Zero_Pin_Criteria_SS]  ! To deselect pins with zeros
+[$Company_Criteria_PS]
+[$BusinessUnit_Crit_PS]
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '-> Get-Positive-Rows'
+end-procedure Get-Positive-Rows
+!**************************************************
+begin-procedure Get-Negative-Rows
+#Debug show '<- Get-Negative-Rows'
+
+#Debug show 'Security: ' $Record_Security ' , ' $Security_Where ' , ' $SecurityClause ' , ' $Security_Effdt
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTX062_TMP(PROCESS_INSTANCE,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,RSLT_SEG_NUM,
+INSTANCE,PIN_NUM,SLICE_BGN_DT,SLICE_END_DT,PAY_ENTITY,PRD_END_DT,GPCH_AL_CPAY_ENDDT,CALC_RSLT_VAL,
+BASE_RSLT_VAL,RATE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL)
+#ifdef ORACLE
+Select /*+ INDEX(PS PS_GPCH_RP_0001)*/ [$prcs_process_instance],
+#else
+Select [$prcs_process_instance],
+#endif
+SS.EMPLID,SS.CAL_RUN_ID,SS.EMPL_RCD,SS.GP_PAYGROUP,SS.CAL_ID,-SS.RSLT_SEG_NUM,SS.INSTANCE,SS.PIN_NUM,
+SS.SLICE_BGN_DT,SS.SLICE_END_DT,PS.PAY_ENTITY,PS.PRD_END_DT,PS.GPCH_AL_CPAY_ENDDT,SS.CALC_RSLT_VAL * -1,
+SS.BASE_RSLT_VAL * -1,SS.RATE_RSLT_VAL,SS.UNIT_RSLT_VAL * -1,SS.PCT_RSLT_VAL
+{Record_GP_Diff}  [$Record_Security]    !Record_GP_Diff Defined in gpchut12.sqc
+WHERE  PS.EMPLID            = SS.EMPLID
+AND    PS.CAL_RUN_ID        = SS.CAL_RUN_ID
+AND    PS.EMPL_RCD          = SS.EMPL_RCD
+AND    PS.GP_PAYGROUP       = SS.GP_PAYGROUP
+AND    PS.CAL_ID            = SS.CAL_ID
+AND    PS.RSLT_SEG_NUM      = SS.RSLT_SEG_NUM
+AND    A.EMPLID             = DL.EMPLID
+AND    A.CAL_RUN_ID         = DL.CAL_RUN_ID
+AND    A.EMPL_RCD           = DL.EMPL_RCD
+AND    A.GP_PAYGROUP        = DL.GP_PAYGROUP
+AND    A.CAL_ID             = DL.CAL_ID
+{Record_GP_Diff_Where}
+AND    DL.EMPLID            = PS.EMPLID
+AND    DL.EMPL_RCD          = PS.EMPL_RCD
+AND    DL.GP_PAYGROUP       = PS.GP_PAYGROUP
+AND    DL.CAL_ID            = PS.CAL_ID
+AND    DL.RSLT_SEG_NUM      = PS.RSLT_SEG_NUM
+AND    DL.PIN_NUM           = SS.PIN_NUM
+AND    DL.CAL_RUN_ID        = $CAL_RUN_ID
+AND    D.PIN_NUM            = DL.PIN_NUM
+AND    D.GPCH_RC_REPORTNAME = $Ctl_Print
+AND    D.EFF_STATUS         = 'A'
+AND    DL.FORWARD_IND       = 'N'
+AND    DL.EMPLID IN (SELECT DISTINCT PS1.EMPLID FROM PS_GPCH_RP_0001 PS1
+                                                WHERE PS1.CAL_RUN_ID = $CAL_RUN_ID
+                                                AND   PS1.PAY_ENTITY = $PR_Pay_Entity )
+[$Security_Where]
+[$SecurityClause]
+[$Security_Effdt]
+[$Emplid_Criteria_DL]
+[$PayEntity_Crit_PS]
+[$Paygroup_Crit_PS]
+[$Dept_Crit_PS]
+[$Location_Crit_PS]
+[$Zero_Pin_Criteria_SS]  ! To deselect pins with zeros
+[$Company_Criteria_PS]
+[$BusinessUnit_Crit_PS]
+End-SQL
+
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '-> Get-Negative-Rows'
+End-procedure Get-Negative-Rows
+!**************************************************
+begin-procedure Get-Positive-Rows-Zero
+#Debug show '-> Get-Positive-Rows-Zero   '  $CAL_RUN_ID ' , ' $Zero_Pin_Criteria_SS
+
+#Debug show 'Security: ' $Record_Security ' , ' $Security_Where ' , ' $SecurityClause ' , ' $Security_Effdt
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTX062_TMP(PROCESS_INSTANCE,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,RSLT_SEG_NUM,
+INSTANCE,PIN_NUM,SLICE_BGN_DT,SLICE_END_DT,PAY_ENTITY,PRD_END_DT,GPCH_AL_CPAY_ENDDT,CALC_RSLT_VAL,
+BASE_RSLT_VAL,RATE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL)
+#ifdef ORACLE
+Select /*+ INDEX(PS PS_GPCH_RP_0001)*/ [$prcs_process_instance],
+#else
+Select [$prcs_process_instance],
+#endif
+SS.EMPLID,SS.CAL_RUN_ID,SS.EMPL_RCD,SS.GP_PAYGROUP,SS.CAL_ID,SS.RSLT_SEG_NUM,SS.INSTANCE,SS.PIN_NUM,
+SS.SLICE_BGN_DT,SS.SLICE_END_DT,PS.PAY_ENTITY,PS.PRD_END_DT,PS.GPCH_AL_CPAY_ENDDT,SS.CALC_RSLT_VAL,
+SS.BASE_RSLT_VAL,SS.RATE_RSLT_VAL,1,SS.PCT_RSLT_VAL
+FROM PS_GPCH_RP_0001 PS ,PS_GPCH_BL_PRINT D ,PS_GP_RSLT_ERN_DED SS   [$RC_Emplid_Record]  [$Record_Security]
+WHERE  PS.EMPLID            = SS.EMPLID
+AND    PS.CAL_RUN_ID        = SS.CAL_RUN_ID
+AND    PS.EMPL_RCD          = SS.EMPL_RCD
+AND    PS.GP_PAYGROUP       = SS.GP_PAYGROUP
+AND    PS.CAL_ID            = SS.CAL_ID
+AND    PS.RSLT_SEG_NUM      = SS.RSLT_SEG_NUM
+AND    PS.CAL_RUN_ID        = $CAL_RUN_ID
+AND    D.PIN_NUM            = SS.PIN_NUM
+AND    D.GPCH_RC_REPORTNAME = $Ctl_Print
+AND    D.EFF_STATUS         = 'A'
+AND    PS.PRD_END_DT        <> PS.GPCH_AL_CPAY_ENDDT
+[$Security_Where]
+[$SecurityClause]
+[$Security_Effdt]
+[$Emplid_Criteria_TX06]
+[$PayEntity_Crit_PS]
+[$Paygroup_Crit_PS]
+[$Dept_Crit_PS]
+[$Location_Crit_PS]
+[$Zero_Pin_Criteria_SS]  ! To select pins with zeros
+[$Company_Criteria_PS]
+[$BusinessUnit_Crit_PS]
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '<- Get-Positive-Rows-Zero '
+end-procedure Get-Positive-Rows-Zero
+!**************************************************
+begin-procedure Get-Negative-Rows-Zero
+#Debug show '-> Get-Negative-Rows-Zero'
+
+#Debug show 'Security: ' $Record_Security ' , ' $Security_Where ' , ' $SecurityClause ' , ' $Security_Effdt
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTX062_TMP(PROCESS_INSTANCE,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,RSLT_SEG_NUM,
+INSTANCE,PIN_NUM,SLICE_BGN_DT,SLICE_END_DT,PAY_ENTITY,PRD_END_DT,GPCH_AL_CPAY_ENDDT,CALC_RSLT_VAL,
+BASE_RSLT_VAL,RATE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL)
+#ifdef ORACLE
+SELECT /*+ INDEX(PS PS_GPCH_RP_0001)*/ [$prcs_process_instance],
+#else
+SELECT [$prcs_process_instance],
+#endif
+SS.EMPLID,SS.CAL_RUN_ID,SS.EMPL_RCD,SS.GP_PAYGROUP,SS.CAL_ID,-SS.RSLT_SEG_NUM,SS.INSTANCE,SS.PIN_NUM,
+SS.SLICE_BGN_DT,SS.SLICE_END_DT,PS.PAY_ENTITY,PS.PRD_END_DT,PS.GPCH_AL_CPAY_ENDDT,SS.CALC_RSLT_VAL * -1,
+SS.BASE_RSLT_VAL * -1,SS.RATE_RSLT_VAL,-1,SS.PCT_RSLT_VAL
+FROM PS_GP_PYE_PRC_STAT A ,PS_GP_RSLT_ERN_DED SS , PS_GPCH_BL_PRINT D, PS_GPCH_RP_0001 PS   [$RC_Emplid_Record]  [$Record_Security]
+WHERE  PS.EMPLID            = SS.EMPLID
+AND    PS.CAL_RUN_ID        = SS.CAL_RUN_ID
+AND    PS.EMPL_RCD          = SS.EMPL_RCD
+AND    PS.GP_PAYGROUP       = SS.GP_PAYGROUP
+AND    PS.CAL_ID            = SS.CAL_ID
+AND    PS.RSLT_SEG_NUM      = SS.RSLT_SEG_NUM
+AND    A.ORIG_CAL_RUN_ID    = SS.CAL_RUN_ID
+AND    A.ORIG_CAL_RUN_ID    <> A.CAL_RUN_ID
+AND    A.EMPLID             = SS.EMPLID
+AND    A.EMPL_RCD           = SS.EMPL_RCD
+AND    A.GP_PAYGROUP        = SS.GP_PAYGROUP
+AND    A.CAL_ID             = SS.CAL_ID
+AND    A.CAL_RUN_ID         = $CAL_RUN_ID
+AND    A.PRD_TYPE           = 'R'
+AND    A.CALC_TYPE          = 'P'
+AND    D.PIN_NUM            = SS.PIN_NUM
+AND    D.GPCH_RC_REPORTNAME = $Ctl_Print
+AND    D.EFF_STATUS         = 'A'
+[$Security_Where]
+[$SecurityClause]
+[$Security_Effdt]
+[$Emplid_Criteria_TX06_A]
+[$PayEntity_Crit_PS]
+[$Paygroup_Crit_PS]
+[$Dept_Crit_PS]
+[$Location_Crit_PS]
+[$Zero_Pin_Criteria_SS]  ! To select pins with zeros
+[$Company_Criteria_PS]
+[$BusinessUnit_Crit_PS]
+End-SQL
+
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '<- Get-Negative-Rows-Zero '
+End-procedure Get-Negative-Rows-Zero
+!**************************************************
+begin-procedure Get-Sum-Posi-Nega
+#Debug show '<- Get-Sum-Posi-Nega' $Zero_Cal_Id
+
+if $Zero_Cal_Id  = 'Y'
+
+else
+   let $Having_Clause = ''
+end-if
+
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTX063_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,PIN_NUM,RSLT_SEG_NUM,INSTANCE,SLICE_END_DT,
+PRD_END_DT,GPCH_AL_CPAY_ENDDT,CALC_RSLT_VAL,BASE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL,RATE_RSLT_VAL)
+SELECT
+FF.PROCESS_INSTANCE,FF.EMPLID,FF.EMPL_RCD,FF.PIN_NUM,MAX(FF.RSLT_SEG_NUM),FF.INSTANCE,FF.SLICE_END_DT,FF.PRD_END_DT,[$FF_GPCH_AL_CPAY_ENDDT],SUM(FF.CALC_RSLT_VAL),
+SUM(FF.BASE_RSLT_VAL),SUM(FF.UNIT_RSLT_VAL),FF.PCT_RSLT_VAL,FF.RATE_RSLT_VAL
+FROM PS_GPCHTX062_TMP FF
+WHERE FF.PROCESS_INSTANCE   = #prcs_process_instance
+#ifdef DB2ALL
+GROUP BY FF.PROCESS_INSTANCE,FF.EMPLID,FF.EMPL_RCD,FF.RSLT_SEG_NUM,FF.INSTANCE,FF.PIN_NUM,FF.SLICE_END_DT,FF.PRD_END_DT,FF.PCT_RSLT_VAL,FF.RATE_RSLT_VAL
+#else
+GROUP BY FF.PROCESS_INSTANCE,FF.EMPLID,FF.EMPL_RCD,ABS(FF.RSLT_SEG_NUM),FF.INSTANCE,FF.PIN_NUM,FF.SLICE_END_DT,FF.PRD_END_DT,FF.PCT_RSLT_VAL,FF.RATE_RSLT_VAL
+#end-if
+[$Having_Clause]
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '-> Get-Sum-Posi-Nega'
+end-procedure Get-Sum-Posi-Nega
+
+!**************************************************
+begin-procedure Get-Delta-Data
+#Debug show '-> Get-Delta-Data'
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+ANALYZE TABLE PS_GPCHTX063_TMP COMPUTE STATISTICS
+End-Sql
+#endif
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTX061_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,PIN_NUM,RSLT_SEG_NUM,INSTANCE,SLICE_END_DT,
+PRD_END_DT,GPCH_AL_CPAY_ENDDT,CALC_RSLT_VAL)
+SELECT SS.PROCESS_INSTANCE,SS.EMPLID,SS.EMPL_RCD,[$DELTA_NUM],SS.RSLT_SEG_NUM,SS.INSTANCE,SS.SLICE_END_DT,SS.PRD_END_DT,SS.GPCH_AL_CPAY_ENDDT,[$DELTA_VAL]
+FROM   PS_GPCHTX063_TMP SS ,[$DELTA_REC]
+WHERE  [$DELTA_PIN]
+AND   SS.PROCESS_INSTANCE   = #prcs_process_instance
+AND    D.GPCH_RC_REPORTNAME = $Ctl_Print
+AND    D.EFF_STATUS         = 'A'
+[$DELTA_AMT]
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '<- Get-Delta-Data'
+end-procedure Get-Delta-Data
+!**************************************************
+begin-procedure Delete-TX63-Data
+#Debug show '-> Delete-TX63-Data'
+
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHTX063_TMP
+WHERE PROCESS_INSTANCE   = #prcs_process_instance AND CALC_RSLT_VAL = 0.00 and BASE_RSLT_VAL = 0.00 and UNIT_RSLT_VAL = 0.00
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '<- Delete-TX63-Data'
+end-procedure Delete-TX63-Data
+!**************************************************
+begin-procedure Get-Current-Bind-Variables
+#Debug show '-> Get-Current-Bind-Variables ' $CAL_RUN_ID ' , ' $CAL_ID
+
+  do Get_Emplid_Streams_Current            !To Renumber the Instance Number by Emplid Streams
+
+
+  ! Calc Data
+  let $CURRENT_NUM = 'SS.PIN_NUM'
+  let $CURRENT_VAL = 'SUM(SS.CALC_RSLT_VAL)'
+  let $CURRENT_REC = 'PS_GPCH_BL_PRINT D'
+  let $CURRENT_PIN = 'D.PIN_NUM         =  SS.PIN_NUM '
+  if $Zero_Cal_Id  = 'Y'
+     let $CURRENT_AMT = 'AND D.GPCH_BL_PR_CALC = ''Y'''
+  else
+     let $CURRENT_AMT = 'AND D.GPCH_BL_PR_CALC = ''Y'' AND SS.CALC_RSLT_VAL <> 0 '
+  end-if
+
+
+  do Get-Current-Data
+
+  ! Base Data
+  let $CURRENT_NUM = 'D.PIN_NUM'
+  let $CURRENT_VAL = 'SUM(SS.BASE_RSLT_VAL)'
+  let $CURRENT_REC = 'PS_GPCHTX064_TMP D'
+  let $CURRENT_PIN = 'D.PIN_PARENT_NUM  = SS.PIN_NUM AND D.PROCESS_INSTANCE = SS.PROCESS_INSTANCE '
+  if $Zero_Cal_Id  = 'Y'
+     let $CURRENT_AMT = 'AND D.GPCH_BL_PR_BASE = ''Y'''
+  else
+     let $CURRENT_AMT = 'AND D.GPCH_BL_PR_BASE = ''Y'' AND SS.BASE_RSLT_VAL <> 0 '
+  end-if
+
+  do Get-Current-Data
+
+  ! Unit Data
+  let $CURRENT_NUM = 'D.PIN_NUM'
+  let $CURRENT_VAL = 'SUM(SS.UNIT_RSLT_VAL)'
+  let $CURRENT_REC = 'PS_GPCHTX064_TMP D'
+  let $CURRENT_PIN = 'D.PIN_PARENT_NUM   = SS.PIN_NUM AND D.PROCESS_INSTANCE = SS.PROCESS_INSTANCE '
+  if $Zero_Cal_Id  = 'Y'
+     let $CURRENT_AMT = 'AND D.GPCH_BL_PR_UNITS = ''Y'''
+  else
+     let $CURRENT_AMT = 'AND D.GPCH_BL_PR_UNITS = ''Y'' AND SS.UNIT_RSLT_VAL <> 0 '
+  end-if
+
+  do Get-Current-Data
+
+  ! Percent Data
+  let $CURRENT_NUM = 'D.PIN_NUM'
+  let $CURRENT_VAL = 'SUM(SS.PCT_RSLT_VAL)'
+  let $CURRENT_REC = 'PS_GPCHTX064_TMP D'
+  let $CURRENT_PIN = 'D.PIN_PARENT_NUM     = SS.PIN_NUM AND D.PROCESS_INSTANCE = SS.PROCESS_INSTANCE '
+  if $Zero_Cal_Id  = 'Y'
+     let $CURRENT_AMT = 'AND D.GPCH_BL_PR_PERCENT = ''Y'''
+  else
+     let $CURRENT_AMT = 'AND D.GPCH_BL_PR_PERCENT = ''Y'' AND SS.PCT_RSLT_VAL <> 0 '
+  end-if
+
+  do Get-Current-Data
+
+  ! Rate Data
+  let $CURRENT_NUM = 'D.PIN_NUM'
+  let $CURRENT_VAL = 'SUM(SS.RATE_RSLT_VAL)'
+  let $CURRENT_REC = 'PS_GPCHTX064_TMP D'
+  let $CURRENT_PIN = 'D.PIN_PARENT_NUM  = SS.PIN_NUM AND D.PROCESS_INSTANCE = SS.PROCESS_INSTANCE '
+  if $Zero_Cal_Id  = 'Y'
+     let $CURRENT_AMT = 'AND D.GPCH_BL_PR_RATE = ''Y'' AND SS.RATE_RSLT_VAL <> 0  '
+  else
+     let $CURRENT_AMT = 'AND D.GPCH_BL_PR_RATE = ''Y'' AND SS.RATE_RSLT_VAL <> 0  '
+  end-if
+
+  do Get-Current-Data
+
+#Debug show '<- Get-Current-Bind-Variables'
+end-procedure Get-Current-Bind-Variables
+!**************************************************
+begin-procedure Get-Delta-Bind-Variables
+#Debug show '-> Get-Delta-Bind-Variables '
+
+  if $Zero_Cal_Id = 'N'
+     do Delete-TX63-Data          !to delete Percent and Rate data for other components zero
+     do Get_Emplid_Streams_Delta  !To Renumber the Instance Number by Emplid Streams
+  end-if
+
+
+
+  ! Calc Data
+  let $DELTA_NUM = 'SS.PIN_NUM'
+  let $DELTA_VAL = 'SS.CALC_RSLT_VAL'
+  let $DELTA_REC = 'PS_GPCH_BL_PRINT D'
+  let $DELTA_PIN = 'D.PIN_NUM         =  SS.PIN_NUM '
+  if $Zero_Cal_Id  = 'Y'
+     let $DELTA_AMT = 'AND D.GPCH_BL_PR_CALC = ''Y'' '
+  else
+     let $DELTA_AMT = 'AND D.GPCH_BL_PR_CALC = ''Y'' AND SS.CALC_RSLT_VAL <> 0 '
+  end-if
+
+  do Get-Delta-Data
+
+  ! Base Data
+  let $DELTA_NUM = 'D.PIN_NUM'
+  let $DELTA_VAL = 'SS.BASE_RSLT_VAL'
+  let $DELTA_REC = 'PS_GPCHTX064_TMP D'
+  let $DELTA_PIN = 'D.PIN_PARENT_NUM  = SS.PIN_NUM AND D.PROCESS_INSTANCE = SS.PROCESS_INSTANCE '
+  if $Zero_Cal_Id  = 'Y'
+     let $DELTA_AMT = 'AND D.GPCH_BL_PR_BASE = ''Y'''
+  else
+     let $DELTA_AMT = 'AND D.GPCH_BL_PR_BASE = ''Y'' AND SS.BASE_RSLT_VAL <> 0 '
+  end-if
+
+  do Get-Delta-Data
+
+  ! Unit Data
+  let $DELTA_NUM = 'D.PIN_NUM'
+  let $DELTA_VAL = 'SS.UNIT_RSLT_VAL'
+  let $DELTA_REC = 'PS_GPCHTX064_TMP D'
+  let $DELTA_PIN = 'D.PIN_PARENT_NUM   = SS.PIN_NUM AND D.PROCESS_INSTANCE = SS.PROCESS_INSTANCE '
+  if $Zero_Cal_Id  = 'Y'
+     let $DELTA_AMT = 'AND D.GPCH_BL_PR_UNITS = ''Y'''
+  else
+     let $DELTA_AMT = 'AND D.GPCH_BL_PR_UNITS = ''Y'' AND SS.UNIT_RSLT_VAL <> 0 '
+  end-if
+
+  do Get-Delta-Data
+
+  ! Percent Data
+  let $DELTA_NUM = 'D.PIN_NUM'
+  let $DELTA_VAL = 'SS.PCT_RSLT_VAL'
+  let $DELTA_REC = 'PS_GPCHTX064_TMP D'
+  let $DELTA_PIN = 'D.PIN_PARENT_NUM     = SS.PIN_NUM AND D.PROCESS_INSTANCE = SS.PROCESS_INSTANCE '
+  if $Zero_Cal_Id  = 'Y'
+     let $DELTA_AMT = 'AND D.GPCH_BL_PR_PERCENT = ''Y'''
+  else
+     let $DELTA_AMT = 'AND D.GPCH_BL_PR_PERCENT = ''Y'' AND SS.PCT_RSLT_VAL <> 0 '
+  end-if
+
+  do Get-Delta-Data
+
+  ! Rate Data
+  let $DELTA_NUM = 'D.PIN_NUM'
+  let $DELTA_VAL = 'SS.RATE_RSLT_VAL'
+  let $DELTA_REC = 'PS_GPCHTX064_TMP D'
+  let $DELTA_PIN = 'D.PIN_PARENT_NUM  = SS.PIN_NUM AND D.PROCESS_INSTANCE = SS.PROCESS_INSTANCE '
+  if $Zero_Cal_Id  = 'Y'
+     let $DELTA_AMT = 'AND D.GPCH_BL_PR_RATE = ''Y'''
+  else
+     let $DELTA_AMT = 'AND D.GPCH_BL_PR_RATE = ''Y'' AND SS.RATE_RSLT_VAL <> 0  '
+  end-if
+
+  do Get-Delta-Data
+
+
+#Debug show '<- Get-Delta-Bind-Variables'
+end-procedure Get-Delta-Bind-Variables
+
+!**************************************************
+begin-procedure Delete-Records
+#Debug show '<- Delete-Records'
+
+   if $Delete_tx61 = 'Y'
+
+   let $DELETE_REC_NAME = 'PS_GPCHTX061_TMP'
+   do  Delete-REC
+
+   end-if
+
+   let $DELETE_REC_NAME = 'PS_GPCHTX062_TMP'
+   do  Delete-REC
+
+   let $DELETE_REC_NAME = 'PS_GPCHTX063_TMP'
+   do  Delete-REC
+
+   let $DELETE_REC_NAME = 'PS_GPCHTX064_TMP'
+   do  Delete-REC
+
+#Debug show '-> Delete-Records'
+end-procedure Delete-Records
+!**************************************************
+
+begin-procedure Delete-REC
+#Debug show '<- Delete-REC'
+
+Begin-Sql on-error=give_warning
+
+  DELETE FROM [$DELETE_REC_NAME] WHERE PROCESS_INSTANCE   = #prcs_process_instance
+
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '-> Delete-REC'
+end-procedure Delete-REC
+
+
+!**************************************************
+Begin-Procedure Update-Delta-Rows
+#Debug show '<- Update-Delta-Rows  ' $Stream_Emplid_TX63 ' , ' $Stream_Emplid_TX06
+
+#ifdef MICROSOFT
+
+Begin-Sql on-error=give_warning
+UPDATE PS_GPCHTX063_TMP
+SET   PS_GPCHTX063_TMP.INSTANCE = (SELECT COUNT (*) FROM PS_GPCHTX063_TMP T
+WHERE T.PROCESS_INSTANCE   = PS_GPCHTX063_TMP.PROCESS_INSTANCE
+AND   T.EMPLID             = PS_GPCHTX063_TMP.EMPLID
+AND   T.EMPL_RCD           = PS_GPCHTX063_TMP.EMPL_RCD
+AND   T.PIN_NUM            = PS_GPCHTX063_TMP.PIN_NUM
+AND   T.PRD_END_DT         = PS_GPCHTX063_TMP.PRD_END_DT
+AND   T.GPCH_AL_CPAY_ENDDT = PS_GPCHTX063_TMP.GPCH_AL_CPAY_ENDDT
+AND   T.SLICE_END_DT      <= PS_GPCHTX063_TMP.SLICE_END_DT
+AND  (T.RSLT_SEG_NUM      <= PS_GPCHTX063_TMP.RSLT_SEG_NUM  OR  T.INSTANCE < PS_GPCHTX063_TMP.INSTANCE)
+AND   T.INSTANCE          <= PS_GPCHTX063_TMP.INSTANCE)
+WHERE PS_GPCHTX063_TMP.PROCESS_INSTANCE   = #prcs_process_instance
+[$Stream_Emplid_TX63]
+End-Sql
+
+#else
+#ifdef ORACLE
+
+Begin-Sql on-error=give_warning
+UPDATE PS_GPCHTX063_TMP
+SET   PS_GPCHTX063_TMP.INSTANCE = (SELECT COUNT (*) FROM PS_GPCHTX063_TMP T
+WHERE T.PROCESS_INSTANCE   = PS_GPCHTX063_TMP.PROCESS_INSTANCE
+AND   T.EMPLID             = PS_GPCHTX063_TMP.EMPLID
+AND   T.EMPL_RCD           = PS_GPCHTX063_TMP.EMPL_RCD
+AND   T.PIN_NUM            = PS_GPCHTX063_TMP.PIN_NUM
+AND   T.PRD_END_DT         = PS_GPCHTX063_TMP.PRD_END_DT
+AND   T.GPCH_AL_CPAY_ENDDT = PS_GPCHTX063_TMP.GPCH_AL_CPAY_ENDDT
+AND   T.SLICE_END_DT      <= PS_GPCHTX063_TMP.SLICE_END_DT
+AND  (T.RSLT_SEG_NUM      <= PS_GPCHTX063_TMP.RSLT_SEG_NUM  OR  T.INSTANCE < PS_GPCHTX063_TMP.INSTANCE)
+AND   T.INSTANCE          <= PS_GPCHTX063_TMP.INSTANCE)
+WHERE PS_GPCHTX063_TMP.PROCESS_INSTANCE   = #prcs_process_instance
+[$Stream_Emplid_TX63]
+End-Sql
+
+#else
+  #ifdef SYBASE
+
+Begin-Sql on-error=give_warning
+UPDATE PS_GPCHTX063_TMP
+SET   PS_GPCHTX063_TMP.INSTANCE = (SELECT COUNT (*) FROM PS_GPCHTX063_TMP T
+WHERE T.PROCESS_INSTANCE   = PS_GPCHTX063_TMP.PROCESS_INSTANCE
+AND   T.EMPLID             = PS_GPCHTX063_TMP.EMPLID
+AND   T.EMPL_RCD           = PS_GPCHTX063_TMP.EMPL_RCD
+AND   T.PIN_NUM            = PS_GPCHTX063_TMP.PIN_NUM
+AND   T.PRD_END_DT         = PS_GPCHTX063_TMP.PRD_END_DT
+AND   T.GPCH_AL_CPAY_ENDDT = PS_GPCHTX063_TMP.GPCH_AL_CPAY_ENDDT
+AND   T.SLICE_END_DT      <= PS_GPCHTX063_TMP.SLICE_END_DT
+AND  (T.RSLT_SEG_NUM      <= PS_GPCHTX063_TMP.RSLT_SEG_NUM  OR  T.INSTANCE < PS_GPCHTX063_TMP.INSTANCE)
+AND   T.INSTANCE          <= PS_GPCHTX063_TMP.INSTANCE)
+WHERE PS_GPCHTX063_TMP.PROCESS_INSTANCE   = #prcs_process_instance
+[$Stream_Emplid_TX63]
+
+End-Sql
+
+#else
+
+Begin-Sql on-error=give_warning
+UPDATE PS_GPCHTX063_TMP A
+SET   INSTANCE = (SELECT COUNT (*) FROM PS_GPCHTX063_TMP T
+WHERE T.PROCESS_INSTANCE   = A.PROCESS_INSTANCE
+AND   T.EMPLID             = A.EMPLID
+AND   T.EMPL_RCD           = A.EMPL_RCD
+AND   T.PIN_NUM            = A.PIN_NUM
+AND   T.PRD_END_DT         = A.PRD_END_DT
+AND   T.GPCH_AL_CPAY_ENDDT = A.GPCH_AL_CPAY_ENDDT
+AND   T.SLICE_END_DT      <= A.SLICE_END_DT
+AND  (T.RSLT_SEG_NUM      <= A.RSLT_SEG_NUM  OR  T.INSTANCE < A.INSTANCE)
+AND   T.INSTANCE          <= A.INSTANCE)
+WHERE PROCESS_INSTANCE   = #prcs_process_instance
+[$Stream_Emplid_TX06]
+End-Sql
+
+#end-if  !ORACLE
+#end-if  !SYBASE
+#end-if  !MICROSOFT
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '-> Update-Delta-Rows  '
+End-Procedure Update-Delta-Rows
+!**************************************************
+Begin-Procedure Update-Current-Rows
+#Debug show '<- Update-Current-Rows  ' $Stream_Emplid_TX62 ' , ' $Stream_Emplid_TX06
+
+#ifdef MICROSOFT
+
+Begin-Sql on-error=give_warning
+UPDATE PS_GPCHTX062_TMP
+SET  PS_GPCHTX062_TMP.INSTANCE = (SELECT COUNT (*) FROM PS_GPCHTX062_TMP T
+WHERE T.PROCESS_INSTANCE   = PS_GPCHTX062_TMP.PROCESS_INSTANCE
+AND   T.EMPLID             = PS_GPCHTX062_TMP.EMPLID
+AND   T.CAL_RUN_ID         = PS_GPCHTX062_TMP.CAL_RUN_ID
+AND   T.EMPL_RCD           = PS_GPCHTX062_TMP.EMPL_RCD
+AND   T.GP_PAYGROUP        = PS_GPCHTX062_TMP.GP_PAYGROUP
+AND   T.CAL_ID             = PS_GPCHTX062_TMP.CAL_ID
+AND   T.PIN_NUM            = PS_GPCHTX062_TMP.PIN_NUM
+AND   T.SLICE_END_DT      <= PS_GPCHTX062_TMP.SLICE_END_DT
+AND  (T.RSLT_SEG_NUM      <= PS_GPCHTX062_TMP.RSLT_SEG_NUM OR T.INSTANCE < PS_GPCHTX062_TMP.INSTANCE)
+AND   T.INSTANCE          <= PS_GPCHTX062_TMP.INSTANCE)
+WHERE PS_GPCHTX062_TMP.PROCESS_INSTANCE   = #prcs_process_instance
+[$Stream_Emplid_TX62]
+End-Sql
+
+#else
+#ifdef ORACLE
+
+Begin-Sql on-error=give_warning
+UPDATE PS_GPCHTX062_TMP
+SET  PS_GPCHTX062_TMP.INSTANCE = (SELECT COUNT (*) FROM PS_GPCHTX062_TMP T
+WHERE T.PROCESS_INSTANCE   = PS_GPCHTX062_TMP.PROCESS_INSTANCE
+AND   T.EMPLID             = PS_GPCHTX062_TMP.EMPLID
+AND   T.CAL_RUN_ID         = PS_GPCHTX062_TMP.CAL_RUN_ID
+AND   T.EMPL_RCD           = PS_GPCHTX062_TMP.EMPL_RCD
+AND   T.GP_PAYGROUP        = PS_GPCHTX062_TMP.GP_PAYGROUP
+AND   T.CAL_ID             = PS_GPCHTX062_TMP.CAL_ID
+AND   T.PIN_NUM            = PS_GPCHTX062_TMP.PIN_NUM
+AND   T.SLICE_END_DT      <= PS_GPCHTX062_TMP.SLICE_END_DT
+AND  (T.RSLT_SEG_NUM      <= PS_GPCHTX062_TMP.RSLT_SEG_NUM OR T.INSTANCE < PS_GPCHTX062_TMP.INSTANCE)
+AND   T.INSTANCE          <= PS_GPCHTX062_TMP.INSTANCE)
+WHERE PS_GPCHTX062_TMP.PROCESS_INSTANCE   = #prcs_process_instance
+[$Stream_Emplid_TX62]
+End-Sql
+
+#else
+#ifdef SYBASE
+
+Begin-Sql on-error=give_warning
+UPDATE PS_GPCHTX062_TMP
+SET  PS_GPCHTX062_TMP.INSTANCE = (SELECT COUNT (*) FROM PS_GPCHTX062_TMP T
+WHERE T.PROCESS_INSTANCE   = PS_GPCHTX062_TMP.PROCESS_INSTANCE
+AND   T.EMPLID             = PS_GPCHTX062_TMP.EMPLID
+AND   T.CAL_RUN_ID         = PS_GPCHTX062_TMP.CAL_RUN_ID
+AND   T.EMPL_RCD           = PS_GPCHTX062_TMP.EMPL_RCD
+AND   T.GP_PAYGROUP        = PS_GPCHTX062_TMP.GP_PAYGROUP
+AND   T.CAL_ID             = PS_GPCHTX062_TMP.CAL_ID
+AND   T.PIN_NUM            = PS_GPCHTX062_TMP.PIN_NUM
+AND   T.SLICE_END_DT      <= PS_GPCHTX062_TMP.SLICE_END_DT
+AND  (T.RSLT_SEG_NUM      <= PS_GPCHTX062_TMP.RSLT_SEG_NUM OR T.INSTANCE < PS_GPCHTX062_TMP.INSTANCE)
+AND   T.INSTANCE          <= PS_GPCHTX062_TMP.INSTANCE)
+WHERE PS_GPCHTX062_TMP.PROCESS_INSTANCE   = #prcs_process_instance
+[$Stream_Emplid_TX62]
+End-Sql
+
+#else
+
+Begin-Sql on-error=give_warning
+UPDATE PS_GPCHTX062_TMP B
+SET   INSTANCE = (SELECT COUNT (*) FROM PS_GPCHTX062_TMP T
+WHERE T.PROCESS_INSTANCE   = B.PROCESS_INSTANCE
+AND   T.EMPLID             = B.EMPLID
+AND   T.CAL_RUN_ID         = B.CAL_RUN_ID
+AND   T.EMPL_RCD           = B.EMPL_RCD
+AND   T.GP_PAYGROUP        = B.GP_PAYGROUP
+AND   T.CAL_ID             = B.CAL_ID
+AND   T.PIN_NUM            = B.PIN_NUM
+AND   T.SLICE_END_DT      <= B.SLICE_END_DT
+AND  (T.RSLT_SEG_NUM      <= B.RSLT_SEG_NUM OR T.INSTANCE < B.INSTANCE)
+AND   T.INSTANCE          <= B.INSTANCE)
+WHERE PROCESS_INSTANCE   = #prcs_process_instance
+[$Stream_Emplid_TX06]
+End-Sql
+
+#end-if  !ORACLE
+#end-if  !SYBASE
+#end-if  !MICROSOFT
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '-> Update-Current-Rows  '
+End-Procedure Update-Current-Rows
+
+!**************************************************
+begin-procedure Delete-Precent-Retros
+#Debug show '-> Delete-Precent-Retros' $Stream_Emplid_TX61 ' , ' $Stream_Emplid_TX06
+
+#ifdef MICROSOFT
+
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHTX061_TMP
+WHERE PS_GPCHTX061_TMP.PROCESS_INSTANCE   = #prcs_process_instance
+  AND PS_GPCHTX061_TMP.GPCH_AL_CPAY_ENDDT <> PS_GPCHTX061_TMP.PRD_END_DT
+  AND PS_GPCHTX061_TMP.PIN_NUM IN (SELECT D.PIN_NUM
+                       FROM PS_GPCHTX064_TMP D
+                       WHERE D.PROCESS_INSTANCE   = #prcs_process_instance
+                         AND D.GPCH_RC_REPORTNAME = $Ctl_Print
+                         AND D.EFF_STATUS         = 'A'
+                         AND D.GPCH_BL_PR_PERCENT = 'Y')
+  AND EXISTS (SELECT 1 FROM PS_GPCHTX061_TMP T
+                       WHERE T.GPCH_AL_CPAY_ENDDT = T.PRD_END_DT
+                         AND T.PROCESS_INSTANCE   = PS_GPCHTX061_TMP.PROCESS_INSTANCE
+                         AND T.EMPLID             = PS_GPCHTX061_TMP.EMPLID
+                         AND T.EMPL_RCD           = PS_GPCHTX061_TMP.EMPL_RCD
+                         AND T.RSLT_SEG_NUM       = PS_GPCHTX061_TMP.RSLT_SEG_NUM
+                         AND T.INSTANCE           = PS_GPCHTX061_TMP.INSTANCE
+                         AND T.PIN_NUM            = PS_GPCHTX061_TMP.PIN_NUM
+                         AND T.PRD_END_DT         = PS_GPCHTX061_TMP.PRD_END_DT
+                         AND T.CALC_RSLT_VAL      = PS_GPCHTX061_TMP.CALC_RSLT_VAL)
+  [$Stream_Emplid_TX61]
+End-Sql
+
+#else
+#ifdef ORACLE
+
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHTX061_TMP
+WHERE PS_GPCHTX061_TMP.PROCESS_INSTANCE   = #prcs_process_instance
+  AND PS_GPCHTX061_TMP.GPCH_AL_CPAY_ENDDT <> PS_GPCHTX061_TMP.PRD_END_DT
+  AND PS_GPCHTX061_TMP.PIN_NUM IN (SELECT D.PIN_NUM
+                       FROM PS_GPCHTX064_TMP D
+                       WHERE D.PROCESS_INSTANCE   = #prcs_process_instance
+                         AND D.GPCH_RC_REPORTNAME = $Ctl_Print
+                         AND D.EFF_STATUS         = 'A'
+                         AND D.GPCH_BL_PR_PERCENT = 'Y')
+  AND EXISTS (SELECT 1 FROM PS_GPCHTX061_TMP T
+                       WHERE T.GPCH_AL_CPAY_ENDDT = T.PRD_END_DT
+                         AND T.PROCESS_INSTANCE   = PS_GPCHTX061_TMP.PROCESS_INSTANCE
+                         AND T.EMPLID             = PS_GPCHTX061_TMP.EMPLID
+                         AND T.EMPL_RCD           = PS_GPCHTX061_TMP.EMPL_RCD
+                         AND T.RSLT_SEG_NUM       = PS_GPCHTX061_TMP.RSLT_SEG_NUM
+                         AND T.INSTANCE           = PS_GPCHTX061_TMP.INSTANCE
+                         AND T.PIN_NUM            = PS_GPCHTX061_TMP.PIN_NUM
+                         AND T.PRD_END_DT         = PS_GPCHTX061_TMP.PRD_END_DT
+                         AND T.CALC_RSLT_VAL      = PS_GPCHTX061_TMP.CALC_RSLT_VAL)
+[$Stream_Emplid_TX61]
+End-Sql
+
+#else
+#ifdef SYBASE
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHTX061_TMP
+WHERE PS_GPCHTX061_TMP.PROCESS_INSTANCE   = #prcs_process_instance
+  AND PS_GPCHTX061_TMP.GPCH_AL_CPAY_ENDDT <> PS_GPCHTX061_TMP.PRD_END_DT
+  AND PS_GPCHTX061_TMP.PIN_NUM IN (SELECT D.PIN_NUM
+                       FROM PS_GPCHTX064_TMP D
+                       WHERE D.PROCESS_INSTANCE   = #prcs_process_instance
+                         AND D.GPCH_RC_REPORTNAME = $Ctl_Print
+                         AND D.EFF_STATUS         = 'A'
+                         AND D.GPCH_BL_PR_PERCENT = 'Y')
+  AND EXISTS (SELECT 1 FROM PS_GPCHTX061_TMP T
+                       WHERE T.GPCH_AL_CPAY_ENDDT = T.PRD_END_DT
+                         AND T.PROCESS_INSTANCE   = PS_GPCHTX061_TMP.PROCESS_INSTANCE
+                         AND T.EMPLID             = PS_GPCHTX061_TMP.EMPLID
+                         AND T.EMPL_RCD           = PS_GPCHTX061_TMP.EMPL_RCD
+                         AND T.RSLT_SEG_NUM       = PS_GPCHTX061_TMP.RSLT_SEG_NUM
+                         AND T.INSTANCE           = PS_GPCHTX061_TMP.INSTANCE
+                         AND T.PIN_NUM            = PS_GPCHTX061_TMP.PIN_NUM
+                         AND T.PRD_END_DT         = PS_GPCHTX061_TMP.PRD_END_DT
+                         AND T.CALC_RSLT_VAL      = PS_GPCHTX061_TMP.CALC_RSLT_VAL)
+
+[$Stream_Emplid_TX61]
+End-Sql
+
+#else
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHTX061_TMP C
+WHERE  PROCESS_INSTANCE   = #prcs_process_instance
+  AND  GPCH_AL_CPAY_ENDDT <> PRD_END_DT
+  AND  PIN_NUM IN (SELECT D.PIN_NUM
+                       FROM PS_GPCHTX064_TMP D
+                       WHERE D.PROCESS_INSTANCE   = #prcs_process_instance
+                         AND D.GPCH_RC_REPORTNAME = $Ctl_Print
+                         AND D.EFF_STATUS         = 'A'
+                         AND D.GPCH_BL_PR_PERCENT = 'Y')
+  AND EXISTS (SELECT 1 FROM PS_GPCHTX061_TMP T
+                       WHERE T.GPCH_AL_CPAY_ENDDT = T.PRD_END_DT
+                         AND T.PROCESS_INSTANCE   = C.PROCESS_INSTANCE
+                         AND T.EMPLID             = C.EMPLID
+                         AND T.EMPL_RCD           = C.EMPL_RCD
+                         AND T.RSLT_SEG_NUM       = C.RSLT_SEG_NUM
+                         AND T.INSTANCE           = C.INSTANCE
+                         AND T.PIN_NUM            = C.PIN_NUM
+                         AND T.PRD_END_DT         = C.PRD_END_DT
+                         AND T.CALC_RSLT_VAL      = C.CALC_RSLT_VAL)
+[$Stream_Emplid_TX06]
+End-Sql
+
+#end-if  !ORACLE
+#end-if  !SYBASE
+#end-if  !MICROSOFT
+
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug show '<- Delete-Precent-Retros'
+end-procedure Delete-Precent-Retros
+!**************************************************
+Begin-Procedure Get_Emplid_Streams_Delta
+#Debug show '-> Get_Emplid_Streams_Delta'
+
+ let $Found_flg = 'N'
+
+Begin-Select
+STRM_NUM
+EMPLID_FROM
+EMPLID_TO
+
+  let $Found_flg = 'Y'
+
+  let $Emplid_From  = rtrim(&EMPLID_FROM, ' ')
+  let $Emplid_To    = rtrim(&EMPLID_TO, ' ')
+
+  let $Stream_Emplid_TX63   = 'AND PS_GPCHTX063_TMP.EMPLID BETWEEN ''' || $Emplid_From || ''' ' || 'AND ''' || $Emplid_To || ''' '
+  let $Stream_Emplid_TX06   = 'AND EMPLID BETWEEN ''' || $Emplid_From || ''' ' || 'AND ''' || $Emplid_To || ''' '
+
+  do Update-Delta-Rows         !To Renumber the Instance Number
+
+FROM PS_GP_STRM
+End-Select
+
+  if $Found_flg = 'N'
+     let $Stream_Emplid_TX63   = ' '
+     let $Stream_Emplid_TX06   = ' '
+     do Update-Delta-Rows         !To Renumber the Instance Number
+  end-if
+
+
+
+#Debug show '<- Get_Emplid_Streams_Delta'
+End-Procedure Get_Emplid_Streams_Delta
+
+!**************************************************
+Begin-Procedure Get_Emplid_Streams_Current
+#Debug show '-> Get_Emplid_Streams_Current'
+
+  let $Found_flg = 'N'
+
+Begin-Select
+A.STRM_NUM
+A.EMPLID_FROM
+A.EMPLID_TO
+
+  let $Found_flg = 'Y'
+  let $Emplid_From  = rtrim(&A.EMPLID_FROM, ' ')
+  let $Emplid_To    = rtrim(&A.EMPLID_TO, ' ')
+
+
+  let $Stream_Emplid_TX62   = 'AND PS_GPCHTX062_TMP.EMPLID BETWEEN ''' || $Emplid_From || ''' ' || 'AND ''' || $Emplid_To || ''' '
+  let $Stream_Emplid_TX06   = 'AND EMPLID BETWEEN ''' || $Emplid_From || ''' ' || 'AND ''' || $Emplid_To || ''' '
+
+  do Update-Current-Rows         !To Renumber the Instance Number
+
+FROM PS_GP_STRM A
+End-Select
+
+  if $Found_flg = 'N'
+
+     let $Stream_Emplid_TX62   = ' '
+     let $Stream_Emplid_TX06   = ' '
+     do Update-Current-Rows         !To Renumber the Instance Number
+  end-if
+
+#Debug show '<- Get_Emplid_Streams_Current'
+End-Procedure Get_Emplid_Streams_Current
+
+!**************************************************
+
+Begin-Procedure Get_Emplid_Streams_Delete
+#Debug show '-> Get_Emplid_Streams_Delete'
+
+  let $Found_flg = 'N'
+
+Begin-Select
+B.STRM_NUM
+B.EMPLID_FROM
+B.EMPLID_TO
+
+  let $Found_flg = 'Y'
+  let $Emplid_From  = rtrim(&B.EMPLID_FROM, ' ')
+  let $Emplid_To    = rtrim(&B.EMPLID_TO, ' ')
+
+  let $Stream_Emplid_TX61   = 'AND PS_GPCHTX061_TMP.EMPLID BETWEEN ''' || $Emplid_From || ''' ' || 'AND ''' || $Emplid_To || ''' '
+  let $Stream_Emplid_TX06   = 'AND EMPLID BETWEEN ''' || $Emplid_From || ''' ' || 'AND ''' || $Emplid_To || ''' '
+
+  do Delete-Precent-Retros         !To Renumber the Instance Number
+
+FROM PS_GP_STRM B
+End-Select
+
+  if $Found_flg = 'N'
+     let $Stream_Emplid_TX61   = ' '
+     let $Stream_Emplid_TX06   = ' '
+     do Delete-Precent-Retros         !To Renumber the Instance Number
+  end-if
+
+#Debug show '<- Get_Emplid_Streams_Delete'
+End-Procedure Get_Emplid_Streams_Delete
+!**************************************************
+!Begin-Procedure Get_Distinct_Emplid
+!#Debug show '-> Get_Distinct_Emplid' $Record_Security ' , ' $Security_Where ' , ' $SecurityClause
+!
+!
+!let $DELETE_REC_NAME = 'PS_GPCHTX063_TMP'
+!   do  Delete-REC
+!
+!let $Null_Date = '''' || $AsOfToday || ''''
+!
+!Begin-Sql on-error=give_warning
+!
+!INSERT INTO PS_GPCHTX063_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,PIN_NUM,RSLT_SEG_NUM,INSTANCE,SLICE_END_DT,
+!PRD_END_DT,GPCH_AL_CPAY_ENDDT,CALC_RSLT_VAL,BASE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL,RATE_RSLT_VAL)
+!SELECT DISTINCT DS.PROCESS_INSTANCE,DS.EMPLID,0,0,0,0,[$Null_Date],[$Null_Date],[$Null_Date],0,0,0,0,0
+!FROM PS_GPCHTX061_TMP DS
+!!    Table PS_GPCHTX061_TMP already filtered by security
+!!    [$Record_Security]
+!WHERE DS.PROCESS_INSTANCE = #prcs_process_instance
+!![$Security_Where]
+!![$SecurityClause]
+!![$Security_Effdt]
+!End-Sql
+!
+!#Debug show '<- Get_Distinct_Emplid ' #sql-count
+!End-Procedure Get_Distinct_Emplid
+!**************************************************
+#include 'gpchcu03.sqc'  !custom override security

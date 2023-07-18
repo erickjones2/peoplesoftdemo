@@ -1,0 +1,215 @@
+!***********************************************************************
+!  UVPYL01:Rel 9.1 Upgrade - Validate Paygroup Retro Trigger Program ID*
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      !
+!          $Date:  2013/01/18:06:12:36                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  103                                                 !
+!                                                                      !
+!***********************************************************************
+
+#include 'setenv.sqc'   !Set environment
+#include 'setup32.sqc'  !printer and page-size initialization
+
+begin-report
+  do Init-Report
+  do Process-Main
+  do Reset
+  do Stdapi-Term
+end-report
+
+
+begin-procedure Init-Report
+  move 'UVPYL01' to $ReportID
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Stdapi-Init
+
+  do Get-Report-Language
+  display ' '
+  display $ReportTitle
+  display ' '
+
+end-procedure
+
+
+! This procedure is used to read language-dependent text from the database.
+begin-procedure Report-Translation
+! Read from UVPYL01 program ids
+  do Init_Report_Translation($ReportID,$language_cd)
+
+  do Get_Field_Information ('UVPYL01', 'REPORT_TITLE',  $ReportTitle,           #dummy_width)
+  do Get_Field_Information ('UVPYL01', 'COMPANY',       $Heading_Company,       #dummy_width)
+  do Get_Field_Information ('UVPYL01', 'PAYGROUP',      $Heading_Paygroup,      #dummy_width)
+  do Get_Field_Information ('UVPYL01', 'PAYGROUP_DESCR',$Heading_Paygroup_Descr,#dummy_width)
+
+
+end-procedure
+
+
+begin-HEADING 7
+
+  #Include 'stdhdgtr.sqc'
+
+
+  do Columns-Heading
+
+end-HEADING
+
+
+begin-procedure Columns-Heading
+
+  print $Heading_Company        (+2,1)
+  print $Heading_Paygroup       (0,10)
+  print $Heading_Paygroup_Descr (0,20)
+  print '-------'               (+1,1)
+  print '--------'              (0,10)
+  print '------------------------------' (0,20)
+
+end-procedure
+
+
+!***********************************************************************
+!  PROC REPORT                                                         *
+!         Main Procedure                                               *
+!***********************************************************************
+
+BEGIN-PROCEDURE Process-Main
+
+  do Cleanup-UPG-PAYGRP-RETRO
+  do Process-Paygroup
+
+END-PROCEDURE
+
+
+!***********************************************************************
+begin-procedure Cleanup-UPG-PAYGRP-RETRO
+! User may have removed one or both Retro fields from a paygroup
+! subsequent to a previous upgrade pass
+!***********************************************************************
+let $err-statement = 'Cleanup-UPG-PAYGRP-RETRO'
+begin-SQL on-error=Sql-Statement-Error
+DELETE FROM
+PS_UPG_PYGRP_RETRO
+WHERE NOT EXISTS
+(SELECT 'X' FROM PS_PAYGROUP_TBL
+ WHERE PS_UPG_PYGRP_RETRO.COMPANY = PS_PAYGROUP_TBL.COMPANY
+   AND PS_UPG_PYGRP_RETRO.PAYGROUP = PS_PAYGROUP_TBL.PAYGROUP
+   AND PS_PAYGROUP_TBL.RETRO_TRG_PGM_ID = ' '
+   AND PS_PAYGROUP_TBL.RETROPAY_PGM_ID <> ' ')
+
+end-sql
+end-procedure
+
+!***********************************************************************
+begin-procedure Process-Paygroup
+
+!***********************************************************************
+let $err-statement =  'Process-Paygroup, SELECT FROM PS_PAYGROUP_TBL'
+begin-select distinct on-error=Sql-Statement-Error
+A.COMPANY
+A.PAYGROUP
+
+  do Get-Paygroup-Descr
+  print &A.COMPANY            (+1,1)
+  print &A.PAYGROUP           (0,10)
+  print $Paygroup-Descr       (0,20)
+  do Insert-UPG-PYGRP-RETRO
+
+FROM PS_PAYGROUP_TBL A
+WHERE A.RETROPAY_PGM_ID <> ' '
+ AND A.RETRO_TRG_PGM_ID = ' '
+ AND NOT EXISTS
+  (SELECT 'X' FROM PS_UPG_PYGRP_RETRO B
+    WHERE B.COMPANY = A.COMPANY
+      AND B.PAYGROUP = A.PAYGROUP)
+ORDER BY COMPANY, PAYGROUP
+
+end-select
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Get-Paygroup-Descr
+
+!***********************************************************************
+let $err-statement =  'Get-Paygroup-Descr, SELECT FROM PS_PAYGROUP_TBL'
+begin-select on-error=Sql-Statement-Error
+B.DESCR
+
+  let $Paygroup-Descr = &B.DESCR
+
+FROM PS_PAYGROUP_TBL B
+WHERE B.COMPANY = &A.COMPANY
+  AND B.PAYGROUP = &A.PAYGROUP
+  AND B.EFFDT = (SELECT MAX(EFFDT) FROM PS_PAYGROUP_TBL C
+                 WHERE C.COMPANY = B.COMPANY
+                   AND C.PAYGROUP = B.PAYGROUP)
+
+end-select
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Insert-UPG-PYGRP-RETRO
+
+!***********************************************************************
+let $err-statement = 'Insert-UPG-PAYGRP-RETRO'
+begin-SQL on-error=Sql-Statement-Error
+INSERT INTO PS_UPG_PYGRP_RETRO
+ (COMPANY,
+  PAYGROUP,
+  RETRO_TRG_PGM_ID,
+  UPG_PYGRP_RTRO_FLG)
+VALUES
+ (&A.COMPANY,
+  &A.PAYGROUP,
+  ' ',
+  'C')
+
+end-SQL
+
+end-procedure
+
+
+!**********************
+begin-procedure Sql-Statement-Error
+!**********************
+  show $err-statement
+  show ' Error : ' $sql-error
+end-procedure
+
+
+#include 'reset.sqc'     !Reset printer procedure
+#include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#include 'datetime.sqc'  !Routines for date and time formatting
+#include 'number.sqc'    !Routines to format numbers
+#include 'stdapi.sqc'    !Update Process API
+#include 'sqrtrans.sqc'  !Translate SQR strings to given language
+#include 'getrplng.sqc'  !Get the report language

@@ -1,0 +1,3234 @@
+!***********************************************************************
+! GPCHAL05.SQR  : FAK Yearly-Familienausgleichkasse-                   *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!       $Release:  HR92                                                !
+!           $Bug:  31611504                                            !
+!                                                                      *
+!***********************************************************************
+#include 'setenv.sqc'    ! set Default environment
+#include 'gpchut10.sqc'  ! setenv override for Swiss Default.
+#include 'gpchut12.sqc'  ! Substitution Variables Defined.
+#include 'setup31.sqc'
+
+begin-setup
+create-array name = CantonTotal size = 26
+field = Provider:char
+field = Canton:char
+field = ContributorySalary:number
+field = FamilyIncome:number
+
+declare-variable
+date   $DateRestr1
+date   $RAFAM_END1
+date   $EARLY_STUDENT2020_DT
+date   $TMP_Begin
+end-declare
+
+end-setup
+
+
+!*************************************************************************************
+begin-PROGRAM
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Report  
+
+#debug  show 'gpchal05 $Run_Option ' $Run_Option ' $Rpt_Type ' $Rpt_Type ' $FK_Mode ' $FK_Mode ' $Company_Name ' $Company_Name
+  If $Run_Option = 'Y' and ($FK_Mode ='0' OR $FK_Mode = '2')
+         #Debug show 'Yearly mode'
+        do Init_Statustbl
+        do Process-Main
+        do Delete-Rec-Al05
+ 
+        do Stdapi-Term
+        do Get-Log
+        Do Update_Status($Ctl_Year,#ptot_domainid,$Comp,$providertype,$Run_Option,$SysDateTime,$Cancel_option)
+  Else
+        If $Cancel_Option = 'Y'
+           do Cancle_YEA($ptot_requestid,$Ctl_Year,$comp,$providertype,#ptot_domainid)
+           Do Update_Status($Ctl_Year,#ptot_domainid,$Comp,$providertype,$Run_Option,'',$Cancel_option) 
+        End-If
+        do Stdapi-Term
+        do Get-Log
+  End-IF
+end-PROGRAM
+
+!**********************************************************************************************
+begin-procedure getcurrtimedate
+
+Begin-select on-error=give_warning
+#ifdef ORACLE
+TO_CHAR(sysdate, 'Dy DD-Mon-YYYY HH24:MI:SS')    &currtimedate
+#else
+#ifdef DB2ALL
+CURRENT_TIMESTAMP &currtimedate
+#else
+CONVERT(char(30), CURRENT_TIMESTAMP,9)    &currtimedate
+#endif
+#endif
+FROM PSCLOCK
+End-Select
+
+let $currtimedate = &currtimedate
+
+end-procedure
+!***********************************************************************
+begin-procedure InitCantonTotalArray
+let #i = 0
+while #i < 26
+put ''            into CantonTotal(#i) Provider
+put ''            into CantonTotal(#i) Canton
+put 0             into CantonTotal(#i) ContributorySalary
+put 0             into CantonTotal(#i) FamilyIncome
+let #i = #i + 1
+end-while
+end-procedure
+
+!**********************************************************************************************
+begin-procedure  GetProvCode
+#Debug show ' -> GetProvCode $Canton ' $Canton ' #Array_Count ' #Array_Count
+let #i=0
+while #i < #Array_Count
+get $Canton_Tmp   from CantonTotal(#i) Canton 
+Evaluate $Canton_Tmp
+When = $Canton
+   get $Provider_Tmp   from CantonTotal(#i) Provider
+   break
+End-Evaluate
+let #i = #i + 1
+end-while
+end-procedure
+
+!**********************************************************************************************
+begin-procedure AddContributorySalary
+#Debug show ' -> AddContributorySalary $Canton ' $Canton ' #Array_Count ' #Array_Count ' #ContributorySalary ' #ContributorySalary
+let #i=0
+while #i < #Array_Count
+get $Canton_Tmp   from CantonTotal(#i) Canton 
+Evaluate $Canton_Tmp
+When = $Canton
+   get #ContributorySalary_Tmp   from CantonTotal(#i) ContributorySalary
+   let #ContributorySalary_Tmp = #ContributorySalary_Tmp + #ContributorySalary
+   put #ContributorySalary_Tmp   into CantonTotal(#i) ContributorySalary
+End-Evaluate
+let #i = #i + 1
+end-while
+
+end-procedure
+
+!**********************************************************************************************
+begin-procedure AddFamilyIncome
+#Debug show ' -> AddFamilyIncome $Canton ' $Canton ' #Array_Count ' #Array_Count ' #FamilyIncome ' #FamilyIncome
+let #i=0
+while #i < #Array_Count
+get $Canton_Tmp   from CantonTotal(#i) Canton 
+Evaluate $Canton_Tmp
+When = $Canton
+   get #FamilyIncome_Tmp   from CantonTotal(#i) FamilyIncome
+   let #FamilyIncome_Tmp = #FamilyIncome_Tmp + #FamilyIncome 
+   put #FamilyIncome_Tmp   into CantonTotal(#i) FamilyIncome
+   break
+End-Evaluate
+let #i = #i + 1
+end-while
+
+end-procedure
+
+!**********************************************************************************************
+begin-procedure PopulateCantonTotal
+#Debug show ' -> PopulateCantonTotal $company ' $Ctl_PayEntity ' $Rc_Adjust_Date ' $Rc_Adjust_Date
+let #Array_Count = 0
+Begin-select on-error=give_warning
+ACC.GPCH_TX_CANTON
+ACC.GPCH_TX_UV_PROV_CD
+
+ let $Canton_Tmp = rtrim(&ACC.GPCH_TX_CANTON,' ')
+ let $Provider_Tmp = rtrim(&ACC.GPCH_TX_UV_PROV_CD,' ')
+  If $Canton_Tmp <> ''
+    put $Provider_Tmp            into CantonTotal(#Array_Count) Provider
+    put $Canton_Tmp              into CantonTotal(#Array_Count) Canton
+    #Debug show 'Array index  #Array_Count ' #Array_Count ' $Provider_Tmp ' $Provider_Tmp ' $Canton_Tmp ' $Canton_Tmp 
+    let #Array_Count = #Array_Count + 1
+  End-If
+FROM PS_GPCH_SI_ACC_INS ACC
+WHERE ACC.COMPANY = $Ctl_PayEntity 
+      AND ACC.GPCH_SI_PROV_TYPE = '5'
+      AND ACC.GPCH_ALL_CANTONFLG <> 'Y'
+      AND ACC.EFFDT = (SELECT MAX(ACC1.EFFDT) FROM PS_GPCH_SI_ACC_INS ACC1
+      WHERE ACC.COMPANY = ACC1.COMPANY
+            AND ACC.GPCH_SI_PROV_TYPE = ACC1.GPCH_SI_PROV_TYPE
+            AND ACC1.EFFDT <= $Rc_Adjust_Date)
+End-Select
+end-procedure
+
+!**********************************************************************************************
+begin-procedure Init-Report
+  do Stdapi-Init
+  
+  if $prcs_process_instance = ''
+     do ask-input
+  else
+     do Get-Report-Parameters
+  end-if
+
+  let $ptot_company = $Company_Name
+  let $ptot_year    = $Ctl_Year 
+#Debug show '$ptot_company ' $ptot_company ' $ptot_year ' $ptot_year ' $Rc_Adjust_Date ' $Rc_Adjust_Date
+
+  let $ReportEndD = $Rc_Adjust_Date
+
+  do Read_FK_Mode($Company_Name ,#Domain_ID, $Rc_Adjust_Date, $FK_Mode)
+
+  let $Provider_crit = ' '
+#Debug show '$Provider_crit ' $Provider_crit ' $providertype ' $providertype ' #Domainid ' #Domainid ' $comp ' $comp 
+  do Get-PTotals-Data($Provider_crit,$providertype,#Domainid,$ptot_company,$ptot_year,#ptot_domainid,$ptot_providercd,$ptot_provtype,$ptot_requestid,$ptot_userkey) 
+ 
+  do Check_Run_Report(#ptot_domainid,$Ctl_Year,$comp,$providertype,$Run_Option,$Cancel_option,$Rpt_Type)
+  let #ptot_year     = $ptot_year
+  Let $Ctl_PayEntity = $comp
+    
+#Debug show 'Inside Init-Report $FK_Mode ' $FK_Mode ' ptot_providercd ' $ptot_providercd
+#Debug show 'company '  $Ctl_PayEntity ' year ' #ptot_year ' domain ' #ptot_domainid ' $ptot_provtype ' $ptot_provtype
+
+  If $FK_Mode = '0'
+     do Get-provider-canton-SD($Ctl_PayEntity,#ptot_year,#ptot_domainid,$ptot_provtype,$Canton_Criteria_Elm)
+     let $canton_elm_crit = $Canton_Criteria_Elm
+     #Debug show 'sd mode $canton_elm_crit = ' $canton_elm_crit
+            
+!pouplate CantonTotal in case of SwissDec
+      Do InitCantonTotalArray
+      Do PopulateCantonTotal
+  End-If
+  If $FK_Mode = '2'
+
+!FMB 20131111           do Get-provider-canton
+     do Get-provider-canton-NEW
+     If $Canton_String_Elm = ''
+        let $canton_elm_crit = ''
+     Else
+        let $canton_elm_crit = 'AND FK2.STATE IN ( ' || $Canton_String_Elm || ')'
+     End-If
+     #Debug show 'eAHV mode $canton_elm_crit = ' $canton_elm_crit
+  End-If
+
+#Debug show ' &GPCH_RUN_CNTL.GPCH_RC_ADJUST_DT = ' &GPCH_RUN_CNTL.GPCH_RC_ADJUST_DT 
+
+  move 'GPCHAL05' to $ReportID
+
+
+  if $Ctl_End_Dt <> ''
+      do ConvertToComponents ( $Ctl_End_Dt , $yy11 , $mm11 , $dd11 )
+      do ConvertToComponents ( $Ctl_Start_Dt , $yy10 , $mm10 , $dd10 )
+
+   do Format-DateTime ( $Ctl_Start_Dt , $Ctl_B_Date , {DEFCMP} , '' , '' )
+   do Format-DateTime ( $Ctl_End_Dt , $Ctl_E_Date , {DEFCMP} , '' , '' )
+
+  end-if
+
+    let #count_Emplid = 0
+    let $Emplid_Criteria1 = ''
+    let $Emplid_Criteria1_PS = ''
+    let $Emplid_Criteria1_tmp = ''
+    let $Emplid_Criteria1_tmp1 = ''
+    let $Emplid_CriteriaE1 = ''
+
+    do Get-Emplid-Count
+
+  if #count_Emplid <> 0
+     let $Emplid_Criteria1      = ' AND PBD.EMPLID IN ( ' || $Emplid-String || ')'
+     let $Emplid_Criteria1_PS    = ' AND PS.EMPLID IN ( ' || $Emplid-String || ')'
+     let $Emplid_Criteria1_tmp  = ' AND PSA.EMPLID IN ( ' || $Emplid-String || ')'
+     let $Emplid_CriteriaE1 = ' AND FK2.EMPLID IN ( ' || $Emplid-String || ')'
+  else
+     let $Emplid_Criteria1      = ' '
+     let $Emplid_Criteria1_PS    = ' '
+     let $Emplid_Criteria1_tmp  = ' '
+     let $Emplid_CriteriaE1 = ' '
+  end-if 
+
+end-procedure
+
+!******************************************************************************************
+begin-procedure Ask-Input
+  let $Emplid-String            = ''
+  let $temp-value               = ''
+  let #count_Emplid             = 0
+  let $Emplid_Criteria1         = ''
+  let $Emplid_Criteria1_PS      = ''
+  let $Emplid_Criteria1_tmp     = ''
+  let $Emplid_Criteria1_tmp1    = ''
+
+  input $Ctl_Curr_Pay_End_Dt    'Current Pay End Date ' type=date
+  input $Ctl_PayEntity  'Pay Entity '        type=char      maxlen=10
+more:
+  input $Ask_Emplid     'EMPLID, you can select mmore again Yes(Y) No(N)'
+  if $Ask_Emplid = 'Y'
+         input $Ctl_Emplid  'EMPLID '
+         if $Ctl_Emplid <> ''
+         let $temp-value                = rtrim($Ctl_Emplid,' ')
+         let $Emplid-String     = $Emplid-String || '''' || $temp-value || '''' || ','
+         let #count_Emplid              = #count_Emplid + 1
+         end-if
+         goto more
+  end-if
+
+  if #count_Emplid <> 0
+         let $Emplid-String             = rtrim($Emplid-String,',')
+         let $Emplid_Criteria1          = ' AND PBD.EMPLID IN ( ' || $Emplid-String || ')'
+         let $Emplid_Criteria1_PS       = ' AND PS.EMPLID IN ( ' || $Emplid-String || ')'
+         let $Emplid_Criteria1_tmp      = ' AND PBD.EMPLID IN ( ' || $Emplid-String || ')'
+  end-if
+
+  input $Ctl_Dept_ID 'Department '
+  input $Ctl_Canton 'Canton '
+
+end-procedure Ask-Input
+
+!******************************************************************************************
+begin-procedure Get-Values
+
+ Let $GPCH_EG_YEP_FLG = &GPCH_RUN_CNTL.GPCH_EG_YEP_FLG
+ let $Ctl_Year                 = RTRIM(to_char(&GPCH_RUN_CNTL.GPCH_RC_PAY_YEAR), ' ')
+ let #Domainid = &GPCH_RUN_CNTL.GPCH_EG_DOMAINID
+ Let $comp                  = rtrim(&GPCH_RUN_CNTL.COMPANY,' ')
+ let $providertype='5'
+ Let $PAY_BGN_DT            = $Ctl_Year || '0101'
+ do Format-DateTime($PAY_BGN_DT, $PAY_BGN_DT, {DEFCMP},'','native')
+
+ let $language_cd                   = RTRIM($PRCS_LANGUAGE_CD,' ')
+ let $Ctl_Department_Crit           = ''
+ let $Ctl_Department_Crit_PS        = ''
+ let $Ctl_Department_Crit_tmp       = ''
+ let $Ctl_Department_Crit_tmp1      = ''
+ let $Ctl_Country_Crit              = ''
+ let $Ctl_Canton_Crit               = ''
+ let $Ctl_Canton_Crit_P             = ''
+ let $Ctl_Canton_Crit1              = ''
+ let $Genf_Crit                     = ''
+ let $Ctl_Canton_CritE1             = ''
+ let $Ctl_Dept_ID                   = $Ctl_Deptid
+ let $Ctl_Canton                    = RTRIM(&GPCH_RUN_CNTL.GPCH_TX_CANTON,' ')
+ let $Run_Retro_Check               = rtrim(&GPCH_RUN_CNTL.GPCH_IC_RUN_RETRO,' ')
+
+ if $Ctl_Canton <> ''
+    let $Ctl_Canton_Crit            = ' AND PBD.STATE  = ''' || $Ctl_Canton || ''' '
+    let $Ctl_Canton_Crit_P          = ' AND PS.STATE  = ''' || $Ctl_Canton || ''' '
+    let $Ctl_Canton_Crit1           = ' AND CANT.STATE  = ''' || $Ctl_Canton || ''' '
+    let $Ctl_Canton_Crit_Ret        = ' AND AL04_12.STATE  = ''' || $Ctl_Canton || ''' '
+    let $Ctl_Canton_CritE1          = ' AND FK2.STATE  = ''' || $Ctl_Canton || ''' '
+    let $Ctl_Canton_CritE2          = ' AND INSD.STATE  = ''' || $Ctl_Canton || ''' '
+    let $Ctl_Canton_CritE3          = ' AND INSPR.STATE  = ''' || $Ctl_Canton || ''' '
+    let $Ctl_Canton_CritE4          = ' AND INSTR.STATE  = ''' || $Ctl_Canton || ''' '
+  else
+    let $Ctl_Canton_Crit            = ' '
+    let $Ctl_Canton_Crit_P          = ' '
+    let $Ctl_Canton_Crit1           = ' '
+    let $Ctl_Canton_Crit_Ret        = ' '
+    let $Ctl_Canton_CritE1          = ' '
+    let $Ctl_Canton_CritE2          = ' '
+    let $Ctl_Canton_CritE3          = ' '
+    let $Ctl_Canton_CritE4          = ' '
+  end-if
+
+  let $Genf_Crit     = ' '
+  let $Genf_Crit_Ret = ' '
+  let $Genf_Crit1 = ' '
+
+  if $Ctl_Dept_ID <> ''
+    let $Ctl_Department_Crit        = ' AND PBD.DEPTID  = ''' || $Ctl_Dept_ID || ''' '
+    let $Ctl_Department_Crit_PS     = ' AND PS.DEPTID  = ''' || $Ctl_Dept_ID || ''' '
+    let $Ctl_Department_Crit_tmp    = ' AND PBD.DEPTID  = ''' || $Ctl_Dept_ID || ''' '
+  else
+    let $Ctl_Department_Crit        = ' '
+    let $Ctl_Department_Crit_PS     = ' '
+    let $Ctl_Department_Crit_tmp    = ' '
+  end-if
+         
+end-procedure
+
+!********************************************************
+begin-procedure Process-Main
+
+#Debug show ' Start Process Main:  $Ctl_End_Dt = ' $Ctl_End_Dt ' $Rep_Month_End_Date = ' $Rep_Month_End_Date ' $Ctl_Curr_Pay_End_Dt = ' $Ctl_Curr_Pay_End_Dt
+
+ do Get_Type_Options($Name_Type,$Addr_Type,$Phone_Type,$Email_Type,$BirthName_Type,$Security_Type)
+ do Get_Canton_Description
+
+ do SelectEmpls
+
+ let $Ctl_Company         = $Ctl_PayEntity
+ let $Ctl_Curr_Pay_End_Dt = $Ctl_End_Dt
+ let $Company_Criteria_PY = ' CD.COMPANY  = ' ||''''|| $Ctl_Company ||''''
+ do Get-Company-Address($Ctl_PayEntity,$Ctl_End_Dt,$language_cd,$Cpline1,$Cpline2,$Cpline3,$Cpline31,
+                         $Cpline4,$Cpline5,$Cpline6,$Cpdescr,$Cpdescrshrt,$Cpcity,$Cpstate,$Cppostal,$CpBusn_Phone,$CpFax_Phone,$CpOtr_Phone)
+
+  do Load_Company_Description
+
+end-procedure
+
+
+!*********************************************************************************************
+
+Begin-Procedure Insert_Company_Total
+#Debug show ' Insert_Company_Total in '
+#Debug show ' $ptot_year = ' $ptot_year ' $ptot_company = ' $ptot_company ' $FAK-CAF-FLG-LFA-Totals_XML = ' $FAK-CAF-FLG-LFA-Totals_XML
+ 
+ let #ptot_year = $ptot_year
+ Let $Ctl_Year = RTRIM(LTRIM($Ctl_Year,' '),' ')
+
+Begin-Sql on-error=give_warning
+Update  PS_GPCH_EG_PTOTALS set  GPCH_EG_CMP_XML= $FAK-CAF-FLG-LFA-Totals_XML where GPCH_SI_PROV_TYPE = '5'   AND GPCH_RC_PAY_YEAR = #ptot_year AND COMPANY = $ptot_company   
+AND GPCH_EG_DOMAINID = #ptot_domainid AND GPCH_SI_PROV_CD = $Tstr2 !FMB 20100515
+End-SQL
+
+End-Procedure
+
+!***********************************FMB 20110420 changes*********************************************************
+Begin-Procedure Insert_PS_GPCHAL053_TMP
+#Debug show 'Insert_PS_GPCHAL053_TMP in'
+#Debug show '$Empl_ID = ' $Empl_ID ' #Empl_RCD = ' #Empl_RCD
+
+Begin-Sql on-error=give_warning
+delete from PS_GPCHAL053_TMP
+end-sql
+
+let $Cal_Run_Id_Criteria = ' AND FK01.CAL_RUN_ID   IN (' || $Cal_Run_Id_String || ')'
+
+Begin-Sql on-error=give_warning
+insert into PS_GPCHAL053_TMP (PROCESS_INSTANCE, EMPLID, DEPENDENT_BENEF, GPCH_AH_NNSS, LAST_NAME, FIRST_NAME, SEX, BIRTHDATE, RELATIONSHIP)
+SELECT [$prcs_process_instance], DB.EMPLID, DB.DEPENDENT_BENEF, NID.NATIONAL_ID, DB.LAST_NAME, DB.FIRST_NAME, DB.SEX, DB.BIRTHDATE, DB.RELATIONSHIP
+FROM PS_DEPENDENT_BENEF DB, PS_DEP_BENEF_NID NID
+ WHERE DB.EMPLID = $Empl_ID
+ AND   DB.EMPLID = NID.EMPLID 
+ AND   DB.DEPENDENT_BENEF = NID.DEPENDENT_BENEF 
+end-sql
+
+Begin-Sql on-error=give_warning
+insert into PS_GPCHAL053_TMP (PROCESS_INSTANCE, EMPLID, DEPENDENT_BENEF, GPCH_AH_NNSS, LAST_NAME, FIRST_NAME, SEX, BIRTHDATE, RELATIONSHIP)
+SELECT [$prcs_process_instance], DB.EMPLID, DB.DEPENDENT_BENEF, '0000000000000', DB.LAST_NAME, DB.FIRST_NAME, DB.SEX, DB.BIRTHDATE, DB.RELATIONSHIP
+FROM PS_DEPENDENT_BENEF DB 
+ WHERE DB.EMPLID = $Empl_ID
+ AND not exists ( select 'x' from PS_DEP_BENEF_NID NID
+ where  DB.EMPLID = NID.EMPLID and  DB.DEPENDENT_BENEF = NID.DEPENDENT_BENEF )
+end-sql
+
+Begin-Sql on-error=give_warning
+#ifdef ORACLE
+commit
+#endif
+end-sql
+
+#Debug show 'Insert_PS_GPCHAL053_TMP out'
+End-Procedure Insert_PS_GPCHAL053_TMP
+
+!********************************************************************************************
+Begin-Procedure determine_relationship
+#Debug show 'determine_relationship in'
+
+ do eAHV_determine_relationship
+
+If $Relationship = '10'
+        let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyStatus>' || 'mother'||'</FamilyStatus>'
+End-If
+If $Relationship = '20'
+        let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyStatus>' || 'father'||'</FamilyStatus>'
+End-If
+If $Relationship = '11'
+   let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyStatus>' || 'fosterMother'||'</FamilyStatus>'
+End-If
+If $Relationship = '21'
+   let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyStatus>' || 'fosterFather'||'</FamilyStatus>'
+End-If
+If $Relationship = '12'
+   let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyStatus>' || 'stepmother'||'</FamilyStatus>'
+End-If
+If $Relationship = '22'
+   let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyStatus>' || 'stepfather'||'</FamilyStatus>'
+End-If
+If $Relationship = '13'
+   let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyStatus>' || 'grandmother'||'</FamilyStatus>'
+End-If
+If $Relationship = '23'
+   let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyStatus>' || 'grandfather'||'</FamilyStatus>'
+End-If
+If $Relationship = '14'
+   let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyStatus>' || 'sister'||'</FamilyStatus>'
+End-If
+If $Relationship = '24'
+   let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyStatus>' || 'brother'||'</FamilyStatus>'
+End-If
+
+#Debug show 'determine_relationship out'
+End-Procedure
+
+!********************************************************************************************
+Begin-Procedure eAHV_determine_relationship
+#Debug show 'eAHV_determine_relationship in'
+let $FamilyIncomePerChildPeriod = ''
+!let $red_bgn_dt   = ''
+Begin-select on-error=give_warning
+CA2.GPCH_CA_RELATION
+!CA2.GPCH_CA_RED_BGN_DT
+
+  let $Relationship = rtrim(&CA2.GPCH_CA_RELATION,' ')
+!  let $red_bgn_dt   = rtrim(&CA2.GPCH_CA_RED_BGN_DT,' ')
+  
+
+FROM PS_GPCH_CA_DATA2 CA2
+WHERE CA2.EMPLID = $Empl_ID 
+!FMB 20151129  AND CA2.EMPL_RCD = #Empl_RCD 
+  AND CA2.DEPENDENT_BENEF = #CurrDependent
+  AND CA2.EFFDT = (SELECT MAX(CA2_T.EFFDT) FROM PS_GPCH_CA_DATA2 CA2_T 
+   WHERE CA2.EMPLID = CA2_T.EMPLID 
+     AND CA2.EMPL_RCD = CA2_T.EMPL_RCD 
+     AND CA2.DEPENDENT_BENEF = CA2_T.DEPENDENT_BENEF
+     AND CA2_T.EFFDT <= $ReportEndD)
+End-Select
+
+#Debug show ' $Relationship = ' $Relationship
+         
+#Debug show 'eAHV_determine_relationship out'
+End-Procedure eAHV_determine_relationship
+!********************************************************************************************
+Begin-Procedure FAK_EMPLOYEE_XML
+#Debug show 'FAK_EMPLOYEE_XML in'
+#Debug show ' $Ctl_End_Dt = ' $Ctl_End_Dt
+
+Begin-Sql on-error=give_warning
+delete from PS_GPCHAL052_TMP
+end-sql
+
+    Let $FAK-CAF-Salary          = ''
+    Let $FAK-CAF-Salaries        = ''
+    Let $StornoFAK-CAF-Salaries  = ''
+    Let $StornoAllowances        = ''
+    Let $FamilyIncomePerChildren = ' '
+    Let $FamilyIncomePerChild    = ' '
+    Let $FAK-CAF-Period          = ' '
+
+!============================== fill PS_GPCHAL052_TMP for all emplids grouped by canton   
+
+ let $Cal_Run_Id_CriteriaFK02 = ' AND FK02.CAL_RUN_ID   IN (' || $Cal_Run_Id_String || ')'
+ let $Cal_Run_Id_CriteriaSSS1 = ' AND SSS1.CAL_RUN_ID   IN (' || $Cal_Run_Id_String || ')'
+
+Let $Ctl_PayEntity_Str = '''' || $Ctl_PayEntity || ''''
+Let $Empl_ID_Str = '''' || $Empl_ID || ''''
+Let $Empl_RCD = edit(#Empl_RCD,'999')
+Let $prcs_process_instance = edit(#prcs_process_instance, '9999999999')
+Let $Birth_Dt   = '1900' || '01' || '01' || '0000'
+do Format-DateTime($Birth_Dt, $Birth_Dt_Out, {DEFCMP},'','native')
+Let $Birth_Dt = '''' || rtrim($Birth_Dt_Out, ' ') || ''''
+
+Begin-Sql on-error=give_warning
+!FMB added National_Id
+insert into PS_GPCHAL052_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,BEGIN_DT,END_DT,PAY_ENTITY,COMPANY,DEPTID,STATE,
+                            HIRE_DT,TERMINATION_DT,BIRTHDATE,FTE,STD_HOURS,COMP_FREQUENCY,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,
+                            GPCH_RP_AMOUNT3,GPCH_SI_FAK_PCT,GPCH_RP_AMOUNT4,GPCH_TX_STAXB_PCT,GPCH_RP_AMOUNT5,
+                            GPCH_RP_AMOUNT6,GPCH_RP_AMOUNT7,GPCH_RP_AMOUNT8,GPCH_RP_AMOUNT9,GPCH_RP_AMOUNT10,
+                            STATUS, NATIONAL_ID,GPCH_AH_NNSS,SEX)
+SELECT [$prcs_process_instance], [$Empl_ID_Str], [$Empl_RCD], min(FK02.SEG_BGN_DT), max(FK02.SLICE_END_DT), [$Ctl_PayEntity_Str], [$Ctl_PayEntity_Str],' ',FK02.STATE,
+FK02.HIRE_DT,max(FK02.TERMINATION_DT),[$Birth_Dt],0,0,' ',sum(FK02.GPCH_RP_AMOUNT1),sum(FK02.GPCH_RP_AMOUNT2),
+0.00, 0.00, 0.00, 0.00, 0.00, 
+0.00, 0.00, 0.00, 0.00, 0.00, ' ', ' ', ' ', ' '
+FROM PS_GPCH_RP_FK02 FK02, PS_GP_PYE_SEG_STAT SSS
+WHERE FK02.EMPLID             = $Empl_ID
+!FMB 20140109 AND   FK02.EMPL_RCD           = #Empl_RCD
+AND   FK02.PAY_ENTITY         = $Ctl_PayEntity
+ and FK02.EMPLID = SSS.EMPLID and FK02.EMPL_RCD = SSS.EMPL_RCD and FK02.CAL_RUN_ID = SSS.CAL_RUN_ID 
+ and FK02.CAL_ID = SSS.CAL_ID 
+ and FK02.GP_PAYGROUP = SSS.GP_PAYGROUP and FK02.ORIG_CAL_RUN_ID = SSS.ORIG_CAL_RUN_ID
+ and FK02.RSLT_SEG_NUM    = SSS.RSLT_SEG_NUM    
+ and SSS.RSLT_VER_NUM = ( select max(S1.RSLT_VER_NUM) from PS_GP_PYE_SEG_STAT S1 where SSS.EMPLID = S1.EMPLID and SSS.EMPL_RCD = S1.EMPL_RCD and
+  SSS.GP_PAYGROUP = S1.GP_PAYGROUP and SSS.CAL_ID = S1.CAL_ID and SSS.RSLT_SEG_NUM = S1.RSLT_SEG_NUM )
+[$Cal_Run_Id_CriteriaFK02]
+Group by FK02.STATE,FK02.HIRE_DT
+
+end-sql
+
+#Debug show 'After insert GPCHAL052_TMP $Cal_Run_Id_CriteriaFK02 ' $Cal_Run_Id_CriteriaFK02 ' $Cal_Run_Id_CriteriaSSS1 ' $Cal_Run_Id_CriteriaSSS1
+#Debug show 'Rows inserted GPCHAL052_TMP: ' #sql-count
+
+!============================== Process per emplid and period
+
+ Let $FAK-CAF-Salaries = '<FAK-CAF-Salaries>'
+ Let $FamilyIncomePerChildren = ''
+Begin-select on-error=give_warning
+AL052.EMPL_RCD
+AL052.BEGIN_DT
+AL052.END_DT
+AL052.STATE
+AL052.HIRE_DT
+AL052.TERMINATION_DT
+AL052.GPCH_RP_AMOUNT1
+AL052.GPCH_RP_AMOUNT2
+
+  Let $From_Date = &AL052.BEGIN_DT
+  Let $To_Date   = &AL052.END_DT
+  Let $Canton    = &AL052.STATE
+  Let $Hire_DT   = &AL052.HIRE_DT
+  Let $Term_DT   = &AL052.TERMINATION_DT
+ 
+!FMB 20140109 
+  Let #Empl_RCD  = &AL052.EMPL_RCD 
+
+  !FMB use Amount2 in place of Amount1
+  Let #ContributorySalary = &AL052.GPCH_RP_AMOUNT2
+  DO Format-Number(#ContributorySalary , $ContributorySalary , '999999999.00')
+  let $ContributorySalary = RTRIM(LTRIM($ContributorySalary,' '),' ')
+  
+  do ConvertToComponents($From_Date , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+  let $From_Date1 = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl 
+
+  
+  !FMB 20170914 Let $FAK-CAF-Period = '<FAK-CAF-Period>' || '<from>' || $From_Date1 || '</from>'
+  
+  do ConvertToComponents($To_Date , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+  let $To_Date1 = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl 
+
+
+  !FMB 20170914 override in case of termination
+  #Debug show '$From_Date before ' $From_Date ' $To_Date ' $To_Date ' $Term_DT ' $Term_DT ' $Hire_DT ' $Hire_DT    
+  If &AL052.TERMINATION_DT > &AL052.HIRE_DT and  &AL052.TERMINATION_DT < &AL052.END_DT
+    do ConvertToComponents($Term_DT , $yy_Term , $mm_Term , $dd_Term)
+    let $To_Date1 = $yy_Term || '-' || $mm_Term || '-' || $dd_Term
+    do ConvertToComponents($Hire_DT , $yy_Hire , $mm_Hire , $dd_Hire)
+    #Debug show '$yy_Hire before ' $yy_Hire ' $mm_Hire ' $mm_Hire ' $dd_Hire ' $dd_Hire ' $yy_Term ' $yy_Term
+    If $yy_Hire = $yy_Term
+       let $From_Date1 = $yy_Hire || '-' || $mm_Hire || '-' || $dd_Hire
+     Else
+       let $From_Date1 = $yy_Term || '-' || '01' || '-' || '01'
+     End-If 
+  End-If
+  #Debug show '$From_Date1 after ' $From_Date1 ' $To_Date1 ' $To_Date1 
+  Let $FAK-CAF-Period = '<FAK-CAF-Period>' || '<from>' || $From_Date1 || '</from>' 
+
+    
+  #Debug show '$From_Date ' $From_Date ' $To_Date ' $To_Date
+  Let $FAK-CAF-Period = $FAK-CAF-Period  || '<until>' || $To_Date1  || '</until>' || '</FAK-CAF-Period>'
+  #Debug show '$FAK-CAF-Period ' $FAK-CAF-Period ' $ContributorySalary ' $ContributorySalary
+  Let $FAK-CAF-ContributorySalary = '<FAK-CAF-ContributorySalary>' ||RTRIM(LTRIM($ContributorySalary,' '),' ')|| '</FAK-CAF-ContributorySalary>'
+
+  Let $FAK-CAF-FamilyIncomeSupplement = ''
+  let $FamilyIncomeSupplementRepetitive = ''
+  
+  Do GetProvCode
+  #Debug show '$Canton ' $Canton ' $Provider_Tmp ' $Provider_Tmp
+  Let $FAK-CAF-Salaries = $FAK-CAF-Salaries || '<FAK-CAF-Salary  institutionIDRef=' || '"' || $Provider_Tmp || '"' || '>' || $FAK-CAF-Period || $FAK-CAF-ContributorySalary  || $FamilyIncomeSupplementRepetitive
+  
+!============================== populate PS_GPCHAL053_TMP with children ( same as for eAHV)
+ 
+ Do Insert_PS_GPCHAL053_TMP
+  
+!============================== process per child within this period
+ Do AddContributorySalary
+ Do swissdec_children 
+ 
+ if $FamilyIncomeSupplementRepetitive <> '' or $FamilyIncomePerChildren <>''
+      Let $FAK-CAF-FamilyIncomeSupplement = '<FAK-CAF-FamilyIncomeSupplement>' || '<FAK-CAF-FamilyIncomeSupplementDetail>' 
+      Let $FAK-CAF-FamilyIncomeSupplement = $FAK-CAF-FamilyIncomeSupplement || $FamilyIncomeSupplementRepetitive || '<FamilyIncomePerChildren>' ||  $FamilyIncomePerChildren || '</FamilyIncomePerChildren>'
+      Let $FAK-CAF-FamilyIncomeSupplement = $FAK-CAF-FamilyIncomeSupplement || '</FAK-CAF-FamilyIncomeSupplementDetail>' || '</FAK-CAF-FamilyIncomeSupplement>'
+   else
+      Let $FAK-CAF-FamilyIncomeSupplement = ''
+ end-if
+ 
+ if $Canton<>'AG'and $Canton<>'AI' and $Canton<>'AR' and $Canton<>'BE' and $Canton<>'BL' and $Canton<>'BS' and $Canton<>'FR' and $Canton<>'GE'
+     and $Canton<>'GL' and $Canton<>'GR' and $Canton<>'JU' and $Canton<>'LU' and $Canton<>'NE' and $Canton<>'NW' and $Canton<>'OW' and $Canton<>'SG' and $Canton<>'SH'
+     and $Canton<>'SO' and $Canton<>'SZ' and $Canton<>'TG' and $Canton<>'TI' and $Canton<>'UR' and $Canton<>'VD' and $Canton<>'VS' and $Canton<>'ZG' and $Canton<>'ZH'
+     let $Canton='EX'
+ end-if
+  Let $FAK-CAF-WorkplaceCanton = '<FAK-CAF-WorkplaceCanton>' || $Canton || '</FAK-CAF-WorkplaceCanton>'
+  
+  Let $FAK-CAF-Salaries = $FAK-CAF-Salaries || $FAK-CAF-FamilyIncomeSupplement || $FAK-CAF-WorkplaceCanton || '</FAK-CAF-Salary>'
+
+#Debug show 'inside select $FAK-CAF-Salaries = ' $FAK-CAF-Salaries  
+
+  Let $From_Date = ' '
+  Let $To_Date   = ' '
+  Let $Canton    = ' '
+  Let $Hire_DT   = ' '
+  Let $Term_DT   = ' '
+  Let $FamilyIncomePerChildren = ''
+
+FROM PS_GPCHAL052_TMP AL052
+ where AL052.PROCESS_INSTANCE = #prcs_process_instance
+ order by AL052.EMPLID, AL052.BEGIN_DT, AL052.STATE
+
+end-select
+
+ Let $FAK-CAF-Salaries = $FAK-CAF-Salaries || '</FAK-CAF-Salaries>'  
+
+#Debug show 'final $FAK-CAF-Salaries = ' $FAK-CAF-Salaries  
+
+#Debug show 'FAK_EMPLOYEE_XML out'
+End-Procedure FAK_EMPLOYEE_XML
+!*********************************************************************************************
+
+Begin-Procedure Company_Totals
+#Debug show 'Company_Totals in company '  $Ctl_PayEntity ' year ' #ptot_year ' domain ' #ptot_domainid ' $ptot_provtype ' $ptot_provtype
+
+let #i=0
+while #i < #Array_Count
+     get $Canton_Tmp               from CantonTotal(#i) Canton 
+     get $Provider_Tmp             from CantonTotal(#i) Provider 
+     get #ContributorySalary_Tmp   from CantonTotal(#i) ContributorySalary 
+     get #FamilyIncome_Tmp         from CantonTotal(#i) FamilyIncome 
+     DO Format-Number(#FamilyIncome_Tmp, $FamilyIncome_Tmp , '999999999.00')
+     let $FamilyIncome_Tmp = RTRIM(LTRIM($FamilyIncome_Tmp,' '),' ')
+     DO Format-Number(#ContributorySalary_Tmp, $ContributorySalary_Tmp , '99999999999.00')
+     let $ContributorySalary_Tmp = RTRIM(LTRIM($ContributorySalary_Tmp,' '),' ')
+     let $FAK-CAF-Totals_startTag = '<FAK-CAF-Totals' || ' institutionIDRef=' || '"' || $Provider_Tmp || '"' || '>'
+     let $Total-FAK-CAF-ContributorySalary = '<Total-FAK-CAF-ContributorySalary>' ||  $ContributorySalary_Tmp || '</Total-FAK-CAF-ContributorySalary>'
+     let $Total-FAK-CAF-FamilyIncomeSupplement = '<Total-FAK-CAF-FamilyIncomeSupplement>' || $FamilyIncome_Tmp  || '</Total-FAK-CAF-FamilyIncomeSupplement>'
+     let $Canton_XML = '<Canton>' || $Canton_Tmp || '</Canton>'
+     let $FAK-CAF-Totals = $FAK-CAF-Totals_startTag || '<Total-FAK-CAF-PerCanton>' || $Total-FAK-CAF-ContributorySalary || $Total-FAK-CAF-FamilyIncomeSupplement || $Canton_XML
+     let $FAK-CAF-Totals = $FAK-CAF-Totals || '</Total-FAK-CAF-PerCanton>' || '</FAK-CAF-Totals>'
+     Begin-Sql on-error=give_warning
+          Update  PS_GPCH_EG_PTOTALS set  GPCH_EG_CMP_XML= $FAK-CAF-Totals where COMPANY = $Ctl_PayEntity AND GPCH_RC_PAY_YEAR = #ptot_year AND GPCH_SI_PROV_TYPE = '5'
+          AND GPCH_EG_DOMAINID = #ptot_domainid AND GPCH_SI_PROV_CD = $Provider_Tmp
+     End-SQL
+let #i = #i + 1
+end-while
+ 
+#Debug show 'Company_Totals out'
+End-Procedure Company_Totals
+!********************************************************************************************
+
+begin-procedure swissdec_children
+#Debug show 'swissdec-children in $To_Date ' $To_Date
+ 
+  let $FamilyIncomePerChild = '' 
+  do Format-DateTime($Term_DT, $Term_DT, {DEFCMP}, '', '')
+Begin-select on-error=give_warning
+SD053.EMPLID
+SD053.DEPENDENT_BENEF
+SD053.GPCH_AH_NNSS
+SD053.FIRST_NAME
+SD053.LAST_NAME
+SD053.BIRTHDATE
+SD053.SEX
+SD053.RELATIONSHIP
+   
+ let #CurrDependent = &SD053.DEPENDENT_BENEF
+ let $Firstname = rtrim(&SD053.First_NAME,  '')
+ let $Lastname = rtrim(&SD053.Last_NAME, ' ')
+ let $Sex = rtrim(&SD053.SEX,' ')
+
+ let $DateOfBirth1 = rtrim(&SD053.BIRTHDATE,' ')
+     find ' ' in $DateOfBirth1 0 #locn
+     extract $DateOfBirth from $DateOfBirth1 0 #locn
+     !FMB 20100515
+     do ConvertToComponents($DateOfBirth1 , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+     let $DateOfBirth = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl 
+  
+ let $SV-AS-Number1 = rtrim(&SD053.GPCH_AH_NNSS,' ')
+ let $SV-AS-Number = substr($SV-AS-Number1,0,3) || '.' || substr($SV-AS-Number1,4,4) || '.' || substr($SV-AS-Number1,8,4) || '.' || substr($SV-AS-Number1,12,2) 
+
+!========================= take allowances from GPCH_RP_FK01  
+ do  swissdec_Allowances
+ 
+  DO Format-Number(#FamilyIncome, $FamilyIncome , '999999999.00')
+  let $FamilyIncome = RTRIM(LTRIM($FamilyIncome,' '),' ')
+  Do AddFamilyIncome
+  DO Format-Number(#amt2 , $SingularIncome , '999999999.00')
+
+  !FMB 20170914
+  let $SingularIncome = RTRIM(LTRIM($SingularIncome,' '),' ')
+
+  do ConvertToComponents($Ctl_End_Dt , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+  
+!============================== some formatting for previous year terminations
+  do ConvertToComponents(&AL052.TERMINATION_DT, $yy_BR_CMP , $mm_BR_CMP , $dd_BR_CMP)
+  #Debug show '$yy_BR_CMP ' $yy_BR_CMP ' $mm_BR_CMP ' $mm_BR_CMP ' $dd_BR_CMP ' $dd_BR_CMP
+
+ If $Allow_From <> '' and $Allow_To <> ''
+ let $FamilyIncomePerChild = '<FamilyIncomePerChild>'
+ do ConvertToComponents($Allow_From , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+ let $Allow_From = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl 
+ 
+ let $FamilyIncomePerChildPeriod = $FamilyIncomePerChildPeriod || '<from>' || $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl || '</from>'
+ 
+ do ConvertToComponents($Allow_To , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+ let $Allow_To = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl 
+
+ let $FamilyIncomePerChildPeriod = $FamilyIncomePerChildPeriod || '<until>' || $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl || '</until>'
+      
+  If $FamilyIncomePerChildPeriod <> ''
+       let $FamilyIncomePerChild = $FamilyIncomePerChild ||'<FamilyIncomePerChildPeriod>' || $FamilyIncomePerChildPeriod || '</FamilyIncomePerChildPeriod>' 
+  Else 
+     let $FamilyIncomePerChild = ''
+  End-If
+    
+ let $FamilyIncomePerChild = $FamilyIncomePerChild ||'<Lastname>' || $LastName || '</Lastname>' 
+ let $FamilyIncomePerChild = $FamilyIncomePerChild || '<Firstname>' || $Firstname || '</Firstname>' 
+ let $FamilyIncomePerChild = $FamilyIncomePerChild || '<Sex>' || $Sex || '</Sex>'
+ let $FamilyIncomePerChild = $FamilyIncomePerChild || '<DateOfBirth>' || $DateOfBirth || '</DateOfBirth>'
+ let $FamilyIncomePerChild = $FamilyIncomePerChild || '<SV-AS-Number>' || $SV-AS-Number || '</SV-AS-Number>'
+
+!========================= take relationship from GPCH_CA_DATA1 ( = eAHV) and convert for swissdec
+ do determine_relationship
+ let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyIncome>' || $FamilyIncome || '</FamilyIncome>'
+  !FMB 20170914
+  If #amt2 <> 0.00
+     let $FamilyIncomePerChild = $FamilyIncomePerChild || '<FamilyIncomeSupplementSingular>' || $SingularIncome || '</FamilyIncomeSupplementSingular>'
+  End-If
+
+ let $FamilyIncomePerChild = $FamilyIncomePerChild || '</FamilyIncomePerChild>' 
+ 
+ let $FamilyIncomePerChildren = $FamilyIncomePerChildren || $FamilyIncomePerChild
+ End-if
+ 
+ let $FamilyIncomePerChild = ' '
+ 
+ 
+FROM  PS_GPCHAL053_TMP SD053
+ WHERE SD053.PROCESS_INSTANCE = #prcs_process_instance
+ AND   SD053.EMPLID = $EMPL_ID
+ AND   SD053.BIRTHDATE <=$To_Date
+! AND   SD053.DEPENDENT_BENEF = #CurrDependent
+ order by SD053.DEPENDENT_BENEF
+end-select  
+ 
+#Debug show ' swissdec_children out'  
+end-procedure swissdec_children 
+  
+!********************************************************************************************
+begin-procedure swissdec_Allowances
+#Debug show ' swissdec_Allowances in $From_Date ' $From_Date ' $To_Date ' $To_Date ' #CurrDependent ' #CurrDependent ' $Empl_ID ' $Empl_ID
+
+ let $Cal_Run_Id_CriteriaSDAL = ' AND SDAL.CAL_RUN_ID   IN (' || $Cal_Run_Id_String || ')'
+ let $Cal_Run_Id_CriteriaSDSEG1 = ' AND SDSEG1.CAL_RUN_ID   IN (' || $Cal_Run_Id_String || ')'
+ let $Allow_From = ''
+ let $Allow_To = ''
+Begin-select on-error=give_warning
+min(SDAL.SEG_BGN_DT)      &SDAL.SEG_BGN_DT
+max(SDAL.SLICE_END_DT)    &SDAL.SLICE_END_DT
+sum(SDAL.GPCH_RP_AMOUNT2) &SDAL.GPCH_RP_AMOUNT2
+sum(SDAL.GPCH_RP_AMOUNT3) &SDAL.GPCH_RP_AMOUNT3
+sum(SDAL.GPCH_RP_AMOUNT4) &SDAL.GPCH_RP_AMOUNT4
+
+ let $Allow_From = &SDAL.SEG_BGN_DT
+ let $Allow_To  = &SDAL.SLICE_END_DT
+ !FMB 20140109
+  ! let #FamilyIncome = &SDAL.GPCH_RP_AMOUNT2 +&SDAL.GPCH_RP_AMOUNT3 + &SDAL.GPCH_RP_AMOUNT4
+  !FMB 20140109
+  let #FamilyIncome = &SDAL.GPCH_RP_AMOUNT3 + &SDAL.GPCH_RP_AMOUNT4
+  let #amt2 = &SDAL.GPCH_RP_AMOUNT2
+
+  FROM PS_GPCH_RP_FK01 SDAL, PS_GP_PYE_SEG_STAT SDSEG
+WHERE SDAL.EMPLID             = $Empl_ID
+!FMB 20140109
+AND (
+  (
+      SDAL.SEQ_NO             <= 15 
+!AND   SDAL.EMPL_RCD           = #Empl_RCD
+AND   SDAL.DEPENDENT_BENEF    = #CurrDependent
+AND   SDAL.PAY_ENTITY         = $Ctl_PayEntity
+AND   SDAL.SLICE_END_DT BETWEEN $From_Date AND $To_Date
+ and SDAL.EMPLID = SDSEG.EMPLID and SDAL.EMPL_RCD = SDSEG.EMPL_RCD and SDAL.CAL_RUN_ID = SDSEG.CAL_RUN_ID 
+ and SDAL.CAL_ID = SDSEG.CAL_ID 
+ and SDAL.GP_PAYGROUP = SDSEG.GP_PAYGROUP and SDAL.ORIG_CAL_RUN_ID = SDSEG.ORIG_CAL_RUN_ID
+ and SDAL.RSLT_SEG_NUM      = SDSEG.RSLT_SEG_NUM    
+ and SDSEG.RSLT_VER_NUM = ( select max(S1.RSLT_VER_NUM) from PS_GP_PYE_SEG_STAT S1 where SDSEG.EMPLID = S1.EMPLID and SDSEG.EMPL_RCD = S1.EMPL_RCD
+  and SDSEG.GP_PAYGROUP = S1.GP_PAYGROUP and SDSEG.CAL_ID = S1.CAL_ID and SDSEG.RSLT_SEG_NUM = S1.RSLT_SEG_NUM ) 
+[$Cal_Run_Id_CriteriaSDAL]          )
+OR
+   ((
+      SDAL.SEQ_NO             > 15 
+!AND   SDAL.EMPL_RCD           = #Empl_RCD
+AND   SDAL.DEPENDENT_BENEF    = #CurrDependent
+AND   SDAL.PAY_ENTITY         = $Ctl_PayEntity
+AND   SDAL.SLICE_END_DT BETWEEN $From_Date AND $To_Date
+ and SDAL.EMPLID = SDSEG.EMPLID and SDAL.EMPL_RCD = SDSEG.EMPL_RCD and SDAL.CAL_RUN_ID = SDSEG.CAL_RUN_ID 
+ and SDAL.CAL_ID = SDSEG.CAL_ID 
+ and SDAL.GP_PAYGROUP = SDSEG.GP_PAYGROUP and SDAL.ORIG_CAL_RUN_ID = SDSEG.ORIG_CAL_RUN_ID
+ and SDAL.RSLT_SEG_NUM       = SDSEG.RSLT_SEG_NUM    
+ and SDSEG.RSLT_VER_NUM = ( select max(S1.RSLT_VER_NUM) from PS_GP_PYE_SEG_STAT S1 where SDSEG.EMPLID = S1.EMPLID and SDSEG.EMPL_RCD = S1.EMPL_RCD
+  and SDSEG.GP_PAYGROUP = S1.GP_PAYGROUP and SDSEG.CAL_ID = S1.CAL_ID and SDSEG.RSLT_SEG_NUM = S1.RSLT_SEG_NUM )
+[$Cal_Run_Id_CriteriaSDAL]          ) 
+       ))
+
+! FMB 20110420 Need to add canton [$Ctl_Canton_CritE4]
+end-select
+ 
+#Debug show 'swissdec_Allowances out'
+end-procedure swissdec_Allowances 
+ 
+
+
+!*******************************************************************************************
+
+Begin-Procedure eAHV_EMPLOYEE_XML
+#Debug show 'eAHV_EMPLOYEE_XML in'
+#Debug show ' $Ctl_End_Dt = ' $Ctl_End_Dt
+
+!============================== populate PS_GPCHAL053_TMP with children
+!sps populating dynamic criteria for slice date
+ If $Ctl_Curr_Pay_End_Dt <> ''
+   do ConvertToComponents($Ctl_Curr_Pay_End_Dt , $year , $month , $day)
+   let $Year_Begin_Date = $year  || '01'  || '01' || '0000'
+   do Format-DateTime($Year_Begin_Date , $Year_Begin_Date, {DEFCMP}, '', 'native')
+   let $Rep_Month_End_Date = $year  || $month  || $day || '0000'
+   do Format-DateTime($Rep_Month_End_Date , $Rep_Month_End_Date, {DEFCMP}, '', 'native')
+   let $Ctl_End_Dt = $Rep_Month_End_Date
+ End-If
+#Debug SHOW 'eAHV_EMPLOYEE_XML $Year_Begin_Date ' $Year_Begin_Date ' $Rep_Month_End_Date ' $Rep_Month_End_Date 
+
+ do Insert_PS_GPCHAL053_TMP
+
+ let $eAHVXML    = ''
+ let $Child      = ''
+ let $Children   = ''
+ let $Allowance  = ''
+ let $Allowances = ''
+
+ let $StornoeAHVXML     = ''
+ let $StornoBeneficiary = ''
+ let $StornoChild       = ''
+ let $StornoChildren    = ''
+ let $StornoAllowance   = ''
+ let $StornoAllowances  = ''
+
+Begin-select on-error=give_warning
+AL053.EMPLID
+AL053.DEPENDENT_BENEF
+AL053.GPCH_AH_NNSS
+AL053.FIRST_NAME
+AL053.LAST_NAME
+AL053.BIRTHDATE
+AL053.SEX
+AL053.RELATIONSHIP
+  
+ let #CurrDependent = &AL053.DEPENDENT_BENEF
+!FMB 20130602
+ let $CurrDependent = &AL053.DEPENDENT_BENEF
+
+ let $First_Name = rtrim(&AL053.First_NAME,  '')
+ let $Last_Name = rtrim(&AL053.Last_NAME, ' ')
+ let $Sex = rtrim(&AL053.SEX,' ')
+
+ If $Sex = 'F'
+    let $Sex = '1'
+ Else
+     let $Sex = '0'
+ End-If
+
+ let $DateOfBirth1 = rtrim(&AL053.BIRTHDATE,' ')
+ do ConvertToComponents($DateOfBirth1 , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+
+ If length($dd_Ctl) = 1 
+    let $dd_Ctl = '0' || $dd_Ctl
+ End-IF
+
+ let $DateOfBirth = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl 
+ let $SV-AS-Number1 = rtrim(&AL053.GPCH_AH_NNSS,' ')
+
+ If $SV-AS-Number1 = ''
+#Debug    show ' childAHVN13 is empty = ' &AL053.EMPLID ' First_NAME = ' &AL053.FIRST_NAME
+    let $SV-AS-Number1 = '0000000000000'
+ End-If
+
+ If $SV-AS-Number1 = '0000000000000'
+#Debug   show ' missing childAHVN13 = ' &AL053.EMPLID ' First_NAME = ' &AL053.FIRST_NAME
+ End-If
+
+ let $SV-AS-Number = substr($SV-AS-Number1,0,3) || '.' || substr($SV-AS-Number1,4,4) || '.' || substr($SV-AS-Number1,8,4) || '.' || substr($SV-AS-Number1,12,2)
+
+ let $Child = '<child>'||'<childAHVN13>'    ||$SV-AS-Number||'</childAHVN13>'   ||'<childSurname>'      ||$Last_Name    ||'</childSurname>' 
+ let $Child = $Child   ||'<childFirstName>' ||$First_Name  ||'</childFirstName>'|| '<childDateOfBirth>' ||$DateOfBirth  ||'</childDateOfBirth>' 
+ let $Child = $Child   ||'<childGender>'    ||$Sex         ||'</childGender>'    
+
+ do eAHV_determine_relationship
+
+ let $Child = $Child   ||'<childFamilyRelation>' || $Relationship || '</childFamilyRelation>' 
+
+#Debug show ' $Child  before eAHV-Allowances = ' $Child 
+
+ let $Allowance        = ''
+ let $Allowances       = ''
+ let $StornoAllowance  = ''
+ let $StornoAllowances = ''
+ 
+!FMB 20140730 do eAHV-Allowances
+ do FMB-Allowances
+ 
+ If $Allowances  = ''
+! ignore and reset
+   let $Child = ''
+#Debug show 'Removed Child data for $Empl_ID = ' $Empl_ID ' #Empl_RCD = ' #Empl_RCD ' $CurrDependent = ' $CurrDependent 
+ Else
+   let $Children       = $Children || $Child || $Allowances || '</child>'
+   let $XML_DEP        = $Child    || '</child>'
+   let $CompleteStorno = '02'
+   do Insert_GPCH_CA_XML_DEP
+!Look for Child Storno
+   let $StornoChild = ''
+   do CreateStornoDep
+
+   If $StornoChild        <> ''   and   $StornoAllowances <> ''
+      let $XML_DEP        = $StornoChild
+      let $CompleteStorno = '01'
+      Do Insert_GPCH_CA_XML_DEP
+
+!Prepare XML for GPCH_EG_PERSON Version 900
+      let $StornoChild    = replace($StornoChild, '</child>', '')
+      let $StornoChildren = $StornoChildren || $StornoChild || $StornoAllowances || '</child>'
+   End-If
+
+ End-If  
+
+FROM  PS_GPCHAL053_TMP AL053 
+WHERE AL053.PROCESS_INSTANCE = #prcs_process_instance
+      AND AL053.BIRTHDATE <= $Rep_Month_End_Date
+order by AL053.DEPENDENT_BENEF
+End-Select 
+
+!====================================Insert only if children
+If $Children <> ''
+!==================================== Beneficiary values come from Get_Employee_Xml
+
+  let $beneficiary = '<beneficiary><beneficiaryAHVN13>' || $NID_Ben  || '</beneficiaryAHVN13><beneficiarySurname>' || $LastName_Ben || '</beneficiarySurname><beneficiaryFirstName>' || $FirstName_Ben 
+  let $beneficiary = $beneficiary || '</beneficiaryFirstName><beneficiaryDateOfBirth>' || $DateOfBirth_Ben || '</beneficiaryDateOfBirth><beneficiaryGender>'
+  let $beneficiary = $beneficiary || $Sex_Ben || '</beneficiaryGender><beneficiaryStatus>01</beneficiaryStatus><beneficiaryStartDateEmployment>' ||  $beneficiaryStartDateEmployment || '</beneficiaryStartDateEmployment>' 
+
+  If Not Isnull ($beneficiaryEndDateEmployment)
+    let $beneficiary = $beneficiary || '<beneficiaryEndDateEmployment>' ||  $beneficiaryEndDateEmployment || '</beneficiaryEndDateEmployment>' 
+  End-If
+
+  if Not Isnull ($beneficiaryDateOfDeath)
+    let $beneficiary = $beneficiary || '<beneficiaryDateOfDeath>' ||  $beneficiaryDateOfDeath || '</beneficiaryDateOfDeath>' 
+  End-If
+
+  let $eAHVXML =  $beneficiary || $Children || '</beneficiary>'  
+  Let #FMB_LEN = length($eAHVXML)
+
+  If #FMB_LEN > 24000
+    #Debug   show '$eAHVXML for $Empl_ID exceeds max length = ' $Empl_ID ' ** ' $eAHVXML 
+    Let $eAHVXML = substr($eAHVXML,1,24000)
+  End-IF
+
+  let $FAK-CAF-Salaries = $eAHVXML
+  let $IF_VER           = '0' 
+  Do Insert_FAK_EMPLOYEE_XML
+
+  !Create XML history
+
+  let $CompleteStorno = '02'
+  let $XML_BEN        = $beneficiary || '</beneficiary>'
+  Do Insert_GPCH_CA_XML_BEN
+
+  ! Look for beneficiary Storno
+  let $StornoBeneficiary = ''
+  do CreateStornoBen
+
+  If $StornoBeneficiary <> ''
+    let $CompleteStorno = '01'
+    let $XML_BEN        = $StornoBeneficiary
+    Do Insert_GPCH_CA_XML_BEN
+
+    !Prepare XML GPCH_EG_PERSON Version 900
+
+    let $IF_VER             = '900'
+    let $StornoBeneficiary  = replace($StornoBeneficiary,'</beneficiary>','')
+    let $StornoeAHVXML      = $StornoBeneficiary || $StornoChildren || '</beneficiary>'
+
+    Let #FMB_LEN = length($StornoeAHVXML)
+
+    If #FMB_LEN > 24000
+      #Debug     show '$StornoeAHVXML for $Empl_ID exceeds max length = ' $Empl_ID ' ** ' $StornoeAHVXML 
+      Let $StornoeAHVXML = substr($StornoeAHVXML,1,24000)
+    End-IF
+
+    let $FAK-CAF-Salaries   = $StornoeAHVXML
+    Let $StornoeAHVXML      = ''
+    Let $StornoAllowances   = ''
+
+    Do Insert_FAK_EMPLOYEE_XML
+  End-If
+
+End-if
+
+#Debug show 'eAHV_EMPLOYEE_XML out'
+End-Procedure eAHV_EMPLOYEE_XML
+
+!********************************************************************************************
+Begin-Procedure FMB-Allowances
+#Debug show 'FMB-Allowances in'
+
+#Debug show  '$Ctl_Start_Dt = ' $Ctl_Start_Dt ' $Ctl_End_Dt = ' $Ctl_End_Dt ' $Ctl_PayEntity = ' $Ctl_PayEntity
+  
+ let $Cal_Run_Id_CriteriaINSC = ' AND INSC.CAL_RUN_ID   IN (' || $Cal_Run_Id_String || ')'
+ let $Cal_Run_Id_CriteriaSSS1 = ' AND SSS1.CAL_RUN_ID   IN (' || $Cal_Run_Id_String || ')'
+
+!FMB 20140624
+  let $Allowances       = '' 
+  let $UPDXMLAllowances = ''
+  let $StornoAllowances = ''
+   
+Begin-select on-error=give_warning
+TCDA3.GPCH_AL_CPAY_ENDDT
+TCDA3.GPCH_EA_DATEFROM
+TCDA3.GPCH_CA_TYPE
+TCDA3.GPCH_CA_CR_STORNO
+TCDA3.GPCH_EA_AMOUNT
+TCDA3.GPCH_CA_REFNBR
+TCDA3.GPCH_RP_CHAR01
+TCDA3.GPCH_EA_DATETO
+TCDA3.GPCH_EA_PERIODEFRO
+TCDA3.GPCH_EA_PERIODETO
+TCDA3.GPCH_EA_PERIODEAMO
+
+
+
+!FMB 20140622
+ let $Allowance        = '' 
+ let $UPDXMLAllowance  = ''
+ let $StornoAllowance  = ''
+
+ let $DateFrom1      = rtrim(&TCDA3.GPCH_EA_DATEFROM,' ')
+ 
+ DO Format-Number(&TCDA3.GPCH_CA_TYPE , $Type, '88')
+ If length($Type) = 1
+   let $Type = '0' || $Type
+ End-If
+ 
+ 
+! If $Type = '10' or $Type = '11' or $Type = '12' or $Type = '13'  
+ 
+! move $ReportEndD to $mon_year 'YYYY/MM'
+! Let $first_day = $mon_year||'/01' 
+! Let $first_day = strtodate($first_day,'YYYY/MM/DD')
+! Let $first_day = dateadd(strtodate($first_day), 'MONTH',-1)
+ 
+! move $DateFrom1 to $birth_mon_year 'YYYY/MM'
+! Let $first_day_birth = $birth_mon_year||'/01' 
+! Let $first_day_birth = strtodate($first_day_birth,'YYYY/MM/DD')
+ 
+! do Get-Hire-Check
+  
+! If $red_bgn_dt   = ''
+! If $hire_dt_check = ''
+! Let $DateFrom1  = rtrim($first_day_birth,' ')
+! else 
+! Let $DateFrom1  = rtrim($hire_dt_check,' ')
+! End-IF
+! else
+! Let $DateFrom1  = rtrim($red_bgn_dt,' ')
+! End-IF
+! End-IF
+ 
+ let $CompleteStorno = &TCDA3.GPCH_CA_CR_STORNO
+ 
+ do Format-Number(&TCDA3.GPCH_EA_AMOUNT, $Amount, '9999.00')
+ let $Amount = ltrim($Amount, ' ') 
+
+ let $RefNumber      = rtrim(&TCDA3.GPCH_CA_REFNBR,' ')
+ let $SourceType     = substr(&TCDA3.GPCH_RP_CHAR01,1,1)
+ let $DateTo1        = rtrim(&TCDA3.GPCH_EA_DATETO,' ')
+ 
+ 
+! let $CompleteStorno = '02'
+
+ do ConvertToComponents($DateFrom1 , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+ If length($dd_Ctl) = 1 
+   let $dd_Ctl = '0' || $dd_Ctl
+ End-IF
+ let $DateFrom = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl 
+
+ do ConvertToComponents($DateTo1 , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+ If length($dd_Ctl) = 1 
+  let $dd_Ctl = '0' || $dd_Ctl
+ End-IF
+ let $DateTo = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl 
+
+ let $PeriodeFrom    = $DateFrom
+ let $PeriodeTo      = $DateTo
+ let $PaidAmount     = '0.00'
+ let $BenefitCanton  = 'VD'
+ !FMB 20190226 do ReadResidenceCountry
+ do ReadResCountry_BFS
+ let $ChildCountryResidence = $nation_child_xml
+
+
+! Process new regular row
+ If $CompleteStorno = '02'
+
+  let $Allowance = '<allowance><allowanceRefNumber>' || $RefNumber || '</allowanceRefNumber><allowanceCompleteStorno>' || $CompleteStorno || '</allowanceCompleteStorno><allowanceType>' || $Type
+  let $Allowance = $Allowance || '</allowanceType><allowanceDateFrom>' ||$DateFrom || '</allowanceDateFrom><allowanceDateTo>' || $DateTo || '</allowanceDateTo><allowanceAmount>' ||$Amount
+  let $Allowance = $Allowance || '</allowanceAmount><allowancePeriodeFrom>'|| $PeriodeFrom || '</allowancePeriodeFrom><allowancePeriodeTo>' || $PeriodeTo || '</allowancePeriodeTo><allowancePeriodeAmount>'  
+  let $Allowance = $Allowance || $PaidAmount|| '</allowancePeriodeAmount><allowanceApplicableLegislation>01</allowanceApplicableLegislation><allowanceBenefitCanton>' || $BenefitCanton || '</allowanceBenefitCanton>'
+  let $Allowance = $Allowance || '<allowanceChildCountryResidence>' || $ChildCountryResidence || '</allowanceChildCountryResidence></allowance>'
+
+! FMB 20120604
+! FMB 20140625 #Debug show ' $SV-AS-Number1 = ' $SV-AS-Number1 ' $Allowance = ' $Allowance
+
+  If $SV-AS-Number1     <> '0000000000000' 
+    let $XML_ALL        = $Allowance 
+    let $SourceInd      = 'N'
+    Do Insert_GPCH_CA_XML_ALL
+!FMB 20140624    let $Allowances     = $Allowances|| $Allowance
+  Else
+    let $Allowances       = ''
+    let #FMB_TotalMissing = #FMB_TotalMissing + &TCDA3.GPCH_EA_PERIODEAMO
+
+#Debug  show ' missing childAHVN13 for $Empl_ID = ' $Empl_ID ' #Empl_RCD = ' #Empl_RCD ' $CurrDependent = ' $CurrDependent ' $RefNumber = ' $RefNumber ' #FMB_TotalMissing = ' #FMB_TotalMissing  
+  End-IF
+ End-If
+! End regular insert
+
+! Storno
+  If $CompleteStorno = '01'
+    Do FMB-StornoAll
+    let $XML_ALL   = $StornoAllowance
+    let $SourceInd = 'S'
+    Do Insert_GPCH_CA_XML_ALL
+  End-If
+  
+
+    do StornoByChangeNID
+
+
+
+FROM  PS_GPCH_CA_DTMP3 TCDA3 
+WHERE TCDA3.EMPLID          = $Empl_ID
+  AND TCDA3.DEPENDENT_BENEF = $CurrDependent
+order by TCDA3.GPCH_EA_DATEFROM, TCDA3.GPCH_CA_TYPE
+End-Select  
+
+#Debug show 'FMB-Allowances out'
+End-Procedure FMB-Allowances
+
+!*************************************************************************************
+Begin-Procedure Insert_FAK_EMPLOYEE_XML
+#Debug show 'Insert_FAK_EMPLOYEE_XML in' 
+ let #ptot_year = $ptot_year
+
+! Need to replace by merge as we may have updates/Storno from 'regular' processing and from HistoryOnly processing (now only the HistoryOnly component will survive)
+! let #IF_VER = $IF_VER
+! IF #IF_VER < 900
+
+Begin-Sql on-error=give_warning
+
+DELETE FROM PS_GPCH_EG_PERSON WHERE  GPCH_EG_DOMAINID= #ptot_domainid AND GPCH_RC_PAY_YEAR = #ptot_year AND COMPANY = $ptot_company AND  EMPLID = $Empl_ID AND 
+ EMPL_RCD = #Empl_RCD AND GPCH_SI_PROV_TYPE='5' AND BEGIN_DT = $PAY_BGN_DT AND END_DT = $Ctl_End_Dt AND GPCH_IF_VER = $IF_VER
+
+End-SQL
+
+Begin-Sql on-error=give_warning
+
+ Insert into PS_GPCH_EG_PERSON (GPCH_EG_DOMAINID,GPCH_RC_PAY_YEAR,COMPANY,GPCH_SI_PROV_TYPE,GPCH_SI_PROV_CD,EMPLID,EMPL_RCD,BEGIN_DT,END_DT,GPCH_IF_VER,GPCH_EG_PRSN_XML)
+ values (#ptot_domainid,#ptot_year,$ptot_company,$ptot_provtype,$ptot_providercd,$Empl_ID,#Empl_RCD,$PAY_BGN_DT,$Ctl_End_Dt,$IF_VER,$FAK-CAF-Salaries)
+ 
+End-SQL 
+
+#Debug show 'Insert_FAK_EMPLOYEE_XML out' 
+End-Procedure Insert_FAK_EMPLOYEE_XML
+
+!*************************************************************************************
+begin-procedure Get_Company_Name
+#Debug show '-> Get_Company_Name   ' $Ctl_Company ' , ' $BASE_LANG ' , ' $language_cd  ' , ' $Fak_Language
+
+      let $Key_Company  = $Ctl_Company || $Fak_Language
+
+      Lookup Base_Company_Descr $Ctl_Company $Return_Val
+      if Not Isnull ($Return_Val)
+         let $Cpdescr = rtrim($Return_Val,' ')
+      end-if
+
+
+      if ($BASE_LANG <> $language_cd) and ($language_cd <> '')
+         Lookup Trans_Company_Descr $Ctl_Company $Return_Val
+         if Not Isnull ($Return_Val)  ! Only if value returned else base language is printed.
+            let $Cpdescr = rtrim($Return_Val,' ')
+         end-if
+      end-if
+
+      if ($BASE_LANG <> $language_cd) and ($language_cd = '')
+         Lookup Trans_Company_Descr_ALL $Key_Company $Return_Val
+         if Not Isnull ($Return_Val)  ! Only if value returned else base language is printed.
+            let $Cpdescr = rtrim($Return_Val,' ')
+         end-if
+      end-if
+
+
+#Debug show '<- Get_Company_Name   ' $Canton_NameR
+end-procedure Get_Company_Name
+
+!*************************************************************************************
+begin-procedure TO_5Rapen(:#AmntInOut)
+   let #AmntInOut = round(#AmntInOut, 2)
+   let #AmntInOut = #AmntInOut * 20
+   let #AmntInOut = round(#AmntInOut, 0)
+   let #AmntInOut = #AmntInOut / 20
+end-procedure
+
+!*************************************************************************************
+Begin-Procedure Delete-Rec-Al05
+#Debug show '-> Delete-Rec-Al05 '
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+Begin-Sql on-error=give_warning
+  delete from PS_GPCHAL052_TMP  WHERE PROCESS_INSTANCE = #prcs_process_instance
+end-sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+#Debug show '<- Delete-Rec-Al05 '
+End-Procedure Delete-Rec-Al05
+
+!**************************************************************************
+begin-procedure DeleteEG_PERSON
+#Debug show 'DeleteEG_PERSON in  '
+
+ let #ptot_year = $ptot_year
+
+#Debug show '#ptot_domainid = ' #ptot_domainid ' #ptot_year = ' #ptot_year ' $ptot_company = ' $ptot_company ' $Ctl_End_Dt = ' $Ctl_End_Dt
+
+Begin-Sql on-error=give_warning
+
+DELETE FROM PS_GPCH_EG_PERSON 
+ WHERE  GPCH_EG_DOMAINID = #ptot_domainid 
+   AND GPCH_RC_PAY_YEAR  = #ptot_year 
+   AND COMPANY           = $ptot_company  
+   AND GPCH_SI_PROV_TYPE ='5' 
+   AND END_DT            = $Ctl_End_Dt 
+   AND EMPLID            in ( select FK2.EMPLID from PS_GPCHAL5X1_TMP FK2 
+ where FK2.PROCESS_INSTANCE = #prcs_process_instance )
+
+End-SQL
+
+#Debug show 'DeleteEG_PERSON out  '
+end-procedure DeleteEG_PERSON
+
+!******************************************* new ***********************************************
+!========== from here we launch now all XML processing
+begin-procedure SelectEmpls
+#Debug show ' ->SelectEmpls $Ctl_PayEntity ' $Ctl_PayEntity ' $Ctl_Start_Dt ' $Ctl_Start_Dt ' $Rep_Month_End_Date = ' $Rep_Month_End_Date ' $Ctl_Curr_Pay_End_Dt = ' $Ctl_Curr_Pay_End_Dt
+
+if rtrim($Cal_Run_Id_String, ' ') <> ''
+  let $Cal_Run_Id_CriteriaME1     = ' AND FK2.CAL_RUN_ID   IN ( ' || $Cal_Run_Id_String || ')'
+  let $Cal_Run_Id_CriteriaI       = ' AND INSD.CAL_RUN_ID  IN ( ' || $Cal_Run_Id_String || ')'
+  let $Cal_Run_Id_CriteriaIC      = ' AND INSTR.CAL_RUN_ID IN ( ' || $Cal_Run_Id_String || ')'
+  let $Cal_Run_Id_CriteriaICD     = ' AND INSPR.CAL_RUN_ID IN ( ' || $Cal_Run_Id_String || ')'
+  let $Cal_Run_Id_CriteriaFK21    = ' AND FK21.CAL_RUN_ID IN  ( ' || $Cal_Run_Id_String || ')'
+  let $Cal_Run_Id_CriteriaF       = ' AND F.CAL_RUN_ID IN     ( ' || $Cal_Run_Id_String || ')'
+  let $Cal_Run_Id_CriteriaF1      = ' AND F1.CAL_RUN_ID IN    ( ' || $Cal_Run_Id_String || ')'
+else
+  let $Cal_Run_Id_CriteriaME1     = ' '
+  let $Cal_Run_Id_CriteriaI       = ' '
+  let $Cal_Run_Id_CriteriaIC      = ' '
+  let $Cal_Run_Id_CriteriaICD     = ' '
+  let $Cal_Run_Id_CriteriaF       = ' '
+  let $Cal_Run_Id_CriteriaF1      = ' '
+end-if
+
+#Debug SHOW 'sps $Cal_Run_Id_CriteriaFK21 ' $Cal_Run_Id_CriteriaFK21 ' $canton_elm_crit ' $canton_elm_crit ' $Cal_Run_Id_CriteriaME1 ' $Cal_Run_Id_CriteriaME1 ' $Emplid_CriteriaE1 ' $Emplid_CriteriaE1
+
+Begin-Sql on-error=give_warning
+delete from PS_GPCHAL5X1_TMP
+end-sql
+
+
+Begin-Sql on-error=give_warning
+
+insert into PS_GPCHAL5X1_TMP (PROCESS_INSTANCE,EMPLID)
+select DISTINCT #prcs_process_instance, FK2.EMPLID
+
+from PS_GPCH_RP_FK02 FK2, PS_GP_PYE_SEG_STAT SSS
+where FK2.PAY_ENTITY         = $Ctl_PayEntity
+!FMB 20141029 AND   FK2.PRD_END_DT         BETWEEN $Ctl_Start_Dt and $Ctl_End_Dt
+AND   FK2.SEG_BGN_DT         BETWEEN $Ctl_Start_Dt and $Ctl_End_Dt
+
+and FK2.EMPLID        = SSS.EMPLID 
+and FK2.EMPL_RCD      = SSS.EMPL_RCD 
+and FK2.CAL_RUN_ID    = SSS.CAL_RUN_ID 
+and FK2.CAL_ID        = SSS.CAL_ID
+and FK2.GP_PAYGROUP   = SSS.GP_PAYGROUP 
+and FK2.ORIG_CAL_RUN_ID = SSS.ORIG_CAL_RUN_ID
+and FK2.RSLT_SEG_NUM  = SSS.RSLT_SEG_NUM    
+and SSS.RSLT_VER_NUM = ( select max(S1.RSLT_VER_NUM) from PS_GP_PYE_SEG_STAT S1 where SSS.EMPLID = S1.EMPLID and SSS.EMPL_RCD = S1.EMPL_RCD and
+    SSS.GP_PAYGROUP = S1.GP_PAYGROUP and SSS.CAL_ID = S1.CAL_ID and SSS.RSLT_SEG_NUM = S1.RSLT_SEG_NUM )
+
+
+[$canton_elm_crit]
+[$Cal_Run_Id_CriteriaME1]
+[$Emplid_CriteriaE1]
+end-sql
+
+! Always process children with manual request for this year
+#Debug show ' $Ctl_Year before enrich by manual override = ' $Ctl_Year
+
+Begin-Sql on-error=give_warning
+insert into PS_GPCHAL5X1_TMP (PROCESS_INSTANCE,EMPLID)
+select DISTINCT #prcs_process_instance, FK2.EMPLID
+from PS_GPCH_CA_DATA2 CA2, PS_GPCH_CA_DATA1 FK2
+where FK2.COMPANY         = $Ctl_PayEntity
+ AND  FK2.EMPLID          = CA2.EMPLID
+ AND  FK2.EFFDT           = CA2.EFFDT
+ AND  CA2.GPCH_RC_PAY_YEAR = $Ctl_Year
+! Just to avoid uniqe constraints 
+ AND not exists ( select 'X' from PS_GPCHAL5X1_TMP T
+  where T.PROCESS_INSTANCE = #prcs_process_instance
+   AND  T.EMPLID           = FK2.EMPLID )
+[$Emplid_CriteriaE1]
+end-sql
+
+!FMB 2012xxxx
+ If $FK_Mode = '2' Or $FK_Mode = '0'
+! Delete here to catch all Version numbers
+    do DeleteEG_PERSON
+ End-If
+
+!FMB 2012xxxx
+ If $FK_Mode = '2'
+   do getcurrtimedate
+#Debug show ' Before Insert_FMB_CA_DATA $currtimedate = ' $currtimedate
+
+   do Insert_FMB_CA_DATA
+
+   do getcurrtimedate
+#Debug show ' After Insert_FMB_CA_DATA $currtimedate = ' $currtimedate
+
+   let $Ctl_End_Dt = $Ctl_Curr_Pay_End_Dt
+ End-If
+
+Begin-select DISTINCT on-error=give_warning
+FK2.EMPLID
+
+  let $Empl_ID  = &FK2.EMPLID  
+
+  If $FK_Mode = '2'  
+     do Get_Employee_Xml
+     do eAHV_EMPLOYEE_XML
+  ELSE
+     do FAK_EMPLOYEE_XML
+     let $IF_VER = '0' 
+     Do Insert_FAK_EMPLOYEE_XML
+  End-IF
+
+from PS_GPCHAL5X1_TMP FK2
+where FK2.PROCESS_INSTANCE = #prcs_process_instance
+end-select
+
+ If $FK_Mode = '0'
+   do Company_Totals
+ End-If
+
+end-procedure
+!**************************************************************************
+begin-procedure Get-MBR-ID
+#Debug show '<- Get-MBR-ID  '
+
+#Debug show '$SPRV_TYPE = ' $SPRV_TYPE
+#Debug show '$SPRV_CD = ' $SPRV_CD
+#Debug show '$SPRV_CANTON = ' $SPRV_CANTON
+#Debug show '$SPRV_ALL = ' $SPRV_ALL
+#Debug show '$Tmp_AsOfDate = ' $Tmp_AsOfDate
+#Debug show '$ctl_end_dt = ' $ctl_end_dt
+#Debug show '$Ctl_Company = ' $Ctl_Company
+#Debug show '$Ctl_Com = ' $Ctl_Com
+#Debug show '$comp = ' $comp
+
+ Let $MBR_ID = ' '
+
+Begin-select on-error=give_warning
+MBR.GPCH_SI_UV_MBR_ID     &MBR_ID
+
+ Let $MBR_ID =  &MBR_ID
+
+FROM PS_GPCH_SI_ACC_INS MBR
+WHERE MBR.COMPANY =  $Ctl_Company
+AND   MBR.GPCH_SI_PROV_TYPE = $SPRV_TYPE
+AND  ( MBR.GPCH_TX_CANTON = $SPRV_CANTON or MBR.GPCH_ALL_CANTONFLG = $SPRV_ALL )
+AND   MBR.EFFDT = (SELECT MAX(MBR2.EFFDT) FROM PS_GPCH_SI_ACC_INS MBR2
+        WHERE MBR.COMPANY = MBR2.COMPANY
+         AND  MBR.GPCH_SI_PROV_TYPE = MBR2.GPCH_SI_PROV_TYPE
+         AND  MBR.GPCH_TX_UV_PROV_CD = MBR2.GPCH_TX_UV_PROV_CD
+         AND  MBR2.EFFDT <= $Ctl_End_Dt)
+End-select
+
+#Debug show '$MBR_ID = ' $MBR_ID
+
+#Debug show '<- Get-MBR-ID  '
+end-procedure Get-MBR-ID
+
+!********************************************************************************************
+begin-procedure Get_Employee_Xml
+#Debug show '-> Get_Employee_Xml'   
+ 
+!-----------------------------------------
+#Debug show ' $Empl_ID = ' $Empl_ID
+
+Let $NID_Ben = ''
+
+Begin-select on-error=give_warning
+NID1.NATIONAL_ID
+
+       Let $NID_Ben = LTRIM(RTRIM(&NID1.NATIONAL_ID,' '),' ')
+!FMB 20140311
+       Let $NID_BEN_XML_BEN = $NID_Ben
+       
+from PS_PERS_NID NID1
+where NID1.EMPLID = $Empl_ID
+AND NID1.COUNTRY = 'CHE'
+AND NID1.NATIONAL_ID_TYPE = 'NNSS'
+End-Select
+
+if $NID_Ben <> ''
+   !let $NID_xml = substr($NID_xml,1,3)||'-'||
+   !               substr($NID_xml,4,4)||'-'||
+   !               substr($NID_xml,8,4)||'-'||
+   let $NID_Ben = substr($NID_Ben,1,3)||'.'||
+                  substr($NID_Ben,4,4)||'.'||
+                  substr($NID_Ben,8,4)||'.'||
+                  substr($NID_Ben,12,2)
+end-if
+
+#Debug show ' $NID_Ben = ' $NID_Ben
+!-----------------------------------------    
+  If $NID_Ben = ''
+   let $SV_AS_xml= '<tnsb:SV-AS-Number>'||'000.EMPLD:' || $Empl_ID ||'</tnsb:SV-AS-Number>'
+  Else     
+   let $SV_AS_xml= '<tnsb:SV-AS-Number>'|| $NID_Ben ||'</tnsb:SV-AS-Number>'
+  End-If 
+
+!-----------------------------------------  
+ 
+Begin-select on-error=give_warning
+PERS.DT_OF_DEATH
+PERS.BIRTHDATE
+!CNTRY.COUNTRY_2CHAR                                
+
+  let $DateOfDeath = ' '
+  let $DateOfDeath_Ben = ' '
+  If Not Isnull (&PERS.DT_OF_DEATH)
+     do Format-DateTime ( $ReportBegD , $period_start_Date , {DEFCMP} , '' , '' )
+     do Format-DateTime ( $ReportEndD , $period_end_Date , {DEFCMP} , '' , '' )
+     do Format-DateTime ( &PERS.DT_OF_DEATH , $death_Date , {DEFCMP} , '' , '' )
+     If $death_Date >= $period_start_Date and $death_Date <= $period_end_Date
+        do ConvertToComponents(&PERS.DT_OF_DEATH , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+        let $DateOfDeath = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl
+        let $DateOfDeath_Ben =  $DateOfDeath 
+     End-If
+  End-If
+  
+  let $DateOfBirth = ' '
+  let $DateOfBirth_Ben = ' '
+  If Not Isnull (&PERS.BIRTHDATE)
+     do ConvertToComponents(&PERS.BIRTHDATE , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+     let $DateOfBirth = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl
+     let $DateOfBirth_Ben =  $DateOfBirth 
+  End-If
+!FMB 20140311
+  Let $DateOfBirth_XML_BEN = &PERS.BIRTHDATE
+
+FROM PS_PERSON PERS                                        
+WHERE PERS.EMPLID = $Empl_ID
+end-select
+
+
+#Debug show ' $DateOfDeath_Ben = ' $DateOfDeath_Ben ' $DateOfBirth_Ben = ' $DateOfBirth_Ben
+!-----------------------------------------
+Begin-select on-error=give_warning
+PN.FIRST_NAME
+PN.LAST_NAME
+
+  let $FirstName_Ben = &PN.FIRST_NAME
+  let $LastName_Ben  = &PN.LAST_NAME
+   
+FROM PS_NAMES PN
+WHERE PN.EMPLID = $Empl_ID AND
+      PN.NAME_TYPE = 'PRI' AND
+      PN.EFFDT = ( select max(PN1.EFFDT) from PS_NAMES PN1
+       where PN.EMPLID = PN1.EMPLID
+       AND   PN.NAME_TYPE = PN1.NAME_TYPE
+       AND   PN1.EFFDT <= $ReportEndD )
+end-select
+
+#Debug show ' $FirstName_Ben = ' $FirstName_Ben ' $LastName_Ben = ' $LastName_Ben
+
+!-----------------------------------------
+Begin-select on-error=give_warning
+PEF.SEX
+
+  let $Sex = &PEF.SEX
+  If $Sex = 'U' 
+    let $Sex = 'M'
+  End-If
+   
+FROM PS_PERS_DATA_EFFDT PEF
+WHERE PEF.EMPLID = $Empl_ID AND
+      PEF.EFFDT = ( select max(PEF1.EFFDT) from PS_PERS_DATA_EFFDT PEF1
+       where PEF.EMPLID = PEF1.EMPLID
+       AND   PEF1.EFFDT <= $ReportEndD )
+end-select
+
+If $Sex <> 'F' 
+    let $Sex = 'M'
+End-If
+
+ If $Sex = 'F'
+   let $Sex = '1'
+  Else
+   let $Sex = '0'
+  End-If
+
+let $Sex_Ben = $Sex
+   
+#Debug show ' $Sex_Ben  = ' $Sex_Ben 
+
+!-----------------------------------------
+
+ let $beneficiaryEndDateEmployment  = ''
+ let $beneficiaryEndDateEmployment1 = ''
+
+Begin-select on-error=give_warning
+RP1.HIRE_DT
+RP1.TERMINATION_DT
+
+  do ConvertToComponents(&RP1.HIRE_DT , $yy_Ctl , $mm_Ctl , $dd_Ctl)
+  let $beneficiaryStartDateEmployment = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl
+  
+
+  if Not Isnull (&RP1.TERMINATION_DT)
+!FMB 20140329 
+     let $beneficiaryEndDateEmployment1 = &RP1.TERMINATION_DT
+     do ConvertToComponents(&RP1.TERMINATION_DT, $yy_Ctl , $mm_Ctl , $dd_Ctl)
+     let $beneficiaryEndDateEmployment  = $yy_Ctl || '-' || $mm_Ctl || '-' || $dd_Ctl
+  End-IF
+   
+FROM PS_GPCH_RP_0001 RP1
+WHERE RP1.EMPLID = $Empl_ID AND
+      RP1.SEG_END_DT = ( select max(RP11.SEG_END_DT) from PS_GPCH_RP_0001 RP11
+       where RP1.EMPLID = RP11.EMPLID
+       AND   RP11.EMPL_RCD = RP11.GPCH_MC_LEGAL_RCD
+       AND   RP11.SEG_END_DT <= $ReportEndD )
+end-select
+
+#Debug show ' $beneficiaryStartDateEmployment  = ' $beneficiaryStartDateEmployment ' $beneficiaryEndDateEmployment = ' $beneficiaryEndDateEmployment
+
+!-----------------------------------------  
+Begin-select on-error=give_warning 
+XML1.COUNTRY
+XML1.STATE 
+  
+   Let $Country_xml      = LTRIM(RTRIM(&XML1.COUNTRY,' '),' ')
+   Let $State_xml        = LTRIM(RTRIM(&XML1.STATE,' '),' ')
+
+   If $Country_xml <>'CHE'
+     !FMB 20190226     let $Country_xml= substr($Country_xml,1,2)
+     let $nation_Xml= '<Nation>' || $Country_xml || '</Nation>' 
+     let $nation_child_temp = $nation_Xml
+     !let $nation_child_temp = '<tnsb:Residence>' || $nation_Xml || '</tnsb:Residence>'
+   else 
+     let $nation_Xml ='<Canton>' || $State_xml ||'</Canton>'
+     let $nation_child_temp = $nation_Xml
+     !let $nation_child_temp = '<tnsb:Residence>' || $nation_Xml || '</tnsb:Residence>'
+   End-If
+   
+from PS_ADDRESSES XML1
+where XML1.EMPLID = $Empl_ID
+AND XML1.ADDRESS_TYPE = 'HOME'
+AND XML1.EFFDT = (Select MAX(XML2.EFFDT) from PS_ADDRESSES XML2
+                                  WHERE XML2.EMPLID = $Empl_ID
+                                    AND XML2.ADDRESS_TYPE = 'HOME'
+                                    AND XML2.EFFDT <= $ReportEndD )
+End-Select
+!-----------------------------------------
+ 
+#Debug show '<- Get_Employee_Xml'
+end-procedure
+
+!*********************************************************************************************
+
+begin-procedure GetCountry2Char
+#Debug show '-> GetCountry2Char'
+
+Begin-select on-error=give_warning
+C2C.COUNTRY_2CHAR
+
+   Let $Country_2CHAR = LTRIM(RTRIM(&C2C.COUNTRY_2CHAR,' '),' ')
+
+from PS_COUNTRY_TBL C2C
+where C2C.COUNTRY = $Read_Country
+
+End-Select
+#Debug show '<- GetCountry2Char'
+end-procedure
+
+!********************************************************************************************
+Begin-Procedure Insert_FMB_CA_DATA
+#Debug show 'Insert_FMB_CA_DATA in'
+
+Begin-Sql on-error=give_warning
+delete from PS_GPCH_CA_DTMP2  
+end-sql
+
+Begin-Sql on-error=give_warning
+delete from PS_GPCH_CA_DTMP3  
+end-sql
+
+Begin-Sql on-error=give_warning
+delete from PS_GPCH_CA_DTMP4  
+end-sql
+
+Begin-Sql on-error=give_warning
+Delete from PS_GPCH_CA_XML_ALL where GPCH_AL_CPAY_ENDDT = {DATEIN-PREFIX}$Ctl_Curr_Pay_End_Dt{DATEIN-SUFFIX}
+ AND GPCH_EG_DOMAINID = #ptot_domainid
+End-SQL
+
+Begin-Sql on-error=give_warning
+Delete from PS_GPCH_CA_XML_DEP where GPCH_AL_CPAY_ENDDT = {DATEIN-PREFIX}$Ctl_Curr_Pay_End_Dt{DATEIN-SUFFIX}
+  AND GPCH_EG_DOMAINID = #ptot_domainid
+End-SQL
+
+Begin-Sql on-error=give_warning
+Delete from PS_GPCH_CA_XML_BEN where GPCH_AL_CPAY_ENDDT = {DATEIN-PREFIX}$Ctl_Curr_Pay_End_Dt{DATEIN-SUFFIX}
+  AND GPCH_EG_DOMAINID = #ptot_domainid
+End-SQL
+
+Begin-Sql on-error=give_warning
+Update PS_GPCH_CA_XML_ALL set GPCH_CA_STRNO_DONE = ' ', GPCH_EG_ISSU_DAT = NULL where GPCH_EG_ISSU_DAT =  {DATEIN-PREFIX}$Ctl_Curr_Pay_End_Dt{DATEIN-SUFFIX}
+ AND GPCH_EG_DOMAINID = #ptot_domainid
+end-sql
+#Debug show ' After Reset Storno done $ctl_end_dt = ' $ctl_end_dt ' $Ctl_Curr_Pay_End_Dt = ' $Ctl_Curr_Pay_End_Dt
+
+ do ConvertToComponents ( $Ctl_Curr_Pay_End_Dt , $BYYYY , $BMM , $BDD )
+ let $RAFAM_END  = $BYYYY || '/' || $BMM || '/' || $BDD
+ let $RAFAM_END1 = strtodate($RAFAM_END, 'YYYY/MM/DD') 
+ let $RAFAM_END1 = dateadd($RAFAM_END1, 'day', 14) 
+ let $EARLY_STUDENT2020_DT = strtodate('2020/08/01', 'YYYY/MM/DD')
+! let $RAFAM_END1  = $RAFAM_END1 + 14
+
+!FMB 20150102
+If #ptot_DomainID = 27
+ let $CAF_BEGIN1 = strtodate('2008/01/01', 'YYYY/MM/DD')
+ let $CAF_BEGIN2 = strtodate('2011/01/01', 'YYYY/MM/DD')
+ let $CAF_END1 = strtodate('2014/12/31', 'YYYY/MM/DD')
+ let $CAF_END2 = strtodate('2014/12/31', 'YYYY/MM/DD')
+ let $REFDOM   = '27'
+Else
+ let $CAF_BEGIN1 = strtodate('2015/01/01', 'YYYY/MM/DD')
+ let $CAF_BEGIN2 = strtodate('2015/01/01', 'YYYY/MM/DD')
+ let $CAF_END1 = strtodate('2099/12/31', 'YYYY/MM/DD')
+ let $CAF_END2 = $Ctl_Curr_Pay_End_Dt
+ let $REFDOM   = '12'
+End-If
+
+#Debug show ' After $RAFAM_END1 = ' $RAFAM_END1 ' $Ctl_Curr_Pay_End_Dt = ' $Ctl_Curr_Pay_End_Dt
+
+! Copy GPCH_CA_DATA2 
+    
+Begin-Sql on-error=give_warning
+insert into PS_GPCH_CA_DTMP2 (EMPLID, DEPENDENT_BENEF, GPCH_CA_CR_BGN, GPCH_CA_TYPE, EFFDT, GPCH_CA_CR_STORNO, GPCH_EA_AMOUNT, GPCH_CA_CR_END, GPCH_CA_RELATION, SEQ_NO,
+GPCH_CA_CA_ELIG, BIRTHDATE, BIRTHDATE_WRK, NAME, STUDENT, DISABLED, GPCH_CA_FOR_AMOUNT, GPCH_CA_FOREIGNER, GPCH_RC_PAY_YEAR, EXCLUDE, GPCH_CA_NUMEROUS, GPCH_CA_PCT)
+ select C2.EMPLID, C2.DEPENDENT_BENEF, 
+ CASE WHEN C2.GPCH_CA_RED_BGN_DT is not NULL Then C2.GPCH_CA_RED_BGN_DT  WHEN DB.BIRTHDATE  between 
+#ifdef ORACLE
+    (trunc(C2.EFFDT) - (to_number(to_char(C2.EFFDT,'DD')) - 1) ) 
+#Else
+    (DATEADD(mm, DATEDIFF(mm, 0, C2.EFFDT), 0)) 
+#Endif  
+ AND
+#ifdef ORACLE
+    (add_months(trunc(C2.EFFDT) - (to_number(to_char(C2.EFFDT,'DD')) - 1), 1) -1) 
+#Else
+    (DATEADD (dd, -1, DATEADD(mm, DATEDIFF(mm, 0, C2.EFFDT) + 1, 0)))
+#Endif
+ AND not exists ( select 'X' from PS_GPCH_RP_0001 R where R.EMPLID = C2.EMPLID and R.HIRE_DT = C2.EFFDT AND R.EMPL_RCD   = R.GPCH_MC_LEGAL_RCD 
+ AND R.GPCH_AL_CPAY_ENDDT = ( select max(R1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 R1   where  R.EMPLID = R1.EMPLID AND R1.EMPL_RCD   = R1.GPCH_MC_LEGAL_RCD )) Then 
+#ifdef ORACLE
+    (trunc(C2.EFFDT) - (to_number(to_char(C2.EFFDT,'DD')) - 1)) 
+#Else
+    (DATEADD(mm, DATEDIFF(mm, 0, C2.EFFDT), 0))
+#Endif
+ else C2.EFFDT END,
+ 0,C2.EFFDT, ' ', 0.00, CASE WHEN C2.GPCH_CA_EDU_END_DT is not NULL and C2.GPCH_CA_EDU_END_DT < C2.GPCH_CA_LEGAL_END Then C2.GPCH_CA_EDU_END_DT ELSE C2.GPCH_CA_LEGAL_END END,
+ C2.GPCH_CA_RELATION,0,C2.GPCH_CA_CA_ELIG, DB.BIRTHDATE, DB.BIRTHDATE,'From Allowance tables', C2.STUDENT, C2.DISABLED, C2.GPCH_CA_FOR_AMOUNT,C2.GPCH_CA_FOREIGNER, 0, ' ', C2.GPCH_CA_NUMEROUS, C2.GPCH_CA_PCT
+from PS_GPCH_CA_DATA2 C2, PS_DEP_BEN DB, PS_GPCH_CA_DATA1 C1 
+ where C2.EMPLID          = DB.EMPLID 
+   and C2.DEPENDENT_BENEF = DB.DEPENDENT_BENEF 
+   and C1.COMPANY         = $Ctl_PayEntity
+   and C1.EMPLID          = C2.EMPLID
+   and C1.EMPL_RCD        = C2.EMPL_RCD
+   and C1.EFFDT           = C2.EFFDT
+   and C2.EMPLID in ( select T.EMPLID from PS_GPCHAL5X1_TMP T)
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After copy GPCH_CA_DATA2  $currtimedate = ' $currtimedate
+
+Begin-Sql on-error=give_warning
+delete from PS_GPCH_CA_DTMP2
+ where exists ( select 'x' from PS_GPCH_CA_DTMP2 A
+ where PS_GPCH_CA_DTMP2.EMPLID          = A.EMPLID 
+   and PS_GPCH_CA_DTMP2.DEPENDENT_BENEF = A.DEPENDENT_BENEF 
+   and PS_GPCH_CA_DTMP2.GPCH_CA_CR_BGN  = A.GPCH_CA_CR_BGN
+   and PS_GPCH_CA_DTMP2.GPCH_CA_TYPE    = A.GPCH_CA_TYPE
+   and PS_GPCH_CA_DTMP2.EFFDT           < A.EFFDT )
+end-sql
+
+
+! Restrict to most recent termination
+Begin-Sql on-error=give_warning
+Update PS_GPCH_CA_DTMP2 set GPCH_CA_CR_END = ( select max(RP1.TERMINATION_DT)  FROM PS_GPCH_RP_0001 RP1
+WHERE RP1.EMPLID = PS_GPCH_CA_DTMP2.EMPLID
+ AND  RP1.SEG_END_DT = ( select max(RP11.SEG_END_DT) from PS_GPCH_RP_0001 RP11
+       where PS_GPCH_CA_DTMP2.EMPLID      = RP11.EMPLID
+       AND   RP11.EMPL_RCD   = RP11.GPCH_MC_LEGAL_RCD )
+   AND RP1.GPCH_AL_CPAY_ENDDT = ( select max(RP11.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 RP11
+    where  PS_GPCH_CA_DTMP2.EMPLID          = RP11.EMPLID
+       AND   RP11.EMPL_RCD   = RP11.GPCH_MC_LEGAL_RCD )
+  AND RP1.EMPL_RCD   = RP1.GPCH_MC_LEGAL_RCD
+ AND RP1.TERMINATION_DT > RP1.HIRE_DT
+ AND RP1.TERMINATION_DT < PS_GPCH_CA_DTMP2.GPCH_CA_CR_END)
+ where exists ( select 'X'  FROM PS_GPCH_RP_0001 RP1
+WHERE RP1.EMPLID = PS_GPCH_CA_DTMP2.EMPLID
+ AND  RP1.SEG_END_DT = ( select max(RP11.SEG_END_DT) from PS_GPCH_RP_0001 RP11
+       where PS_GPCH_CA_DTMP2.EMPLID      = RP11.EMPLID
+       AND   RP11.EMPL_RCD   = RP11.GPCH_MC_LEGAL_RCD )
+   AND RP1.GPCH_AL_CPAY_ENDDT = ( select max(RP11.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 RP11
+    where  PS_GPCH_CA_DTMP2.EMPLID          = RP11.EMPLID
+       AND   RP11.EMPL_RCD   = RP11.GPCH_MC_LEGAL_RCD )
+  AND RP1.EMPL_RCD   = RP1.GPCH_MC_LEGAL_RCD
+ AND RP1.TERMINATION_DT > RP1.HIRE_DT
+ AND RP1.TERMINATION_DT < PS_GPCH_CA_DTMP2.GPCH_CA_CR_END)
+end-sql
+
+
+   do getcurrtimedate
+#Debug show ' After Restrict to termination  $currtimedate = ' $currtimedate
+
+! Insert additional rows, if Effdt < End and not Effdt with End + 1 exists
+Begin-select on-error=give_warning
+TCA.EMPLID
+TCA.GPCH_CA_CR_END
+
+ let $TMP_EMPLID = &TCA.EMPLID
+
+ let $TMP_Begin  = dateadd(&TCA.GPCH_CA_CR_END, 'day', 1)
+ 
+ let $TMP_Year   = edit('1001','9999')
+
+ DO Insert_EffdtForEnd 
+
+FROM  PS_GPCH_CA_DTMP2 TCA 
+WHERE TCA.GPCH_CA_CR_BGN < TCA.GPCH_CA_CR_END 
+  and not exists ( select 'X' from PS_GPCH_CA_DTMP2 TCA1
+  where TCA.EMPLID             = TCA1.EMPLID 
+    and TCA.DEPENDENT_BENEF    = TCA1.DEPENDENT_BENEF 
+    and 
+#ifdef Oracle
+       (TO_DATE(TCA.GPCH_CA_CR_END,'DD-MON-YY')+1)  
+#Else
+#ifdef DB2ALL
+       DATE(DAYS(TCA.GPCH_CA_CR_END) + 1)
+#Else
+       (DATEADD(dd,+1,TCA.GPCH_CA_CR_END))
+#Endif 
+#Endif
+    = TCA1.GPCH_CA_CR_BGN )    
+End-Select
+
+   do getcurrtimedate
+#Debug show ' After Temp row for effdt < End +1  $currtimedate = ' $currtimedate
+
+! Insert additional rows for early student 
+Begin-select on-error=give_warning
+TCA2.EMPLID
+TCA2.BIRTHDATE
+
+ let $TMP_EMPLID = &TCA2.EMPLID
+ !FMB 20181115 let $TMP_Begin  = dateadd(&TCA2.BIRTHDATE, 'month', 194)
+ let $TMP_Begin  = dateadd(&TCA2.BIRTHDATE, 'month', 193)
+
+ do ConvertToComponents ( $TMP_Begin , $BYYYY , $BMM , $BDD )
+ Let $day        = $BYYYY||'/' || $BMM|| '/01' 
+ Let $TMP_Begin  = strtodate($day, 'YYYY/MM/DD') 
+ Let $TMP_Year   = edit('1002','9999')
+
+ DO Insert_EffdtForEnd
+ 
+FROM  PS_GPCH_CA_DTMP2 TCA2 
+WHERE TCA2.GPCH_CA_CR_BGN < 
+#ifdef ORACLE
+    trunc(ADD_MONTHS(TCA2.BIRTHDATE,193),'MM')
+#Else
+#ifdef DB2ALL
+    (DATE(TCA2.BIRTHDATE) + 193 MONTHS) - (DAY(DATE(TCA2.BIRTHDATE) + 193 MONTHS)-1) DAYS
+#Else
+    CONVERT(DATETIME, CONVERT(VARCHAR(7), (DATEADD(MONTH, 193, TCA2.BIRTHDATE)), 120) + '-01')    
+#endif
+#endif 
+and TCA2.STUDENT = 'Y' and not exists ( select 'X' from PS_GPCH_CA_DTMP2 TCA21
+  where TCA2.EMPLID = TCA21.EMPLID and TCA2.DEPENDENT_BENEF = TCA21.DEPENDENT_BENEF and 
+#ifdef ORACLE
+    trunc(ADD_MONTHS(TCA2.BIRTHDATE,193),'MM')
+#Else
+#ifdef DB2ALL
+    (DATE(TCA2.BIRTHDATE) + 193 MONTHS) - (DAY(DATE(TCA2.BIRTHDATE) + 193 MONTHS)-1) DAYS
+#Else
+    CONVERT(DATETIME, CONVERT(VARCHAR(7), (DATEADD(MONTH, 193, TCA2.BIRTHDATE)), 120) + '-01')    
+#endif
+#endif 
+  = TCA21.GPCH_CA_CR_BGN )      
+End-Select
+
+   do getcurrtimedate
+#Debug show ' After early student  $currtimedate = ' $currtimedate
+
+#Debug show ' Insert additional rows for early student 2020 (15th birthday) - Begin' 
+Begin-select on-error=give_warning
+TCA3.EMPLID
+TCA3.BIRTHDATE
+
+ let $TMP_EMPLID = &TCA3.EMPLID
+ let $TMP_Begin  = dateadd(&TCA3.BIRTHDATE, 'month', 181)
+
+ do ConvertToComponents ( $TMP_Begin , $BYYYY , $BMM , $BDD )
+ Let $day        = $BYYYY||'/' || $BMM|| '/01' 
+ Let $TMP_Begin  = strtodate($day, 'YYYY/MM/DD') 
+ Let $TMP_Year   = edit('1003','9999')
+ 
+ DO Insert_EffdtForEnd
+
+FROM  PS_GPCH_CA_DTMP2 TCA3 
+WHERE TCA3.GPCH_CA_CR_BGN < 
+#ifdef ORACLE
+    trunc(ADD_MONTHS(TCA3.BIRTHDATE,181),'MM')
+#Else
+#ifdef DB2ALL
+    (DATE(TCA3.BIRTHDATE) + 181 MONTHS) - (DAY(DATE(TCA3.BIRTHDATE) + 181 MONTHS)-1) DAYS
+#Else
+    CONVERT(DATETIME, CONVERT(VARCHAR(7), (DATEADD(MONTH, 181, TCA3.BIRTHDATE)), 120) + '-01')    
+#endif
+#endif 
+and TCA3.STUDENT = 'Y' and not exists ( select 'X' from PS_GPCH_CA_DTMP2 TCA31
+  where TCA3.EMPLID = TCA31.EMPLID and TCA3.DEPENDENT_BENEF = TCA31.DEPENDENT_BENEF and 
+#ifdef ORACLE
+    trunc(ADD_MONTHS(TCA3.BIRTHDATE,181),'MM')
+#Else
+#ifdef DB2ALL
+    (DATE(TCA3.BIRTHDATE) + 181 MONTHS) - (DAY(DATE(TCA3.BIRTHDATE) + 181 MONTHS)-1) DAYS
+#Else
+    CONVERT(DATETIME, CONVERT(VARCHAR(7), (DATEADD(MONTH, 181, TCA3.BIRTHDATE)), 120) + '-01')    
+#endif
+#endif 
+  = TCA31.GPCH_CA_CR_BGN )
+End-Select
+
+#Debug show ' Insert additional rows for early student 2020 (15th birthday) - end' 
+   do getcurrtimedate
+#Debug show ' After early student 2020 (15th birthday)   $currtimedate = ' $currtimedate
+
+! Restrict to 01.01.2008
+Begin-Sql on-error=give_warning
+Update PS_GPCH_CA_DTMP2 set GPCH_CA_CR_BGN = $CAF_BEGIN1 where GPCH_CA_CR_BGN < $CAF_BEGIN1
+   and GPCH_CA_CR_BGN = ( select max(C.GPCH_CA_CR_BGN) from PS_GPCH_CA_DTMP2 C where PS_GPCH_CA_DTMP2.EMPLID = C.EMPLID 
+    and PS_GPCH_CA_DTMP2.DEPENDENT_BENEF = C.DEPENDENT_BENEF   and C.GPCH_CA_CR_BGN < $CAF_BEGIN1 )
+    and  not exists ( select 'X' from PS_GPCH_CA_DTMP2 C where PS_GPCH_CA_DTMP2.EMPLID = C.EMPLID and PS_GPCH_CA_DTMP2.DEPENDENT_BENEF = C.DEPENDENT_BENEF 
+     and  C.GPCH_CA_CR_BGN =  $CAF_BEGIN1 )
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After restrict to 01.01.2008  $currtimedate = ' $currtimedate
+
+! Delete rows where Begin >= End
+Begin-Sql on-error=give_warning
+delete from PS_GPCH_CA_DTMP2 where GPCH_CA_CR_BGN < $CAF_BEGIN1 !FMB 20140805 or GPCH_CA_CR_BGN >=  GPCH_CA_CR_END
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After 3rd delete Begin < 01-JAN-2008 $currtimedate = ' $currtimedate
+
+! fix overlap - restrict to next effdt (user did not restrict previous entry)
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set GPCH_CA_CR_END = ( select 
+#ifdef Oracle
+       min(TO_DATE(C.GPCH_CA_CR_BGN,'DD-MON-YY')-1)  
+#Else
+#ifdef DB2ALL
+       min(DATE(DAYS(C.GPCH_CA_CR_BGN) -1))
+#Else
+       min(DATEADD(dd,-1,C.GPCH_CA_CR_BGN))
+#Endif 
+#Endif
+ from PS_GPCH_CA_DTMP2 C 
+  where PS_GPCH_CA_DTMP2.EMPLID = C.EMPLID and PS_GPCH_CA_DTMP2.DEPENDENT_BENEF = C.DEPENDENT_BENEF 
+      and PS_GPCH_CA_DTMP2.GPCH_CA_CR_BGN < C.GPCH_CA_CR_BGN 
+  and PS_GPCH_CA_DTMP2.GPCH_CA_CR_END > 
+#ifdef Oracle
+       (TO_DATE(C.GPCH_CA_CR_BGN,'DD-MON-YY')-1)  
+#Else
+#ifdef DB2ALL
+       DATE(DAYS(C.GPCH_CA_CR_BGN) -1)
+#Else
+       (DATEADD(dd,-1,C.GPCH_CA_CR_BGN))
+#Endif 
+#Endif 
+)
+  where exists ( select 'X' from PS_GPCH_CA_DTMP2 C 
+  where PS_GPCH_CA_DTMP2.EMPLID = C.EMPLID and PS_GPCH_CA_DTMP2.DEPENDENT_BENEF = C.DEPENDENT_BENEF 
+    and PS_GPCH_CA_DTMP2.GPCH_CA_CR_BGN < C.GPCH_CA_CR_BGN 
+    and PS_GPCH_CA_DTMP2.GPCH_CA_CR_END > 
+#ifdef Oracle
+       (TO_DATE(C.GPCH_CA_CR_BGN,'DD-MON-YY')-1)  
+#Else
+#ifdef DB2ALL
+       DATE(DAYS(C.GPCH_CA_CR_BGN) -1)
+#Else
+       (DATEADD(dd,-1,C.GPCH_CA_CR_BGN))
+#Endif 
+#Endif 
+)
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After restrict to next effdt  $currtimedate = ' $currtimedate
+
+! Simulate birthdate for twins and tripples
+Begin-Sql on-error=give_warning
+ update PS_GPCH_CA_DTMP2 set BIRTHDATE_WRK = 
+#ifdef Oracle
+       (TO_DATE(BIRTHDATE_WRK,'DD-MON-YY')+1)  
+#Else
+#ifdef DB2ALL
+       DATE(DAYS(BIRTHDATE_WRK) + 1)
+#Else
+       (DATEADD(dd,+1,BIRTHDATE_WRK))
+#Endif 
+#Endif 
+ where exists ( select 'X' from PS_GPCH_CA_DTMP2 C where PS_GPCH_CA_DTMP2.EMPLID = C.EMPLID and PS_GPCH_CA_DTMP2.GPCH_CA_CR_BGN = C.GPCH_CA_CR_BGN
+ and PS_GPCH_CA_DTMP2.BIRTHDATE_WRK = C.BIRTHDATE_WRK and PS_GPCH_CA_DTMP2.DEPENDENT_BENEF > C.DEPENDENT_BENEF )
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After Birthdate_wrk for twins $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+Begin-Sql on-error=give_warning 
+  update PS_GPCH_CA_DTMP2 set BIRTHDATE_WRK = 
+#ifdef Oracle
+       (TO_DATE(BIRTHDATE_WRK,'DD-MON-YY')+1)  
+#Else
+#ifdef DB2ALL
+       DATE(DAYS(BIRTHDATE_WRK) + 1)
+#Else
+       (DATEADD(dd,+1,BIRTHDATE_WRK))
+#Endif 
+#Endif 
+  where exists ( select 'X' from PS_GPCH_CA_DTMP2 C where PS_GPCH_CA_DTMP2.EMPLID = C.EMPLID and PS_GPCH_CA_DTMP2.GPCH_CA_CR_BGN = C.GPCH_CA_CR_BGN
+ and PS_GPCH_CA_DTMP2.BIRTHDATE_WRK = C.BIRTHDATE_WRK and PS_GPCH_CA_DTMP2.DEPENDENT_BENEF > C.DEPENDENT_BENEF )
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After Birthdate_wrk for tripple $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+! Identify nombreuse
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set SEQ_NO = ( select  1 from PS_GPCH_CA_DTMP2 C where
+ PS_GPCH_CA_DTMP2.EMPLID = C.EMPLID and  PS_GPCH_CA_DTMP2.GPCH_CA_CR_BGN = C.GPCH_CA_CR_BGN and PS_GPCH_CA_DTMP2.BIRTHDATE_WRK > C.BIRTHDATE_WRK 
+ and PS_GPCH_CA_DTMP2.DEPENDENT_BENEF <> C.DEPENDENT_BENEF and C.GPCH_CA_CR_BGN < C.GPCH_CA_CR_END  having count(*) >= 2 )
+ where exists ( select 'X'  from PS_GPCH_CA_DTMP2 C where
+ PS_GPCH_CA_DTMP2.EMPLID = C.EMPLID and  PS_GPCH_CA_DTMP2.GPCH_CA_CR_BGN = C.GPCH_CA_CR_BGN and PS_GPCH_CA_DTMP2.BIRTHDATE_WRK > C.BIRTHDATE_WRK 
+ and PS_GPCH_CA_DTMP2.DEPENDENT_BENEF <> C.DEPENDENT_BENEF and C.GPCH_CA_CR_BGN < C.GPCH_CA_CR_END having count(*) >= 2 )
+end-sql
+
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set SEQ_NO = 1 where GPCH_CA_NUMEROUS = 'Y'
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After nombreuse  $currtimedate = ' $currtimedate
+
+! Calculate allowance Type (may take amounts later from setup)
+! Child allowance
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set GPCH_CA_TYPE = 10, GPCH_EA_AMOUNT = 230 where STUDENT = 'N' and DISABLED = 'N' and SEQ_NO = 0 
+end-sql
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set GPCH_CA_TYPE = 11, GPCH_EA_AMOUNT = 370 where STUDENT = 'N' and DISABLED = 'N' and SEQ_NO = 1 
+end-sql
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set GPCH_CA_TYPE = 12, GPCH_EA_AMOUNT = 230 where STUDENT = 'N' and DISABLED = 'Y' and SEQ_NO = 0 
+end-sql
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set GPCH_CA_TYPE = 13, GPCH_EA_AMOUNT = 370 where STUDENT = 'N' and DISABLED = 'Y' and SEQ_NO = 1 
+end-sql
+
+! Education start with Education for < 16 years
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set GPCH_CA_TYPE = 22, GPCH_EA_AMOUNT = 300 where STUDENT = 'Y' and 
+((GPCH_CA_CR_BGN < $EARLY_STUDENT2020_DT AND GPCH_CA_CR_END < $EARLY_STUDENT2020_DT AND GPCH_CA_CR_BGN < (
+#ifdef ORACLE
+    trunc(ADD_MONTHS(BIRTHDATE,193),'MM')
+#Else
+#ifdef DB2ALL
+    (DATE(BIRTHDATE) + 193 MONTHS) - (DAY(DATE(BIRTHDATE) + 193 MONTHS)-1) DAYS
+#Else
+    CONVERT(DATETIME, CONVERT(VARCHAR(7), (DATEADD(MONTH, 193, BIRTHDATE)), 120) + '-01')    
+#endif
+#endif
+)) OR (GPCH_CA_CR_BGN >= $EARLY_STUDENT2020_DT AND GPCH_CA_CR_BGN < (
+#ifdef ORACLE
+    trunc(ADD_MONTHS(BIRTHDATE,181),'MM')
+#Else
+#ifdef DB2ALL
+    (DATE(BIRTHDATE) + 181 MONTHS) - (DAY(DATE(BIRTHDATE) + 181 MONTHS)-1) DAYS
+#Else
+    CONVERT(DATETIME, CONVERT(VARCHAR(7), (DATEADD(MONTH, 181, BIRTHDATE)), 120) + '-01')    
+#endif
+#endif
+)))
+end-sql
+
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set GPCH_CA_TYPE = 20, GPCH_EA_AMOUNT = 300 where STUDENT = 'Y' and GPCH_CA_TYPE <> 22 and SEQ_NO = 0 
+end-sql
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set GPCH_CA_TYPE = 21, GPCH_EA_AMOUNT = 440 where STUDENT = 'Y' and GPCH_CA_TYPE <> 22 and SEQ_NO = 1 
+end-sql
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set GPCH_CA_TYPE = 23, GPCH_EA_AMOUNT = 440 where STUDENT = 'Y' and GPCH_CA_TYPE =  22 and SEQ_NO = 1 
+end-sql
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set GPCH_CA_TYPE = 30, GPCH_EA_AMOUNT = GPCH_CA_FOR_AMOUNT where GPCH_CA_FOR_AMOUNT <> 0.00 and GPCH_CA_FOREIGNER <> 'Y'
+end-sql
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP2 set GPCH_CA_TYPE = 31, GPCH_EA_AMOUNT = GPCH_CA_FOR_AMOUNT where GPCH_CA_FOR_AMOUNT <> 0.00 and GPCH_CA_FOREIGNER = 'Y'
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After calculate allowance Type  $currtimedate = ' $currtimedate
+
+
+! Build durations
+! Begin = no predecessor exists
+Begin-Sql on-error=give_warning
+insert into PS_GPCH_CA_DTMP3 (EMPLID, DEPENDENT_BENEF, GPCH_AL_CPAY_ENDDT, GPCH_EA_DATEFROM, GPCH_CA_TYPE, GPCH_CA_CR_STORNO, GPCH_EA_AMOUNT, 
+GPCH_CA_REFNBR, GPCH_RP_CHAR01, GPCH_EA_DATETO, GPCH_CA_RELATION, SEQ_NO, GPCH_EA_PERIODEFRO, GPCH_EA_PERIODETO, GPCH_EA_PERIODEAMO, GPCH_CA_CA_ELIG,
+BIRTHDATE, NAME, STUDENT, DISABLED, GPCH_CA_FOR_AMOUNT, GPCH_RC_PAY_YEAR, EXCLUDE, GPCH_CA_PCT)
+select A.EMPLID, A.DEPENDENT_BENEF,$ctl_end_dt, A.GPCH_CA_CR_BGN, A.GPCH_CA_TYPE, '02', A.GPCH_EA_AMOUNT, ' ', 'N', A.GPCH_CA_CR_END, A.GPCH_CA_RELATION, 
+0, NULL, NULL, 0.00,A.GPCH_CA_CA_ELIG, A.BIRTHDATE,CONCAT('Build durations',$CAF_END2), A.STUDENT, A.DISABLED, A.GPCH_CA_FOR_AMOUNT, 0, ' ', A.GPCH_CA_PCT
+from PS_GPCH_CA_DTMP2 A where 
+   A.GPCH_CA_PCT <> 0.001 AND 
+! FMB 20140901
+! FMB 20181115   A.GPCH_CA_CR_BGN <=  $CAF_END2  and
+   not exists ( select 'x' from PS_GPCH_CA_DTMP2 C where A.EMPLID = C.EMPLID and A.DEPENDENT_BENEF = C.DEPENDENT_BENEF and A.GPCH_CA_TYPE = C.GPCH_CA_TYPE
+   and A.GPCH_CA_CR_BGN > C.GPCH_CA_CR_BGN and A.GPCH_CA_CR_BGN =  
+#ifdef Oracle
+       (TO_DATE(C.GPCH_CA_CR_END,'DD-MON-YY')+1)  
+#Else
+#ifdef DB2ALL
+       DATE(DAYS(C.GPCH_CA_CR_END) +1)
+#Else
+       (DATEADD(dd,+1,C.GPCH_CA_CR_END))
+#Endif 
+#Endif 
+! FMB 20140901
+! FMB 20181115   and C.GPCH_CA_CR_BGN <= $CAF_END2)
+)
+ end-sql
+
+   do getcurrtimedate
+#Debug show ' After insert durations  $currtimedate = ' $currtimedate
+
+! End = no postdecessor exists
+Begin-Sql on-error=give_warning
+insert into PS_GPCH_CA_DTMP4 (EMPLID, DEPENDENT_BENEF, GPCH_EA_DATEFROM, GPCH_CA_TYPE, GPCH_CA_CR_STORNO, GPCH_EA_AMOUNT, GPCH_EA_DATETO, GPCH_CA_RELATION, SEQ_NO,
+GPCH_CA_CA_ELIG, BIRTHDATE, NAME, STUDENT, DISABLED, GPCH_EA_PERIODEAMO, GPCH_RC_PAY_YEAR, EXCLUDE)
+select A.EMPLID, A.DEPENDENT_BENEF, A.GPCH_CA_CR_BGN, A.GPCH_CA_TYPE, '02', 0.00, A.GPCH_CA_CR_END, A.GPCH_CA_RELATION, 
+0, A.GPCH_CA_CA_ELIG,A.BIRTHDATE,A.NAME, A.STUDENT, A.DISABLED, 0.00, 0, ' '
+from PS_GPCH_CA_DTMP2 A where
+! FMB 20140901
+! FMB 20181115   A.GPCH_CA_CR_BGN <= $CAF_END2 and 
+   not exists ( select 'x' from PS_GPCH_CA_DTMP2 C where A.EMPLID = C.EMPLID and A.DEPENDENT_BENEF = C.DEPENDENT_BENEF and A.GPCH_CA_TYPE = C.GPCH_CA_TYPE
+   and A.GPCH_CA_CR_BGN < C.GPCH_CA_CR_BGN and
+#ifdef Oracle
+       (TO_DATE(A.GPCH_CA_CR_END,'DD-MON-YY')+1)  
+#Else
+#ifdef DB2ALL
+       DATE(DAYS(A.GPCH_CA_CR_END) + 1)
+#Else
+       (DATEADD(dd,+1,A.GPCH_CA_CR_END))
+#Endif 
+#Endif   
+   = C.GPCH_CA_CR_BGN  
+! FMB 20140901
+! FMB 20181115   and C.GPCH_CA_CR_BGN <= $CAF_END2)
+)
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After insert durations  $currtimedate = ' $currtimedate
+
+! End = update duration rows with End date
+Begin-Sql on-error=give_warning
+    update PS_GPCH_CA_DTMP3 set GPCH_EA_DATETO = ( select A.GPCH_EA_DATETO from PS_GPCH_CA_DTMP4 A
+    where PS_GPCH_CA_DTMP3.EMPLID = A.EMPLID and PS_GPCH_CA_DTMP3.DEPENDENT_BENEF = A.DEPENDENT_BENEF and PS_GPCH_CA_DTMP3.GPCH_CA_TYPE = A.GPCH_CA_TYPE
+     and A.GPCH_EA_DATEFROM = ( select min(A1.GPCH_EA_DATEFROM) from PS_GPCH_CA_DTMP4 A1 where 
+    A1.EMPLID = A.EMPLID and A1.DEPENDENT_BENEF = A.DEPENDENT_BENEF and A1.GPCH_CA_TYPE = A.GPCH_CA_TYPE and A1.GPCH_EA_DATEFROM >= PS_GPCH_CA_DTMP3.GPCH_EA_DATEFROM ))
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After update End for durations  $currtimedate = ' $currtimedate
+
+Begin-Sql on-error=give_warning
+  delete from PS_GPCH_CA_DTMP3 where GPCH_EA_DATETO < $CAF_BEGIN2 or GPCH_EA_DATEFROM >= GPCH_EA_DATETO  !FMB 20140805
+  ! FMB 20181115   
+    or GPCH_EA_DATEFROM > $CAF_END2
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After GPCH_EA_DATETO < 01-JAN-2011 $currtimedate / #sql-count = ' $currtimedate ' / ' #sql-count
+
+! create Sequence for Reference Number
+Begin-Sql on-error=give_warning
+ update PS_GPCH_CA_DTMP3 set SEQ_NO = ( select  count(*) from PS_GPCH_CA_DTMP3 C where
+ PS_GPCH_CA_DTMP3.EMPLID = C.EMPLID and  PS_GPCH_CA_DTMP3.DEPENDENT_BENEF = C.DEPENDENT_BENEF and  PS_GPCH_CA_DTMP3.GPCH_CA_TYPE = C.GPCH_CA_TYPE
+ and C.GPCH_EA_DATEFROM < PS_GPCH_CA_DTMP3.GPCH_EA_DATEFROM )
+ where exists ( select 'x' from PS_GPCH_CA_DTMP3 C where
+ PS_GPCH_CA_DTMP3.EMPLID = C.EMPLID and  PS_GPCH_CA_DTMP3.DEPENDENT_BENEF = C.DEPENDENT_BENEF and  PS_GPCH_CA_DTMP3.GPCH_CA_TYPE = C.GPCH_CA_TYPE
+ and C.GPCH_EA_DATEFROM < PS_GPCH_CA_DTMP3.GPCH_EA_DATEFROM )
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After SEQ_NO for RefNbr  $currtimedate = ' $currtimedate
+
+!set RefNbr
+
+Begin-Sql on-error=give_warning
+ Update PS_GPCH_CA_DTMP3 
+ set GPCH_CA_REFNBR =  
+#ifdef MICROSOFT
+ CONCAT($REFDOM , (select substring(PN.NATIONAL_ID,4,9) from PS_PERS_NID PN where PS_GPCH_CA_DTMP3.EMPLID =  PN.EMPLID and PN.COUNTRY = 'CHE' and PN.NATIONAL_ID_TYPE = 'NNSS' ), SEQ_NO, DEPENDENT_BENEF, GPCH_CA_TYPE)         
+#else
+ $REFDOM || ( select substr(PN.NATIONAL_ID,4,9) from PS_PERS_NID PN where PS_GPCH_CA_DTMP3.EMPLID =  PN.EMPLID and PN.COUNTRY = 'CHE' and PN.NATIONAL_ID_TYPE = 'NNSS' )  || SEQ_NO||DEPENDENT_BENEF || GPCH_CA_TYPE         
+#endif 
+ 
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After RefNbr 1st time  $currtimedate = ' $currtimedate
+
+! Loop for Adjust SEQ_NO
+ let #EMExit      = 0
+ let #UpdateCount = 100
+
+ While #UpdateCount > 0  and #EMExit < 10
+  Do FMB-AdjustSEQ_NO
+  let #EMExit = #EMExit +1
+ End-While
+
+#debug show ' in update by Setup $ctl_end_dt = ' $ctl_end_dt
+
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP3 set GPCH_EA_AMOUNT = (
+select S2.GPCH_CA_AMOUNT from PS_GPCH_CA_STAT_S2 S2
+ where S2.GPCH_CA_RATES_ID = 'CA1' and S2.GPCH_TX_CANTON = 'VD' and S2.SEQNUM = 1 and S2.EFFDT = 
+ ( select max(S1.EFFDT) from PS_GPCH_CA_STAT_S1 S1 where S2.GPCH_CA_RATES_ID = S1.GPCH_CA_RATES_ID and S2.GPCH_TX_CANTON = S1.GPCH_TX_CANTON
+   and S1.EFFDT <= PS_GPCH_CA_DTMP3.GPCH_EA_DATETO and S1.EFFDT <= $ctl_end_dt )   )
+ where GPCH_CA_TYPE in ('10','12')
+end-sql
+ 
+Begin-Sql on-error=give_warning
+update PS_GPCH_CA_DTMP3 set GPCH_EA_AMOUNT = (
+select S2.GPCH_CA_AMOUNT from PS_GPCH_CA_STAT_S2 S2
+ where S2.GPCH_CA_RATES_ID = 'CA1' and S2.GPCH_TX_CANTON = 'VD' and S2.SEQNUM = 3 and S2.EFFDT = 
+ ( select max(S1.EFFDT) from PS_GPCH_CA_STAT_S1 S1 where S2.GPCH_CA_RATES_ID = S1.GPCH_CA_RATES_ID and S2.GPCH_TX_CANTON = S1.GPCH_TX_CANTON
+   and S1.EFFDT <= PS_GPCH_CA_DTMP3.GPCH_EA_DATETO and S1.EFFDT <= $ctl_end_dt )   )
+ where GPCH_CA_TYPE in ('11','13')
+end-sql
+ 
+Begin-Sql on-error=give_warning 
+ update PS_GPCH_CA_DTMP3 set GPCH_EA_AMOUNT = (
+ select S2.GPCH_EDU_AMOUNT from PS_GPCH_CA_STAT_S2 S2
+  where S2.GPCH_CA_RATES_ID = 'CA1' and S2.GPCH_TX_CANTON = 'VD' and S2.SEQNUM = 1 and S2.EFFDT = 
+  ( select max(S1.EFFDT) from PS_GPCH_CA_STAT_S1 S1 where S2.GPCH_CA_RATES_ID = S1.GPCH_CA_RATES_ID and S2.GPCH_TX_CANTON = S1.GPCH_TX_CANTON
+    and S1.EFFDT <= PS_GPCH_CA_DTMP3.GPCH_EA_DATETO and S1.EFFDT <= $ctl_end_dt )   )
+  where GPCH_CA_TYPE in ('20','22')
+end-sql
+ 
+Begin-Sql on-error=give_warning 
+ update PS_GPCH_CA_DTMP3 set GPCH_EA_AMOUNT = (
+ select S2.GPCH_EDU_AMOUNT from PS_GPCH_CA_STAT_S2 S2
+  where S2.GPCH_CA_RATES_ID = 'CA1' and S2.GPCH_TX_CANTON = 'VD' and S2.SEQNUM = 3 and S2.EFFDT = 
+  ( select max(S1.EFFDT) from PS_GPCH_CA_STAT_S1 S1 where S2.GPCH_CA_RATES_ID = S1.GPCH_CA_RATES_ID and S2.GPCH_TX_CANTON = S1.GPCH_TX_CANTON
+    and S1.EFFDT <= PS_GPCH_CA_DTMP3.GPCH_EA_DATETO and S1.EFFDT <= $ctl_end_dt )   )
+  where GPCH_CA_TYPE in ('21','23')
+end-sql
+
+
+
+! Swiss Round for GPCH_EA_AMOUNT
+! Round exclude all percent < 0.008. If percent is < 0.008, after rounding, the amount will be 0.
+
+Begin-Sql on-error=give_warning 
+ update PS_GPCH_CA_DTMP3 set GPCH_EA_AMOUNT =  ROUND((GPCH_EA_AMOUNT * GPCH_CA_PCT/100), 2) * 20
+  where GPCH_CA_PCT BETWEEN 0.002 AND 99.999
+end-sql
+Begin-Sql on-error=give_warning 
+ update PS_GPCH_CA_DTMP3 set GPCH_EA_AMOUNT =  ROUND(GPCH_EA_AMOUNT, 0) / 20
+  where GPCH_CA_PCT BETWEEN 0.002 AND 99.999
+end-sql
+
+
+
+
+! Manual Request for Storno
+
+Begin-Sql on-error=give_warning
+ insert into PS_GPCH_CA_DTMP3 (EMPLID, DEPENDENT_BENEF, GPCH_AL_CPAY_ENDDT, GPCH_EA_DATEFROM, GPCH_CA_TYPE, GPCH_CA_CR_STORNO, GPCH_EA_AMOUNT, 
+GPCH_CA_REFNBR, GPCH_RP_CHAR01, GPCH_EA_DATETO, GPCH_CA_RELATION, SEQ_NO, GPCH_EA_PERIODEFRO, GPCH_EA_PERIODETO, GPCH_EA_PERIODEAMO, GPCH_CA_CA_ELIG,
+BIRTHDATE, NAME, STUDENT, DISABLED, GPCH_CA_FOR_AMOUNT, GPCH_RC_PAY_YEAR, EXCLUDE, GPCH_CA_PCT)
+ select distinct XMA.EMPLID, XMA.DEPENDENT_BENEF, XMA.GPCH_AL_CPAY_ENDDT, XMA.GPCH_CA_CR_BGN, XMA.GPCH_CA_TYPE, '01', 0.00, XMA.GPCH_CA_REFNBR, 'S', 
+ XMA.GPCH_CA_CR_END, 'XX',  0,'', '', 0.00, ' ',  XMA.BIRTHDATE, 'Manual Storno ', ' ', ' ',  0.00, 0, 'U', 0
+   from PS_GPCH_CA_XML_ALL XMA, PS_GPCH_CA_XML_STR C3
+    where C3.RUN_FINALIZED_TS  is NULL
+      AND XMA.GPCH_EG_DOMAINID = #ptot_domainid
+      and XMA.EMPLID           = C3.EMPLID 
+      and XMA.DEPENDENT_BENEF  = C3.DEPENDENT_BENEF
+      and XMA.GPCH_CA_REFNBR   = C3.GPCH_CA_REFNBR 
+      and XMA.GPCH_AL_CPAY_ENDDT = ( select max(XMA1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_CA_XML_ALL XMA1 
+         where XMA.EMPLID           = XMA1.EMPLID 
+           AND XMA.GPCH_EG_DOMAINID = XMA1.GPCH_EG_DOMAINID
+           and XMA.DEPENDENT_BENEF  = XMA1.DEPENDENT_BENEF
+           and XMA.GPCH_CA_TYPE     = XMA1.GPCH_CA_TYPE 
+           and XMA.GPCH_CA_REFNBR   = XMA1.GPCH_CA_REFNBR  )
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After insert Storno on Manual Request  $currtimedate = ' $currtimedate
+
+! Birth allowances
+Begin-Sql on-error=give_warning
+insert into PS_GPCH_CA_DTMP3 (EMPLID, DEPENDENT_BENEF, GPCH_AL_CPAY_ENDDT, GPCH_EA_DATEFROM, GPCH_CA_TYPE, GPCH_CA_CR_STORNO, GPCH_EA_AMOUNT, 
+GPCH_CA_REFNBR, GPCH_RP_CHAR01, GPCH_EA_DATETO, GPCH_CA_RELATION, SEQ_NO, GPCH_EA_PERIODEFRO, GPCH_EA_PERIODETO, GPCH_EA_PERIODEAMO, GPCH_CA_CA_ELIG,
+BIRTHDATE, NAME, STUDENT, DISABLED, GPCH_CA_FOR_AMOUNT, GPCH_RC_PAY_YEAR, EXCLUDE, GPCH_CA_PCT)
+ select distinct C2.EMPLID, C2.DEPENDENT_BENEF, $ctl_end_dt, DB.BIRTHDATE, '01', '02', 1500.00 * C2.GPCH_CA_BALL_PCT,  ' ', ' ', DB.BIRTHDATE, 'XX',  0,'', '', 0.00, ' ', 
+ DB.BIRTHDATE, 'Birth Allowances', ' ', ' ',  0.00, 0, ' ', C2.GPCH_CA_PCT
+from PS_GPCH_CA_DATA2 C2, PS_DEP_BEN DB, PS_GPCH_CA_DATA1 C1 
+ where C2.EMPLID          = DB.EMPLID 
+   and C2.DEPENDENT_BENEF = DB.DEPENDENT_BENEF 
+   and C2.GPCH_CA_BIRTH_PYDT IS NULL 
+   and C1.EMPLID          = C2.EMPLID
+   and C1.EMPL_RCD        = C2.EMPL_RCD
+   and C1.EFFDT           = C2.EFFDT
+   and C2.EFFDT           between DB.BIRTHDATE and 
+#ifdef MICROSOFT
+       DATEADD(DAY,-1,DATEADD(MONTH,+1,DB.BIRTHDATE))
+#Else
+       LAST_DAY(DB.BIRTHDATE)
+#Endif
+   and C2.EFFDT           >= $CAF_BEGIN2
+! FMB - 20150526 - R_150505_042
+   and C2.EFFDT           <= $CAF_END1
+! FMB - 20150526 - R_150505_042
+   and C2.EMPLID in ( select T.EMPLID from PS_GPCHAL5X1_TMP T)
+   and C2.GPCH_CA_BALL_PCT <> 0 
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After Birth Allowances  $currtimedate = ' $currtimedate
+
+!set RefNbr for Birth Allowances
+ 
+Begin-Sql on-error=give_warning
+ Update PS_GPCH_CA_DTMP3 
+ set GPCH_CA_REFNBR =
+#ifdef MICROSOFT
+ concat($REFDOM ,(select substring(PN.NATIONAL_ID,4,9) from PS_PERS_NID PN where PS_GPCH_CA_DTMP3.EMPLID =  PN.EMPLID and PN.COUNTRY = 'CHE' and PN.NATIONAL_ID_TYPE = 'NNSS' ) , SEQ_NO,DEPENDENT_BENEF , '01')
+#else
+ $REFDOM || ( select substr(PN.NATIONAL_ID,4,9) from PS_PERS_NID PN where PS_GPCH_CA_DTMP3.EMPLID =  PN.EMPLID and PN.COUNTRY = 'CHE' and PN.NATIONAL_ID_TYPE = 'NNSS' ) || SEQ_NO||DEPENDENT_BENEF || '01'
+#endif
+  where GPCH_CA_TYPE = 01     !Concatenating above value '01' instead of field GPCH_CA_TYPE as the update where clause filters by such a value 
+                              ! BUG 26202487
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After RefNbr 1st time  $currtimedate = ' $currtimedate
+
+!delete Birth allowance if storno exists for the same
+Begin-Sql on-error=give_warning
+ Delete from PS_GPCH_CA_DTMP3 
+  where PS_GPCH_CA_DTMP3.GPCH_CA_TYPE = '01' 
+   AND exists ( select 'X' from PS_GPCH_CA_XML_ALL X
+                    where PS_GPCH_CA_DTMP3.EMPLID          = X.EMPLID
+                    AND   PS_GPCH_CA_DTMP3.DEPENDENT_BENEF = X.DEPENDENT_BENEF
+                    AND   PS_GPCH_CA_DTMP3.GPCH_CA_REFNBR  = X.GPCH_CA_REFNBR
+                    AND   X.GPCH_EG_DOMAINID              = #ptot_domainid
+                    AND   X.GPCH_CA_TYPE                  = '01'
+                    AND   X.GPCH_CA_CR_STORNO             = '01'  )
+
+end-sql
+
+#Debug show 'After delete Birth allowance #sql-count = ' #sql-count
+
+   do getcurrtimedate
+#Debug show ' After delete Birth allowance Storno  $currtimedate = ' $currtimedate
+
+! Adoption allowance
+Begin-Sql on-error=give_warning
+insert into PS_GPCH_CA_DTMP3 (EMPLID, DEPENDENT_BENEF, GPCH_AL_CPAY_ENDDT, GPCH_EA_DATEFROM, GPCH_CA_TYPE, GPCH_CA_CR_STORNO, GPCH_EA_AMOUNT, 
+GPCH_CA_REFNBR, GPCH_RP_CHAR01, GPCH_EA_DATETO, GPCH_CA_RELATION, SEQ_NO, GPCH_EA_PERIODEFRO, GPCH_EA_PERIODETO, GPCH_EA_PERIODEAMO, GPCH_CA_CA_ELIG,
+BIRTHDATE, NAME, STUDENT, DISABLED, GPCH_CA_FOR_AMOUNT, GPCH_RC_PAY_YEAR, EXCLUDE, GPCH_CA_PCT)
+ select distinct C2.EMPLID, C2.DEPENDENT_BENEF, $ctl_end_dt, C2.GPCH_CA_BIRTH_PYDT, '02', '02', 1500.00 * C2.GPCH_CA_BALL_PCT,  ' ', ' ', C2.GPCH_CA_BIRTH_PYDT, 'XX',  0,'', '', 0.00, ' ', 
+ DB.BIRTHDATE, 'Adoption Allowance ', ' ', ' ',  0.00, 0, ' ', C2.GPCH_CA_PCT
+ from PS_GPCH_CA_DATA2 C2, PS_DEP_BEN DB, PS_GPCH_CA_DATA1 C1 
+  where C2.EMPLID          = DB.EMPLID 
+   and C2.DEPENDENT_BENEF = DB.DEPENDENT_BENEF 
+   and C1.EMPLID          = C2.EMPLID
+   and C1.EMPL_RCD        = C2.EMPL_RCD
+   and C1.EFFDT           = C2.EFFDT
+   and C2.EFFDT           between C2.GPCH_CA_BIRTH_PYDT and 
+#ifdef MICROSOFT
+       DATEADD(DAY,-1,DATEADD(MONTH,+1,C2.GPCH_CA_BIRTH_PYDT))
+#Else
+       LAST_DAY(C2.GPCH_CA_BIRTH_PYDT)
+#Endif
+   and C2.EFFDT           >= $CAF_BEGIN2
+! FMB - 20150526 - R_150505_042
+   and C2.EFFDT           <= $CAF_END1
+! FMB - 20150526 - R_150505_042
+   and C2.EMPLID in ( select T.EMPLID from PS_GPCHAL5X1_TMP T)
+   and C2.GPCH_CA_BALL_PCT <> 0 
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After Adoption Allowances  $currtimedate = ' $currtimedate
+
+!set RefNbr for Adoption Allowances
+ 
+Begin-Sql on-error=give_warning
+ Update PS_GPCH_CA_DTMP3 
+ set GPCH_CA_REFNBR =
+#ifdef MICROSOFT
+ concat($REFDOM ,(select substring(PN.NATIONAL_ID,4,9) from PS_PERS_NID PN where PS_GPCH_CA_DTMP3.EMPLID =  PN.EMPLID and PN.COUNTRY = 'CHE' and PN.NATIONAL_ID_TYPE = 'NNSS' ) , SEQ_NO,DEPENDENT_BENEF , GPCH_CA_TYPE)         
+#else
+ $REFDOM || ( select substr(PN.NATIONAL_ID,4,9) from PS_PERS_NID PN where PS_GPCH_CA_DTMP3.EMPLID =  PN.EMPLID and PN.COUNTRY = 'CHE' and PN.NATIONAL_ID_TYPE = 'NNSS' ) || SEQ_NO||DEPENDENT_BENEF || '02'         
+#endif
+  where GPCH_CA_TYPE = '02'
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After RefNbr 1st time  $currtimedate = ' $currtimedate
+
+!delete Birth allowance if storno exists for the same
+Begin-Sql on-error=give_warning
+Delete from PS_GPCH_CA_DTMP3 
+  where PS_GPCH_CA_DTMP3.GPCH_CA_TYPE = '02' 
+   AND exists ( select 'X' from PS_GPCH_CA_XML_ALL X
+                    where PS_GPCH_CA_DTMP3.EMPLID          = X.EMPLID
+                    AND   PS_GPCH_CA_DTMP3.DEPENDENT_BENEF = X.DEPENDENT_BENEF
+                    AND   PS_GPCH_CA_DTMP3.GPCH_CA_REFNBR  = X.GPCH_CA_REFNBR
+                    AND   X.GPCH_EG_DOMAINID              = #ptot_domainid
+                    AND   X.GPCH_CA_TYPE                  = '02'
+                    AND   X.GPCH_CA_CR_STORNO             = '02'  )
+end-sql
+
+#Debug show 'After delete Adoption allowance #sql-count = ' #sql-count
+
+   do getcurrtimedate
+#Debug show ' After delete Adoption allowance Storno  $currtimedate = ' $currtimedate
+
+!delete if allowance > 2 weeks in the future and RefNbr exists for the same
+Begin-Sql on-error=give_warning
+ Delete from PS_GPCH_CA_DTMP3 
+!FMB 20141205  where PS_GPCH_CA_DTMP3.GPCH_EA_DATEFROM >= $RAFAM_END1 
+   where PS_GPCH_CA_DTMP3.GPCH_EA_DATEFROM >=$CAF_END2
+   AND exists ( select 'X' from PS_GPCH_CA_XML_ALL X
+                    where PS_GPCH_CA_DTMP3.EMPLID          = X.EMPLID
+                    AND   PS_GPCH_CA_DTMP3.DEPENDENT_BENEF = X.DEPENDENT_BENEF
+                    AND   PS_GPCH_CA_DTMP3.GPCH_CA_REFNBR  = X.GPCH_CA_REFNBR
+                    AND   X.GPCH_EG_DOMAINID              = #ptot_domainid 
+      and X.GPCH_AL_CPAY_ENDDT = ( select max(XMA1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_CA_XML_ALL XMA1 
+         where X.EMPLID           = XMA1.EMPLID
+           AND X.GPCH_EG_DOMAINID = XMA1.GPCH_EG_DOMAINID 
+           and X.DEPENDENT_BENEF  = XMA1.DEPENDENT_BENEF
+           and X.GPCH_CA_TYPE     = XMA1.GPCH_CA_TYPE 
+           and X.GPCH_CA_REFNBR   = XMA1.GPCH_CA_REFNBR  )
+                    AND   PS_GPCH_CA_DTMP3.GPCH_EA_DATEFROM  <> X.GPCH_CA_CR_BGN )
+
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After delete allowance > 2 weeks in the future and RefNbr exists for the same  $currtimedate = ' $currtimedate
+
+!FMB 20141217
+! Due to change of CAF restrict all End dates to '31-DEC-2014'
+
+
+Begin-Sql on-error=give_warning
+  update PS_GPCH_CA_DTMP3 set GPCH_EA_DATETO = $CAF_END1 where GPCH_EA_DATETO > $CAF_END1 and GPCH_EA_DATEFROM < $CAF_END1 
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After restrict to 31-Dec-2014 $currtimedate / #sql-count = ' $currtimedate ' / ' #sql-count
+
+! FMB 20180801 Begin
+! Update amount if manual entry CH_CA_M01 or CH_CA_M02 exists
+Begin-Sql on-error=give_warning
+ update PS_GPCH_CA_DTMP3 set GPCH_EA_AMOUNT = (
+ select SUM(PI.GP_AMT) from PS_GP_PI_MNL_DATA PI, PS_GP_PI_MNL_SOVR MS
+  where PI.EMPLID   = PS_GPCH_CA_DTMP3.EMPLID     
+     and PI.EMPLID  = MS.EMPLID     
+     and PI.PIN_NUM = MS.PIN_NUM
+     and PI.INSTANCE = MS.INSTANCE
+     and PI.PIN_NUM      in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_M01' )
+     and MS.PIN_SOVR_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_S01' )
+     and MS.SOVR_VAL_CHAR = PS_GPCH_CA_DTMP3.DEPENDENT_BENEF ) 
+  where GPCH_CA_TYPE in ('01')
+   and exists ( select 'X' from PS_GP_PI_MNL_DATA PI, PS_GP_PI_MNL_SOVR MS 
+     where PI.EMPLID = PS_GPCH_CA_DTMP3.EMPLID     
+     and PI.EMPLID = MS.EMPLID     
+     and PI.PIN_NUM = MS.PIN_NUM
+     and PI.INSTANCE = MS.INSTANCE
+     and PI.PIN_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_M01' )
+     and MS.PIN_SOVR_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_S01' )
+     and MS.SOVR_VAL_CHAR = PS_GPCH_CA_DTMP3.DEPENDENT_BENEF )
+end-sql
+
+Begin-Sql on-error=give_warning
+ update PS_GPCH_CA_DTMP3 set GPCH_EA_AMOUNT = (
+ select SUM(PI.GP_AMT) from PS_GP_PI_MNL_DATA PI, PS_GP_PI_MNL_SOVR MS
+  where PI.EMPLID   = PS_GPCH_CA_DTMP3.EMPLID     
+     and PI.EMPLID  = MS.EMPLID     
+     and PI.PIN_NUM = MS.PIN_NUM
+     and PI.INSTANCE = MS.INSTANCE
+     and PI.PIN_NUM      in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_M02' )
+     and MS.PIN_SOVR_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_S01' )
+     and MS.SOVR_VAL_CHAR = PS_GPCH_CA_DTMP3.DEPENDENT_BENEF ) 
+  where GPCH_CA_TYPE in ('02')
+   and exists ( select 'X' from PS_GP_PI_MNL_DATA PI, PS_GP_PI_MNL_SOVR MS 
+     where PI.EMPLID = PS_GPCH_CA_DTMP3.EMPLID     
+     and PI.EMPLID = MS.EMPLID     
+     and PI.PIN_NUM = MS.PIN_NUM
+     and PI.INSTANCE = MS.INSTANCE
+     and PI.PIN_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_M02' )
+     and MS.PIN_SOVR_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_S01' )
+     and MS.SOVR_VAL_CHAR = PS_GPCH_CA_DTMP3.DEPENDENT_BENEF )
+end-sql
+
+ ! Update amount and type if manual entry CH_CA_M03 or CH_CA_M04 exists
+Begin-Sql on-error=give_warning
+  update PS_GPCH_CA_DTMP3 set GPCH_EA_AMOUNT = (
+  select SUM(PI.GP_AMT) from PS_GP_PI_MNL_DATA PI, PS_GP_PI_MNL_SOVR MS
+   where PI.EMPLID   = PS_GPCH_CA_DTMP3.EMPLID     
+      and PI.EMPLID  = MS.EMPLID     
+      and PI.PIN_NUM = MS.PIN_NUM
+      and PI.INSTANCE = MS.INSTANCE
+      and PI.PIN_NUM      in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_M03' )
+      and MS.PIN_SOVR_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_S01' )
+      and MS.SOVR_VAL_CHAR = PS_GPCH_CA_DTMP3.DEPENDENT_BENEF ),
+      GPCH_CA_TYPE = '03'
+   where GPCH_CA_TYPE in ('01')
+    and exists ( select 'X' from PS_GP_PI_MNL_DATA PI, PS_GP_PI_MNL_SOVR MS 
+      where PI.EMPLID = PS_GPCH_CA_DTMP3.EMPLID     
+      and PI.EMPLID = MS.EMPLID     
+      and PI.PIN_NUM = MS.PIN_NUM
+      and PI.INSTANCE = MS.INSTANCE
+      and PI.PIN_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_M03' )
+      and MS.PIN_SOVR_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_S01' )
+      and MS.SOVR_VAL_CHAR = PS_GPCH_CA_DTMP3.DEPENDENT_BENEF )
+end-sql
+
+Begin-Sql on-error=give_warning
+  update PS_GPCH_CA_DTMP3 set GPCH_EA_AMOUNT = (
+  select SUM(PI.GP_AMT) from PS_GP_PI_MNL_DATA PI, PS_GP_PI_MNL_SOVR MS
+   where PI.EMPLID   = PS_GPCH_CA_DTMP3.EMPLID     
+      and PI.EMPLID  = MS.EMPLID     
+      and PI.PIN_NUM = MS.PIN_NUM
+      and PI.INSTANCE = MS.INSTANCE
+      and PI.PIN_NUM      in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_M04' )
+      and MS.PIN_SOVR_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_S01' )
+      and MS.SOVR_VAL_CHAR = PS_GPCH_CA_DTMP3.DEPENDENT_BENEF ),
+      GPCH_CA_TYPE = '04'
+   where GPCH_CA_TYPE in ('02')
+    and exists ( select 'X' from PS_GP_PI_MNL_DATA PI, PS_GP_PI_MNL_SOVR MS 
+      where PI.EMPLID = PS_GPCH_CA_DTMP3.EMPLID     
+      and PI.EMPLID = MS.EMPLID     
+      and PI.PIN_NUM = MS.PIN_NUM
+      and PI.INSTANCE = MS.INSTANCE
+      and PI.PIN_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_M04' )
+      and MS.PIN_SOVR_NUM in (select P.PIN_NUM from PS_GP_PIN P where P.PIN_NM = 'CH_CA_S01' )
+      and MS.SOVR_VAL_CHAR = PS_GPCH_CA_DTMP3.DEPENDENT_BENEF )
+end-sql
+
+
+! Storno if exists old row, that creates a conflict
+
+Begin-Sql on-error=give_warning
+ insert into PS_GPCH_CA_DTMP3 (EMPLID, DEPENDENT_BENEF, GPCH_AL_CPAY_ENDDT, GPCH_EA_DATEFROM, GPCH_CA_TYPE, GPCH_CA_CR_STORNO, GPCH_EA_AMOUNT, 
+GPCH_CA_REFNBR, GPCH_RP_CHAR01, GPCH_EA_DATETO, GPCH_CA_RELATION, SEQ_NO, GPCH_EA_PERIODEFRO, GPCH_EA_PERIODETO, GPCH_EA_PERIODEAMO, GPCH_CA_CA_ELIG,
+BIRTHDATE, NAME, STUDENT, DISABLED, GPCH_CA_FOR_AMOUNT, GPCH_RC_PAY_YEAR, EXCLUDE, GPCH_CA_PCT)
+ select distinct XMA.EMPLID, XMA.DEPENDENT_BENEF, XMA.GPCH_AL_CPAY_ENDDT, XMA.GPCH_CA_CR_BGN, XMA.GPCH_CA_TYPE, '01', 0.00, XMA.GPCH_CA_REFNBR, 'S', 
+ XMA.GPCH_CA_CR_END, 'XX',  0,'', '', 0.00, ' ',  XMA.BIRTHDATE, 'Storno Conflict ', ' ', ' ',  0.00, 0, ' ', 0
+   from PS_GPCH_CA_XML_ALL XMA, PS_GPCHAL5X1_TMP C3
+    where XMA.GPCH_CA_TYPE <> '01' 
+      and XMA.GPCH_CA_CR_STORNO <> '01' 
+      and XMA.GPCH_CA_STRNO_DONE <> 'Y'   
+      and XMA.GPCH_CA_CR_END >= $CAF_BEGIN2 
+      AND XMA.GPCH_EG_DOMAINID = #ptot_domainid
+      and XMA.GPCH_AL_CPAY_ENDDT = ( select max(XMA1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_CA_XML_ALL XMA1 
+         where XMA.EMPLID           = XMA1.EMPLID 
+           AND XMA.GPCH_EG_DOMAINID = XMA1.GPCH_EG_DOMAINID
+           and XMA.DEPENDENT_BENEF  = XMA1.DEPENDENT_BENEF
+           and XMA.GPCH_CA_TYPE     = XMA1.GPCH_CA_TYPE 
+           and XMA.GPCH_CA_REFNBR   = XMA1.GPCH_CA_REFNBR  )
+      and XMA.EMPLID          = C3.EMPLID 
+!FMB 20141028      and XMA.DEPENDENT_BENEF = C3.DEPENDENT_BENEF 
+!FMB 20141028      and  (  XMA.GPCH_CA_CR_END between C3.GPCH_EA_DATEFROM and C3.GPCH_EA_DATETO or
+!FMB 20140920
+!FMB 20141028              XMA.GPCH_CA_CR_BGN between C3.GPCH_EA_DATEFROM and C3.GPCH_EA_DATETO or
+!FMB 20141028            ( XMA.GPCH_CA_CR_BGN <= C3.GPCH_EA_DATEFROM and XMA.GPCH_CA_CR_END >= C3.GPCH_EA_DATETO ) )  
+      and not exists ( select 'X' from PS_GPCH_CA_DTMP3 F3 
+         where XMA.EMPLID          = F3.EMPLID 
+           and XMA.DEPENDENT_BENEF = F3.DEPENDENT_BENEF 
+           and XMA.GPCH_CA_TYPE    = F3.GPCH_CA_TYPE 
+           and XMA.GPCH_CA_REFNBR  = F3.GPCH_CA_REFNBR )
+end-sql
+
+#Debug show 'After insert Storno #sql-count = ' #sql-count
+
+   do getcurrtimedate
+#Debug show ' After insert Storno  $currtimedate = ' $currtimedate
+
+#Debug show 'Insert_FMB_CA_DATA out'
+End-Procedure Insert_FMB_CA_DATA
+
+!********************************************************************************************
+Begin-Procedure Insert_EffdtForEnd
+!#Debug show 'Insert_EffdtForEnd in'
+
+Begin-Sql on-error=give_warning
+insert into PS_GPCH_CA_DTMP2 (EMPLID, DEPENDENT_BENEF, GPCH_CA_CR_BGN, GPCH_CA_TYPE, EFFDT, GPCH_CA_CR_STORNO, GPCH_EA_AMOUNT, GPCH_CA_CR_END, GPCH_CA_RELATION, SEQ_NO,
+GPCH_CA_CA_ELIG, BIRTHDATE, BIRTHDATE_WRK, NAME, STUDENT, DISABLED, GPCH_CA_FOR_AMOUNT, GPCH_CA_FOREIGNER, GPCH_RC_PAY_YEAR, EXCLUDE, GPCH_CA_NUMEROUS, GPCH_CA_PCT)
+ select C.EMPLID, C.DEPENDENT_BENEF, $TMP_Begin, C.GPCH_CA_TYPE,C.EFFDT,C.GPCH_CA_CR_STORNO, C.GPCH_EA_AMOUNT, C.GPCH_CA_CR_END, C.GPCH_CA_RELATION, C.SEQ_NO,
+ C.GPCH_CA_CA_ELIG, C.BIRTHDATE, C.BIRTHDATE_WRK, 'Insert_EffdtForEnD', C.STUDENT, C.DISABLED, C.GPCH_CA_FOR_AMOUNT, C.GPCH_CA_FOREIGNER, $TMP_Year, C.EXCLUDE, C.GPCH_CA_NUMEROUS, C.GPCH_CA_PCT
+ from PS_GPCH_CA_DTMP2 C
+ where C.EMPLID = $TMP_EMPLID
+   and C.GPCH_CA_CR_BGN = ( select max(C1.GPCH_CA_CR_BGN) from PS_GPCH_CA_DTMP2 C1 where C.EMPLID = C1.EMPLID and C.DEPENDENT_BENEF = C1.DEPENDENT_BENEF
+  and C1.GPCH_CA_CR_BGN < $TMP_Begin  )
+  and not exists ( select 'X' from PS_GPCH_CA_DTMP2 C3 where C.EMPLID = C3.EMPLID and C.DEPENDENT_BENEF = C3.DEPENDENT_BENEF and $TMP_Begin = C3.GPCH_CA_CR_BGN
+  and C.GPCH_CA_TYPE = C3.GPCH_CA_TYPE )
+!FMB 20140916
+  and C.GPCH_CA_CR_BGN <= {DATEIN-PREFIX}$Ctl_Curr_Pay_End_Dt{DATEIN-SUFFIX}
+end-sql
+
+!#Debug show 'Insert_EffdtForEnd out'
+End-Procedure Insert_EffdtForEnd
+
+!********************************************************************************************
+Begin-Procedure FMB-AdjustSEQ_NO
+#Debug show 'FMB-AdjustSEQ_NO in'
+
+! increment RefNbr in case of existing Storno
+Begin-Sql on-error=give_warning
+ update PS_GPCH_CA_DTMP3 set SEQ_NO = SEQ_NO + 1  where    
+#ifdef MICROSOFT
+ concat(EMPLID , DEPENDENT_BENEF , GPCH_CA_TYPE , SEQ_NO)
+#else
+ EMPLID || DEPENDENT_BENEF || GPCH_CA_TYPE || SEQ_NO
+#endif
+   in (select
+#ifdef MICROSOFT
+ concat(B.EMPLID , B.DEPENDENT_BENEF , B.GPCH_CA_TYPE , B.SEQ_NO)
+#else
+ B.EMPLID || B.DEPENDENT_BENEF || B.GPCH_CA_TYPE || B.SEQ_NO
+#endif   
+    from PS_GPCH_CA_DTMP3  A, PS_GPCH_CA_DTMP3 B, PS_GPCH_CA_XML_ALL C
+     where A.EMPLID = B.EMPLID and A.DEPENDENT_BENEF = B.DEPENDENT_BENEF and A.GPCH_CA_TYPE = B.GPCH_CA_TYPE
+       and B.SEQ_NO >= A.SEQ_NO
+       and A.EMPLID = C.EMPLID and A.DEPENDENT_BENEF = C.DEPENDENT_BENEF and A.GPCH_CA_TYPE = C.GPCH_CA_TYPE
+       and A.GPCH_CA_REFNBR = C.GPCH_CA_REFNBR and C.GPCH_CA_CR_STORNO = '01'  
+!FMB 20150103
+       AND C.GPCH_EG_DOMAINID = #ptot_domainid
+       and C.GPCH_CA_CR_BGN   >= $CAF_BEGIN1 and C.GPCH_CA_CR_BGN <= $CAF_END1 )
+   OR
+#ifdef MICROSOFT
+ concat(EMPLID , DEPENDENT_BENEF , GPCH_CA_TYPE , SEQ_NO) 
+#else
+ EMPLID || DEPENDENT_BENEF || GPCH_CA_TYPE || SEQ_NO
+#endif
+    in (select
+#ifdef MICROSOFT
+ concat(B.EMPLID , B.DEPENDENT_BENEF , B.GPCH_CA_TYPE , B.SEQ_NO)
+#else
+ B.EMPLID || B.DEPENDENT_BENEF || B.GPCH_CA_TYPE || B.SEQ_NO
+#endif  
+    from PS_GPCH_CA_DTMP3  A, PS_GPCH_CA_DTMP3 B, PS_GPCH_CA_XML_STR C
+     where A.EMPLID = B.EMPLID and A.DEPENDENT_BENEF = B.DEPENDENT_BENEF and A.GPCH_CA_TYPE = B.GPCH_CA_TYPE
+       and B.SEQ_NO >= A.SEQ_NO 
+       and A.EMPLID = C.EMPLID and A.DEPENDENT_BENEF = C.DEPENDENT_BENEF and A.GPCH_CA_TYPE = C.GPCH_CA_TYPE
+       and A.GPCH_CA_REFNBR = C.GPCH_CA_REFNBR and C.RUN_FINALIZED_TS is NULL )
+end-sql
+
+   let #UpdateCount = #sql-count
+
+#Debug show 'Adjust SEQ_NO Iteration / #sql-count = ' #EMExit ' / ' #sql-count ' / ' #UpdateCount 
+
+Begin-Sql on-error=give_warning
+ Update PS_GPCH_CA_DTMP3 
+ set GPCH_CA_REFNBR = 
+#ifdef MICROSOFT
+ concat($REFDOM , (select substring(PN.NATIONAL_ID,4,9) from PS_PERS_NID PN where PS_GPCH_CA_DTMP3.EMPLID =  PN.EMPLID and PN.COUNTRY = 'CHE' and PN.NATIONAL_ID_TYPE = 'NNSS' ) , SEQ_NO,DEPENDENT_BENEF , GPCH_CA_TYPE)         
+#else
+ $REFDOM || ( select substr(PN.NATIONAL_ID,4,9) PN from PS_PERS_NID PN where PS_GPCH_CA_DTMP3.EMPLID =  PN.EMPLID and PN.COUNTRY = 'CHE' and PN.NATIONAL_ID_TYPE = 'NNSS' )  || SEQ_NO||DEPENDENT_BENEF || GPCH_CA_TYPE        
+#endif 
+end-sql
+
+   do getcurrtimedate
+#Debug show ' After RefNbr ##th time / $currtimedate = ' #EMExit ' / ' $currtimedate
+
+#Debug show 'FMB-AdjustSEQ_NO out'
+End-Procedure FMB-AdjustSEQ_NO
+
+!********************************************************************************************
+Begin-Procedure Insert_GPCH_CA_XML_ALL
+#Debug show ' IN Insert_GPCH_CA_XML_ALL'
+
+#Debug show '$CurrDependent = ' $CurrDependent ' $SV-AS-Number1 = ' $SV-AS-Number1 ' $RefType = ' $RefType ' $RefNumber = ' $RefNumber ' $ctl_end_dt = ' $ctl_end_dt ' $DateFrom1 = ' $DateFrom1 ' $DateTo1 = ' $DateTo1 
+#Debug show '$XML_ALL = ' $XML_ALL
+
+Begin-Sql on-error=give_warning
+
+insert into PS_GPCH_CA_XML_ALL (EMPLID, GPCH_EG_DOMAINID, GPCH_AL_CPAY_ENDDT, GPCH_CA_CR_STORNO, DEPENDENT_BENEF, GPCH_CA_TYPE, GPCH_CA_CR_BGN, RUN_OPEN_TS, GPCH_CA_CR_END, RUN_FINALIZED_TS,GPCH_AH_NNSS, BIRTHDATE
+ , GPCH_CA_REFNBR, GPCH_CA_STRNO_DONE,GPCH_EG_ISSU_DAT, SOURCE_IND, GPCH_EG_PRSN_XML )
+ select $Empl_ID,#ptot_domainid, $ctl_end_dt, $CompleteStorno, $CurrDependent,$Type,$DateFrom1, {DATETIMEOUT-PREFIX}$SysDateTime{DATETIMEOUT-SUFFIX}, $DateTo1, NULL, $SV-AS-Number1, $DateOfBirth1
+ , $RefNumber, ' ' , NULL, $SourceInd, $XML_ALL
+from PS_INSTALLATION I
+ where not exists ( select 'X' from PS_GPCH_CA_XML_ALL A
+  where A.EMPLID             = $Empl_ID
+    and A.GPCH_AL_CPAY_ENDDT = $ctl_end_dt
+    and A.GPCH_CA_CR_STORNO  = $CompleteStorno
+    and A.DEPENDENT_BENEF    = $CurrDependent
+    and A.GPCH_CA_TYPE       = $Type
+    and A.GPCH_CA_CR_BGN     = $DateFrom1
+    and A.RUN_OPEN_TS        = {DATETIMEIN-PREFIX}$SysDateTime{DATETIMEIN-SUFFIX} )
+
+end-sql
+
+ If #sql-count > 0
+  let $Allowances = $Allowances || $XML_ALL
+#Debug show ' #sql-count = ' #sql-count ' $Allowances = ' $Allowances
+ End-If
+
+#Debug show 'After insert PS_GPCH_CA_XML_ALL '
+
+#Debug show 'out Insert_GPCH_CA_XML_ALL'
+End-Procedure Insert_GPCH_CA_XML_ALL
+
+!*********************************************************************************************
+Begin-Procedure FMB-StornoAll
+!#Debug show 'FMB-StornoAll in'
+
+Begin-select on-error=give_warning
+TCDA31.GPCH_EG_PRSN_XML
+TCDA31.GPCH_AL_CPAY_ENDDT
+TCDA31.GPCH_CA_TYPE
+TCDA31.GPCH_CA_CR_BGN
+TCDA31.GPCH_CA_CR_END
+TCDA31.GPCH_CA_REFNBR
+TCDA31.RUN_OPEN_TS
+
+ let $STRNO_GPCH_AL_CPAY_ENDDT = &TCDA31.GPCH_AL_CPAY_ENDDT
+ let $STRNO_GPCH_CA_TYPE       = &TCDA31.GPCH_CA_TYPE
+ let $STRNO_GPCH_CA_CR_BGN     = &TCDA31.GPCH_CA_CR_BGN
+ let $STRNO_GPCH_CA_CR_END     = &TCDA31.GPCH_CA_CR_END
+ let $STRNO_RUN_OPEN_TS        = &TCDA31.RUN_OPEN_TS
+ let $STRNO_GPCH_CA_REFNBR     = &TCDA31.GPCH_CA_REFNBR 
+
+ let $StornoAllowance = &TCDA31.GPCH_EG_PRSN_XML
+
+ Do StornoDone
+ 
+#Debug show 'Storno inside1 select for $Empl_ID = ' $Empl_ID '$CurrDependent = ' $CurrDependent ' $RefType = ' $RefType  ' $DateTo1 =' $DateTo1  '$DateFrom1 = ' $DateFrom1   ' $RefNumber = ' $RefNumber
+
+FROM  PS_GPCH_CA_XML_ALL TCDA31 
+WHERE TCDA31.EMPLID             = $Empl_ID
+  AND TCDA31.GPCH_EG_DOMAINID   = #ptot_domainid
+  AND TCDA31.DEPENDENT_BENEF    = $CurrDependent
+  AND TCDA31.GPCH_AL_CPAY_ENDDT = &TCDA3.GPCH_AL_CPAY_ENDDT
+  AND TCDA31.GPCH_CA_REFNBR     = &TCDA3.GPCH_CA_REFNBR
+
+End-Select
+
+ let $StornoAllowance = replace($StornoAllowance,'<allowanceCompleteStorno>02', '<allowanceCompleteStorno>01')
+
+#Debug show 'FMB-StornoAll out'
+End-Procedure FMB-StornoAll
+
+!********************************************************************************************
+Begin-Procedure StornoDone
+#Debug show 'StornoDone in'
+! Avoid to reverse same row multiple times
+
+Begin-SQL on-error=give_warning
+Update PS_GPCH_CA_XML_ALL
+ set GPCH_CA_STRNO_DONE = 'Y', GPCH_EG_ISSU_DAT = $ctl_end_dt
+where PS_GPCH_CA_XML_ALL.EMPLID             = $Empl_ID
+  AND PS_GPCH_CA_XML_ALL.GPCH_EG_DOMAINID   = #ptot_domainid
+  AND PS_GPCH_CA_XML_ALL.GPCH_AL_CPAY_ENDDT = $STRNO_GPCH_AL_CPAY_ENDDT
+  AND PS_GPCH_CA_XML_ALL.GPCH_CA_CR_STORNO  = '02'
+  AND PS_GPCH_CA_XML_ALL.DEPENDENT_BENEF    = $CurrDependent
+  AND PS_GPCH_CA_XML_ALL.GPCH_CA_TYPE       = $STRNO_GPCH_CA_TYPE
+  AND PS_GPCH_CA_XML_ALL.GPCH_CA_CR_BGN     = $STRNO_GPCH_CA_CR_BGN
+  AND PS_GPCH_CA_XML_ALL.GPCH_CA_REFNBR     = $STRNO_GPCH_CA_REFNBR
+End-SQL
+
+#Debug show 'StornoDone out'
+End-Procedure StornoDone
+
+!*********************************************************************************************
+Begin-Procedure Insert_GPCH_CA_XML_DEP
+#Debug show ' IN Insert_GPCH_CA_XML_DEP'
+
+#Debug show '$CurrDependent = ' $CurrDependent ' $SV-AS-Number1 = ' $SV-AS-Number1 ' $RefType = ' $RefType ' $RefNumber = ' $RefNumber ' $ctl_end_dt = ' $ctl_end_dt 
+#Debug show '$DateFrom1 = ' $DateFrom1 ' $DateTo1 = ' $DateTo1 ' #IncrementSeq = ' #IncrementSeq
+
+Begin-Sql on-error=give_warning
+insert into PS_GPCH_CA_XML_DEP (EMPLID, GPCH_EG_DOMAINID, GPCH_AL_CPAY_ENDDT, GPCH_CA_CR_STORNO, DEPENDENT_BENEF, RUN_OPEN_TS, RUN_FINALIZED_TS, GPCH_AH_NNSS, BIRTHDATE, 
+GPCH_CA_REFNBR, GPCH_EG_PRSN_XML)
+ select $Empl_ID,#ptot_domainid, $ctl_end_dt, $CompleteStorno, $CurrDependent,{DATETIMEOUT-PREFIX}$SysDateTime{DATETIMEOUT-SUFFIX}, NULL, $SV-AS-Number1, $DateOfBirth1, $RefNumber, $XML_DEP
+from PS_INSTALLATION
+end-sql
+
+#Debug show 'out Insert_GPCH_CA_XML_DEP'
+End-Procedure Insert_GPCH_CA_XML_DEP
+
+!*********************************************************************************************
+Begin-Procedure CreateStornoDep
+#Debug show 'CreateStornoDep in'
+! Storno for any overlapping
+
+Begin-select on-error=give_warning
+XML3.GPCH_EG_PRSN_XML
+
+ let $StornoChild = &XML3.GPCH_EG_PRSN_XML
+ 
+#Debug show 'Storno for $Empl_ID = ' $Empl_ID '$CurrDependent = ' $CurrDependent ' $StornoChild = ' $StornoChild
+
+FROM  PS_GPCH_CA_XML_DEP XML3 
+WHERE XML3.EMPLID             = $Empl_ID
+  AND XML3.GPCH_EG_DOMAINID   = #ptot_domainid
+  AND XML3.RUN_FINALIZED_TS   is not NULL
+  AND XML3.DEPENDENT_BENEF    = $CurrDependent
+  AND XML3.GPCH_AL_CPAY_ENDDT  = ( select max(XML31.GPCH_AL_CPAY_ENDDT) from PS_GPCH_CA_XML_DEP XML31
+   where XML31.EMPLID             = $Empl_ID
+     AND XML31.GPCH_EG_DOMAINID   = #ptot_domainid
+     AND XML31.DEPENDENT_BENEF    = $CurrDependent 
+     AND XML31.RUN_FINALIZED_TS   is not NULL
+     AND XML31.GPCH_AL_CPAY_ENDDT <= $ctl_end_dt)
+  AND exists ( select 'X' from PS_GPCH_CA_XML_ALL XML4
+   where XML3.EMPLID             = XML4.EMPLID
+     AND XML3.GPCH_EG_DOMAINID   = XML4.GPCH_EG_DOMAINID
+     AND XML3.DEPENDENT_BENEF    = XML4.DEPENDENT_BENEF
+     AND XML4.RUN_FINALIZED_TS   is NULL
+     AND ( XML4.SOURCE_IND  = 'S' or XML4.SOURCE_IND = 'U' or XML4.SOURCE_IND = 'H' )
+     AND XML4.GPCH_AL_CPAY_ENDDT = $ctl_end_dt )
+
+End-Select
+
+#Debug show '$StornoAllowances = ' $StornoAllowances
+#Debug show '$StornoChild = ' $StornoChild
+
+#Debug show 'CreateStornoDep out'
+End-Procedure CreateStornoDep
+
+!*********************************************************************************************
+Begin-Procedure Insert_GPCH_CA_XML_BEN
+#Debug show ' IN Insert_GPCH_CA_XML_BEN'
+
+#Debug show '$CurrDependent = ' $CurrDependent ' $SV-AS-Number1 = ' $SV-AS-Number1 ' $RefType = ' $RefType ' $RefNumber = ' $RefNumber ' $ctl_end_dt = ' $ctl_end_dt ' $CompleteStorno = ' $CompleteStorno
+#Debug show '$DateFrom1 = ' $DateFrom1 ' $DateTo1 = ' $DateTo1 ' #IncrementSeq = ' #IncrementSeq
+
+Begin-Sql on-error=give_warning
+
+insert into PS_GPCH_CA_XML_BEN (EMPLID, GPCH_EG_DOMAINID, GPCH_AL_CPAY_ENDDT, GPCH_CA_CR_STORNO, RUN_OPEN_TS, RUN_FINALIZED_TS, GPCH_AH_NNSS, BIRTHDATE, GPCH_EG_PRSN_XML) 
+!FMB 2040311 select $Empl_ID,$ctl_end_dt, $CompleteStorno, $SysDateTime, '', $SV-AS-Number1, $DateOfBirth1, 
+select $Empl_ID,#ptot_domainid, $ctl_end_dt, $CompleteStorno, {DATETIMEOUT-PREFIX}$SysDateTime{DATETIMEOUT-SUFFIX}, NULL, $NID_BEN_XML_BEN, $DateOfBirth_XML_BEN, $XML_BEN
+from PS_INSTALLATION
+ where not exists ( select 'X' from PS_GPCH_CA_XML_BEN XB
+  where XB.EMPLID             = $EMPL_ID
+    AND XB.GPCH_EG_DOMAINID   = #ptot_domainid
+    AND XB.GPCH_AL_CPAY_ENDDT = $ctl_end_dt
+    AND XB.GPCH_CA_CR_STORNO  = $CompleteStorno
+    AND XB.RUN_OPEN_TS        = {DATETIMEIN-PREFIX}$SysDateTime{DATETIMEIN-SUFFIX} )
+
+end-sql
+
+#Debug show 'After insert PS_GPCH_CA_XML_BEN '
+
+#Debug show 'out Insert_GPCH_CA_XML_BEN'
+End-Procedure Insert_GPCH_CA_XML_BEN
+
+!*********************************************************************************************
+Begin-Procedure CreateStornoBen
+#Debug show 'CreateStornoBen in'
+! Storno for any overlapping
+
+Begin-select on-error=give_warning
+XML5.GPCH_EG_PRSN_XML
+
+ let $StornoBeneficiary =  &XML5.GPCH_EG_PRSN_XML
+ 
+#Debug show 'Storno for $Empl_ID = ' $Empl_ID 
+
+FROM  PS_GPCH_CA_XML_BEN XML5 
+WHERE XML5.EMPLID             = $Empl_ID
+  AND XML5.GPCH_EG_DOMAINID   = #ptot_domainid
+  AND XML5.RUN_FINALIZED_TS   is not NULL
+  AND XML5.GPCH_AL_CPAY_ENDDT = ( select max(XML51.GPCH_AL_CPAY_ENDDT) from PS_GPCH_CA_XML_BEN XML51
+   where XML51.EMPLID             = $Empl_ID
+     AND XML51.GPCH_EG_DOMAINID   = #ptot_domainid
+     AND XML51.RUN_FINALIZED_TS   is not NULL
+     AND XML51.GPCH_AL_CPAY_ENDDT <= $ctl_end_dt)
+  AND exists ( select 'X' from PS_GPCH_CA_XML_DEP XML6
+   where XML5.EMPLID             = XML6.EMPLID
+     AND XML6.GPCH_EG_DOMAINID   = #ptot_domainid
+     AND XML6.GPCH_CA_CR_STORNO  = '01'
+     AND XML6.RUN_FINALIZED_TS   is NULL
+     AND XML6.GPCH_AL_CPAY_ENDDT = $ctl_end_dt )
+
+End-Select
+
+#Debug show '$Beneficiary = ' $Beneficiary
+#Debug show '$StornoBeneficiary = ' $StornoBeneficiary
+
+#Debug show 'CreateStornoBen out'
+End-Procedure CreateStornoBen
+
+
+
+Begin-procedure StornoByChangeNID
+
+#Debug show 'StornoByChangeNID -->'
+
+! In case of change in dependent NID, the system should create a new allowance reference number (seq = seq +1) and cancelate (storno = <01>) the previous allowance.
+
+Begin-select on-error=give_warning
+XML7.GPCH_EG_PRSN_XML
+XML7.GPCH_CA_CR_STORNO
+XML7.GPCH_CA_REFNBR
+XML7.GPCH_CA_TYPE
+XML7.GPCH_AL_CPAY_ENDDT
+XML7.GPCH_CA_CR_BGN
+XML7.GPCH_CA_CR_END
+
+ let $StornoByChangeNID =  &XML7.GPCH_EG_PRSN_XML
+ let $XML_ALL =  &XML7.GPCH_EG_PRSN_XML
+ let $OldStorno = &XML7.GPCH_CA_CR_STORNO
+ let $OldRefNbr = &XML7.GPCH_CA_REFNBR
+ let #CaType = &XML7.GPCH_CA_TYPE
+ let $PayEndDt = &XML7.GPCH_AL_CPAY_ENDDT
+ 
+ 
+
+ 
+ if $OldStorno = '01' 
+    let $CompleteStorno = '02'
+ else
+    let $CompleteStorno = '01'
+ end-if
+ 
+ let $from_string = '<allowanceCompleteStorno>' || $OldStorno || '</allowanceCompleteStorno>'
+ let $to_string = '<allowanceCompleteStorno>' || $CompleteStorno || '</allowanceCompleteStorno>'
+
+ let $XML_ALL = replace($XML_ALL, $from_string, $to_string)
+ 
+
+  
+   Do Insert_GPCH_CA_XML_ALL
+   Do UpdatePersXMLByNIDChange
+   
+
+FROM  PS_GPCH_CA_XML_ALL XML7 
+WHERE XML7.EMPLID             = $Empl_ID
+  AND XML7.GPCH_EG_DOMAINID   = #ptot_domainid
+  AND XML7.RUN_FINALIZED_TS   is not NULL
+  AND XML7.DEPENDENT_BENEF    = $CurrDependent
+  AND XML7.GPCH_AL_CPAY_ENDDT  = ( select max(XML71.GPCH_AL_CPAY_ENDDT) from PS_GPCH_CA_XML_DEP XML71
+   where XML71.EMPLID             = $Empl_ID
+     AND XML71.GPCH_EG_DOMAINID   = #ptot_domainid
+     AND XML71.DEPENDENT_BENEF    = $CurrDependent 
+     AND XML71.RUN_FINALIZED_TS   is not NULL
+     AND XML71.GPCH_AL_CPAY_ENDDT <= $ctl_end_dt)
+  AND exists ( select 'X' from PS_GPCH_CA_XML_ALL XML8
+   where XML7.EMPLID             = XML8.EMPLID
+     AND XML7.GPCH_EG_DOMAINID   = XML8.GPCH_EG_DOMAINID
+     AND XML7.DEPENDENT_BENEF    = XML8.DEPENDENT_BENEF
+     AND XML8.RUN_FINALIZED_TS   is NULL
+     AND XML7.GPCH_AH_NNSS  <>  XML8.GPCH_AH_NNSS
+     AND XML8.GPCH_AL_CPAY_ENDDT = $ctl_end_dt )
+
+End-Select
+
+#Debug show 'StornoByChangeNID <--'
+
+End-Procedure
+
+! ---------------------------------------------------------------------
+! Get-Hire-Check
+! ---------------------------------------------------------------------
+
+!begin-procedure Get-Hire-Check
+!let $hire_dt_check    = ''
+
+!begin-select on-error=give_warning
+!J1.HIRE_DT   &J1.HIRE_DT
+   
+!   let $hire_dt_check    =  &J1.HIRE_DT
+
+!from PS_GPCH_RP_0001 J1
+!where J1.EMPLID = $Empl_ID and
+!J1.EMPL_RCD = #Empl_RCD 
+!AND  J1.SEG_END_DT = ( select max(RP11.SEG_END_DT) from PS_GPCH_RP_0001 RP11
+!       where J1.EMPLID      = RP11.EMPLID
+!       AND   RP11.EMPL_RCD   = RP11.GPCH_MC_LEGAL_RCD
+!       AND J1.EMPL_RCD = RP11.EMPL_RCD )
+!AND J1.GPCH_AL_CPAY_ENDDT = ( select max(RP11.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 RP11
+!    where  J1.EMPLID          = RP11.EMPLID
+!       AND   RP11.EMPL_RCD   = RP11.GPCH_MC_LEGAL_RCD 
+!       AND J1.EMPL_RCD = RP11.EMPL_RCD)
+!AND J1.HIRE_DT BETWEEN $first_day AND $Ctl_End_Dt
+
+!end-select
+
+!end-procedure Get-Hire-Check
+
+
+!********************************************************************************************
+Begin-Procedure UpdatePersXMLByNIDChange
+#Debug show 'UpdatePersXMLByNIDChange -->'
+
+
+let $New_XML_ALL = ' '
+let $NewRefNumber = ' '
+let #SeqNbr = 0
+
+! Get and Update the RefNumber and Allowance XML 
+   
+Begin-select on-error=give_warning
+XML10.GPCH_EG_PRSN_XML
+XML10.GPCH_CA_REFNBR
+   let $XML_ALL =  &XML10.GPCH_EG_PRSN_XML
+   let $OldRefNbr = &XML10.GPCH_CA_REFNBR
+
+    let #SeqNbr = substr($OldRefNbr,12,1)
+    let #SeqNbr = #SeqNbr + 1
+    move #SeqNbr to $SeqNbr 9
+    let $NewRefNumber = substr($OldRefNbr,1,11) || $SeqNbr || substr($OldRefNbr,13,4)
+
+    let $from_string = '<allowanceRefNumber>' || $OldRefNbr || '</allowanceRefNumber>'
+    let $to_string = '<allowanceRefNumber>' || $NewRefNumber || '</allowanceRefNumber>'
+
+    let $New_XML_ALL = replace($XML_ALL, $from_string, $to_string)
+
+    let $Allowances =   replace($Allowances, $XML_ALL, $New_XML_ALL)
+   
+FROM  PS_GPCH_CA_XML_ALL XML10 
+WHERE XML10.EMPLID             = $Empl_ID
+  AND XML10.GPCH_EG_DOMAINID   = #ptot_domainid
+  AND XML10.DEPENDENT_BENEF    = $CurrDependent
+  AND XML10.GPCH_AL_CPAY_ENDDT  = $ctl_end_dt
+  AND XML10.GPCH_CA_CR_STORNO  = '02'
+  AND XML10.GPCH_CA_TYPE       = #CaType
+  
+End-Select
+
+
+Begin-SQL on-error=give_warning
+Update PS_GPCH_CA_XML_ALL
+ set GPCH_EG_PRSN_XML = $New_XML_ALL, GPCH_CA_REFNBR = $NewRefNumber
+where PS_GPCH_CA_XML_ALL.EMPLID             = $Empl_ID
+  AND PS_GPCH_CA_XML_ALL.GPCH_EG_DOMAINID   = #ptot_domainid
+  AND PS_GPCH_CA_XML_ALL.GPCH_AL_CPAY_ENDDT = $ctl_end_dt
+  AND PS_GPCH_CA_XML_ALL.GPCH_CA_CR_STORNO  = '02'
+  AND PS_GPCH_CA_XML_ALL.DEPENDENT_BENEF    = $CurrDependent
+  AND PS_GPCH_CA_XML_ALL.GPCH_CA_TYPE       = #CaType
+End-SQL
+
+#Debug show 'UpdatePersXMLByNIDChange <--'
+End-Procedure UpdatePersXMLByNIDChange
+
+!*********************************************************************************************
+Begin-Procedure ReadResidenceCountry
+#Debug show 'ReadResidenceCountry in'
+
+Begin-Select  on-error=give_warning
+ADR.SAME_ADDRESS_EMPL
+ADR.COUNTRY
+
+
+  let $Same_Addr=rtrim(&ADR.SAME_ADDRESS_EMPL,' ')
+  let $Cntry   = rtrim(&ADR.COUNTRY,' ')
+
+  
+  If $Same_Addr = 'Y'
+    If $Country_xml <> 'CHE'
+      let $nation_child_xml = $Country_xml
+    else
+      let $nation_child_xml = 'CH'
+    end-if
+  else
+     let $Read_Country = $Cntry
+     do GetCountry2Char
+     let $nation_child_xml = $Country_2CHAR
+  end-if
+
+  
+From PS_DEP_BEN_ADDR ADR
+where  ADR.EMPLID= $Empl_ID
+      AND ADR.DEPENDENT_BENEF= $CurrDependent
+      AND ADR.EFFDT = (SELECT MAX(ADR1.EFFDT)
+                         FROM   PS_DEP_BEN_ADDR ADR1
+                         WHERE  ADR1.EMPLID= $Empl_ID
+                         AND ADR1.DEPENDENT_BENEF= $CurrDependent
+                          AND ADR1.EFFDT <= $ReportEndD)
+      
+End-Select
+
+
+#Debug show 'ReadResidenceCountry out'
+End-Procedure ReadResidenceCountry
+
+!*********************************************************************************************
+Begin-Procedure ReadResCountry_BFS
+#Debug show 'ReadResCountry_BFS in'
+
+  let $Country_BFS = ' '
+
+Begin-Select on-error=give_warning
+ADRB.SAME_ADDRESS_EMPL
+ADRB.COUNTRY
+
+
+  let $Same_Addr=rtrim(&ADRB.SAME_ADDRESS_EMPL,' ')
+  let $Cntry   = rtrim(&ADRB.COUNTRY,' ')
+  
+  If $Same_Addr = 'Y'
+    let $Read_Country = $Country_xml
+  else
+    let $Read_Country = $Cntry
+  End-if
+  
+  do CountryBracket_BFS
+  
+  If $Country_BFS <> ' '
+    let $nation_child_xml = $Country_BFS
+  Else
+    let $nation_child_xml = '8100'
+  End-If
+
+  
+From PS_DEP_BEN_ADDR ADRB
+where  ADRB.EMPLID= $Empl_ID
+      AND ADRB.DEPENDENT_BENEF= $CurrDependent
+      AND ADRB.EFFDT = (SELECT MAX(ADRB1.EFFDT)
+                         FROM   PS_DEP_BEN_ADDR ADRB1
+                         WHERE  ADRB1.EMPLID= $Empl_ID
+                         AND ADRB1.DEPENDENT_BENEF= $CurrDependent
+                          AND ADRB1.EFFDT <= $ReportEndD)
+      
+End-Select
+
+
+#Debug show 'ReadResCountry_BFS out'
+End-Procedure ReadResCountry_BFS
+
+!***********************************************************************************************
+begin-procedure CountryBracket_BFS
+#Debug Show 'CountryBracket_BFS in'
+
+
+Begin-Select on-error=give_warning
+A.DATA_VAL3
+
+  Let $Country_BFS = LTRIM(RTRIM(&A.DATA_VAL3,' '),' ')
+
+FROM PS_GP_PIN B, PS_GP_BRACKET_DTL A
+WHERE B.PIN_NUM = A.PIN_NUM
+AND   B.PIN_CODE = 'CH_EO_BCOUNTRY CHE'
+AND   A.DATA_KEY1 = $Read_Country
+AND   A.EFFDT = (SELECT MAX(A1.EFFDT)
+                  FROM PS_GP_BRACKET_DTL A1
+                  WHERE A.PIN_NUM = A1.PIN_NUM
+                   AND A1.EFFDT <= $ReportEndD)
+
+End-Select
+
+#Debug Show 'CountryBracket_BFS out'
+end-procedure CountryBracket_BFS
+
+!***********************************************************************************************
+Begin-procedure Get_English_Strings($ReportID)
+#Debug show 'Get_English_Strings -> '  $ReportID
+
+#Debug show 'Get_English_Strings <- ' #_str_cnt
+End-procedure Get_English_Strings
+!****************************************************************************
+Begin-procedure Get_German_Strings($ReportID)
+#Debug show 'Get_German_Strings -> '  $ReportID
+
+#Debug show 'Get_German_Strings <- ' #_str_cnt
+End-procedure Get_German_Strings
+!****************************************************************************
+Begin-procedure Get_Italian_Strings($ReportID)
+#Debug show 'Get_Italian_Strings -> '  $ReportID
+
+#Debug show 'Get_Italian_Strings <- ' #_str_cnt
+End-procedure Get_Italian_Strings
+!****************************************************************************
+Begin-procedure Get_French_Strings($ReportID)
+#Debug show 'Get_French_Strings -> '  $ReportID
+
+#Debug show 'Get_French_Strings <- ' #_str_cnt
+End-procedure Get_French_Strings
+!****************************************************************************
+#include 'gpchut01.sqc'
+#include 'gpchut02.sqc'
+#include 'gpchut04.sqc'  !get company informations
+#include 'gpchut06.sqc'  !get run control parameter values
+#include 'gpchut07.sqc'  !Log Output Selection
+#include 'gpchut11.sqc'  !get Tax and Fak Values
+#include 'curdttim.sqc'  !get-current-datetime procedure
+#include 'readxlat.sqc'  !read-translate-table procedure
+#include 'datetime.sqc'  !routines for date and time formatting
+#include 'validdt.sqc'   !validate date routine
+#include 'number.sqc'    !routines to format numbers
+#include 'stdapi.sqc'    !routines to update run status
+#include 'datemath.sqc'  !function for date-calculation
+#include 'sqrtrans.sqc'  !sqr strings table procedures
+#include 'gpchal4s.sqc'  !Get Strings Values for GPCHAL04
+#include 'gpchglbs.sqc'  !Get Strings Values for GPCHGLOB

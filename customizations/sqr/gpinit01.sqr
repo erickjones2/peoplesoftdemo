@@ -1,0 +1,1646 @@
+!***********************************************************************
+!  GPINIT01:  Generate the IT Computation Sheet                        *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2019, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!       $Release:  HR92                                                !
+!           $Bug:  29440878                                            !
+!***********************************************************************
+! Program Description                                                  *
+! -------------------                                                  *
+!                                                                      *
+! This report generates the IT Computation for the provided Calendar   *
+! group and the Template on the Run Control Page                       *
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc'    !Set environment
+#include 'setup07.sqc'   !Database specific setup
+#include 'rellang.sqc'
+
+Begin-Setup
+ #Include 'ptset01.sqc'   ! Printer and page-size initialization
+
+End-Setup
+
+Begin-Program
+    do Init-Processing
+    do Process-Main
+    do GP-ePay-control
+    do stdapi-term
+    do Reset
+End-Program
+
+!**************************************************************************
+
+Begin-Procedure Init-Processing
+    do Init-Datetime                ! called from datetime.sqc
+    do Init-Number                  ! called from number.sqc
+    do Stdapi-Init                  ! called stdapi.sqc
+    do Get-Language-Codes           ! called from prcslng.sqc
+    do Get-Current-Datetime         ! called from prcsapi.sqc (curdttim.sqc)
+    do Get-Strings-Table
+    do Get-Run-Ctrl-Params
+    do GP-ePay-Init
+
+End-Procedure  !Init-Processing
+
+!****************************************************************************
+!Process-Main
+!****************************************************************************
+Begin-Procedure Process-Main
+
+do Print-ITCompSheet
+do Clear-Output-Tbl
+
+End-Procedure !Process-Main
+
+!****************************************************************************
+!Get Run Control Params
+!****************************************************************************
+Begin-procedure Clear-Output-Tbl
+
+begin-sql
+DELETE FROM PS_GPIN_IT_EE_DTL
+end-sql
+
+end-procedure
+
+!****************************************************************************
+!Get Run Control Params
+!****************************************************************************
+
+Begin-Procedure Get-Run-Ctrl-Params
+let $flag = 'N'
+
+
+BEGIN-SELECT DISTINCT
+R.CAL_RUN_ID
+R.GPIN_ITCS_TMPL_ID &tmplid
+CAL.PRD_END_DT &prd_end_dt
+CAL.PRD_BGN_DT &prd_bgn_dt
+CAL.PYMT_DT
+
+  MOVE &R.CAL_RUN_ID to $Cal_Run_ID
+  Move &prd_end_dt to $prd_end_Dt
+  Move &prd_bgn_dt to $prd_begin_dt
+  Move &CAL.PYMT_DT to $pymt_dt
+  Let $tmplid = &tmplid
+
+
+FROM PS_GPIN_RC_ITCS R
+,PS_GP_CAL_RUN_DTL CAL
+WHERE R.OPRID=  $prcs_oprid
+AND R.RUN_CNTL_ID = $prcs_run_cntl_id
+AND CAL.CAL_RUN_ID = R.CAL_RUN_ID
+AND CAL.CALC_TYPE = 'P'
+AND CAL.PRD_END_DT = (SELECT MAX(C1.PRD_END_DT)
+                      FROM PS_GP_CAL_RUN_DTL C1
+                      WHERE C1.CAL_RUN_ID = CAL.CAL_RUN_ID)
+
+END-SELECT
+
+IF $flag = 'N'
+
+BEGIN-SELECT DISTINCT
+R.CAL_RUN_ID &CAL_RUN_ID_1
+R.GPIN_ITCS_TMPL_ID &tmplid_1
+B.PRD_END_DT &prd_end_dt_1
+
+
+  MOVE &CAL_RUN_ID_1 to $Cal_Run_ID
+  Move &prd_end_dt_1 to $prd_end_Dt
+  Let $tmplid_1 = &tmplid
+
+FROM PS_GPIN_RC_ITCS R,
+PS_GP_CAL_RUN_OFF A, 
+PS_GP_CAL_PRD B 
+WHERE R.OPRID=  $prcs_oprid
+AND R.RUN_CNTL_ID = $prcs_run_cntl_id
+AND A.CAL_RUN_ID = R.CAL_RUN_ID 
+AND A.CAL_PRD_ID = B.CAL_PRD_ID
+END-SELECT
+
+END-IF
+
+do Convert-To-DTU-Date ($prd_end_dt,$prd_end_Dt_dtu)
+do dtu-parse-date($prd_end_Dt_dtu,#year, #month, #day)
+
+let $year = edit(#year,'XXXX')
+let $NextYear = edit(#year+1,'XXXX')
+let $NextToNextYear = edit(#year+2,'XXXX')
+let $LastYear = edit(#year -1,'XXXX')
+
+If #month >= 4
+   let $PrevYear = $year || ' - ' || $NextYear
+   let $AssYear = $NextYear || ' - ' || $NextToNextYear
+   let $ty_beg_dt_str = $Year||'0401'
+   let $ty_end_dt_str = $NextYear||'0331'
+Else
+   let $PrevYear = $LastYear || ' - ' || $year
+   let $AssYear = $year || ' - ' || $NextYear
+   let $ty_beg_dt_str = $LastYear||'0401'
+   let $ty_end_dt_str = $Year||'0331'
+End-If
+
+
+    let $ty_beg_dt = strtodate($ty_beg_dt_str)
+    let $ty_end_dt = strtodate($ty_end_dt_str)
+
+
+    #ifdef DB2UNIX
+
+    let $ty_beg_dt = substr($ty_beg_dt,1,10)
+    let $ty_end_dt = substr($ty_end_dt,1,10)
+    let $prd_end_dt = substr($prd_end_dt,1,10)
+
+
+    #ENDIF
+
+    #ifdef DB2DDCS
+    let $ty_beg_dt = substr($ty_beg_dt,1,10)
+    let $ty_end_dt = substr($ty_end_dt,1,10)
+    let $prd_end_dt = substr($prd_end_dt,1,10)
+
+    #ENDIF
+
+
+    #ifdef DB2ALL
+    let $ty_beg_dt = substr($ty_beg_dt,1,10)
+    let $ty_end_dt = substr($ty_end_dt,1,10)
+    let $prd_end_dt = substr($prd_end_dt,1,10)
+
+    #ENDIF
+
+
+
+
+
+
+
+
+End-Procedure
+
+!*******************************************************
+!Print-calc-ftr
+!*******************************************************
+Begin-Procedure Print-calc-ftr
+let #rowpos = #rowpos + 2
+graphic (#rowpos,#beg_vrt,#hline_len) box 3
+print $calc_ftr (#rowpos,+1) wrap 120 2
+End-procedure
+
+!*******************************************************
+!Print-ITCompSheet
+!*******************************************************
+Begin-Procedure Print-ITCompSheet
+Let $exists = 'N'
+Let $Emplid = ''
+Let $PrevEmplid = ''
+let $PrevSection = ''
+Let #currowcount = 1
+do Reset-RowPos
+let #beg_vrt = 10 ! column vertical positions
+let #Acol_vrt = 60
+let #Bcol_vrt = 83
+let #Ccol_vrt = 106
+let #last_vrt = 130
+let #hline_len = #last_vrt - #beg_vrt
+let #PrevEmplRcd = ''
+let #Totalval = 0
+Let #begin_page = 1
+Let #end_page = 1
+Let #tax_paid = 0
+Let #tot_tax_pybl = 0
+Let #bal_tax = 0
+
+Let #Ernval_vrt = #Acol_vrt - 20
+Let #Ded_vrt = #Bcol_vrt - 20
+let #rowlimit = 65
+let #ded_dec = 0
+let #tot_ded_dec = 0
+let #tot_prev_comp_decl = 0
+let #tot_prev_comp_appr = 0
+
+Let $inc = '1IN'
+LEt $calc = '2CL'
+Let $exm = '3EX'
+Let $prq = '4PQ'
+LEt $ded = '5DD'
+
+ string $Footer_STR1_lbl $Footer_STR2_lbl by ' ' into $calc_ftr
+  
+ Evaluate $AssYear
+ when = '2018 - 2019'
+ let #std_ded_amt = 0
+ when = '2019 - 2020'
+ let #std_ded_amt = 40000
+ when = '2020 - 2021'
+ let #std_ded_amt = 50000
+ End-Evaluate
+
+do Get-80EE-PinNum
+
+BEGIN-SELECT
+DTL.EMPLID
+DTL.EMPL_RCD
+DTL.GPIN_TAX_YEAR
+DTL.GPIN_SECTION_ID
+DTL.KEY_SERIAL_NBR
+DTL.PIN_NUM
+DTL.GPIN_IT_COLMN
+DTL.GPIN_ITCS_LBL
+DTL.CALC_RSLT_VAL
+
+     Let $cursection = &DTL.GPIN_SECTION_ID
+     Let $exists = 'Y'
+
+     ! For New Employee
+
+     if ($PrevEmplid <> &DTL.EMPLID or #PrevEmplRcd <>  &DTL.EMPL_RCD)
+     let $showtax = 'Y'
+     let $showSurchg = 'Y'
+     let $showTCr87 = 'Y'
+
+
+        if  $Prevemplid <> ''
+          evaluate $prevsection
+             when = $inc
+                do print-Hline('C')
+                break
+             when = $calc
+                do Print-Bal-tax
+                do Print-calc-ftr
+                new-page
+                let #end_page = #end_page + 1
+                do reset-rowpos
+                do print-rpt-hdr
+                break
+             when = $exm
+             when = $prq
+             when = $ded
+               do cons-prev-totals
+               break
+          end-evaluate
+
+          do Print-HRA-CLA ('HRA')
+          do Print-HRA-CLA ('CLA')
+          do Print-Prev-Comp
+        
+        new-page
+        do GP-ePay-guide
+        Let #Begin_page = #End_Page + 1
+        Let #End_page = #Begin_page
+
+        Let #tax_year = &DTL.GPIN_TAX_YEAR
+        Let $PrevSection = ''
+        Let #PrevSerialNbr = 0
+        let #txbl_inc = 0
+        Let #tax_paid = 0
+        Let #tot_tax_pybl = 0
+        Let #bal_tax = 0
+        let #chap_6a = 0
+        LET #gross_tot = 0
+        let #tot_ded_dec = 0
+        let #tot_prev_comp_decl = 0
+        let #tot_prev_comp_appr = 0
+       end-if
+        do Reset-RowPos
+        do Get-Empl-Pers-Dtls
+        do Print-Rpt-Hdr
+        do print-sec-hdr ($cursection)
+        let $emplid = ltrim(rtrim(&DTL.EMPLID,' '),' ')
+        Let #emplrcd = &DTL.EMPL_RCD
+     end-if
+
+     !DIFFERENT SECTION
+     if $cursection <> $prevsection and $prevsection <> ''
+
+        if $prevsection = $inc
+           do print-Hline('C')
+        end-if
+
+        if $prevsection = $calc
+            do Print-Bal-tax
+            do Print-calc-ftr
+        else
+           !consolidate totals in the bottom buffer space - they can always fit into the buffer space
+           do cons-prev-totals
+        end-if
+
+        if #rowpos > #rowlimit or ($prevsection = $calc and $cursection >= $exm)
+          new-page
+          let #end_page = #end_page + 1
+          do reset-rowpos
+          do Get-Empl-Pers-Dtls
+          do print-rpt-hdr
+        end-if
+         if  $cursection <> $inc and $cursection <> $calc
+          do print-sec-hdr ($cursection)
+         end-if
+      end-if
+
+      !SAME SECTION
+      if $cursection = $prevsection  or $prevsection = ''
+        if #rowpos > #rowlimit
+        Evaluate $cursection
+        When = $inc
+            do print-hline('A')
+            break
+        When = $calc
+            do print-hline ('C')
+            break
+        When = $exm
+        When = $prq
+            do print-hline ('A')
+            break
+        When = $ded
+            do print-hline ('B')
+            break
+        end-evaluate
+         new-page
+         let #end_page = #end_page + 1
+         do reset-rowpos
+         do Get-Empl-Pers-Dtls
+         do print-rpt-hdr
+         do print-sec-hdr ($cursection)
+        end-if
+      end-if
+        Let $it_column = ltrim(rtrim(&DTL.GPIN_IT_COLMN,' '),' ')
+
+        Evaluate $it_column
+         When = 'A'
+           let #Aval = &DTL.CALC_RSLT_VAL
+          break
+         When = 'B'
+          let  #Bval = &DTL.CALC_RSLT_VAL
+          break
+         When  = 'C'
+             let #Cval = &DTL.CALC_RSLT_VAL
+
+              if (($cursection = $inc and #Cval <> 0) or $cursection = $calc)
+
+                if $cursection = $calc
+                     Evaluate &DTL.KEY_SERIAL_NBR
+                     when = 10  !Perquisites
+                     when = 30  !Gross Salary
+                     when = 50  !Net Salary
+                     when = 70  !Net Taxable Salary
+                     when = 130 !Less Deduction  U/c VIA
+                     when = 150 !Tax Payable on Total Income
+                     when = 170 !Tax Payable
+                      do Print-HLine('C')
+                     End-Evaluate
+
+                     if &DTL.KEY_SERIAL_NBR = 60   !Net Taxable Salary
+                     
+                     do Print-Row-Label($Less_Ded_US16_lbl,'C',1)                    
+                     do Print-Total-val(#std_ded_amt, #rowpos, #Ccol_vrt)
+                     !let #rowpos = #rowpos + 1                  
+                     end-if
+
+                     if &DTL.KEY_SERIAL_NBR = 125
+                     let #sect80EE = &DTL.CALC_RSLT_VAL
+                     end-if
+
+                     if &DTL.KEY_SERIAL_NBR = 130
+                     let #GROSS_TOT = &DTL.CALC_RSLT_VAL
+                     end-if
+
+                     if &DTL.KEY_SERIAL_NBR = 140
+                     let #chap_6a = &DTL.CALC_RSLT_VAL
+                     end-if
+
+                     if &DTL.KEY_SERIAL_NBR = 150
+                     Let #txbl_inc = #GROSS_TOT - #chap_6a 
+                     if #txbl_inc < 0
+                         let #txbl_inc = 0
+                     end-if 
+                     do print-hline('C')
+                     do Print-Row-Label($taxable_Inc_lbl,'C',1)
+                     do Print-Total-val (#txbl_inc, #rowpos, #Ccol_vrt)
+                     let #txbl_inc = 0
+                     end-if
+
+                     if &DTL.KEY_SERIAL_NBR = 191
+                     let #tot_tax_tmp = &DTL.CALC_RSLT_VAL
+                     end-if
+
+                     if &DTL.KEY_SERIAL_NBR = 200
+                     let #tot_tax_pybl = &DTL.CALC_RSLT_VAL
+                     end-if
+
+                     if &DTL.KEY_SERIAL_NBR = 210
+                      let #tax_paid = &DTL.CALC_RSLT_VAL
+                     end-if
+
+                 end-if
+
+
+         !do Print-Row-Label(&DTL.GPIN_ITCS_LBL,'C',1)
+         !let $showtax = 'Y'
+
+
+         if &DTL.KEY_SERIAL_NBR = 130 
+             let #Cval = #Cval + #sect80EE 
+         if #Cval < 0 
+                  let #Cval = 0
+             end-if
+         end-if
+
+         if &DTL.KEY_SERIAL_NBR = 140 
+             let #Cval = #Cval + #sect80EE 
+         end-if
+
+         if (&DTL.KEY_SERIAL_NBR = 150 or &DTL.KEY_SERIAL_NBR = 200) and #Cval < 0 
+             let #Cval = 0 
+         end-if
+
+
+         if &DTL.KEY_SERIAL_NBR = 180 and #Cval = 0
+             let $showSurchg = 'N'
+         end-if
+
+         if &DTL.KEY_SERIAL_NBR = 185 and #Cval = 0
+             let $showTCr87 = 'N'
+         end-if
+
+         if &DTL.KEY_SERIAL_NBR = 192 and #Cval = 0
+             let $showtax = 'N'
+         end-if
+
+         if (&DTL.KEY_SERIAL_NBR = 180 and $showSurchg = 'N') or (&DTL.KEY_SERIAL_NBR = 185 and $showTCr87 = 'N') or (&DTL.KEY_SERIAL_NBR = 125)
+
+         else
+         if (&DTL.KEY_SERIAL_NBR = 192 or &DTL.KEY_SERIAL_NBR = 200) and $showtax = 'N'
+            let #tot_tax_pybl=#tot_tax_tmp 
+         else
+            do Print-Row-Label(&DTL.GPIN_ITCS_LBL,'C',1)
+         end-if
+         end-if
+
+                 if $cursection = $inc
+                     do Print-Aval
+                     do Print-Bval
+                 end-if
+
+         !do Print-Total-val(#Cval,#rowpos ,#Ccol_vrt )
+         if (&DTL.KEY_SERIAL_NBR = 125) or (&DTL.KEY_SERIAL_NBR = 180 and $showSurchg = 'N') or (&DTL.KEY_SERIAL_NBR = 185 and $showTCr87 = 'N') or ((&DTL.KEY_SERIAL_NBR = 192 or &DTL.KEY_SERIAL_NBR = 200) and $showtax = 'N')
+
+         else
+             do Print-Total-val(#Cval,#rowpos ,#Ccol_vrt )
+         end-if
+
+             end-if
+
+               if (&DTL.GPIN_SECTION_ID <> $inc AND &DTL.GPIN_SECTION_ID <> $calc)
+                  if $cursection = $exm or $cursection = $prq
+                    do Print-Row-label(&DTL.GPIN_ITCS_LBL, 'A',1)
+                    do Print-Total-val (&DTL.CALC_RSLT_VAL, #rowpos, #Acol_vrt) ! print the "total" value
+                  end-if
+
+                  if $cursection = $ded
+                    if &DTL.PIN_NUM =  #80EEPin_Num
+                      do Get-SECT80EE-Dec
+                    else  
+                      do Get-Ded-Dec
+                    end-if
+                
+                    
+                    if &DTL.CALC_RSLT_VAL > 0
+                    do Print-Row-label(&DTL.GPIN_ITCS_LBL,'B',1)
+                    do Print-Total-val (#ded_dec, #rowpos, #Acol_vrt)
+                    let #rowpos = #rowpos - 1
+                    do Print-Total-val (&DTL.CALC_RSLT_VAL, #rowpos, #Bcol_vrt) ! print the "total" value
+                    end-if
+                    let #tot_ded_dec =  #tot_ded_dec + #ded_dec
+                  end-if
+
+                  Let #totalval = #totalval + &DTL.CALC_RSLT_VAL
+
+               end-if
+               Let #Aval = 0
+               Let #Bval = 0
+               Let #Cval = 0
+               Let #ded_dec = 0
+             break
+        end-evaluate
+
+      Move &DTL.EMPLID to $PrevEmplid
+      Move &DTL.EMPL_RCD to #PrevEmplRcd
+      Move &DTL.GPIN_SECTION_ID to $PrevSection
+      Move &DTL.KEY_SERIAL_NBR to #PrevSerialNbr
+      Move &DTL.GPIN_IT_COLMN to $PrevCol
+      !Let $tax_year = &DTL.GPIN_TAX_YEAR
+FROM PS_GPIN_IT_EE_DTL DTL
+WHERE DTL.PROCESS_INSTANCE =  #prcs_process_instance - 1
+ORDER BY DTL.EMPLID
+,DTL.EMPL_RCD
+,DTL.GPIN_TAX_YEAR
+,DTL.GPIN_SECTION_ID
+,DTL.KEY_SERIAL_NBR
+,DTL.GPIN_IT_COLMN
+END-SELECT
+
+
+if $exists = 'Y' and $emplid <> ''
+
+  evaluate $prevsection
+  when = $inc
+    do print-Hline('C')
+    break
+  when = $calc
+    do Print-Bal-tax
+    do Print-calc-ftr
+    new-page
+    let #end_page = #end_page + 1
+    do reset-rowpos
+    do print-rpt-hdr
+    break
+  when = $exm
+  when = $prq
+  when = $ded
+    do cons-prev-totals
+    break
+  end-evaluate
+  do Print-HRA-CLA ('HRA')
+  do Print-HRA-CLA ('CLA')
+  do Print-Prev-Comp
+  do GP-ePay-guide
+end-if
+
+End-Procedure   !Print-ITCompSheet
+
+
+
+!*****************************************************************************
+!Print-sec-hdr
+!*****************************************************************************
+Begin-procedure Print-sec-hdr ($sec)
+        Evaluate $sec
+          when = $_inc
+          when = $_calc
+            do print-inc-hdr
+            break
+          when = $_exm
+            do Print-exm-hdr ($_Exemption_Us10_lbl)
+            break
+          when = $_prq
+            do Print-exm-hdr ($_Perquisites_lbl)
+            break
+          when = $_ded
+            do Print-Ded-Hdr
+            break
+        end-evaluate
+end-procedure
+
+
+
+
+!***********************************************************************************
+!Cons-Prev-Totals
+!*****************************************************************************
+Begin-Procedure Cons-Prev-Totals
+Evaluate $prevsection
+          When = $exm
+           do Print-Exm-Total
+           break
+          When = $prq
+           do Print-Exm-Total
+           break
+          when = $ded
+           do Print-Ded-total
+           break
+end-evaluate
+
+let $totalval = 0
+end-procedure
+
+!***********************************************************************************
+!Print-Ded-Hdr
+!*****************************************************************************
+Begin-Procedure Print-Ded-Hdr
+let #vdep = 2
+Do Print-Hline('B')
+graphic (#rowpos,#beg_vrt,#vdep) vert-line
+      print $Deductions_lbl (+1,+1) bold
+      graphic (#rowpos,#Acol_vrt,#vdep) vert-line
+      print $Declared_lbl (+1,+1) bold
+      graphic (#rowpos,#Bcol_vrt,#vdep) vert-line
+      print $Actual_lbl (+1,+1) bold
+      graphic (#rowpos,#Ccol_vrt,#vdep) vert-line
+      let #rowpos = #rowpos + #vdep
+      do Print-Hline('B')
+end-procedure
+
+!*****************************************************************************
+!Get-Ded-Dec
+!*****************************************************************************
+Begin-Procedure Get-Ded-Dec
+
+begin-SELECT
+sum(A.GPIN_TAX_DECL_AMT) &decl_amt
+
+       let #ded_dec = &decl_amt
+
+FROM PS_GPIN_TDS_DEDN A,
+PS_GPIN_IT_EE_DTL B
+WHERE A.EMPLID = B.EMPLID
+AND A.GPIN_TAX_YEAR = B.GPIN_TAX_YEAR
+AND A.PIN_NUM = B.PIN_NUM
+AND A.EMPLID = $emplid
+AND B.PIN_NUM = &DTL.PIN_NUM
+
+end-select
+
+end-procedure
+
+
+!*****************************************************************************
+!Get-80EE-PinNum
+!*****************************************************************************
+Begin-Procedure Get-80EE-PinNum
+
+begin-SELECT
+A.PIN_NUM
+
+       let #80EEPin_Num = &A.PIN_NUM
+
+FROM PS_GP_PIN A
+WHERE A.PIN_NM = 'SECT 80EE'
+
+end-select
+
+end-procedure !Get-80EE-PinNum
+
+!*****************************************************************************
+!Get-SECT80EE-Dec
+!*****************************************************************************
+Begin-Procedure Get-Sect80EE-Dec
+
+Begin-select
+sum(A.GPIN_TAX_DECL_AMT) &decl_amt1
+
+   let #ded_dec = &decl_amt1
+
+FROM PS_GPIN_TDS_OTH A, PS_GP_PIN B 
+WHERE A.PIN_NUM=B.PIN_NUM 
+AND B.PIN_NM='SECT 80EE' 
+AND A.GPIN_TAX_YEAR=#tax_year 
+AND A.EMPLID=$emplid
+end-select
+
+End-Procedure !Get-Sect80EE-Dec
+
+!*****************************************************************************
+!Print-Ded-Total
+!*****************************************************************************
+Begin-Procedure Print-Ded-Total
+
+      Let #vdep = 2
+      do Print-Hline('B')
+      do print-row-label($Total_lbl,'B',#vdep)
+      Let #t = #Acol_vrt + 1
+      print #Tot_ded_dec (+1,#t) edit 99,99,99,99,99,999.99
+      Let #t = #Bcol_vrt + 1
+      print #Totalval (,#t) edit 99,99,99,99,99,999.99
+      Let #rowpos = #rowpos + #vdep
+      do Print-Hline('B')
+      Let #rowpos = #rowpos + 1
+      let #Totalval = 0
+
+End-Procedure
+
+!***********************************************************************************
+!Print-Prev-comp-hdr
+!*****************************************************************************
+Begin-procedure Print-Prev-comp-hdr
+!Print the Header
+let #vdep = 2
+let #rowpos = #rowpos + 2
+do Print-hline('B')
+graphic (#rowpos,#beg_vrt,#vdep) vert-line
+print $Prev_Emplmt_Dtls_lbl (+1,+1) bold
+graphic (#rowpos,#Ccol_vrt,1) vert-line
+!let #rowpos = #rowpos + 1
+!do Print-exm-hdr ($Components_lbl)
+      graphic (#rowpos,#Acol_vrt,#vdep) vert-line
+      print $Declared_lbl (+1,+1) bold
+      graphic (#rowpos,#Bcol_vrt,#vdep) vert-line
+      print $Actual_lbl (+1,+1) bold
+      graphic (#rowpos,#Ccol_vrt,#vdep) vert-line
+      let #rowpos = #rowpos + #vdep
+       do Print-hline('B')
+do print-row-label('','A',1)
+!let #rowpos = #rowpos + 1
+let #tot_prev_comp = 0
+end-procedure
+
+!***********************************************************************************
+!Print-Prev-Comp
+!*****************************************************************************
+Begin-procedure Print-Prev-Comp
+
+if #rowpos > #rowlimit
+    do print-hline('B')
+    new-page
+    let #_end_page = #_end_page + 1
+    do reset-rowpos
+    do print-rpt-hdr
+end-if
+
+do print-prev-comp-hdr
+
+begin-select
+B.GPIN_ITCS_LBL
+A.GPIN_TAX_DECL_AMT
+A.GPIN_TDS_APPR_AMT
+
+  if &A.GPIN_TAX_DECL_AMT <> 0 or &A.GPIN_TDS_APPR_AMT <> 0
+
+    if #rowpos > #rowlimit ! If further data exists to be printed, then issue a new-page command and print rpt hdr and prev company hdr in the new page before printing data
+    do print-hline('B')
+    new-page
+    let #_end_page = #_end_page + 1
+    let #end_page = #end_page + 1     !When the data had spanned to the next page, the #end_page must be incremented accordingly to insert correct endpage no in Insert-ePay-Guide-Data
+    do reset-rowpos
+    do print-rpt-hdr
+    do print-prev-comp-hdr
+    end-if
+
+   do print-row-label(&B.GPIN_ITCS_LBL,'B',1)
+   do Print-Total-val (&A.GPIN_TAX_DECL_AMT, #rowpos, #Acol_vrt) ! print the "total" value
+   let #rowpos = #rowpos - 1
+   do Print-Total-val (&A.GPIN_TDS_APPR_AMT, #rowpos, #Bcol_vrt) ! print the "total" value
+   let #tot_prev_comp_decl = #tot_prev_comp_decl + &A.GPIN_TAX_DECL_AMT
+   let #tot_prev_comp_appr = #tot_prev_comp_appr + &A.GPIN_TDS_APPR_AMT  
+
+  end-if   
+   
+FROM PS_GPIN_TDS_PREV A,
+PS_GPIN_ITCS_PREV B
+WHERE A.EMPLID = $emplid
+AND A.PIN_NUM = B.PIN_NUM
+AND A.GPIN_TAX_YEAR = #tax_year
+AND B.GPIN_ITCS_TMPL_ID = $tmplid
+AND  B.EFFDT = 
+        (SELECT MAX(B_ED.EFFDT) FROM PS_GPIN_ITCS_PREV B_ED 
+        WHERE B_ED.GPIN_ITCS_TMPL_ID = B.GPIN_ITCS_TMPL_ID 
+          AND B_ED.EFFDT <=$AsOfToday)
+
+end-select
+
+    do Print-hline('B')
+!    Let #rowpos = #rowpos + 1
+   do print-row-label($Total_lbl,'B',1)
+   do Print-Total-val (#tot_prev_comp_decl, #rowpos, #Acol_vrt) ! print the "total" value
+   let #rowpos = #rowpos - 1
+   do Print-Total-val (#tot_prev_comp_appr, #rowpos, #Bcol_vrt) ! print the "total" value
+   do Print-hline('B')   
+end-procedure
+
+
+!***********************************************************************************
+!Print-HRA-hdr
+!*****************************************************************************
+begin-procedure Print-HRA-CLA-hdr ($type)
+let #vdep = 2
+let #_rowpos = #_rowpos + 2
+
+if $type = 'HRA'
+    let $hdrname = $_HRA_Details_lbl
+else
+    let $hdrname = $_CLA_Details_lbl
+end-if
+
+if #_rowpos > #_rowlimit - 5
+  new-page
+  let #_end_page = #_end_page + 1
+  do reset-rowpos
+  do print-rpt-hdr
+end-if
+
+! _____________
+! | HRA        |
+do Print-Hline('C')
+graphic (#_rowpos,#_beg_vrt,#vdep) vert-line
+print $hdrname (+1,+1) bold
+graphic (#_rowpos,#_last_vrt,#vdep) vert-line
+Let #_rowpos = #_rowpos + #vdep
+do Print-Hline('C')
+
+! ______________________________________
+! | From   |To     |Rent    |Metro    |
+graphic (#_rowpos,#_beg_vrt,#vdep) vert-line
+print $_Frm_Dt_lbl (+1,+1) bold
+let #t = (#_beg_vrt+30)
+graphic (#_rowpos,#t,2) vert-line
+print $_To_Dt_lbl (+1,+1) bold
+graphic (#_rowpos,#_Bcol_vrt,2) vert-line
+print $_Rent_lbl (+1,+1) bold
+graphic (#_rowpos,#_Ccol_vrt,2) vert-line
+print $_Metro_lbl (+1,+1) bold
+graphic (#_rowpos,#_last_vrt,2) vert-line
+let #_rowpos = #_rowpos + 1
+do Print-Hline ('C')
+let #_rowpos = #_rowpos + 1
+end-procedure
+
+!***********************************************************************************
+!Print-HRA-CLA
+!*****************************************************************************
+Begin-procedure Print-HRA-CLA($type)
+let $paygroup = ''
+let $payentity = ''
+let $freeze_dt = ''
+
+if $type = 'HRA'
+ Let $accmtype = '01'
+else
+ let $accmtype = '02'
+end-if
+do Print-HRA-CLA-hdr ($type)
+Let $firstrow = 'Y'
+
+BEGIN-SELECT
+PAYGRP.GP_PAYGROUP
+PYENT.PAY_ENTITY 
+
+   let $paygroup = &PAYGRP.GP_PAYGROUP
+   let $payentity = &PYENT.PAY_ENTITY
+
+FROM PS_JOB J, 
+PS_GP_PYGRP PAYGRP, 
+PS_GP_PYENT PYENT 
+WHERE J.EMPLID = $_prevemplid
+AND J.GP_PAYGROUP = PAYGRP.GP_PAYGROUP 
+AND PAYGRP.PAY_ENTITY = PYENT.PAY_ENTITY 
+AND J.EFFDT = (SELECT MAX(J1.EFFDT) 
+        FROM PS_JOB J1 
+        WHERE J1.EMPLID = J.EMPLID 
+        AND J1.EMPL_RCD = J.EMPL_RCD 
+        AND J1.HR_STATUS = J.HR_STATUS) 
+AND J.EFFSEQ = (SELECT MAX(J2.EFFSEQ) 
+        FROM PS_JOB J2 
+        WHERE J2.EMPLID = J.EMPLID 
+        AND J2.EMPL_RCD = J.EMPL_RCD 
+        AND J2.EFFDT = J.EFFDT 
+        AND J2.HR_STATUS = J.HR_STATUS) 
+AND J.HR_STATUS = 'A'
+END-SELECT
+
+BEGIN-SELECT
+A.GPIN_TD_FREEZE_DT
+
+   let $freeze_dt = &A.GPIN_TD_FREEZE_DT
+
+FROM PS_GPIN_SSTD_ADMEE A
+WHERE A.EMPLID = $_prevemplid
+END-SELECT
+
+if $freeze_dt = ''
+BEGIN-SELECT
+B.GPIN_TD_FREEZE_DT
+
+   let $freeze_dt = &B.GPIN_TD_FREEZE_DT
+
+FROM PS_GPIN_SSTD_ADMPG B
+WHERE B.GP_PAYGROUP = $paygroup
+END-SELECT
+end-if
+
+if $freeze_dt = ''
+BEGIN-SELECT
+C.GPIN_TD_FREEZE_DT
+
+   let $freeze_dt = &C.GPIN_TD_FREEZE_DT
+
+FROM PS_GPIN_SSTD_ADMPE C
+WHERE C.PAY_ENTITY = $payentity
+END-SELECT
+end-if
+
+LET $hra_type = ''
+
+BEGIN-SELECT
+H.GPIN_HRA_RENT_PAID
+H.GPIN_HRA_RENT_APPR
+H.EFFDT
+H.GPIN_HRA_LOCATION
+H.GPIN_TDS_VERIFIED
+H.GPIN_HRA_TYPE
+
+   
+   
+    if $firstrow <> 'Y'
+     if ( &H.EFFDT >= $_doj and &H.EFFDT >= $_beg_dt)
+                 if $_HRAfromdt < $_ty_beg_dt
+              
+       let $_HRAfromdt = $_ty_beg_dt
+     end-if
+          
+     if #_rowpos > #_rowlimit
+       do print-hline('C')
+       new-page
+       let #_end_page = #_end_page + 1
+       do reset-rowpos
+       do print-rpt-hdr
+       do print-HRA-CLA ($type)
+     end-if
+
+     let $_HRAtodt = dateadd(&H.EFFDT,'day',-1)
+     LET $from = edit($_HRAfromdt , 'DD/MM/YYYY')
+     LET $to = edit($_HRAtodt , 'DD/MM/YYYY')
+     
+     if $hra_type = $accmtype
+        
+
+   do Print-HRA-row ($from,$to,#rentpm, $metro)
+     end-if
+
+     Let $Metro =&H.GPIN_HRA_LOCATION
+
+     if &H.GPIN_TDS_VERIFIED = 'N'
+        if $_prd_end_dt <= $freeze_dt
+           Let #rentpm = &H.GPIN_HRA_RENT_PAID
+                               
+        else
+           Let #rentpm = 0
+                              
+        end-if
+     else
+        Let #rentpm = &H.GPIN_HRA_RENT_APPR
+                            
+     end-if
+
+       end-if
+     end-if
+
+      Let $_HRAfromdt = &H.EFFDT
+      Let $Metro =&H.GPIN_HRA_LOCATION
+      
+     if &H.GPIN_TDS_VERIFIED = 'N'
+        if $_prd_end_dt <= $freeze_dt
+           Let #rentpm = &H.GPIN_HRA_RENT_PAID
+                             
+        else
+           Let #rentpm = 0
+                               
+        end-if
+     else
+        Let #rentpm = &H.GPIN_HRA_RENT_APPR
+                            
+     end-if
+
+       let $firstrow = 'N'
+      let $hra_type = &H.GPIN_HRA_TYPE
+       
+FROM PS_GPIN_TDS_HRA H
+WHERE H.EMPLID = $_prevemplid
+AND (H.GPIN_HRA_TYPE = $accmtype or H.GPIN_HRA_TYPE = '03')
+AND (H.EFFDT BETWEEN  $_ty_beg_dt AND $_prd_end_dt)
+UNION
+SELECT H1.GPIN_HRA_RENT_PAID,
+H1.GPIN_HRA_RENT_APPR,
+H1.EFFDT,
+H1.GPIN_HRA_LOCATION,
+H1.GPIN_TDS_VERIFIED,
+H1.GPIN_HRA_TYPE
+FROM PS_GPIN_TDS_HRA H1
+WHERE H1.EMPLID = $_prevemplid
+AND H1.GPIN_HRA_TYPE = $accmtype
+AND H1.EFFDT = (SELECT MAX(H2.EFFDT)
+                FROM PS_GPIN_TDS_HRA H2
+                WHERE H2.EMPLID = H1.EMPLID
+                AND H2.GPIN_HRA_TYPE = $accmtype
+                AND H2.EFFDT BETWEEN $_ty_beg_dt AND $_prd_end_dt)
+AND NOT EXISTS (SELECT H3.EFFDT FROM PS_GPIN_TDS_HRA H3 
+                WHERE H1.EMPLID = H3.EMPLID 
+                AND H3.EFFDT BETWEEN $_ty_beg_dt AND $_prd_end_dt
+                AND H3.GPIN_HRA_TYPE = '03')
+UNION
+SELECT H1.GPIN_HRA_RENT_PAID,
+H1.GPIN_HRA_RENT_APPR,
+H1.EFFDT,
+H1.GPIN_HRA_LOCATION,
+H1.GPIN_TDS_VERIFIED,
+H1.GPIN_HRA_TYPE
+FROM PS_GPIN_TDS_HRA H1
+WHERE H1.EMPLID = $_prevemplid
+AND (H1.GPIN_HRA_TYPE = $accmtype or H1.GPIN_HRA_TYPE = '03')
+AND H1.EFFDT BETWEEN $_doj AND $_prd_end_dt
+AND EXISTS (SELECT H3.EFFDT FROM PS_GPIN_TDS_HRA H3 
+                WHERE H1.EMPLID = H3.EMPLID 
+                AND H3.EFFDT >= $_ty_beg_dt
+                AND H3.GPIN_HRA_TYPE = '03')
+AND NOT EXISTS (SELECT EMPLID, EFFDT, GPIN_HRA_TYPE, GPIN_HRA_RENT_PAID
+                FROM PS_GPIN_TDS_HRA H
+                WHERE H.EMPLID = $_prevemplid
+                AND H.GPIN_HRA_TYPE = $accmtype
+                AND (H.EFFDT BETWEEN  $_ty_beg_dt AND $_prd_end_dt)) 
+
+ORDER BY 3
+end-select
+
+if $firstrow <> 'Y'
+     if $_HRAfromdt < $_ty_beg_dt
+       let $_HRAfromdt = $_ty_beg_dt
+     end-if
+     let  $_HRAtodt = $_end_dt
+     LET $from = edit($_HRAfromdt , 'DD/MM/YYYY')
+     LET $to = edit($_HRAtodt , 'DD/MM/YYYY')
+
+     if $hra_type = $accmtype
+     do Print-HRA-row ($from,$to,#rentpm, $metro)
+     end-if
+end-if
+do Print-Hline ('C')
+let #_rowpos = #_rowpos + 1
+end-procedure
+
+!*****************************************************************************
+!Print-HRA-row
+!*****************************************************************************
+Begin-Procedure Print-HRA-row($strfromdt, $strtodt, #rentpm, $MetroYN)
+
+ if $MetroYN = '01'
+     let $MetroYN = 'Yes'
+ else
+     let $MetroYN = 'No'
+ end-if
+
+Let #vdep = 1
+graphic (#_rowpos,#_beg_vrt,#vdep) vert-line
+print $strfromdt (+1,+1)
+let #t = (#_beg_vrt+30)
+graphic (#_rowpos,#t,#vdep) vert-line
+print $strtodt (+1,+1)
+graphic (#_rowpos,#_Bcol_vrt,#vdep) vert-line
+print #rentpm (+1,+1) bold
+graphic (#_rowpos,#_Ccol_vrt,#vdep) vert-line
+print $MetroYN (+1,+1) bold
+graphic (#_rowpos,#_last_vrt,#vdep) vert-line
+let #_rowpos = #_rowpos + 1
+end-procedure
+
+!***********************************************************************************
+!Print-Bal-tax
+!*****************************************************************************
+Begin-procedure Print-Bal-tax
+    let #bal_tax = #tot_tax_pybl - #tax_paid
+    if #bal_tax < 0
+       let #bal_tax = 0
+    end-if
+    do Print-Row-Label($Bal_Tax_Payable_lbl,'C',2)
+    let #t = #Ccol_vrt + 1
+    print #bal_tax (+1, #t) edit 99,99,99,99,99,999.99
+    let #rowpos = #rowpos + 2
+    do Print-Hline('C')! to close the CL table with a Horizontal line
+    let #rowpos = #rowpos + 1
+End-procedure
+
+!*****************************************************************************
+!Print-Exm-Hdr
+!*****************************************************************************
+Begin-Procedure Print-Exm-Hdr ($TotStr)
+         Let #vdep = 2
+         do Print-Hline ('A')
+         graphic (#_rowpos,#_beg_vrt,#vdep) vert-line
+         print $TotStr (+1,+1) bold
+         graphic (#_rowpos,#_Acol_vrt,#vdep) vert-line
+         print $_Amount_lbl (+1,+1) bold
+         graphic (#_rowpos,#_Bcol_vrt,#vdep) vert-line
+         Let #_rowpos = #_rowpos + #vdep
+         do Print-Hline ('A')
+End-Procedure
+
+!*****************************************************************************
+!Print-Exm-Total
+!*****************************************************************************
+Begin-Procedure Print-Exm-Total
+      !Let #rowpos = #rowpos + 1
+      Let #vdep = 2
+      do Print-Hline('A')
+      graphic (#rowpos,#beg_vrt,#vdep) vert-line
+      print $Total_lbl (+1,+1)
+      graphic (#rowpos,#Acol_vrt,#vdep) vert-line
+      print #Totalval (+1,+1) edit 99,99,99,99,99,999.99
+      graphic (#rowpos,#Bcol_vrt,#vdep) vert-line
+      Let #rowpos = #rowpos + #vdep
+      do Print-Hline('A')
+      Let #rowpos = #rowpos + 1
+      let #Totalval = 0
+End-Procedure
+
+!*****************************************************************************
+!Reset-RowPos
+!*****************************************************************************
+Begin-Procedure Reset-RowPos
+let #rowpos = 10
+End-Procedure
+
+!*****************************************************************************
+!Print-Line
+!*****************************************************************************
+Begin-Procedure Print-HLine($endcol)
+Let #r = #_rowpos
+if $endcol = 'A'
+let #l =  #_Bcol_vrt - #_beg_vrt
+end-if
+
+if $endcol = 'B'
+let #l =  #_Ccol_vrt - #_beg_vrt
+end-if
+if $endcol = 'C'
+let #l =  #_last_vrt - #_beg_vrt
+end-if
+
+graphic (#r,#_beg_vrt,#l) horz-line
+End-Procedure
+
+!*****************************************************************************
+!Print-Aval
+!*****************************************************************************
+Begin-Procedure Print-Aval
+      !graphic (#rowpos,#Acol_vrt,2) vert-line
+      let #r= #rowpos + 1
+      let #c= #Acol_vrt + 1
+      print #Aval (#r,#c) edit 99,99,99,99,99,999.99
+      !graphic (#rowpos,#Bcol_vrt,2) vert-line
+End-Procedure
+
+!*****************************************************************************
+!Print-Bval
+!*****************************************************************************
+Begin-Procedure Print-Bval!(#val)
+      let #r= #rowpos + 1
+      let #c= #Bcol_vrt + 1
+      print #Bval (#r,#c)  edit 99,99,99,99,99,999.99
+End-Procedure
+
+!*****************************************************************************
+!Print-Total-val
+!*****************************************************************************
+Begin-Procedure Print-Total-val (#val,#r,#c)
+      let #r= #r + 1
+      let #c= #c + 1
+      print #val (#r,#c) edit 99,99,99,99,99,999.99
+      let #_rowpos = #_rowpos + 1
+End-Procedure
+
+!*****************************************************************************
+!Print-Row-Label
+!*****************************************************************************
+Begin-Procedure Print-Row-Label ($lbl,$col,#vdep)
+      !Let #vdep = 1
+      graphic (#_rowpos,#_beg_vrt,#vdep) vert-line
+      print $lbl (+1,+1)
+      graphic (#_rowpos,#_Acol_vrt,#vdep) vert-line
+      graphic (#_rowpos,#_Bcol_vrt,#vdep) vert-line
+
+      if $col >= 'B'
+      graphic (#_rowpos,#_Ccol_vrt,#vdep) vert-line
+      end-if
+
+      if $col  = 'C'
+      graphic (#_rowpos,#_last_vrt,#vdep) vert-line
+      end-if
+End-Procedure
+!*****************************************************************************
+!Print-Rpt-Hdr
+!*****************************************************************************
+Begin-Procedure Print-Rpt-Hdr
+
+  let #hdrbox_dep = 7
+  let #hdrbox_wid = 120
+  graphic (#rowpos,10,#hdrbox_wid) box #hdrbox_dep
+  Print $report_Title (#rowpos,+1) bold
+  let #a = 30
+  let #t = #beg_vrt + 1
+  let #rowpos = #rowpos + 2
+  Print $Emp_Code_lbl (#rowpos,#t)
+  Print &J.EMPLID (#rowpos,#a)
+  Print $Emp_Name_lbl (#rowpos,#Acol_vrt)
+  Print &N.NAME_DISPLAY (#rowpos,#Bcol_vrt)
+  let #rowpos = #rowpos + 1
+  Print $Asesmnt_Year_lbl (#rowpos,#t)
+  Print $Assyear (,#a)
+  Print $Previous_Year_lbl (#rowpos,#Acol_vrt)
+  Print $Prevyear (,#Bcol_vrt)
+  let #rowpos = #rowpos + 1
+  Print $Gender_lbl (#rowpos,#t)
+  Print &D.SEX (,#a)
+  Print $PAN_lbl (#rowpos,#Acol_vrt)
+  Print $pan (,#Bcol_vrt)
+  let #rowpos = #rowpos + 1
+  Print $Date_of_Joining_lbl (#rowpos,#t)
+  LET $doj_str = edit($doj , 'DD/MM/YYYY')
+  Print $doj_str (#rowpos,#a)
+  do Get-Month(#month, $mth_str)
+  Print $Month_lbl (#rowpos, #Acol_vrt)
+  Print $mth_str (#rowpos, #Bcol_vrt)
+  let #rowpos = #rowpos + 2
+
+
+End-Procedure !Print-Rpt-Hdr
+!*****************************************************************************
+!Get-Month
+!*****************************************************************************
+Begin-procedure Get-Month (#mth, :$month_str)
+  Evaluate #Mth
+   when = 1
+      let $Month_str = 'January - ' || $_Year
+      break
+   when = 2
+      let $Month_str = 'February - ' || $_Year
+      break
+   when = 3
+       let $Month_str = 'March - ' || $_Year
+       break
+   when = 4
+       let $Month_str = 'April - ' || $_Year
+      break
+   when = 5
+      let $Month_str = 'May - ' || $_Year
+      break
+   when = 6
+       let $Month_str = 'June - ' || $_Year
+      break
+   when = 7
+       let $Month_str = 'July - ' || $_Year
+      break
+   when = 8
+       let $Month_str = 'August - ' || $_Year
+      break
+   when = 9
+       let $Month_str = 'September - ' || $_Year
+      break
+   when = 10
+       let $Month_str = 'October - ' || $_Year
+      break
+   when = 11
+       let $Month_str = 'November - ' || $_Year
+      break
+   when = 12
+       let $Month_str = 'December - ' || $_Year
+      break
+  end-evaluate
+end-procedure
+!*****************************************************************************
+!Print
+!*****************************************************************************
+Begin-Procedure Print-Inc-Data
+
+      graphic (#rowpos,#beg_vrt,4) vert-line
+      print &DTL.GPIN_ITCS_LBL (+1,+1)
+      graphic (#rowpos,#Acol_vrt,4) vert-line
+      graphic (#rowpos,#Bcol_vrt,4) vert-line
+      graphic (#rowpos,#Ccol_vrt,4) vert-line
+      graphic (#rowpos,#last_vrt,4) vert-line
+      graphic (+2,#beg_vrt,#hline_len) horz-line
+      let #rowpos = #rowpos + 2
+
+End-Procedure !Print-Inc-Data
+
+!*****************************************************************************
+!Print-Inc-Hdr
+!*****************************************************************************
+Begin-Procedure Print-Inc-Hdr
+         graphic (#rowpos,#beg_vrt,#hline_len) horz-line
+         graphic (#rowpos,#beg_vrt,2) vert-line
+         print $Heads_of_Income_lbl (+1,+1) bold
+         graphic (#rowpos,#Acol_vrt,2) vert-line
+         print $Actual_lbl (+1,+1) bold
+         graphic (#rowpos,#Bcol_vrt,2) vert-line
+         print $Projected_lbl (+1,+1) bold
+         graphic (#rowpos,#Ccol_vrt,2) vert-line
+         print $Total_lbl (+1,+1) bold
+         graphic (#rowpos,#last_vrt,2) vert-line
+         graphic (+1,#beg_vrt,#hline_len) horz-line
+
+         let #rowpos = #rowpos + 2
+
+End-Procedure !Print-Inc
+
+
+!***************************************************
+!Get-Empl_Pers_Dtls
+!***************************************************
+
+Begin-Procedure Get-Empl-Pers-Dtls !($l_emplid, #l_emplrcd)
+
+let $pan = ' '
+
+BEGIN-SELECT
+J.EMPLID
+N.NAME_DISPLAY
+D.SEX
+J.EFFDT
+NID.NATIONAL_ID
+NID.NATIONAL_ID_TYPE
+
+    Let $doj = &J.EFFDT
+
+    if &NID.NATIONAL_ID_TYPE = 'PAN'
+       let $pan = &NID.NATIONAL_ID
+    end-if
+
+FROM PS_JOB J,
+PS_NAMES N,
+PS_PERS_DATA_EFFDT D,
+PS_PERS_NID NID
+
+WHERE J.EMPLID = &DTL.EMPLID
+AND J.EMPL_RCD = &DTL.EMPL_RCD
+AND J.EMPLID = N.EMPLID
+AND J.EMPLID = D.EMPLID
+AND J.EMPLID = NID.EMPLID
+
+
+AND J.EFFDT = (SELECT MAX(J1.EFFDT) FROM PS_JOB J1 WHERE J1.EMPLID = J.EMPLID AND J1.EMPL_RCD = J.EMPL_RCD
+         AND J1.HR_STATUS = J.HR_STATUS AND J.ACTION = J1.ACTION)
+AND J.EFFSEQ = (SELECT MAX(J2.EFFSEQ) FROM PS_JOB J2 WHERE J2.EMPLID = J.EMPLID AND J2.EMPL_RCD = J.EMPL_RCD
+        AND J2.EFFDT = J.EFFDT AND J2.HR_STATUS = J.HR_STATUS AND J2.ACTION = J.ACTION)
+AND J.HR_STATUS = 'A'
+AND J.ACTION IN('HIR','REH')
+
+AND N.NAME_TYPE = 'PRI'
+AND N.EFFDT = (SELECT MAX(N1.EFFDT)FROM PS_NAMES N1 WHERE N1.EMPLID = N.EMPLID AND N1.NAME_TYPE = N.NAME_TYPE)
+
+AND D.EFFDT = (SELECT MAX(D1.EFFDT) FROM PS_PERS_DATA_EFFDT D1
+WHERE D1.EMPLID =D.EMPLID)
+
+AND NID.COUNTRY ='IND' AND NID.PRIMARY_NID = 'Y'
+END-SELECT
+
+
+BEGIN-SELECT
+TD.EMPLID
+TD.EFFDT
+
+    Let $ter_Dt = &TD.EFFDT
+
+
+FROM PS_JOB TD
+WHERE TD.EMPLID = $emplid
+AND TD.EMPL_RCD = #emplrcd
+AND TD.EFFDT = (SELECT MAX(TD1.EFFDT) FROM PS_JOB TD1 WHERE TD1.EMPLID = TD.EMPLID AND TD1.EMPL_RCD = TD.EMPL_RCD
+        AND TD1.HR_STATUS = TD.HR_STATUS AND TD.ACTION = TD1.ACTION
+    AND TD1.EFFDT BETWEEN $ty_beg_dt_tmp AND $prd_end_dt_tmp)
+
+AND TD.EFFSEQ = (SELECT MAX(TD2.EFFSEQ) FROM PS_JOB TD2 WHERE TD2.EMPLID = TD.EMPLID AND TD2.EMPL_RCD = TD.EMPL_RCD
+        AND TD2.EFFDT = TD.EFFDT AND TD2.HR_STATUS = TD.HR_STATUS AND TD2.ACTION = TD.ACTION
+    AND TD2.EFFDT BETWEEN $ty_beg_dt_tmp AND $prd_end_dt_tmp)
+AND TD.HR_STATUS = 'I'
+AND TD.ACTION ='TER'
+END-SELECT
+
+
+
+
+    if $ter_dt < $ty_end_dt and $ter_dt <> ''
+    let $end_dt = $ter_dt
+    else
+    let $end_dt = $ty_end_dt
+    end-if
+
+    if $doj > $ty_beg_dt
+    let $beg_dt = $doj
+    else
+    let $beg_dt = $ty_beg_dt
+    end-if
+
+
+    #ifdef DB2UNIX
+
+
+    let $end_dt = substr($end_dt, 1, 10)
+    let $beg_dt = substr($beg_dt, 1, 10)
+    let $ter_dt = substr($ter_dt, 1, 10)
+    let $doj = substr($doj, 1, 10)
+
+    #ENDIF
+
+    #ifdef DB2DDCS
+
+
+    let $end_dt = substr($end_dt, 1, 10)
+    let $beg_dt = substr($beg_dt, 1, 10)
+    let $ter_dt = substr($ter_dt, 1, 10)
+    let $doj = substr($doj, 1, 10)
+
+    #ENDIF
+
+
+    #ifdef DB2ALL
+
+
+    let $end_dt = substr($end_dt, 1, 10)
+    let $beg_dt = substr($beg_dt, 1, 10)
+    let $ter_dt = substr($ter_dt, 1, 10)
+    let $doj = substr($doj, 1, 10)
+
+    #ENDIF
+
+End-Procedure !Get-Empl_Pers_Dtls
+
+!
+!***********************************************************************
+! For ePay Purposes: Online ITCS                                       *
+! Procedure : GP-ePay-Init                                             *
+! Initialize variables that we'll use for ePay processing              *
+!***********************************************************************
+begin-procedure GP-ePay-Init
+  !e-Pay functionality is being used to spilt the files and post it in the repository
+  Do Check-ePay-installed ($ePay_Installed)
+
+    If $ePay_Installed = 'Y'
+     Move 'GPINIT01' to $ReportID
+
+      let #eV4 =  to_number($prcs_process_instance)
+
+      !* have the Output Working Directory from the Process parameters table
+      do Get-Output-Wrk-Directory(#eV4, $PRCSOUTPUTDIR, $PRCSNAME)
+
+      !* have the URL id from the Payslip option table
+      do Get-ePay-URLid ('IND', $eV18)
+
+      !* Global ePay variable settings used in GP-ePay procedures in this SQR
+      let $eV1 = $prcs_oprid
+      let $eV2 = $prcs_run_cntl_id
+      let $eV3 = $ReportID
+
+      ! when we do not pass a control file
+       Let $GP_PSLP_CTLFILE = ' '
+       Let $FILELAYOUT = ' '
+
+    End-If
+
+end-procedure !GP-ePay-Init
+
+!***********************************************************************
+! For ePay Purposes: Online ITCS                                       *
+! Procedure : GP-ePay-Guide                                            *
+! Insert one row per ITCS into the temporary guide table for ePay      *
+!***********************************************************************
+
+begin-procedure GP-ePay-Guide
+
+
+    #ifdef DB2UNIX
+    let $prd_begin_dt = substr($prd_begin_dt,1,10)
+    let $prd_end_dt = substr($prd_end_dt,1,10)
+    let $pymt_dt = substr($pymt_dt,1,10)
+    #ENDIF
+
+    #ifdef DB2DDCS
+    let $prd_begin_dt = substr($prd_begin_dt,1,10)
+    let $prd_end_dt = substr($prd_end_dt,1,10)
+    let $pymt_dt = substr($pymt_dt,1,10)
+    #ENDIF
+
+    #ifdef DB2ALL
+    let $prd_begin_dt = substr($prd_begin_dt,1,10)
+    let $prd_end_dt = substr($prd_end_dt,1,10)
+    let $pymt_dt = substr($pymt_dt,1,10)
+    #ENDIF
+
+
+
+    Let $rptid = lower($ReportID)
+ If $ePay_Installed = 'Y'
+
+   Let $strEmplRcd = to_char(#Empl_Rcd)
+   let $strEmplRcd  = rtrim($strEmplRcd,' ')
+   let $strEmplRcd  = ltrim($strEmplRcd,' ')
+
+   let $eV5  = ltrim(rtrim($Emplid, ' '),' ')
+   LET $eV6 = ltrim(rtrim($Cal_Run_ID, ' '),' ')
+   let $eV7  = 'GPIND'
+   let $eV8  = $PrevYear  || '_' || $eV5 ||'_' || $strEmplRcd        ! gp epay payslip id
+   !let $eV9  = $pymt_dt_tmp
+   let $eV9  = $pymt_dt
+   let $eV10 = $prd_end_dt
+   let $eV11 = $prd_begin_dt
+   let #eV12 = 0 ! net pay is not required for ITCS
+
+   let $eV13 = 'IT Sheet for year ' || $Prevyear   ! Description column.
+
+   let $eV14 = ' ' ! we are not populating the run type
+   let $eV15 = 'ORIG' ! status ORIGINAL
+   let $eV16 = $eV5 ||'_'||$strEmplRcd|| '_' ||$eV7 || '_' ||$eV10 ||'_'|| $rptid ||'.pdf'       !sysfilename of the payslip pdf
+   let $eV17 = $eV16                                                           !userfilename  - what the payee sees filename as
+   let #eV19 = #Begin_Page                                                !begin page number of payslip in output report
+   let #eV20 = #End_Page                                                  !end page number of payslip in output report
+
+    do Delete-epay-Guide-Data !Delete any existing row for the tax year. There can be only single row entry for an year.
+    do Insert-ePay-Guide-Data($eV1,$eV2,$eV3,#eV4,$eV5,$eV6,$eV7,$eV8,$eV9,$eV10,$eV11,#eV12,$eV13,$eV14,$eV15,$eV16,$eV17,$eV18,#eV19,#eV20)
+
+ End-If
+
+end-procedure ! GP-ePay-Guide
+
+!***************************************************
+!Delete-epay-Guide-Data
+!***************************************************
+begin-procedure Delete-epay-Guide-Data
+begin-sql
+DELETE FROM PS_GP_SS_PSLP_GDE
+WHERE EMPLID = $eV5
+AND GP_PSLP_SRCPRODUCT = 'GPIND'
+AND GP_PSLP_ID = $eV8
+AND PRD_END_DT = $ty_end_dt_tmp
+AND PRD_BGN_DT = $ty_beg_dt_tmp
+end-sql
+end-procedure
+
+!***********************************************************************
+! For ePay Purposes: Online ITCS                                       *
+! Procedure : GP-ePay-Control                                          *
+! Insert one row per report into the epay run control table            *
+!***********************************************************************
+begin-procedure GP-ePay-Control
+
+ If $ePay_Installed = 'Y'
+
+   Let $rptid = lower($ReportID)
+   let $eCV7  = $rptid || '_' || $prcs_process_instance || '.PDF'
+   let $eCV8  = rtrim($PRCSOUTPUTDIR, ' ')
+
+    do Insert-ePay-RunControl($eV1,$eV2,$eV3,'Y', 'Y', $GP_PSLP_CTLFILE, $eCV7,$eCV8,' ',$FILELAYOUT,#eV4,$eV18,'Y')
+
+ End-If
+
+end-procedure !GP-ePay-Control
+
+
+
+Begin-Procedure Get-Strings-Table
+   do Init_Report_Translation ($ReportID,$Language_Code)
+   do Append_Report_Translation ('GPINIT01')
+   do Get_Field_Information ('GPINIT01','REPORT_TITLE', $Report_Title,                 #DW)
+   do Get_Field_Information ('GPINIT01','ACTUAL',       $Actual_lbl,                   #DW)
+   do Get_Field_Information ('GPINIT01','AMOUNT',       $Amount_lbl,                   #DW)
+   do Get_Field_Information ('GPINIT01','ASESMNT_YEAR', $Asesmnt_Year_lbl,             #DW)
+   do Get_Field_Information ('GPINIT01','BAL_TAX_PAYABLE', $Bal_Tax_Payable_lbl,       #DW)
+   do Get_Field_Information ('GPINIT01','CLA_DETAILS', $CLA_Details_lbl,               #DW)
+   do Get_Field_Information ('GPINIT01','COMPONENTS',    $Components_lbl,              #DW)
+   do Get_Field_Information ('GPINIT01','DATE_OF_JOINING', $DATE_OF_JOINING_lbl,       #DW)
+   do Get_Field_Information ('GPINIT01','DECLARED',     $Declared_lbl,                 #DW)
+   do Get_Field_Information ('GPINIT01','DEDUCTIONS',  $Deductions_lbl,                #DW)
+   do Get_Field_Information ('GPINIT01','EMP_CODE',      $Emp_Code_lbl,                #DW)
+   do Get_Field_Information ('GPINIT01','EMP_NAME',   $Emp_Name_lbl,                   #DW)
+   do Get_Field_Information ('GPINIT01','EXEMPTION _US10',  $Exemption_Us10_lbl,       #DW)
+   do Get_Field_Information ('GPINIT01','FOOTER_STR1',   $Footer_Str1_lbl,             #DW)
+   do Get_Field_Information ('GPINIT01','FOOTER_STR2',   $Footer_Str2_lbl,             #DW)
+   do Get_Field_Information ('GPINIT01','FRM_DT',  $Frm_Dt_lbl,                        #DW)
+   do Get_Field_Information ('GPINIT01','GENDER',   $Gender_lbl,                       #DW)
+   do Get_Field_Information ('GPINIT01','HEADS_OF_INCOME', $Heads_Of_Income_lbl,       #DW)
+   do Get_Field_Information ('GPINIT01','HRA_DETAILS',     $HRA_Details_lbl,           #DW)
+   do Get_Field_Information ('GPINIT01','LESS_DED_US16',   $Less_Ded_Us16_lbl,         #DW)
+   do Get_Field_Information ('GPINIT01','METRO',             $Metro_lbl,               #DW)
+   do Get_Field_Information ('GPINIT01','MONTH',        $Month_lbl,                    #DW)
+   do Get_Field_Information ('GPINIT01','PAN',           $Pan_lbl,                     #DW)
+   do Get_Field_Information ('GPINIT01','PERQUISITES',  $Perquisites_lbl,              #DW)
+   do Get_Field_Information ('GPINIT01','PREVIOUS_YEAR', $Previous_Year_lbl,           #DW)
+   do Get_Field_Information ('GPINIT01','PREV_EMPLMT_DTLS', $Prev_Emplmt_Dtls_lbl,     #DW)
+   do Get_Field_Information ('GPINIT01','PROJECTED',     $Projected_lbl,               #DW)
+   do Get_Field_Information ('GPINIT01','RENT',         $Rent_lbl,                     #DW)
+   do Get_Field_Information ('GPINIT01','TAXABLE_INC',  $Taxable_Inc_lbl,              #DW)
+   do Get_Field_Information ('GPINIT01','TOTAL',        $Total_lbl,                    #DW)
+   do Get_Field_Information ('GPINIT01','TO_DT',        $To_Dt_lbl,                   #DW)
+
+
+
+
+End-Procedure ! Get-Strings-Table
+
+#include 'datetime.sqc'     !Routines for date and time formatting
+#include 'datemath.sqc'     !Date conversion procedures
+#include 'sqrtrans.sqc'     !Translate SQR strings to given language
+#include 'prcsapi.sqc'      !Replaces stdapi.sqc
+#include 'stdapi.sqc'
+#include 'prcslng.sqc'      !Replaces getrplng.sqc
+#include 'readxlat.sqc'     !Procedure to read values from xlattable
+#include 'reset.sqc'        !Reset printer procedure
+#include 'number.sqc'       !Routines to format numbers
+#Include 'gpsspslp.sqc'     ! ePay SQC with ePay procedures

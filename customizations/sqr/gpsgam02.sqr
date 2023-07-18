@@ -1,0 +1,643 @@
+!***********************************************************************
+! GPSGAM02.SQR GLOBAL PAYROLL SGP LEAVE LIABILITY PROGRAM              *
+!                                                                      *
+!  Description:  This program will report the leave liability          *
+!                of a particular employee by retrieving the result     *
+!                values from the Earnings and Deductions result table. *
+!                The earnings it reports is based on the values        *
+!                attached to the GL Grouping table for 'entitlements'. *
+!                                                                      *
+!                                               *
+!***********************************************************************
+
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/18:04:01:20                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!                                                                      *
+!***********************************************************************
+
+!***********************************************************************
+! Modification History                                                 *
+! Dated      Author  ICE       Changes                                 *
+! 22/01/03   KWH    526979000  Fix problem with duplicate rows printed *
+!                              when Eff Seq was used on Job data       *
+!***********************************************************************
+
+
+#include 'setenv.sqc'   !Set environment
+Begin-Setup
+   #Include 'ptset02.sqc'   !Printer and page-size initialization
+End-Setup
+! #Include 'setup02.sqc'  ! Portrait Printer and page-size initialization
+
+!List of constants for program
+#define $Term_Emps 'T'
+
+#define colA  1
+#define colB  14
+#define colC  55
+#define colD  74
+#define colD1 83
+#define colE  89
+#define colF  100
+#define colF1 114
+#define colG  127
+#define colH  145
+#define colJ  160
+#define colK  173
+begin-setup
+ declare-variable
+ integer #Pin_Num
+ integer #Pin_Sovr_Num
+ end-declare
+end-setup
+
+begin-program
+
+  do Init-DateTime
+  do Init-Number
+  do Init-Report
+  do Get-Current-DateTime
+  do Process-Main
+  do Reset
+  do Delete-RunControl 
+  do Stdapi-Term
+
+end-program
+
+begin-heading 13
+
+#include 'stdhdg01.sqc'
+  If rtrim($Pay_Entity, ' ') <> ''
+    let $header1 = 'Pay Entity: ' || $Pay_Entity
+    Print $Header1 (+1, {colA})
+    let $header1A = ' - ' || $PayEntityDescr
+    Print $Header1A (0, 30)
+  End-If
+  If rtrim($Deptid, ' ') <> ''
+    let $header2 = 'Deptid:     ' || $Save_deptID
+    Print $Header2 (+1, {colA})
+    Let $Header2A = ' - ' || $dept_name
+    Print $Header2A (0, 30)
+  End-If
+
+  If rtrim($AsOfDate, ' ') <> ''
+    let $header3 = 'As Of Date: ' || $AsOfDate_Conv
+    Print $Header3 (+1, {colA})
+  End-If
+  If rtrim($GP_Paygroup, ' ') <> ''
+    let $header4 = 'Paygroup:   ' || $GP_Paygroup
+    Print $Header4 (+1, {colA})
+  End-If
+
+  graphic (+1,{colA}, {colK}) Horz-line
+  print 'Emplid'        (+1,{ColA})
+  print 'Name '         (0,{ColB})
+  print 'Entitlement '  (0,{ColC})
+  print 'Rate'          (0,{ColD1})
+  print 'Category'      (0,{ColE})
+  print 'Accrual Date'  (0,{ColF})
+  print 'Attrition % '  (0,{ColF1})
+  print 'Balance Units' (0,{ColG})
+  print 'Unit Type'     (0,{ColH})
+  print 'Balance Amount'(0,{ColJ})
+
+  graphic (+1,{colA}, {colK}) Horz-line
+
+end-heading
+
+!**************************************************************************
+!
+! Procedure: Init-Report
+!
+! Description: Initialise header and run control variables.
+!
+!**************************************************************************
+begin-procedure Init-Report
+
+
+  move 'GPSGAM02' to $ReportID
+  move 'Leave Liability' to $ReportTitle
+  display $ReportTitle
+
+  do Stdapi-Init
+
+  display '$prcs_process_instance: ' noline
+  display $prcs_process_instance
+
+  if $prcs_process_instance = ''
+    do Get-Prompt
+  else
+    do Select-Parameters
+  end-if
+
+  do Define-Values
+
+  do Format-DateTime($AsOfDate, $AsOfDate_Conv, {DEFDMY}, '', '')
+
+end-procedure
+
+!**************************************************************************
+!
+! Procedure: Get-Prompt
+!
+! Description: Get the run control values from outside.
+!
+!**************************************************************************
+begin-procedure Get-Prompt
+
+  input $Pay_Entity 'Pay Entity <Enter for all> '
+ let $Pay_Entity = rtrim(upper($Pay_Entity),' ')
+
+ input $Deptid 'Department <Enter for all> '
+ let $Deptid = rtrim(upper($Deptid),' ')
+
+ input $GP_Paygroup 'Paygroup <Enter for all> '
+ let $GP_Paygroup = rtrim(upper($GP_Paygroup),' ')
+
+ input $AsOfDate 'As Of Date <Enter for all> '
+ let $AsOfDate = rtrim(upper($AsOfDate),' ')
+
+end-procedure
+
+!**************************************************************************
+!
+! Procedure: Define-Values
+!
+! Description: Define general SQL Dynamic Query Variables.
+!
+!**************************************************************************
+begin-procedure Define-Values
+
+
+  if rtrim($Pay_Entity, ' ') <> ''
+ let $where1 = 'AND C.PAY_ENTITY  = ''' || $Pay_Entity || ''' '
+   let $where_temp = $where1
+  end-if
+
+  if rtrim($Deptid, ' ') <> ''
+ let $where2 = 'AND A.DEPTID  = ''' || $Deptid || ''' '
+ string $where2 $where_temp BY ' ' INTO  $where_temp
+  end-if
+
+  if rtrim($GP_Paygroup, ' ') <> ''
+ let $where3 = 'AND A.GP_PAYGROUP  = ''' || $GP_Paygroup || ''' '
+ string $where3 $where_temp BY ' ' INTO  $where_temp
+  end-if
+
+  let $where = $where_temp
+
+  if rtrim($AsOfDate, ' ') <> ''
+
+ let $where_date = 'AND A.SLICE_END_DT  = (SELECT MAX(SLICE_END_DT) FROM PS_GP_RSLT_ERN_DED A1' ||
+   ' WHERE A1.EMPLID = A.EMPLID ' ||
+   ' AND A1.EMPL_RCD = A.EMPL_RCD ' ||
+   ' AND A1.RSLT_SEG_NUM = A.RSLT_SEG_NUM' ||
+   ' AND A1.SLICE_END_DT  <= ''' || $AsOfDate || ''' ' || ')'
+  end-if
+
+  do Check-Categories
+
+  
+end-procedure
+!**************************************************************************
+!
+! Procedure: Process-Main
+!
+! Description: Main processing section
+!
+!**************************************************************************
+begin-procedure Process-Main
+
+ Let #Day_Count = 0
+ Let $First_Emp = 'Y'
+ Let $First_Dept = 'Y'
+
+begin-SELECT on-error=SQL-Error
+A.EMPLID
+B.NAME
+A.EMPL_RCD
+A.DEPTID
+A.BUSINESS_UNIT
+A.GP_PAYGROUP
+A.SETID_DEPT
+C.PAY_ENTITY
+
+
+  let $Emplid           = &A.EMPLID
+  let $Name             = substr(&B.NAME,1,42)
+  let #Empl_Rcd         = &A.EMPL_RCD
+  let $Deptid           = &A.DEPTID
+  let $Business_Unit    = &A.BUSINESS_UNIT
+  let $GP_Paygroup      = &A.GP_PAYGROUP
+  let $Setid_Dept       = &A.SETID_DEPT
+  let $Pay_Entity       = &C.PAY_ENTITY
+
+  if rtrim($Setid, ' ') = ''
+     let $Setid = $Setid_Dept
+  end-if
+
+  if $Pay_Entity <> $Prev_Pay_Entity
+     do Get-PayEntity
+  end-if
+
+  do Get_Leave_Liability
+
+
+  FROM PS_JOB A, PS_NAMES B, PS_GP_PYGRP C
+ WHERE A.EMPLID = B.EMPLID
+   AND A.EMPL_STATUS <> 'T'
+   AND A.EFFDT = (SELECT MAX(EFFDT)
+                    FROM PS_JOB A1
+                   WHERE A1.EMPLID = A.EMPLID
+                     AND A1.EMPL_RCD = A.EMPL_RCD
+                     AND A1.EFFDT   <= $AsOfDate)
+   AND A.EFFSEQ = (SELECT MAX(EFFSEQ)
+                     FROM PS_JOB A1
+                    WHERE A1.EMPLID = A.EMPLID
+                      AND A1.EMPL_RCD = A.EMPL_RCD
+                      AND A1.EFFDT   = A.EFFDT)
+   AND B.EFFDT = (SELECT MAX(EFFDT)
+                    FROM PS_NAMES B1
+                   WHERE B1.EMPLID = B.EMPLID
+                     AND B1.NAME_TYPE = B.NAME_TYPE
+                     AND B1.NAME_TYPE = 'PRI')
+   AND B.NAME_TYPE = 'PRI'
+   AND A.GP_PAYGROUP = C.GP_PAYGROUP
+      [$where]
+ORDER BY C.PAY_ENTITY, A.DEPTID
+end-SELECT
+
+ Let $Save_DeptId = $DeptID
+ do get_dept
+ let  $Subtotal = 'TOTAL FOR : ' || $dept_name
+ print $Subtotal (+2,{ColA}) BOLD
+ print #Sub-Total (0,{ColJ}) edit $$$,$$$,$$9.99
+
+ let #Grand-Total = #Grand-Total + #Sub-Total
+ print 'GRAND TOTAL :' (+2,{ColA})
+ print #Grand-Total (0,{ColJ}) edit $$$,$$$,$$9.99
+
+end-procedure
+
+
+
+!**************************************************************************
+!
+! Procedure: Get_Leave_Liability
+!
+! Description: Get the leave liability PIN numbers.
+!
+!**************************************************************************
+begin-procedure Get_Leave_Liability
+
+begin-SELECT DISTINCT on-error=SQL-Error
+
+B.PIN_NUM
+
+ let #Pin_Num        = &B.PIN_NUM
+
+ If #Category_Count > 0
+    do Get-Cat-Sovr-Num
+    do Get-Categories
+
+    If $Category-Chosen = 'Y'
+       do Get-Unit-Type
+       do Get-Results
+       let $Category-Chosen  = 'N'
+       let $SOVR_Val = '' 
+    End-If
+ Else
+       do Get-Unit-Type
+       do Get-Results
+ End-If
+
+FROM PS_GP_GLGRP_SGPSG A, PS_GP_GL_GROUP_DTL B
+WHERE A.PAY_ENTITY = B.PAY_ENTITY
+AND A.BUSINESS_UNIT = B.BUSINESS_UNIT
+AND A.GROUPING_CODE = B.GROUPING_CODE
+AND A.GPSG_JOURNAL_TYPE = '30'
+AND A.PAY_ENTITY = $Pay_Entity
+AND A.BUSINESS_UNIT = $Business_Unit
+end-SELECT
+
+end-procedure
+!**************************************************************************
+! Procedure: Get-Categories
+!
+! Description: Get element catogories to be reported.
+!
+!**************************************************************************
+begin-procedure Get-Categories
+!Report by categories and report only those categories select at runtime.
+
+begin-SELECT
+ABCT.PIN_CATEGORY &PIN_CATEGORY
+
+ Let $Category-Chosen  = 'Y'
+
+FROM PS_GPSG_RC_LL_ABCT ABCT
+WHERE ABCT.OPRID = $PRCS_OPRID
+AND ABCT.RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+AND ABCT.PIN_CATEGORY = $SOVR_Val
+end-SELECT
+
+end-procedure
+!**************************************************************************
+!
+! Procedure: Get-Results
+!
+! Description: Get the leave liability values from the result tables.
+!
+!**************************************************************************
+begin-procedure Get-Results
+
+begin-SELECT on-error=SQL-Error
+
+A.SLICE_END_DT
+A.CALC_RSLT_VAL
+A.RATE_RSLT_VAL
+A.UNIT_RSLT_VAL
+A.PCT_RSLT_VAL
+B.PIN_TYPE
+B.PIN_NM
+
+  let $Slice_End_Date = &A.SLICE_END_DT
+  let #Calc_Rslt_Val  = &A.CALC_RSLT_VAL
+  let #Rate_Rslt_Val  = &A.RATE_RSLT_VAL
+  let #Unit_Rslt_Val  = &A.UNIT_RSLT_VAL
+  let #Pct_Rslt_Val   = &A.PCT_RSLT_VAL
+  let $Pin_Nm         = &B.PIN_NM
+   
+ do Print-Empl-Dtls
+
+FROM PS_GP_ERN_DED C
+,PS_GP_PIN B
+,PS_GP_RSLT_ERN_DED A
+,PS_GP_PYE_SEG_STAT S
+,PS_GP_PYE_PRC_STAT T
+WHERE A.PIN_NUM = B.PIN_NUM
+AND A.PIN_NUM = C.PIN_NUM
+AND A.EMPLID = S.EMPLID
+AND A.EMPL_RCD = S.EMPL_RCD
+AND A.CAL_RUN_ID = S.CAL_RUN_ID
+AND A.CAL_ID = S.CAL_ID
+AND A.GP_PAYGROUP = S.GP_PAYGROUP
+AND A.RSLT_SEG_NUM = S.RSLT_SEG_NUM
+AND A.EMPLID = T.EMPLID
+AND A.EMPL_RCD = T.EMPL_RCD
+AND A.CAL_RUN_ID = T.CAL_RUN_ID
+AND A.CAL_ID = T.CAL_ID
+AND A.GP_PAYGROUP = T.GP_PAYGROUP
+AND T.RSLT_VER_NUM= (SELECT MAX(T1.RSLT_VER_NUM)
+   FROM PS_GP_PYE_PRC_STAT T1
+   WHERE
+   T1.EMPLID = T.EMPLID
+   AND T1.EMPL_RCD = T.EMPL_RCD
+   AND T1.CAL_RUN_ID = T.CAL_RUN_ID
+   AND T1.CAL_ID = T.CAL_ID
+   AND T1.GP_PAYGROUP = T.GP_PAYGROUP)
+AND T.RSLT_REV_NUM = (SELECT MAX(T1.RSLT_REV_NUM)
+   FROM PS_GP_PYE_PRC_STAT T1
+   WHERE
+   T1.EMPLID = T.EMPLID
+   AND T1.EMPL_RCD = T.EMPL_RCD
+   AND T1.CAL_RUN_ID = T.CAL_RUN_ID
+   AND T1.CAL_ID = T.CAL_ID
+   AND T1.GP_PAYGROUP = T.GP_PAYGROUP)
+[$where_date]
+AND A.PIN_NUM = #Pin_Num
+AND A.EMPLID = $Emplid
+AND A.EMPL_RCD = #Empl_Rcd
+end-SELECT
+End-Procedure
+!**************************************************************************
+!
+! Procedure: Get-Cat-Sovr-Num
+! Description: Get the Pin Num of cateory SOVR based on Pin Code.
+!
+!
+!**************************************************************************
+begin-procedure Get-Cat-Sovr-Num
+
+Begin-SELECT on-error=SQL-Error
+PIN.PIN_NUM
+
+  let #Pin_Sovr_Num = &PIN.PIN_NUM
+
+FROM PS_GP_PIN PIN
+WHERE PIN.PIN_CODE = 'LVE VR CATEGORY SGP'
+END-SELECT
+
+begin-SELECT on-error=SQL-Error
+
+SOVR_VAL_CHAR     &SOVR_VAL_CHAR
+
+ let $SOVR_Val = &SOVR_VAL_CHAR
+
+FROM PS_GP_ELM_DFN_SOVR A
+WHERE A.PIN_NUM = #Pin_Num
+AND A.PIN_SOVR_NUM = #Pin_Sovr_Num
+AND A.BGN_DT =  (SELECT MAX(BGN_DT) FROM PS_GP_ELM_DFN_SOVR A1
+  WHERE A.PIN_NUM = A1.PIN_NUM
+  AND A.PIN_SOVR_NUM = A1.PIN_SOVR_NUM
+  and A1.BGN_DT <= $AsOfDate)
+end-SELECT
+
+end-procedure
+!**************************************************************************
+!
+! Procedure: Get-Unit-Type
+! Description: Get the Pin Num of Units SOVR based on Pin Code.
+!
+!
+!**************************************************************************
+begin-procedure Get-Unit-Type
+
+
+Begin-SELECT on-error=SQL-Error
+UNIT.PIN_NUM
+
+  let #Unit_Sovr_Num = &UNIT.PIN_NUM
+
+FROM PS_GP_PIN UNIT
+WHERE UNIT.PIN_CODE = 'LVL VR UNIT TYPE SGP'
+END-SELECT
+
+begin-SELECT on-error=SQL-Error
+
+SOVR.SOVR_VAL_CHAR     &SOVR.SOVR_VAL_CHAR
+
+
+ let $Unit_Type = &SOVR.SOVR_VAL_CHAR
+
+FROM PS_GP_ELM_DFN_SOVR SOVR
+WHERE SOVR.PIN_NUM = #Pin_Num
+AND SOVR.PIN_SOVR_NUM = #Unit_Sovr_Num
+AND SOVR.BGN_DT =  (SELECT MAX(BGN_DT) FROM PS_GP_ELM_DFN_SOVR A1
+  WHERE SOVR.PIN_NUM = A1.PIN_NUM
+  AND SOVR.PIN_SOVR_NUM = A1.PIN_SOVR_NUM
+  and A1.BGN_DT <= $AsOfDate)
+end-SELECT
+
+end-procedure
+
+!**************************************************************************
+!
+! Procedure:  Print-Empl-Dtls
+!
+! Description: Print the employees details
+!**************************************************************************
+Begin-procedure Print-Empl-Dtls
+
+ do Format-DateTime($Slice_End_Date, $Slice_End_Conv, {DEFDMY}, '', '')
+  If $Deptid <> $Save_DeptID
+        do Page-Break
+  End-If
+
+
+  print $Emplid           (+1,{ColA})
+  print $Name             (0,{ColB})
+  print $Pin_Nm           (0,{ColC})
+  print $SOVR_Val         (0,{ColE})
+  print $Slice_End_Conv   (0,{ColF})
+  print $Unit_Type        (0,{ColH})
+  print &A.CALC_RSLT_VAL  (0,{ColJ}) edit $$$,$$$,$$9.99
+  print &A.RATE_RSLT_VAL  (0,{ColD}) edit 999999.999999
+  print &A.UNIT_RSLT_VAL  (0,{ColG}) edit 999999.999999
+  print &A.PCT_RSLT_VAL   (0,{ColF1})
+
+
+
+  let #Sub-Total = #Calc_Rslt_Val + #Sub-Total
+
+
+end-procedure
+
+!**************************************************************************
+!
+! Procedure: Page-Break
+!
+! Description: Control page breaks.
+!
+!**************************************************************************
+begin-procedure Page-Break
+  If $First_Dept = 'Y'
+     let $First_Dept = 'N'
+     Let $Save_DeptId = $DeptID
+   Else
+     do get_dept
+     let  $Subtotal = 'TOTAL FOR : ' || $dept_name
+     print $Subtotal (+2,{ColA}) BOLD
+     print #Sub-Total (0,{ColJ}) edit $$$,$$$,$$9.99
+     let #Grand-Total = #Grand-Total + #Sub-Total
+     let #Sub-Total = 0
+     New-Page
+     Let $Save_DeptId = $DeptID
+  End-If
+end-procedure
+
+!**************************************************************************
+!
+! Procedure: Get-PayEntity
+! Description: Get the pay entity details
+!
+!**************************************************************************
+begin-procedure Get-PayEntity
+  Let $PayEntityDescr = ''
+begin-SELECT on-error=SQL-Error
+PYE.DESCR
+
+  Let $PayEntityDescr = &PYE.DESCR
+
+  let $Prev_Pay_Entity = $Pay_Entity
+
+FROM PS_GP_PYENT PYE
+WHERE PYE.PAY_ENTITY = $Pay_Entity
+END-SELECT
+end-procedure
+!
+!**************************************************************************
+! Procedure: Get_dept
+! Description: Get the dept name of the payee
+!**************************************************************************
+begin-procedure Get_dept
+begin-SELECT on-error=SQL-Error
+
+DPT.DESCR
+
+      Let $dept_name = rtrim(&DPT.DESCR,' ')
+
+FROM PS_DEPT_TBL DPT
+WHERE DPT.SETID = $Setid
+AND DPT.DEPTID = $Save_Deptid
+AND DPT.EFFDT = (SELECT MAX(EFFDT)
+                 FROM PS_DEPT_TBL A
+                 WHERE A.SETID = DPT.SETID
+                 AND A.DEPTID = DPT.DEPTID
+                 AND A.EFFDT <= $AsofDate)
+END-SELECT
+end-procedure
+!
+!**************************************************************************
+!
+! Procedure: Delete-RunControl           
+!
+! Description: Delete run control when report comes to successful end.
+!
+!**************************************************************************
+begin-procedure Delete-RunControl
+begin-SQL
+DELETE FROM PS_GPSG_RC_LVELIAB
+    WHERE OPRID         = $PRCS_OPRID
+        AND RUN_CNTL_ID = $PRCS_RUN_CNTL_ID;
+
+        #ifdef ORACLE
+           COMMIT;
+        #endif
+end-SQL
+begin-SQL
+DELETE FROM PS_GPSG_RC_LL_ABCT
+    WHERE OPRID         = $PRCS_OPRID
+        AND RUN_CNTL_ID = $PRCS_RUN_CNTL_ID;
+
+        #ifdef ORACLE
+           COMMIT;
+        #endif
+end-SQL
+
+end-procedure
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'datemath.sqc'  !Routines for date arithmetic
+#Include 'stdapi.sqc'    !Routines to Update Run Status
+#Include 'number.sqc'    !Routines to format numbers
+
+#Include 'gpsgrnll.sqc'  !Select GP Singapore Leave Liability Run control Parameters
+
+
+
+

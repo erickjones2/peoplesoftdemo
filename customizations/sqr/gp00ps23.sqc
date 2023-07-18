@@ -1,0 +1,591 @@
+!***********************************************************************
+!  GP00PS23.sqc:  Dynamic Net Distributions - GPUS                     *
+!                                                                      *
+!                 Get_Dyn_NetPayDist                                   *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/18:04:08:47                                 *
+!       $Release:  HR92                                                *
+!      $Revision:  101                                                 *
+!                                                                      *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+! Function: Print Net Pay Distribution section for Payslip             *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!***********************************************************************
+! Change History
+! Incident ID    Dated     Comments
+!
+! 126994900       7/05     Performance issues found when printing the payslips. 
+!                          The GP_PAYMENT table Select statement needs to be tuned.
+
+!#include 'gp00ps31.sqc'  !common procedures
+#define ARRAY_SIZE 10000
+#define NetPayDist_DYNAMIC_TITLE_SIZE 1
+
+!***********************************************************************
+begin-procedure Init_Net_Dist_Arrays
+!***********************************************************************
+Create-Array Name=Check_data Size={ARRAY_SIZE}
+   field=check_nbr:Char
+   field=check_amt:Number
+   field=pmt_mthd1:Char
+
+Create-Array Name=NetPay_data Size={ARRAY_SIZE}
+   field=account_nbr:Char
+   field=netpay_amt:Number
+    
+Create-Array Name=CashPay_Data Size={ARRAY_SIZE}
+   field=cashpay_amt:Number
+   
+Create-Array Name=WirePay_Data Size={ARRAY_SIZE}
+   field=w_account_nbr:Char
+   field=wirepay_amt:Number
+   
+Create-Array Name=PostalPay_Data Size={ARRAY_SIZE}
+   field=postalpay_amt:Number
+   
+
+let #i = 0
+while (#i < {ARRAY_SIZE} )
+   Put '0' into Check_data(#i) check_nbr
+   Put 0 into Check_data(#i) check_amt
+   Put '0' into Check_data(#i) pmt_mthd1
+      
+   Put '0' into NetPay_data(#i) account_nbr
+   Put 0 into NetPay_data(#i) netpay_amt
+   
+   Put 0 into CashPay_Data(#i) cashpay_amt
+   Put '0' into WirePay_Data(#i) w_account_nbr
+   Put 0 into WirePay_Data(#i) wirepay_amt
+   Put 0 into PostalPay_Data(#i) postalpay_amt
+   
+   add 1 to #i
+end-while
+
+
+end-procedure
+
+!**********************************************************************
+begin-procedure Get_Dyn_NetPayDist
+!**********************************************************************
+
+#debug do Pslp-Proc-Debug-Msg('ALL Net Distributions section GP00ps23.SQC ')
+#debug do Pslp-Proc-Debug-Msg('ALL Net Distributions: Procedure Get_Dyn_NetPayDist')
+
+let $space_left = 'y'
+let $check_collision = 'n'
+let $section_printed = 'n'
+
+while ($section_printed = 'n')
+
+        do get_start_page_line_number(#current-line, #page-count, #start-section-line-number, #start-section-page-number)
+        do evaluate_space_for_title(#start-section-line-number,{NetPayDist_DYNAMIC_TITLE_SIZE},$space_left)
+        if $space_left = 'n'
+            if $gbl_Paycheck_To_Do = 'y'
+                Do print_check_usa
+                move 'n' to $check_collision 
+                move 'n' to $gbl_Paycheck_To_Do
+            else
+                new-page
+                Move 1 to #gbl_curr_Section_Start_Line
+                Move 1 to #start-section-line-number
+                do Process_Dyn_NetPay
+                move 'y' to $section_printed
+                break
+            end-if
+        end-if
+        if $space_left = 'y'
+            if $gbl_Paycheck_To_Do = 'y'
+                do evaluate_bankdraft_collision(#start-section-line-number,$check_collision)
+                if $check_collision = 'y'
+                
+                    Do print_check_usa
+                    move 'n' to $check_collision 
+                    move 'n' to $gbl_Paycheck_To_Do
+                else
+                    do Process_Dyn_NetPay
+                    move 'y' to $section_printed
+                    break
+                end-if
+            else
+                do Process_Dyn_NetPay
+                move 'y' to $section_printed
+                break
+            end-if
+        end-if
+    end-while
+
+end-procedure !Get_Dyn_NetPayDist        
+
+
+!**********************************************************************
+begin-procedure Process_Dyn_NetPay
+!**********************************************************************
+
+   Do Init_Net_Dist_Arrays
+   Do Init_Options
+   Do Get_Check_Data
+   Do Get_NetPay_Data
+   Do Get_CashPay_Data
+   Do Get_WirePay_Data
+   Do Get_PostalPay_Data
+   Do Print_NetPayDist
+
+end-procedure !Process_Dyn_NetPay
+
+
+!**********************************************************************
+begin-procedure Init_Options
+!**********************************************************************
+let $PayslipDate = ''
+#debug do Pslp-Proc-Debug-Msg('ALL Net Distributions: Procedure Print_NetPayDist')
+#debug1 show '** ALL Net Distributions section:         CAL_RUN_ID = ' $gbl_rc_Calendar_Group ' EMPLID = ' $gbl_tgt_Emplid
+BEGIN-SELECT LOOPS = 1 ON-ERROR=SQL-ERROR
+ 
+DEBIT_DT &payslip_date  
+
+  let $PayslipDate = &payslip_date
+
+FROM PS_GP_PAYMENT
+WHERE CAL_RUN_ID = $gbl_rc_Calendar_Group
+AND EMPLID = $gbl_tgt_Emplid 
+END-SELECT 
+
+if ($gbl_tgt_pslp_gen_dt <> '') or ($gbl_rc_Proc_Name = 'RGEN')
+        or ($gbl_rc_Proc_Name = 'RNUM')
+   Let $PayslipDate = $gbl_tgt_pslp_gen_dt
+end-if
+           
+end-procedure !Init_Options
+        
+        
+!**********************************************************************
+begin-procedure Get_Check_Data
+!**********************************************************************
+
+let #check_cnt = 0
+let #check_total_amt = 0
+
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+A.PYMT_NBR       &check_nbr  
+A.GP_PMT_AMT     &check_amt
+A.PAYMENT_MTHD1  &pmt_mthd1
+
+  let Check_data.check_nbr(#check_cnt) = &check_nbr
+  let Check_data.check_amt(#check_cnt) = &check_amt
+  let Check_data.pmt_mthd1(#check_cnt) = &pmt_mthd1
+    
+  let #check_cnt = #check_cnt + 1
+  let #check_total_amt = #check_total_amt + &check_amt
+
+FROM PS_GP_PYMT_BNK_TBL A 
+
+WHERE A.CAL_RUN_ID = $gbl_rc_Calendar_Group 
+  AND A.EMPLID = $gbl_tgt_Emplid 
+  AND A.PMT_GRP_ID = #gbl_tgt_Grp_ID
+  AND ((A.PAYMENT_MTHD1 = 'C' AND A.RECON_STAT = '01') OR (A.PAYMENT_MTHD1 = 'Z' OR A.PAYMENT_MTHD1 = 'N'))
+  !AND A.RECON_STAT = '01'
+
+
+END-SELECT
+
+end-procedure !Get_Check_Data
+
+
+!**********************************************************************
+begin-procedure Get_NetPay_Data
+!**********************************************************************
+
+let #netpay_cnt = 0
+let #netpay_total_amt = 0
+
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+C.ACCOUNT_EC_ID   &account_nbr
+A.GP_PMT_AMT      &netpay_amt
+
+  let NetPay_data.account_nbr(#netpay_cnt) = &account_nbr
+  let NetPay_data.netpay_amt(#netpay_cnt)  = &netpay_amt
+  let #netpay_cnt       = #netpay_cnt + 1
+  let #netpay_total_amt = #netpay_total_amt + &netpay_amt
+
+FROM PS_GP_PYMT_BNK_TBL A
+    ,PS_GP_NET_DIST_DTL B 
+    ,PS_PYE_BANKACCT C
+    ,PS_GP_CALENDAR D
+WHERE A.CAL_RUN_ID = $gbl_rc_Calendar_Group  
+   AND A.PMT_GRP_ID = #gbl_tgt_Grp_ID
+   AND C.EMPLID = $gbl_tgt_Emplid 
+   AND C.EMPLID = B.EMPLID
+   AND C.ACCOUNT_ID = B.ACCOUNT_ID 
+   AND A.GP_PAYGROUP = D.GP_PAYGROUP
+   AND A.CAL_ID = D.CAL_ID
+   AND A.PAYMENT_MTHD1 = 'T'
+   AND A.EMPLID = B.EMPLID 
+   AND A.EMPL_RCD = B.EMPL_RCD 
+   AND A.INSTANCE = B.INSTANCE
+   AND D.RUN_TYPE = B.RUN_TYPE
+   AND B.EFFDT = ( SELECT MAX(M.EFFDT) 
+                   FROM PS_GP_NET_DIST_DTL M 
+                   WHERE B.EMPLID = M.EMPLID 
+                     AND B.EMPL_RCD = M.EMPL_RCD 
+                     AND B.INSTANCE = M.INSTANCE 
+                     AND B.INSTANCE = A.INSTANCE
+                     AND B.RUN_TYPE = M.RUN_TYPE
+                     AND M.EFFDT <= $PayslipDate)
+
+END-SELECT
+
+end-procedure !Get_NetPay_Data
+
+
+!**********************************************************************
+begin-procedure Get_CashPay_Data
+!**********************************************************************
+
+let #cash_cnt = 0
+let #cash_total_amt = 0
+
+BEGIN-SELECT ON-ERROR=SQL-ERROR 
+A.GP_PMT_AMT  &cash_amt
+
+  let CashPay_Data.cashpay_amt(#cash_cnt) = &cash_amt
+  let #cash_cnt = #cash_cnt + 1
+  let #cash_total_amt = #cash_total_amt + &cash_amt
+
+FROM PS_GP_PYMT_BNK_TBL A 
+
+WHERE A.CAL_RUN_ID = $gbl_rc_Calendar_Group 
+  AND A.EMPLID = $gbl_tgt_Emplid 
+  AND A.PMT_GRP_ID = #gbl_tgt_Grp_ID
+  AND A.PAYMENT_MTHD1 = 'A' 
+
+END-SELECT
+
+end-procedure !Get_CashPay_Data
+
+!**********************************************************************
+begin-procedure Get_WirePay_Data
+!**********************************************************************
+
+let #wire_cnt = 0
+let #wire_total_amt = 0
+
+BEGIN-SELECT ON-ERROR=SQL-ERROR 
+A.GP_PMT_AMT  &wire_amt
+
+  let WirePay_Data.wirepay_amt(#wire_cnt) = &wire_amt
+  let #wire_cnt = #wire_cnt + 1
+  let #wire_total_amt = #wire_total_amt + &wire_amt
+
+FROM PS_GP_PYMT_BNK_TBL A
+WHERE A.CAL_RUN_ID = $gbl_rc_Calendar_Group 
+  AND A.EMPLID = $gbl_tgt_Emplid 
+  AND A.PMT_GRP_ID = #gbl_tgt_Grp_ID
+  AND A.PAYMENT_MTHD1 = 'W'
+
+        
+END-SELECT
+
+end-procedure !Get_WirePay_Data
+
+!**********************************************************************
+begin-procedure Get_PostalPay_Data
+!**********************************************************************
+
+let #postal_cnt = 0
+let #postal_total_amt = 0
+
+BEGIN-SELECT ON-ERROR=SQL-ERROR 
+A.GP_PMT_AMT  &postal_amt
+
+  let PostalPay_Data.postalpay_amt(#postal_cnt) = &postal_amt
+  let #postal_cnt = #postal_cnt + 1
+  let #postal_total_amt = #postal_total_amt + &postal_amt
+
+FROM PS_GP_PYMT_BNK_TBL A
+
+WHERE A.CAL_RUN_ID = $gbl_rc_Calendar_Group 
+  AND A.EMPLID = $gbl_tgt_Emplid 
+  AND A.PMT_GRP_ID = #gbl_tgt_Grp_ID
+  AND A.PAYMENT_MTHD1 = 'P'
+
+END-SELECT
+
+end-procedure !Get_PostalPay_Data
+
+
+!***********************************************************************
+begin-procedure Print_NetPayDist
+!***********************************************************************
+
+#debug do Pslp-Proc-Debug-Msg('ALL Net Distributions: Procedure Print_NetPayDist')
+
+if upper($gbl_new_lang_flag) = 'Y'
+
+do Get_Field_Information ($ReportID, 'NETPAY_TITLE' , $NetPayTitle, #DW)
+do Get_Field_Information ($ReportID, 'NETPAY_CHK_NBR_LBL' , $CheckTitle, #DW)
+do Get_Field_Information ($ReportID, 'NETPAY_DDP_ACT_LBL' , $DDPTitle, #DW)
+do Get_Field_Information ($ReportID, 'OTHER_LBL' , $OthersTitle, #DW)
+do Get_Field_Information ($ReportID, 'TOTAL_LBL' , $TotalTitle, #DW)
+
+do Get_Field_Information ($ReportID, 'CASH_LBL' , $CashTitle, #DW)
+do Get_Field_Information ($ReportID, 'WIRE_TRANSFER_LBL' , $WireTransferTitle, #DW)
+do Get_Field_Information ($ReportID, 'POSTAL_ORDER_LBL' , $PostalOrderTitle, #DW)
+do Get_Field_Information ($ReportID, 'PAYMENT_TITLE' , $PaymentTitle, #DW)
+
+end-if
+
+let #total_amt = #check_total_amt + #netpay_total_amt + #cash_total_amt + #wire_total_amt + #postal_total_amt
+
+!if #total_amt < 0
+!   let #total_amt = 0
+!end-if
+
+let $total_amt = #total_amt
+let #row1 = #start-section-line-number
+
+columns 3
+
+graphic (#row1,1,48) box  1 10 12
+graphic (#row1,,48)  box  1 10
+
+use-column 0
+print $NetPayTitle            (#row1, 17) bold
+
+!
+!Print Net Pay for Check
+
+let #cnt = 0
+
+while Check_data.check_amt(#cnt) <> 0
+
+ let #page-break-test =  #gbl_Page_lines - #current-line 
+
+   if #page-break-test > 1
+   position (+1)
+   Add 1 to #start-section-line-number !Update globle varible
+
+   
+   IF Check_data.pmt_mthd1(#cnt) = 'C'
+         print $CheckTitle     (#start-section-line-number,4)
+   ELSE
+         print $PaymentTitle   (#start-section-line-number,4)
+   END-IF
+            
+   let $check_nbr = Check_data.check_nbr(#cnt)
+   print $check_nbr      (#start-section-line-number,13) Edit 000000000000000000 ! 18 digits check number
+   let $check_amt = Check_data.check_amt(#cnt)
+   print $check_amt      (#start-section-line-number,36) Edit 999,999,990.99mi
+   Add 1 to #cnt
+   
+ else
+        new-page
+        let #start-section-line-number = 1
+        let #row1 = #start-section-line-number
+        columns 3
+
+        graphic (#row1,1,46) box  1 10 12
+        graphic (#row1,,46)  box  1 10
+
+        use-column 0
+        print $NetPayTitle            (#row1, 12) bold
+        
+   end-if
+   
+end-while
+
+!
+!Print Net Pay for Direct Deposit
+
+let #cnt = 0
+
+while NetPay_data.netpay_amt(#cnt) <> 0
+
+      let #page-break-test =  #gbl_Page_lines - #current-line 
+
+   if #page-break-test > 1
+
+      position (+1)
+      Add 1 to #start-section-line-number !Update globle varible
+
+      print $DDPTitle        (#start-section-line-number,4)
+      let $account_nbr = NetPay_data.account_nbr(#cnt)
+      
+      let #account_length = length($account_nbr)
+      if #account_length > 17 
+         let $account_nbr = substr($account_nbr, 1, 17)
+      end-if
+            
+      print $account_nbr     (#start-section-line-number,13) Edit xxxxxxxxxxxxxxxxx ! 17 digits account number
+      let $netpay_amt = NetPay_data.netpay_amt(#cnt)
+      print $netpay_amt      (#start-section-line-number,36) Edit 999,999,990.99mi
+
+      Add 1 to #cnt
+   else
+        new-page
+        let #start-section-line-number= 1
+        let #row1 = #start-section-line-number
+
+        columns 3
+
+        graphic (#row1,1,46) box  1 10 12
+        graphic (#row1,,46)  box  1 10
+
+        use-column 0
+        print $NetPayTitle            (#row1, 12) bold
+        
+   end-if
+
+end-while
+
+!
+!Print Net Pay for Cash
+
+let #cnt = 0
+
+while CashPay_data.cashpay_amt(#cnt) <> 0
+
+      let #page-break-test =  #gbl_Page_lines - #current-line 
+
+   if #page-break-test > 1
+
+      position (+1)
+      Add 1 to #start-section-line-number !Update globle varible
+
+      print $CashTitle        (#start-section-line-number,4)
+      !let $account_nbr = cashpay_data.account_nbr(#cnt) 
+      !print $account_nbr     (#start-section-line-number,13) 
+      let $cashpay_amt = cashpay_data.cashpay_amt(#cnt)
+      print $cashpay_amt      (#start-section-line-number,36) Edit 999,999,990.99mi
+      Add 1 to #cnt
+      
+   else
+        new-page
+        let #start-section-line-number= 1
+        let #row1 = #start-section-line-number
+
+        columns 3
+
+        graphic (#row1,1,46) box  1 10 12
+        graphic (#row1,,46)  box  1 10
+
+        use-column 0
+        print $NetPayTitle            (#row1, 12) bold
+        
+   end-if
+
+end-while
+
+!
+!Print Net Pay for Postal Order
+
+let #cnt = 0
+
+while PostalPay_data.postalpay_amt(#cnt) <> 0
+
+      let #page-break-test =  #gbl_Page_lines - #current-line 
+
+   if #page-break-test > 1
+
+      position (+1)
+      Add 1 to #start-section-line-number !Update globle varible
+
+      print $PostalOrderTitle (#start-section-line-number,4)
+      !let $account_nbr = postalpay_data.account_nbr(#cnt) 
+      !print $account_nbr     (#start-section-line-number,13) 
+      let $postalpay_amt = postalpay_data.postalpay_amt(#cnt)
+      print $postalpay_amt    (#start-section-line-number,36) Edit 999,999,990.99mi
+
+      Add 1 to #cnt
+      
+   else
+        new-page
+        let #start-section-line-number= 1
+        let #row1 = #start-section-line-number
+
+        columns 3
+
+        graphic (#row1,1,46) box  1 10 12
+        graphic (#row1,,46)  box  1 10
+
+        use-column 0
+        print $NetPayTitle            (#row1, 12) bold
+        
+   end-if
+
+end-while
+
+!
+!Print Net Pay for Wire Transfer
+
+let #cnt = 0
+
+while WirePay_data.wirepay_amt(#cnt) <> 0
+
+      let #page-break-test =  #gbl_Page_lines - #current-line 
+
+   if #page-break-test > 1
+
+      position (+1)
+      Add 1 to #start-section-line-number !Update globle varible
+
+      print $WireTransferTitle (#start-section-line-number,4)
+      !let $account_nbr = wirepay_data.account_nbr(#cnt) 
+      !print $account_nbr      (#start-section-line-number,13) 
+      let $wirepay_amt = wirepay_data.wirepay_amt(#cnt)
+      print $wirepay_amt       (#start-section-line-number,36) Edit 999,999,990.99mi
+
+      Add 1 to #cnt
+      
+   else
+        new-page
+        let #start-section-line-number= 1
+        let #row1 = #start-section-line-number
+
+        columns 3
+
+        graphic (#row1,1,46) box  1 10 12
+        graphic (#row1,,46)  box  1 10
+
+        use-column 0
+        print $NetPayTitle            (#row1, 12) bold
+        
+   end-if
+
+end-while
+
+position (+2)
+Add 1 to #start-section-line-number !Update globle varible
+print $TotalTitle     (#start-section-line-number, 4)
+print $total_amt      (#start-section-line-number, 36) Edit 999,999,990.99mi
+Add 2 to #start-section-line-number !Update globle varible
+
+end-procedure !Print_NetPayDist

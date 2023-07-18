@@ -1,0 +1,1475 @@
+!***********************************************************************
+!  TAX810CA:  Qtrly Wage List - CALIFORNIA                             *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2017, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  25921100                                            !
+!                                                                      *
+!***********************************************************************
+!
+!***********************************************************************
+! Modified for Education & Government                                  *
+! HP99999       HP version of core SQR TAX810CA                        *
+! HP00006       E&G 7.5  System test fixes                             *
+! HP99998       E&G 7.51 AU Merge                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+#include 'setup31.sqc' !Printer and page-size initialization
+#include 'usarpt.sqc'  ! NID_COUNTRY defined
+
+begin-report
+  do Init-Report
+
+  do Process-Main
+
+  if #FileCount > 1
+    write 10 from '</ReturnData>'
+    close 10
+  end-if
+
+  if $RecordWritten = 'Y'
+    display ''
+    display 'Upon successful conclusion of this program, the file(s) will have been'
+    display 'created, as follows:'
+    display ''
+    display '  T8CAxxx   IF Separate Tax Report box NOT selected on Run Control Page; '
+    display '            where "xxx" represents a volume identifier for each company code'
+    display ''
+    display '  T8CAxxxz  IF Separate Tax Report box selected on Run Control Page; '
+    display '            where "xxx" represents a volume identifier for each company code'
+    display '            and "z" represents the Wage Plan Code reported.'
+    display ''
+    display '  The file(s) are created in XML format required for on-line'
+    display '  submission of quarterly wages to the California Employment'
+    display '  Development Department.'
+    display ''
+    display ''
+    display 'Follow the instructions from the department for preparing and'
+    display 'submitting the file(s).'
+    display ''
+  else
+    do Print-Summary-Data('NoData')
+  end-if
+
+  do Stdapi-Term
+
+end-report
+
+begin-procedure Init-Report
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Get-Calendar-Year-Id
+  do Stdapi-Init
+  do Get-EandG                                                          !HP99999
+
+  do Initialization
+  move 'TAX810CA' to $ReportID
+  move 'California Quarterly UI Wage Report' to $ReportTitle
+  display ''
+  display 'Creating file for California Quarterly Wage and Withholding Reporting'
+
+end-procedure
+
+begin-procedure Initialization
+  move 'CA' to $State
+
+  do Get-Tax-Reporting-Run-Controls
+  move &TX.Balance_Year to $RptYear 9999
+  move $RptYear          to $RptYear ~~xx
+  move $PeriodEndDate    to $AsOfDate
+
+  display ' '
+  display 'Processing balances for '   noline
+  display $RptQtrYr
+
+  move 1  to #FileCount
+  move '' to $Co-Wage-Code
+
+  move &TX.Balance_Year  to $Balance_Year     0999
+  let $ReportingPeriod = $QtrEndMonth || $Balance_Year
+
+end-procedure
+
+begin-procedure Open-File
+
+   move 0 to #RecordCount
+   if #FileCount > 1
+      write 10 from '</ReturnData>'
+      close 10
+   end-if
+   move #FileCount to $FileExtension 099
+
+   let $Filename = $Company || $Co-Wage-Code
+   let $File_name  = rtrim($Filename,' ' )
+
+   let $FileID = '{IMPORTPREFIX}' || 'T8CA' || $File_name || '{IMPORTSUFFIX}'
+
+   open $FileID as 10 for-writing record=300:vary
+
+end-procedure
+
+begin-procedure Process-Main
+  move &TX.Company       to $Company  !TX.Company is the Transmitter
+  if RTRIM($Company,' ') = ''
+    display '*** Company field blank on Tax Run Control Record ***'
+    display '***************** Processing stopped ****************'
+    stop
+  end-if
+  do Get-Company-Data                 !Transmitter identifying data
+
+begin-SELECT
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+end-SELECT
+
+begin-SELECT
+A.COMPANY
+A.DESCR
+A.FEDERAL_EIN
+A.ADDRESS1
+A.CITY
+A.STATE
+A.POSTAL
+A.COUNTRY
+A.TAX_REPORT_TYPE
+
+  move &A.Company to $Company
+
+  move ''         to $priorEmplID
+  move 'N'        to $Process_Company
+  do Read-Employee-Data
+  if $Process_Company = 'Y'
+     do Generate-Tax-Tape
+     do Delete-Work-File
+  end-if
+
+FROM  PS_COMPANY_TBL A
+WHERE A.EFF_STATUS = 'A'
+  AND A.TAX_REPORT_TYPE IN ('2', 'R')
+  AND A.EFFDT =
+  (SELECT MAX(EFFDT)
+     FROM PS_COMPANY_TBL
+     WHERE  COMPANY = A.COMPANY
+       AND  EFFDT  <= $AsOfDate)
+ORDER BY COMPANY
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Read-Employee-Data
+begin-SELECT
+RC.COMPANY   () on-break level=1 print=never
+                                       Before=Get-Company-Info
+RC.TAX_CLASS
+RC.EMPLID    () on-break level=2 print=never before=Reset-Dis-Ind
+                                             after=Process-SWT          !HP99998
+RC.STATE
+RC.LOCALITY
+RC.TXGRS_QTD
+RC.NLGRS_QTD
+RC.TAX_QTD
+
+  move 'Y' to $Process_Company
+  move &RC.COMPANY      to $Company
+  let $Tax_Class = rtrim(&RC.TAX_CLASS, ' ')
+  move &RC.STATE        to $State
+  move &RC.EMPLID       to $Emplid
+  move &RC.LOCALITY     to $Locality
+
+  if $Sep_Tax_Rpt = 'N'
+     if rtrim(&RC.TAX_CLASS, ' ') = 'U'
+        move $Sel_Employer_ID    to $Employer_ID                        !HP99998
+        move &RC.TXGRS_QTD       to #TxGrs_QTD                          !HP99998
+        move &RC.NLGRS_QTD       to #NlGrs_QTD                          !HP99998
+        move &RC.TAX_QTD         to #Tax_QTD                            !HP99998
+        do Insert-Work-Record                                           !HP99998
+     else                                                               !HP99998
+        if rtrim(&RC.TAX_CLASS, ' ') = 'H' or                           !HP99998
+           rtrim(&RC.TAX_CLASS, ' ') = 'A'                              !HP99998
+           add &RC.TXGRS_QTD     to #SWT_TxGrs_QTD                      !HP99998
+           add &RC.NLGRS_QTD     to #SWT_NlGrs_QTD                      !HP99998
+           add &RC.TAX_QTD       to #SWT_Tax_QTD                        !HP99998
+        end-if                                                          !HP99998
+     end-if
+  else
+     if rtrim(&RC.TAX_CLASS, ' ') = 'U'
+        move &Employer_ID_SUT    to $Employer_ID
+        move 0                   to #TxGrs_QTD
+        move &RC.NLGRS_QTD       to #NlGrs_QTD
+        move 0                   to #Tax_QTD
+        do Insert-Work-Record
+     else
+        if ((rtrim(&RC.TAX_CLASS, ' ') = 'D' and $Dis_Found = 'N') or
+            (rtrim(&RC.TAX_CLASS, ' ') = 'E' and $Dis_Found = 'N'))
+           move &Employer_ID_DIS    to $Employer_ID
+           move 0                   to #TxGrs_QTD
+           move &RC.NLGRS_QTD       to #NlGrs_QTD
+           move 0                   to #Tax_QTD
+           let $Dis_Found = 'Y'
+           let $Tax_Class = 'E'
+           do Insert-Work-Record
+        else
+           if rtrim(&RC.TAX_CLASS, ' ') = 'H' or                        !HP99998
+              rtrim(&RC.TAX_CLASS, ' ') = 'A'                           !HP99998
+              add &RC.TXGRS_QTD     to #SWT_TxGrs_QTD                   !HP99998
+              add &RC.TAX_QTD       to #SWT_Tax_QTD                     !HP99998
+           else                                                         !HP99998
+              move &Employer_ID_SWT to $Employer_ID                     !HP99998
+              move &RC.TXGRS_QTD    to #TxGrs_QTD                       !HP99998
+              move 0                to #NlGrs_QTD                       !HP99998
+              move &RC.TAX_QTD      to #Tax_QTD                         !HP99998
+              do Insert-Work-Record                                     !HP99998
+           end-if                                                       !HP99998
+        end-if
+     end-if
+  end-if
+
+FROM  PS_TAX_BALANCE RC
+WHERE RC.COMPANY       = &A.Company
+  AND RC.TAX_CLASS    IN ('H','A','U','E','D')
+  AND RC.BALANCE_ID    = $Calendar_Year_Id
+  AND RC.BALANCE_YEAR  = &TX.Balance_Year
+  AND RC.BALANCE_QTR   = &TX.Balance_Qtr
+  AND RC.STATE = 'CA'
+  AND RC.LOCALITY = ' '
+  AND RC.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = RC.EMPLID
+         AND  COMPANY       = RC.COMPANY
+         AND  BALANCE_ID    = RC.BALANCE_ID
+         AND  BALANCE_YEAR  = RC.BALANCE_YEAR
+         AND  BALANCE_QTR   = RC.BALANCE_QTR
+         AND  STATE         = RC.STATE
+         AND  LOCALITY      = ' '
+         AND  TAX_CLASS     = RC.TAX_CLASS)
+  AND ((RC.NLGRS_QTD <> 0
+       AND &A.TAX_REPORT_TYPE = '2')
+      OR (RC.TAX_QTD <> 0)
+      OR (RC.TXGRS_QTD <> 0
+       AND &A.TAX_REPORT_TYPE = '2'))
+end-SELECT
+end-procedure
+
+begin-procedure Generate-Tax-Tape
+begin-SELECT
+C.COMPANY       () on-break level=1 print=never Before=Before-Company
+                                                After=After-Company
+C.EMPLOYER_ID   () on-break level=2 print=never Before=Employer-ID-Chg
+                                                After=After-Employer-ID
+D1.NATIONAL_ID  () on-break level=3 print=never Before=Before-SSN
+C.EMPLID        () on-break level=4 print=never Before=Before-Emplid
+                                                After=After-Emplid
+C.TAX_CLASS     () on-break level=5 print=never Before=Before-Tax-Class
+C.STATE
+C.LOCALITY
+C.TXGRS_QTD
+C.NLGRS_QTD
+C.TAX_QTD
+D.LAST_NAME
+D.FIRST_NAME
+D.MIDDLE_NAME
+
+
+  move &C.EMPLOYER_ID  to $Employer_ID
+  let $Tax_Class = rtrim(&C.TAX_CLASS, ' ')
+  move &C.Tax_QTD to #Tax_QTD
+
+  if rtrim(&C.Tax_Class, ' ') = 'H'                                     !HP99998
+      and &C.Tax_QTD < 0
+    move 'CA QTD Tax Withheld Negative' to $ErMsg
+    move &C.Tax_QTD to #Neg_Tax_QTD
+    do Print-Summary-Data('NegAmt')
+    move 'Y' to $DoNotProcess1
+  end-if
+
+  if rtrim(&C.Tax_Class, ' ') = 'H'                                     !HP99998
+      and (&C.Tax_QTD = 0 or &C.Tax_QTD > 0)
+    move '' to $DoNotProcess1
+  end-if
+
+  if rtrim(&C.Tax_Class, ' ') = 'H'                                     !HP99998
+      and &C.TXGrs_QTD < 0
+    move 'CA QTD PIT Wages Negative' to $ErMsg
+    move &C.TxGrs_QTD to #Neg_TxGrs_QTD
+    do Print-Summary-Data('NegAmt')
+    move 'Y' to $DoNotProcess2
+  end-if
+
+  if rtrim(&C.Tax_Class, ' ') = 'H'                                     !HP99998
+      and (&C.TXGrs_QTD = 0 or &C.TXGrs_QTD > 0)
+    move '' to $DoNotProcess2
+  end-if
+
+  if rtrim(&C.Tax_Class, ' ') = 'U' and &C.NlGrs_QTD < 0
+    move 'CA QTD SUI Wages Negative' to $ErMsg
+    move &C.NlGrs_QTD to #Neg_NlGrs_QTD
+    do Print-Summary-Data('NegAmt')
+    move 'Y' to $DoNotProcess3
+  end-if
+
+  if rtrim(&C.Tax_Class, ' ') = 'U' and (&C.NlGrs_QTD = 0 or &C.NlGrs_QTD > 0)
+    move '' to $DoNotProcess3
+  end-if
+
+  if rtrim(&C.Tax_Class, ' ') = 'E' and &C.NlGrs_QTD < 0
+    move 'CA QTD DIS Wages Negative' to $ErMsg
+    move &C.NlGrs_QTD to #Neg_Dis_NlGrs_QTD
+    do Print-Summary-Data('NegAmt')
+    move 'Y' to $DoNotProcess4
+  end-if
+
+  if rtrim(&C.Tax_Class, ' ') = 'E' and (&C.NlGrs_QTD = 0 or &C.NlGrs_QTD > 0)
+    move '' to $DoNotProcess4
+  end-if
+
+FROM  PS_R_TAX810CA C, PS_PERSON_NAME D, PS_PERS_NID D1
+WHERE C.COMPANY       = &A.Company
+  AND (C.NLGRS_QTD <> 0 or C.TAX_QTD <> 0 or C.TXGRS_QTD <> 0)
+  AND D.EMPLID        = C.EMPLID
+  AND D.EMPLID        = D1.EMPLID
+  AND D1.COUNTRY      = {NID_Country}
+  AND D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+ORDER BY C.EMPLOYER_ID, D1.NATIONAL_ID, C.EMPLID, C.TAX_CLASS
+end-SELECT
+end-procedure
+
+begin-procedure Before-SSN
+  move &D1.NATIONAL_ID to $S123 xxx       !isolate first 3 digits
+  if $S123 = &Temp_SSN_Mask or RTRIM(&D1.NATIONAL_ID, ' ') = ''
+    move '000000000'           to $NATIONAL_ID
+  else
+    move &D1.NATIONAL_ID        to $NATIONAL_ID
+  end-if
+end-procedure
+
+begin-procedure Before-Emplid
+
+  let $LastName   = {ps-substr}(&D.LAST_NAME,1,30)
+  let $FirstName  = {ps-substr}(&D.FIRST_NAME,1,16)
+  let $MidInitial = {ps-substr}(&D.MIDDLE_NAME,1,1)
+
+  uppercase $LastName
+  uppercase $FirstName
+  uppercase $MidInitial
+
+  do Chk-Empl-Name
+
+  do Get-Wage-Plan-Cd
+
+  move 0  to #NlGrs_QTD
+  move 0  to #TxGrs_QTD
+  move 0  to #STW_QTD
+
+  move '' to $DoNotProcess1
+  move '' to $DoNotProcess2
+  move '' to $DoNotProcess3
+  move '' to $DoNotProcess4
+end-procedure
+
+
+
+begin-procedure Chk-Empl-Name
+
+  let $ChkName  = rtrim($FirstName,' ')
+  do Chk-Name($ChkName,'Employee',$FirstName)
+
+  let $ChkName  = rtrim($LastName,' ')
+  do Chk-Name($ChkName,'Employee',$LastName)
+
+  let $ChkName  = rtrim($MiddleName,' ')
+  do Chk-Name($ChkName,'Employee',$MiddleName)
+
+end-procedure
+
+
+begin-procedure Chk-Name($ChkName,$NameType,:$OutputName)
+
+  let #ChkName_Lgth = length($ChkName)
+  let #ChkName_Pos  = 1
+
+  while #ChkName_Pos <= #ChkName_Lgth
+    let $ChkName_Sub  = substr($ChkName, #ChkName_Pos, 1)
+    let $ChkName_Sub  = upper($ChkName_Sub)
+    let #ChkName_Rem_Lgth = #ChkName_Lgth - #ChkName_Pos
+
+    let #ChkName_Inst = instr('ABCDEFGHIJKLMNOPQRSTUVWXYZ .,&"/-',$ChkName_Sub, 1)
+    if #ChkName_Inst = 0
+       if $NameType = 'Employee'
+          let $OutputName = substr($OutputName,1,#ChkName_Pos -1)||' '||substr($OutputName,#ChkName_Pos+1,#ChkName_Rem_Lgth)
+       end-if
+    end-if
+
+    add 1 to #ChkName_Pos
+  end-while
+
+end-procedure
+
+begin-procedure After-Emplid
+
+  if &A.TAX_REPORT_TYPE = 'R'
+    move 0 to #NlGrs_QTD
+    move 0 to #TxGrs_QTD
+    move 0 to #Temp_Co_NlGrs_QTD
+    move 0 to #Temp_Co_NlGrs_TRec
+    move 0 to #Temp_Co_TxGrs_QTD
+    move 0 to #Temp_Co_TxGrs_TRec
+    move 0 to #Temp_Co_Dis_NlGrs_QTD
+    move 0 to #Temp_Co_Dis_NlGrs_TRec
+  end-if
+
+  if ($DoNotProcess1 = '' and $DoNotProcess2 = '' and
+      $DoNotProcess3 = '' and $DoNotProcess4 = '')
+    move #NlGrs_QTD to $NlGrs_QTD  999999999999.99
+    move #TxGrs_QTD to $TxGrs_QTD  999999999999.99
+    move #STW_QTD to $STW_QTD  999999999999.99
+
+    do Write-XML-employee-data
+    add 1 to #Count_ID
+
+    add #Temp_Co_Dis_NlGrs_QTD   to #ID_Dis_NlGrs_QTD
+    add #Temp_Co_Dis_NlGrs_TRec  to #ID_Dis_NlGrs_TRec
+    add #Temp_Co_NlGrs_QTD       to #ID_NlGrs_QTD
+    add #Temp_Co_NlGrs_TRec      to #ID_NlGrs_TRec
+    add #Temp_Co_TxGrs_QTD       to #ID_TxGrs_QTD
+    add #Temp_Co_TxGrs_TRec      to #ID_TxGrs_TRec
+    add #Temp_Co_STW_QTD         to #ID_STW_QTD
+    add #Temp_Co_STW_TRec        to #ID_STW_TRec
+  end-if
+  MOVE 0 TO   #Temp_Co_Dis_NlGrs_QTD
+  MOVE 0 TO   #Temp_Co_Dis_NlGrs_TRec
+  MOVE 0 TO   #Temp_Co_NlGrs_QTD
+  MOVE 0 TO   #Temp_Co_NlGrs_TRec
+  MOVE 0 TO   #Temp_Co_TxGrs_QTD
+  MOVE 0 TO   #Temp_Co_TxGrs_TRec
+  MOVE 0 TO   #Temp_Co_STW_QTD
+  MOVE 0 TO   #Temp_Co_STW_TRec
+end-procedure
+
+begin-procedure Before-Tax-Class
+  if rtrim(&C.Tax_Class, ' ') = 'E' and &C.NlGrs_QTD > 0
+    move &C.NlGrs_QTD to #NlGrs_QTD
+    add #NlGrs_QTD to #Temp_Co_Dis_NlGrs_QTD
+    add #NlGrs_QTD to #Temp_Co_Dis_NlGrs_TRec
+  end-if
+
+  if rtrim(&C.Tax_Class, ' ') = 'U' and &C.NlGrs_QTD > 0
+    move &C.NlGrs_QTD to #NlGrs_QTD
+    add #NlGrs_QTD to #Temp_Co_NlGrs_QTD
+    add #NlGrs_QTD to #Temp_Co_NlGrs_TRec
+  end-if
+
+  if rtrim(&C.Tax_Class, ' ') = 'H' and &C.Tax_QTD > 0                  !HP99998
+    move &C.Tax_QTD to #STW_QTD
+    add #STW_QTD to #Temp_Co_STW_QTD
+    add #STW_QTD to #Temp_Co_STW_TRec
+  end-if
+
+  if rtrim(&C.Tax_Class, ' ') = 'H' and &C.TxGrs_QTD > 0                !HP99998
+    move &C.TxGrs_QTD to #TxGrs_QTD
+    add #TxGrs_QTD to #Temp_Co_TxGrs_QTD
+    add #TxGrs_QTD to #Temp_Co_TxGrs_TRec
+  end-if
+end-procedure
+
+
+begin-procedure Get-Wage-Plan-Cd
+begin-SELECT loops=1
+S.WAGE_PLAN_CD
+S.EFFDT
+FROM  PS_STATE_TAX_DATA S
+WHERE S.EMPLID        = &C.EmplID
+  AND S.COMPANY       = &A.Company
+  AND S.STATE         = 'CA'
+  AND S.EFFDT        <= $PeriodEndDate
+ORDER BY S.EFFDT DESC
+end-SELECT
+
+  if $Sep_Tax_Rpt = 'Y'
+     if rtrim(&C.Tax_Class, ' ') = 'E'
+        let $Wage_Plan_Cd = 'J'
+     else
+        if rtrim(&C.Tax_Class, ' ') = 'U'
+           let $Wage_Plan_Cd = 'A'
+        else
+           let $Wage_Plan_Cd = 'P'
+        end-if
+     end-if
+  else
+     move &S.Wage_Plan_Cd to $Wage_Plan_Cd
+  end-if
+
+end-procedure
+
+begin-procedure Get-Company-Info
+
+  do Get-Company-Data
+  move 'CA' to $State
+  do Get-State-Tax-Data
+
+  if $Prcs_Process_Instance  =  ''
+     do Employer-Prompts
+  else
+     do Company-Run-Control
+  end-if
+
+  if $Sep_Tax_Rpt = 'N'
+     if RTRIM(&Employer_ID_SUT,' ') = ''
+        display '*** State Unemployment ID missing in Company State Tax Table ***'
+        display '*** Company: '   noline
+        display $Company
+        display '*** State  : '   noline
+        display $State
+        display '*********************** Processing stopped *********************'
+        stop
+     end-if
+     let $Sel_Employer_ID = &Employer_ID_SUT
+  else
+     let $Tmp_Employer_ID_SUT = RTRIM(&Employer_ID_SUT, ' ')
+     let $Tmp_Employer_ID_SWT = RTRIM(&Employer_ID_SWT, ' ')
+     let $Tmp_Employer_ID_DIS = RTRIM(&Employer_ID_DIS, ' ')
+
+     if $Tmp_Employer_ID_SUT = ''
+        display '*** Missing Employer ID (SUT) ***'
+        display '****** Processing stopped *******'
+        stop
+     end-if
+
+     if $Tmp_Employer_ID_SWT = ''
+        display '*** Missing Employer ID (SWT) ***'
+        display '****** Processing stopped *******'
+        stop
+     end-if
+
+     if $Tmp_Employer_ID_DIS = ''
+        display '*** Missing Employer ID (DIS) ***'
+        display '****** Processing stopped *******'
+        stop
+     end-if
+
+     if $Tmp_Employer_ID_SUT = $Tmp_Employer_ID_SWT or
+        $Tmp_Employer_ID_SUT = $Tmp_Employer_ID_DIS or
+        $Tmp_Employer_ID_SWT = $Tmp_Employer_ID_DIS
+        display '*** Duplicate Employer ID with Separate Tax Report Opt ***'
+        display '******************* Processing stopped *******************'
+        stop
+     end-if
+  end-if
+
+end-procedure
+
+begin-procedure Reset-Dis-Ind
+  move 0 to #SWT_TxGrs_QTD                                              !HP99998
+  move 0 to #SWT_NlGrs_QTD                                              !HP99998
+  move 0 to #SWT_Tax_QTD                                                !HP99998
+  let $Dis_Found = 'N'
+end-procedure
+
+begin-procedure Process-SWT                                             !HP99998
+  if #SWT_TxGrs_QTD <> 0 or                                             !HP99998
+     #SWT_NlGrs_QTD <> 0 or                                             !HP99998
+     #SWT_Tax_QTD   <> 0                                                !HP99998
+     if $Sep_Tax_Rpt = 'N'                                              !HP99998
+        move $Sel_Employer_ID to $Employer_ID                           !HP99998
+     else                                                               !HP99998
+        move &Employer_ID_SWT to $Employer_ID                           !HP99998
+     end-if                                                             !HP99998
+     move 'H'                 to $Tax_Class                             !HP99998
+     move #SWT_TXGRS_QTD      to #TxGrs_QTD                             !HP99998
+     move #SWT_NLGRS_QTD      to #NlGrs_QTD                             !HP99998
+     move #SWT_TAX_QTD        to #Tax_QTD                               !HP99998
+     do Insert-Work-Record                                              !HP99998
+  end-if                                                                !HP99998
+end-procedure                                                           !HP99998
+
+begin-procedure Employer-ID-Chg
+
+  let $StateEIN = RTRIM(&C.Employer_ID,' ')
+  unstring $StateEIN by '-' into $str1 $str2 $str3
+  string $str1 $str2 $str3 '*' by '' into $StateEIN
+  while INSTR($StateEIN,' ',0) <> 0
+    let #Spaces = INSTR($StateEIN,' ',0)
+    if #Spaces > 0
+      let $StateEIN = SUBSTR($StateEIN,0,(#Spaces - 1)) ||
+                      SUBSTR($StateEIN,(#Spaces + 1),8)
+    end-if
+  end-while
+
+  move $StateEIN to $TestStateEIN
+  find '*' in $TestStateEIN 0 #Spaces
+  extract $StateEIN from $TestStateEIN 0 #Spaces
+  move #Spaces to $Spaces 09
+  evaluate $Spaces
+    when = '04'
+      concat '0000' with $StateEIN
+    when = '05'
+      concat '000'  with $StateEIN
+    when = '06'
+      concat '00'   with $StateEIN
+    when = '07'
+      concat '0'    with $StateEIN
+  end-evaluate
+
+  do Get-Wage-Plan-Cd
+
+  if $Sep_Tax_Rpt = 'N'
+     move '' to $Co-Wage-Code
+  else
+     move $Wage_Plan_Cd to $Co-Wage-Code
+  end-if
+
+  do Open-File
+  do Write-XML-Headers
+  do Write-XML-Company-Data
+  add  1 to #FileCount
+
+end-procedure
+
+begin-procedure After-Employer-ID
+  if #Count_ID > 0
+    if $Sep_Tax_Rpt = 'N' or
+       $Tax_Class = 'U'
+      let $Prt_Cnt_Opt = 'Y'
+    else
+      let $Prt_Cnt_Opt = 'N'
+    end-if
+    do Print-Summary-Data('AcctTotal')
+    multiply 100 times #ID_STW_TRec
+    do Format-Number(#ID_STW_TRec,  $ID_STW_TRec,  '09999999999999')
+    add #ID_Dis_NlGrs_TRec to #ID_NlGrs_TRec
+    multiply 100 times #ID_NlGrs_TRec
+    do Format-Number(#ID_NlGrs_TRec,  $ID_NlGrs_TRec,  '09999999999999')
+    multiply 100 times #ID_TxGrs_TRec
+    do Format-Number(#ID_TxGrs_TRec,  $ID_TxGrs_TRec,  '09999999999999')
+    do Write-XML-Company-summary
+
+    add #ID_STW_QTD       to #Co_STW_QTD
+    add #ID_Dis_NlGrs_QTD to #Co_Dis_NlGrs_QTD
+    add #ID_NlGrs_QTD     to #Co_NlGrs_QTD
+    add #ID_TxGrs_QTD     to #Co_TxGrs_QTD
+    add #Count_ID to #Count_S
+
+    move 0 to #ID_STW_QTD
+    move 0 to #ID_Dis_NlGrs_QTD
+    move 0 to #ID_NlGrs_QTD
+    move 0 to #ID_TxGrs_QTD
+    move 0 to #Count_ID
+    move 0 to $CountID
+    new-page
+  end-if
+end-procedure
+
+begin-procedure Before-Company
+  do Get-Company-Data
+  move 'CA' to $State
+  do Get-State-Tax-Data             !Employer ID
+end-procedure
+
+begin-procedure After-Company
+  if #Count_S > 0
+    do Print-Summary-Data('CoAmt')
+
+    add #Co_STW_QTD       to #Tot_STW_QTD
+    add #Co_Dis_NlGrs_QTD to #Tot_Dis_NlGrs_QTD
+    add #Co_NlGrs_QTD     to #Tot_NlGrs_QTD
+    add #Co_TxGrs_QTD     to #Tot_TxGrs_QTD
+    add #Count_S to #Count_F
+    add #Count_R to #Count_R_Total
+
+    move 0 to #Co_STW_QTD
+    move 0 to #Co_Dis_NlGrs_QTD
+    move 0 to #Co_NlGrs_QTD
+    move 0 to #Co_TxGrs_QTD
+    move 0 to #Count_S
+    move 0 to #Count_R
+    new-page
+  end-if
+end-procedure
+
+
+begin-procedure Write-XML-Company-Data
+  move &CT.Descr        to $ErName
+  move $CompnyAdd1      to $ErAddress
+  move $CompnyCity      to $City
+  let $StateCd = rtrim(&CT.State, ' ')
+  move &CT.Postal       to $Zip
+  move $Zip             to $ZipExtsn ~~~~~~xxxx
+  if instr($Zip,'-',6) = 0
+  and $ZipExtsn <> '    '
+    let $Zip = substr($Zip,1,5) || '-' || substr($Zip,6,4)
+  end-if
+  let $ZipExtsn = substr($Zip,6,5)
+  let $Zip = substr($Zip,1,5)
+
+  uppercase $ErName
+  uppercase $ErAddress
+  uppercase $City
+
+
+  write 10 from '<ReturnHeaderState documentId="A">'
+
+  move &TX.Balance_Qtr   to $ReturnQuarter 9
+  let $xml_content = $ReturnQuarter
+  let $xml_content = rtrim($xml_content, ' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<ReturnQuarter>' || $xml_content || '</ReturnQuarter>'
+  write 10 from $xml_output_line
+
+  move &TX.Balance_Year   to $ReturnYear xxxx
+  let $xml_content = $ReturnYear
+  let $xml_content = rtrim($xml_content, ' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<Taxyear>' || $xml_content || '</Taxyear>'
+  write 10 from $xml_output_line
+
+  let $xml_output_line = ''
+  let $xml_output_line = '<ReturnType>' || 'StateCombined' || '</ReturnType>'
+  write 10 from $xml_output_line
+
+  write 10 from '<FilingAction>'
+  let $xml_output_line = ''
+  let $xml_output_line = '<Action>' || 'Original' || '</Action>'
+  write 10 from $xml_output_line
+  write 10 from '</FilingAction>'
+
+  write 10 from '<StateEIN>'
+
+  let $xml_output_line = ''
+  let $xml_output_line = '<TypeStateEIN>' || 'WithholdingAccountNo' || '</TypeStateEIN>'
+  write 10 from $xml_output_line
+
+  let $xml_content = rtrim($StateEIN,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<StateEINValue>' || $xml_content || '</StateEINValue>'
+  write 10 from $xml_output_line
+
+  write 10 from '</StateEIN>'
+
+  let $xml_output_line = ''
+  let $xml_output_line = '<StateCode>' || 'CA' || '</StateCode>'
+  write 10 from $xml_output_line
+
+  write 10 from '<BusinessAddress>'
+
+  let $xml_content = rtrim($ErName,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<BusinessName>' || $xml_content || '</BusinessName>'
+  write 10 from $xml_output_line
+
+  let $xml_content = rtrim($ErAddress,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<AddressLine>' || $xml_content || '</AddressLine>'
+  write 10 from $xml_output_line
+
+  let $xml_content = rtrim($City,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<City>' || $xml_content || '</City>'
+  write 10 from $xml_output_line
+
+  let $xml_content = rtrim($StateCd,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<StateOrProvince>' || $xml_content || '</StateOrProvince>'
+  write 10 from $xml_output_line
+
+  let $xml_content = rtrim($Zip,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<ZipCode>' || $xml_content || '</ZipCode>'
+  write 10 from $xml_output_line
+
+  write 10 from '</BusinessAddress>'
+
+  write 10 from '</ReturnHeaderState>'
+
+  write 10 from '<StateReturn>'
+
+  write 10 from '<StateCombined documentType="Form" documentId="A">'
+
+  move &C.Employer_ID to $Sep-Employer_ID
+
+  if $Sep_Tax_Rpt = 'Y'
+
+     move &C.EMPLOYER_ID to $Sep-Employer_ID
+     do Get-Company-Gross-Wages-Sep
+     do Get-Employee-count-Sep
+
+     if $Co-Wage-Code = 'A'
+        move &CO_Number-of-Employees-U to #Number-of-Employees
+     else
+        if $Co-Wage-Code = 'J'
+            move &CO_Number-of-Employees-J to #Number-of-Employees
+        else
+            move &CO_Number-of-Employees-P to #Number-of-Employees
+        end-if
+     end-if
+  else
+     do Get-Company-Gross-Wages
+     do Get-Employee-count
+  end-if
+
+  move #Number-of-Employees  to $xml_content 0999999
+  let $xml_output_line = '<NumberOfEmployees>' || $xml_content || '</NumberOfEmployees>'
+  write 10 from $xml_output_line
+
+  move  #Co-QTD-NlGrs    to $xml_content  9999999999999.99
+  do Process-XML-Content
+  let $xml_output_line = '<WHTotalWages>' || $xml_content || '</WHTotalWages>'
+  write 10 from $xml_output_line
+
+  move  #Co-QTD-STW    to $xml_content  9999999999999.99
+  do Process-XML-Content
+  let $xml_output_line = '<TotalIncomeTaxWithheld>' || $xml_content || '</TotalIncomeTaxWithheld>'
+  write 10 from $xml_output_line
+
+  move  #Co-QTD-TxGrs    to $xml_content  9999999999999.99
+  do Process-XML-Content
+  let $xml_output_line = '<WHTaxableWages>' || $xml_content || '</WHTaxableWages>'
+  write 10 from $xml_output_line
+
+  write 10 from '<PayRoll>'
+
+  add 1 to #RecordCount
+  move 'Y' to $RecordWritten
+
+end-procedure
+
+
+begin-procedure Write-XML-employee-data
+
+  write 10 from '<Employee>'
+
+  let $xml_content = rtrim($NATIONAL_ID,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<SSN>' || $xml_content || '</SSN>'
+  write 10 from $xml_output_line
+
+  write 10 from '<Employee>'
+
+  let $xml_content = rtrim($FirstName,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<FirstName>' || $xml_content || '</FirstName>'
+  write 10 from $xml_output_line
+
+  let $xml_content = rtrim($LastName,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<LastName>' || $xml_content || '</LastName>'
+  write 10 from $xml_output_line
+
+  write 10 from '</Employee>'
+
+  let $xml_content = rtrim($NlGrs_QTD,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<TotalWages>' || $xml_content || '</TotalWages>'
+  write 10 from $xml_output_line
+
+  let $xml_content = rtrim($TxGrs_QTD,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<TaxableWages>' || $xml_content || '</TaxableWages>'
+  write 10 from $xml_output_line
+
+  let $xml_content = rtrim($STW_QTD,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<TaxWithheld>' || $xml_content || '</TaxWithheld>'
+  write 10 from $xml_output_line
+
+  let $xml_content = rtrim($Wage_Plan_Cd,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<WagePlan>' || $xml_content || '</WagePlan>'
+  write 10 from $xml_output_line
+
+  write 10 from '</Employee>'
+
+  add 1 to #RecordCount
+  add 1 to #Count_T
+  add 1 to #Count_S1
+
+  move 0    to #NlGrs_QTD
+  move ' '  to $NlGrs_QTD
+  move 0    to #TxGrs_QTD
+  move ' '  to $TxGrs_QTD
+  move 0    to #STW_QTD
+  move ' '  to $STW_QTD
+end-procedure
+
+
+
+begin-procedure Write-XML-Company-summary
+
+  move 0 to $Month1CountDisp 0999999
+  move 0 to $Month2CountDisp 0999999
+  move 0 to $Month3CountDisp 0999999
+  if $Sep_Tax_Rpt = 'N' or
+     $Tax_Class = 'U'
+     move $Month1Count  to $Month1CountDisp
+     move $Month2Count  to $Month2CountDisp
+     move $Month3Count  to $Month3CountDisp
+  end-if
+
+
+  move #Count_ID to $Count_S 0999999
+
+  write 10 from '</PayRoll>'
+
+  let $xml_content = rtrim($Month1CountDisp,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<Month1Employees>' || $xml_content || '</Month1Employees>'
+  write 10 from $xml_output_line
+
+  let $xml_content = rtrim($Month2CountDisp,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<Month2Employees>' || $xml_content || '</Month2Employees>'
+  write 10 from $xml_output_line
+
+  let $xml_content = rtrim($Month3CountDisp,' ')
+  do Process-XML-Content
+  let $xml_output_line = ''
+  let $xml_output_line = '<Month3Employees>' || $xml_content || '</Month3Employees>'
+  write 10 from $xml_output_line
+
+  write 10 from '</StateCombined>'
+
+  write 10 from '</StateReturn>'
+
+  add 1 to #RecordCount
+
+  move '' to $ID_NlGrs_TRec
+  move 0  to #ID_NlGrs_TRec
+  move 0  to #ID_Dis_NlGrs_TRec
+  move '' to $ID_TxGrs_TRec
+  move 0  to #ID_TxGrs_TRec
+  move '' to $ID_STW_TRec
+  move 0  to #ID_STW_TRec
+  move 0 to $Month1CountDisp 0999999
+  move 0 to $Month2CountDisp 0999999
+  move 0 to $Month3CountDisp 0999999
+
+end-procedure
+
+
+begin-procedure Employer-Prompts
+  display ' '
+  display 'Enter quarterly data for ' noline
+  display $Company noline
+  display ':'
+  display '(Numbers should not include commas)'
+  input $Month1Count     '   Month 1 employee count'
+  input $Month2Count     '   Month 2 employee count'
+  input $Month3Count     '   Month 3 employee count'
+  move $Month1Count     to #Month1Count
+  move $Month2Count     to #Month2Count
+  move $Month3Count     to #Month3Count
+
+  move #Month1Count     to $Month1Count     0999999
+  move #Month2Count     to $Month2Count     0999999
+  move #Month3Count     to $Month3Count     0999999
+
+  while $Sep_Tax_Rpt = ' '
+    input $Sep_Tax_Rpt 'Enter Separate Tax Report Option (Y/N)'
+    uppercase $Sep_Tax_Rpt
+    If INSTR ('YN',$Sep_Tax_Rpt,1) = 0
+       display ' '
+       display '***** Enter Y or N *****'
+       display ' '
+    end-if
+  end-while
+
+end-procedure
+
+begin-procedure Company-Run-Control
+
+  let $RunCtl_Found    = 'N'
+  let #Month1Count     = 0
+  let #Month2Count     = 0
+  let #Month3Count     = 0
+  let $Sep_Tax_Rpt     = 'N'
+
+begin-select
+CA.CA_MONTH1_COUNT
+CA.CA_MONTH2_COUNT
+CA.CA_MONTH3_COUNT
+CA.SEP_TAX_RPT
+
+  let $RunCtl_Found = 'Y'
+
+FROM PS_RC_TAX810CA CA
+WHERE CA.OPRID = $Prcs_OprID
+  AND CA.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+  AND CA.COMPANY = &RC.Company
+end-SELECT
+
+  if $RunCtl_Found = 'Y'
+     move &CA.CA_Month1_Count     to #Month1Count
+     move &CA.CA_Month2_Count     to #Month2Count
+     move &CA.CA_Month3_Count     to #Month3Count
+
+     move &CA.Sep_Tax_Rpt  to $Sep_Tax_Rpt
+  end-if
+
+  move #Month1Count     to $Month1Count     0999999
+  move #Month2Count     to $Month2Count     0999999
+  move #Month3Count     to $Month3Count     0999999
+end-procedure
+
+begin-procedure Insert-Work-Record
+
+  let $Txgrs_QTD = #Txgrs_QTD
+  let $Nlgrs_QTD = #Nlgrs_QTD
+  let $Tax_QTD   = #Tax_QTD
+
+  let $err-statement1 = 'TAX810CA, Insert-Error - INSERT-WORK-RECORD'
+  let $err-statement2 = 'Key Values: TABLE PS_R_TAX810CA' ||
+                        ', COMPANY ' || $Company ||
+                        ', EMPLOYER_ID ' || $Employer_ID ||
+                        ', STATE ' || $State ||
+                        ', EMPLID ' || $Emplid ||
+                        ', TAX_CLASS ' || $Tax_Class ||
+                        ', LOCALITY ' || $Locality ||
+                        ', TXGRS_QTD ' || $Txgrs_QTD ||
+                        ', NLGRS_QTD ' || $Nlgrs_QYD ||
+                        ', TAX_QTD ' || $Tax_QTD
+
+begin-SQL on-error=Error-Display
+  INSERT INTO PS_R_TAX810CA
+        (COMPANY,
+         EMPLOYER_ID,
+         STATE,
+         EMPLID,
+         TAX_CLASS,
+         LOCALITY,
+         TXGRS_QTD,
+         NLGRS_QTD,
+         TAX_QTD)
+ VALUES ($Company,
+         $Employer_ID,
+         $State,
+         $EmplID,
+         $Tax_Class,
+         $Locality,
+         #Txgrs_QTD,
+         #Nlgrs_QTD,
+         #Tax_QTD)
+end-SQL
+end-procedure
+
+begin-procedure Delete-Work-File
+
+  let $err-statement1 = 'TAX810CA, Delete-Error - DELETE-WORK-FILE'
+  let $err-statement2 = ' '
+
+begin-SQL On-Error=Error-Display
+DELETE FROM PS_R_TAX810CA
+end-SQL
+end-procedure
+
+begin-procedure Write-XML-Headers
+
+  write 10 from '<?xml version="1.0" encoding="UTF-8"?>'
+  write 10 from '<ReturnData documentCount="2" xsi:schemaLocation="http://www.irs.gov/efile ReturnDataState.xsd"'
+  write 10 from 'xmlns="http://www.irs.gov/efile"'
+  write 10 from 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+
+  let $xml_output_line = '<ContentLocation>' || 'T8CA' || $Company || $Co-Wage-Code || '</ContentLocation>'
+  write 10 from $xml_output_line
+
+end-procedure
+
+begin-procedure Process-XML-Content
+
+   let $xml_content   = replace($xml_content, '&',  '&amp;')
+   let $xml_content   = replace($xml_content, '"',  '&quot;')
+   let $xml_content   = replace($xml_content, '<',  '&lt;')
+   let $xml_content   = replace($xml_content, '>',  '&gt;')
+   let $xml_content   = replace($xml_content, '''', '&apos;')
+
+
+   let $xml_content   = ltrim($xml_content, ' ')
+   let $xml_content   = rtrim($xml_content, ' ')
+
+end-procedure
+
+
+begin-procedure Get-Company-Gross-Wages
+
+  let #Co-QTD-TxGrs        = 0
+  let #Co-QTD-NlGrs        = 0
+  let #Co-QTD-STW          = 0
+
+begin-SELECT
+SUM(XMLC.NLGRS_QTD)  &Co-QTD-NlGrs
+
+  move  &Co-QTD-NlGrs    to #Co-QTD-NlGrs
+
+
+FROM  PS_R_TAX810CA XMLC, PS_PERSON_NAME XMLD, PS_PERS_NID XMLD1
+WHERE XMLC.COMPANY       = &A.Company
+  AND XMLC.TAX_CLASS     = 'U'
+  AND (XMLC.NLGRS_QTD     > 0
+       AND &A.TAX_REPORT_TYPE = '2')
+  AND XMLD.EMPLID        = XMLC.EMPLID
+  AND XMLD.EMPLID        = XMLD1.EMPLID
+  AND XMLD1.COUNTRY      = {NID_Country}
+  AND XMLD1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+  AND XMLC.EMPLID NOT IN (SELECT XML5C.EMPLID
+                          FROM PS_R_TAX810CA XML5C, PS_PERSON_NAME XML5D, PS_PERS_NID XML5D1
+                          WHERE XML5C.COMPANY       = &A.Company
+                            AND XML5C.TAX_CLASS     = 'H'
+                            AND (XML5C.TAX_QTD       < 0
+                                 OR (XML5C.TXGRS_QTD     < 0
+                                     AND &A.TAX_REPORT_TYPE = '2'))
+                            AND XML5D.EMPLID        = XML5C.EMPLID
+                            AND XML5D.EMPLID        = XML5D1.EMPLID
+                            AND XML5D1.COUNTRY      = {NID_Country}
+                            AND XML5D1.NATIONAL_ID_TYPE = $Payroll_NID_Type)
+end-SELECT
+
+
+begin-SELECT
+SUM(XML2C.TAX_QTD)    &Co-QTD-STW
+
+  move  &Co-QTD-STW    to #Co-QTD-STW
+
+
+FROM  PS_R_TAX810CA XML2C, PS_PERSON_NAME XML2D, PS_PERS_NID XML2D1
+WHERE XML2C.COMPANY       = &A.Company
+  AND XML2C.TAX_CLASS     = 'H'
+  AND XML2C.TAX_QTD       > 0
+  AND XML2D.EMPLID        = XML2C.EMPLID
+  AND XML2D.EMPLID        = XML2D1.EMPLID
+  AND XML2D1.COUNTRY      = {NID_Country}
+  AND XML2D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+  AND XML2C.EMPLID NOT IN (SELECT XML6C.EMPLID
+                           FROM PS_R_TAX810CA XML6C, PS_PERSON_NAME XML6D, PS_PERS_NID XML6D1
+                           WHERE XML6C.COMPANY       = &A.Company
+                           AND XML6C.TAX_CLASS     = 'U'
+                           AND (XML6C.NLGRS_QTD     < 0
+                           AND &A.TAX_REPORT_TYPE = '2')
+                           AND XML6D.EMPLID        = XML6C.EMPLID
+                           AND XML6D.EMPLID        = XML6D1.EMPLID
+                           AND XML6D1.COUNTRY      = {NID_Country}
+                           AND XML6D1.NATIONAL_ID_TYPE = $Payroll_NID_Type )
+  AND XML2C.EMPLID NOT IN (SELECT XML8C.EMPLID
+                           FROM PS_R_TAX810CA XML8C, PS_PERSON_NAME XML8D, PS_PERS_NID XML8D1
+                           WHERE XML8C.COMPANY       = &A.Company
+                           AND XML8C.TAX_CLASS     = 'H'
+                           AND (XML8C.TXGRS_QTD     < 0
+                                AND &A.TAX_REPORT_TYPE = '2')
+                           AND XML8D.EMPLID        = XML8C.EMPLID
+                           AND XML8D.EMPLID        = XML8D1.EMPLID
+                           AND XML8D1.COUNTRY      = {NID_Country}
+                           AND XML8D1.NATIONAL_ID_TYPE = $Payroll_NID_Type )
+end-SELECT
+
+
+begin-SELECT
+SUM(XML3C.TXGRS_QTD)  &Co-QTD-TxGrs
+
+  move  &Co-QTD-TxGrs  to #Co-QTD-TxGrs
+
+
+FROM  PS_R_TAX810CA XML3C, PS_PERSON_NAME XML3D, PS_PERS_NID XML3D1
+WHERE XML3C.COMPANY       = &A.Company
+  AND XML3C.TAX_CLASS     = 'H'
+  AND (XML3C.TXGRS_QTD     > 0
+       AND &A.TAX_REPORT_TYPE = '2')
+  AND XML3D.EMPLID        = XML3C.EMPLID
+  AND XML3D.EMPLID        = XML3D1.EMPLID
+  AND XML3D1.COUNTRY      = {NID_Country}
+  AND XML3D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+  AND XML3C.EMPLID NOT IN (SELECT XML7C.EMPLID
+                           FROM PS_R_TAX810CA XML7C, PS_PERSON_NAME XML7D, PS_PERS_NID XML7D1
+                           WHERE XML7C.COMPANY       = &A.Company
+                           AND XML7C.TAX_CLASS     = 'U'
+                           AND XML7C.TAX_QTD     < 0
+                           AND XML7D.EMPLID        = XML7C.EMPLID
+                           AND XML7D.EMPLID        = XML7D1.EMPLID
+                           AND XML7D1.COUNTRY      = {NID_Country}
+                           AND XML7D1.NATIONAL_ID_TYPE = $Payroll_NID_Type )
+  AND XML3C.EMPLID NOT IN (SELECT XML9C.EMPLID
+                           FROM PS_R_TAX810CA XML9C, PS_PERSON_NAME XML9D, PS_PERS_NID XML9D1
+                           WHERE XML9C.COMPANY       = &A.Company
+                           AND XML9C.TAX_CLASS     = 'H'
+                           AND XML9C.TAX_QTD     < 0
+                           AND XML9D.EMPLID        = XML9C.EMPLID
+                           AND XML9D.EMPLID        = XML9D1.EMPLID
+                           AND XML9D1.COUNTRY      = {NID_Country}
+                           AND XML9D1.NATIONAL_ID_TYPE = $Payroll_NID_Type )
+end-SELECT
+
+end-procedure
+
+begin-procedure Get-Company-Gross-Wages-Sep
+  let #Co-QTD-TxGrs        = 0
+  let #Co-QTD-NlGrs        = 0
+  let #Co-QTD-STW          = 0
+
+begin-SELECT
+SUM(XMLSC.NLGRS_QTD)  &Co-Sep-QTD-NlGrs
+
+  move  &Co-Sep-QTD-NlGrs    to #Co-QTD-NlGrs
+
+
+FROM  PS_R_TAX810CA XMLSC, PS_PERSON_NAME XMLSD, PS_PERS_NID XMLSD1
+WHERE XMLSC.COMPANY       = &A.Company
+  AND XMLSC.EMPLOYER_ID   = $Sep-Employer_ID
+  AND XMLSC.TAX_CLASS     = 'U'
+  AND (XMLSC.NLGRS_QTD     > 0
+       AND &A.TAX_REPORT_TYPE = '2')
+  AND XMLSD.EMPLID        = XMLSC.EMPLID
+  AND XMLSD.EMPLID        = XMLSD1.EMPLID
+  AND XMLSD1.COUNTRY      = {NID_Country}
+  AND XMLSD1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+end-SELECT
+
+
+begin-SELECT
+SUM(XMLS2C.TAX_QTD)    &Co-Sep-QTD-STW
+
+  move  &Co-Sep-QTD-STW    to #Co-QTD-STW
+
+
+FROM  PS_R_TAX810CA XMLS2C, PS_PERSON_NAME XMLS2D, PS_PERS_NID XMLS2D1
+WHERE XMLS2C.COMPANY       = &A.Company
+  AND XMLS2C.EMPLOYER_ID   = $Sep-Employer_ID
+  AND XMLS2C.TAX_CLASS     IN ('H','A')
+  AND XMLS2C.TAX_QTD       > 0
+  AND XMLS2D.EMPLID        = XMLS2C.EMPLID
+  AND XMLS2D.EMPLID        = XMLS2D1.EMPLID
+  AND XMLS2D1.COUNTRY      = {NID_Country}
+  AND XMLS2D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+  AND XMLS2C.EMPLID NOT IN (SELECT XML12C.EMPLID
+                           FROM PS_R_TAX810CA XML12C, PS_PERSON_NAME XML12D, PS_PERS_NID XML12D1
+                           WHERE XML12C.COMPANY       = &A.Company
+                           AND XML12C.EMPLOYER_ID     = $Sep-Employer_ID
+                           AND XML12C.TAX_CLASS       IN ('H','A')
+                           AND (XML12C.TXGRS_QTD     < 0
+                                AND &A.TAX_REPORT_TYPE = '2')
+                           AND XML12D.EMPLID          = XML12C.EMPLID
+                           AND XML12D.EMPLID          = XML12D1.EMPLID
+                           AND XML12D1.COUNTRY        = {NID_Country}
+                           AND XML12D1.NATIONAL_ID_TYPE = $Payroll_NID_Type )
+end-SELECT
+
+
+begin-SELECT
+SUM(XMLS3C.TXGRS_QTD)  &Co-Sep-QTD-TxGrs
+
+  move  &Co-Sep-QTD-TxGrs  to #Co-QTD-TxGrs
+
+
+FROM  PS_R_TAX810CA XMLS3C, PS_PERSON_NAME XMLS3D, PS_PERS_NID XMLS3D1
+WHERE XMLS3C.COMPANY       = &A.Company
+  AND XMLS3C.EMPLOYER_ID   = $Sep-Employer_ID
+  AND XMLS3C.TAX_CLASS      IN ('H','A','E','D')
+  AND (XMLS3C.TXGRS_QTD     > 0
+       AND &A.TAX_REPORT_TYPE = '2')
+  AND XMLS3D.EMPLID        = XMLS3C.EMPLID
+  AND XMLS3D.EMPLID        = XMLS3D1.EMPLID
+  AND XMLS3D1.COUNTRY      = {NID_Country}
+  AND XMLS3D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+  AND XMLS3C.EMPLID NOT IN (SELECT XML14C.EMPLID
+                           FROM PS_R_TAX810CA XML14C, PS_PERSON_NAME XML14D, PS_PERS_NID XML14D1
+                           WHERE XML14C.COMPANY       = &A.Company
+                           AND XML14C.EMPLOYER_ID     = $Sep-Employer_ID
+                           AND XML14C.TAX_CLASS     IN ('H','A','E','D')
+                           AND XML14C.TAX_QTD       < 0
+                           AND XML14D.EMPLID        = XML14C.EMPLID
+                           AND XML14D.EMPLID        = XML14D1.EMPLID
+                           AND XML14D1.COUNTRY      = {NID_Country}
+                           AND XML14D1.NATIONAL_ID_TYPE = $Payroll_NID_Type )
+end-SELECT
+
+begin-SELECT
+SUM(XMLS4C.NLGRS_QTD)  &Co-Sep-Dis-QTD-NlGrs
+
+  if #Co-QTD-NlGrs = 0
+    move  &Co-Sep-Dis-QTD-NlGrs    to #Co-QTD-NlGrs
+  end-if
+
+
+FROM  PS_R_TAX810CA XMLS4C, PS_PERSON_NAME XMLS4D, PS_PERS_NID XMLS4D1
+WHERE XMLS4C.COMPANY       = &A.Company
+  AND XMLS4C.EMPLOYER_ID   = $Sep-Employer_ID
+  AND XMLS4C.TAX_CLASS     IN ('E','D')
+  AND (XMLS4C.NLGRS_QTD     > 0
+       AND &A.TAX_REPORT_TYPE = '2')
+  AND XMLS4D.EMPLID        = XMLS4C.EMPLID
+  AND XMLS4D.EMPLID        = XMLS4D1.EMPLID
+  AND XMLS4D1.COUNTRY      = {NID_Country}
+  AND XMLS4D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+  AND XMLS4C.EMPLID NOT IN (SELECT XML15C.EMPLID
+                          FROM PS_R_TAX810CA XML15C, PS_PERSON_NAME XML15D, PS_PERS_NID XML15D1
+                          WHERE XML15C.COMPANY       = &A.Company
+                            AND XML15C.EMPLOYER_ID   = $Sep-Employer_ID
+                            AND XML15C.TAX_CLASS     IN ('E','D')
+                            AND (XML15C.TAX_QTD       < 0
+                                 OR (XML15C.TXGRS_QTD     < 0
+                                     AND &A.TAX_REPORT_TYPE = '2'))
+                            AND XML15D.EMPLID        = XML15C.EMPLID
+                            AND XML15D.EMPLID        = XML15D1.EMPLID
+                            AND XML15D1.COUNTRY      = {NID_Country}
+                            AND XML15D1.NATIONAL_ID_TYPE = $Payroll_NID_Type)
+end-SELECT
+
+end-procedure
+
+begin-procedure Get-Employee-count
+
+begin-SELECT
+COUNT(DISTINCT CC.EMPLID)    &Number-of-Employees
+
+   move &Number-of-Employees to #Number-of-Employees
+
+FROM  PS_R_TAX810CA CC, PS_PERSON_NAME CD, PS_PERS_NID CD1
+WHERE CC.COMPANY       = &A.Company
+  AND CC.TAX_CLASS    IN ('H','A','U','E','D')
+  AND (CC.NLGRS_QTD > 0 or CC.TAX_QTD > 0 or CC.TXGRS_QTD > 0)
+  AND CD.EMPLID        = CC.EMPLID
+  AND CD.EMPLID        = CD1.EMPLID
+  AND CD1.COUNTRY      = {NID_Country}
+  AND CD1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+  AND CC.EMPLID NOT IN (SELECT CC7.EMPLID
+                        FROM PS_R_TAX810CA CC7, PS_PERSON_NAME CD7, PS_PERS_NID CD17
+                        WHERE CC7.COMPANY       = &A.Company
+                        AND CC7.TAX_CLASS    IN ('H','A','U','E','D')
+                        AND (CC7.NLGRS_QTD < 0 or CC7.TAX_QTD < 0 or CC7.TXGRS_QTD < 0)
+                        AND CD7.EMPLID        = CC7.EMPLID
+                        AND CD7.EMPLID        = CD17.EMPLID
+                        AND CD17.COUNTRY      = {NID_Country}
+                        AND CD17.NATIONAL_ID_TYPE = $Payroll_NID_Type )
+end-SELECT
+
+end-procedure
+
+begin-procedure Get-Employee-count-Sep
+
+begin-SELECT
+COUNT(DISTINCT CC2.EMPLID)    &CO_Number-of-Employees-U
+
+FROM  PS_R_TAX810CA CC2, PS_PERSON_NAME CD2, PS_PERS_NID CD21
+WHERE CC2.COMPANY       = &A.Company
+  AND CC2.EMPLOYER_ID   = $Sep-Employer_ID
+  AND CC2.TAX_CLASS     = 'U'
+  AND (CC2.NLGRS_QTD > 0 or CC2.TAX_QTD > 0 or CC2.TXGRS_QTD > 0)
+  AND CD2.EMPLID        = CC2.EMPLID
+  AND CD2.EMPLID        = CD21.EMPLID
+  AND CD21.COUNTRY      = {NID_Country}
+  AND CD21.NATIONAL_ID_TYPE = $Payroll_NID_Type
+  AND CC2.EMPLID NOT IN (SELECT CC5.EMPLID
+                         FROM PS_R_TAX810CA CC5, PS_PERSON_NAME CD5, PS_PERS_NID CD51
+                         WHERE CC5.COMPANY       = &A.Company
+                           AND CC5.EMPLOYER_ID   = $Sep-Employer_ID
+                           AND CC5.TAX_CLASS     = 'U'
+                           AND (CC5.NLGRS_QTD < 0 or CC5.TAX_QTD < 0 or CC5.TXGRS_QTD < 0)
+                           AND CD5.EMPLID        = CC5.EMPLID
+                           AND CD5.EMPLID        = CD51.EMPLID
+                           AND CD51.COUNTRY      = {NID_Country}
+                           AND CD51.NATIONAL_ID_TYPE = $Payroll_NID_Type)
+end-SELECT
+
+
+begin-SELECT
+COUNT(DISTINCT CC3.EMPLID)    &CO_Number-of-Employees-J
+
+FROM  PS_R_TAX810CA CC3, PS_PERSON_NAME CD3, PS_PERS_NID CD31
+WHERE CC3.COMPANY       = &A.Company
+  AND CC3.EMPLOYER_ID   = $Sep-Employer_ID
+  AND CC3.TAX_CLASS     IN ('E','D')
+  AND (CC3.NLGRS_QTD > 0 or CC3.TAX_QTD > 0 or CC3.TXGRS_QTD > 0)
+  AND CD3.EMPLID        = CC3.EMPLID
+  AND CD3.EMPLID        = CD31.EMPLID
+  AND CD31.COUNTRY      = {NID_Country}
+  AND CD31.NATIONAL_ID_TYPE = $Payroll_NID_Type
+  AND CC3.EMPLID NOT IN (SELECT CC4.EMPLID
+                         FROM PS_R_TAX810CA CC4, PS_PERSON_NAME CD4, PS_PERS_NID CD41
+                         WHERE CC4.COMPANY       = &A.Company
+                           AND CC4.EMPLOYER_ID   = $Sep-Employer_ID
+                           AND CC4.TAX_CLASS     IN ('E','D')
+                           AND (CC4.NLGRS_QTD < 0 or CC4.TAX_QTD < 0 or CC4.TXGRS_QTD < 0)
+                           AND CD4.EMPLID        = CC4.EMPLID
+                           AND CD4.EMPLID        = CD41.EMPLID
+                           AND CD41.COUNTRY      = {NID_Country}
+                           AND CD41.NATIONAL_ID_TYPE = $Payroll_NID_Type)
+end-SELECT
+
+
+begin-SELECT
+COUNT(DISTINCT CC5.EMPLID)    &CO_Number-of-Employees-P
+
+FROM  PS_R_TAX810CA CC5, PS_PERSON_NAME CD5, PS_PERS_NID CD51
+WHERE CC5.COMPANY       = &A.Company
+  AND CC5.EMPLOYER_ID   = $Sep-Employer_ID
+  AND CC5.TAX_CLASS     IN ('H','A')
+  AND (CC5.NLGRS_QTD > 0 or CC5.TAX_QTD > 0 or CC5.TXGRS_QTD > 0)
+  AND CD5.EMPLID        = CC5.EMPLID
+  AND CD5.EMPLID        = CD51.EMPLID
+  AND CD51.COUNTRY      = {NID_Country}
+  AND CD51.NATIONAL_ID_TYPE = $Payroll_NID_Type
+  AND CC5.EMPLID NOT IN (SELECT CC6.EMPLID
+                         FROM PS_R_TAX810CA CC6, PS_PERSON_NAME CD6, PS_PERS_NID CD61
+                         WHERE CC6.COMPANY       = &A.Company
+                           AND CC6.EMPLOYER_ID   = $Sep-Employer_ID
+                           AND CC6.TAX_CLASS     IN ('H','A')
+                           AND (CC6.NLGRS_QTD < 0 or CC6.TAX_QTD < 0 or CC6.TXGRS_QTD < 0)
+                           AND CD6.EMPLID        = CC6.EMPLID
+                           AND CD6.EMPLID        = CD61.EMPLID
+                           AND CD61.COUNTRY      = {NID_Country}
+                           AND CD61.NATIONAL_ID_TYPE = $Payroll_NID_Type)
+end-SELECT
+
+end-procedure
+
+
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'geteandg.sqc'  !Get-EandG procedure                           !HP99999
+#Include 'getstdta.sqc'  !Get-State-Tax-Data procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'rptsmmca.sqc'  !Print-Summary-Data procedure
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'txrnctl1.sqc'  !Process Scheduler Run Controls
+
+#Include 'stderror.sqc'  !Routine for error display

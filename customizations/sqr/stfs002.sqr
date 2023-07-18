@@ -1,0 +1,419 @@
+!-----------------------------------------------------------------------
+! Report Name: STFS002.SQR - Expected Volitility Report
+!-----------------------------------------------------------------------
+!
+!
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!-----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:02:51:38                                 
+!       $Release:  HR92                                                
+!      $Revision:  101                                                 
+!
+!-----------------------------------------------------------------------
+! Program Descr: This report calculates the expected volatility for a
+!                stock id on a given date range using a date frequency
+!-----------------------------------------------------------------------
+! Options:       None
+! Tables:        ST_DAILY_PRICES
+!-----------------------------------------------------------------------
+
+  #include 'setenv.sqc'
+
+!-----------------------------------------------------------------------
+Begin-Setup
+!-----------------------------------------------------------------------
+
+  #include 'ptpsp125.sqc'
+
+End-Setup
+
+!-----------------------------------------------------------------------
+! Procedure: Begin-Program
+! Descr:     Main Report procedure.
+!-----------------------------------------------------------------------
+Begin-Program
+
+  do Init-Report
+  do Main-Process
+  do Reset
+  do Successful-EOJ
+
+End-Program
+
+!-----------------------------------------------------------------------
+! Section: Heading Procedures
+! Descr:   This sections contains all procedures for
+!          printing the optional heading.
+!-----------------------------------------------------------------------
+Begin-Heading 6
+
+  #Include 'stdhdg01.sqc'
+
+  print $StockIdLbl                                        (-1,001,008)
+  print ':'                                                (  ,   ,001)
+  print $StockId                                          (  , +3,010)
+
+  do Format-DateTime ($RC_FromDate, $Date, {DEFDATE}, '', '')
+  print $FromLbl                                           (  ,051,004)
+  print ':'                                                (  ,   ,001)
+  print $Date                                              (  , +1,010)
+
+  do Format-DateTime ($RC_ThruDate, $Date, {DEFDATE}, '', '')
+  print $ThruLbl                                           (  ,070,004)
+  print ':'                                                (  ,   ,001)
+  print $Date                                              (  , +1,010)
+
+  print $DateLbl                                           (+3,001,010) 
+  print $FmvPriceLbl                                       (  ,022,009) 
+  print $ChangeReturnLbl                                   (  ,037,013) 
+  print $NaturalLogLbl                                     (  ,056,011) 
+  print '-'                                                (+1,001,125) fill Bold
+
+End-Heading
+
+!-----------------------------------------------------------------------
+! Procedure: Init-Report
+! Descr:     Report initialization procedure.  Set titles, parameters.
+!            This is called from the Begin-Program procedure.
+!-----------------------------------------------------------------------
+Begin-Procedure Init-Report
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Define-Prcs-Vars
+  do Get-Run-Control-Parms
+  let $ReportId = 'STFS002'
+
+  do Get-Report-Language    ! Procedure that decides the report language
+                            ! and then calls 'Report-Translation' procedure
+                            ! that reads the language dep. text.
+                            
+  if $prcs_process_instance = ''
+    do Ask-From-Thru-Date
+  else
+    do Get-SQR-Parms
+  end-if
+
+  do Init-Variables
+  do Create-Array
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Report-Translation
+! Descr:     This procedure is used to read language-dependent text from
+!            the database.
+!-----------------------------------------------------------------------
+Begin-Procedure Report-Translation
+
+  do Init_Report_Translation('STOCK', $Language_Cd)
+  do Append_Report_Translation ($ReportId)
+
+  do Get_Field_Information ('STOCK'  ,'STOCK_ID',      $StockIdLbl,      #DW)
+  do Get_Field_Information ('STOCK'  ,'FROM',          $FromLbl,         #DW)
+  do Get_Field_Information ('STOCK'  ,'THRU',          $ThruLbl,         #DW)
+  do Get_Field_Information ('STOCK'  ,'DATE',          $DateLbl,         #DW)
+  do Get_Field_Information ('STFS002','REPORT_TITLE',  $ReportTitle,     #DW)
+  do Get_Field_Information ('STFS002','VOLATILITY',    $VolatilityLbl,   #DW)
+  do Get_Field_Information ('STFS002','FMV_PRICE',     $FmvPriceLbl,     #DW)
+  do Get_Field_Information ('STFS002','CHANGE_RETURN', $ChangeReturnLbl, #DW)
+  do Get_Field_Information ('STFS002','NATURAL_LOG',   $NaturalLogLbl,   #DW)
+  do Get_Field_Information ('STFS002','MESSAGE1',      $Message1Lbl,     #DW)
+
+End-Procedure Report-Translation
+
+!-----------------------------------------------------------------------
+! Procedure: Init-Variables
+! Descr:     Initializes all report variables
+!-----------------------------------------------------------------------
+Begin-Procedure Init-Variables
+
+  let #Count           = 0
+  let #Rows            = 0
+  let #X               = 1
+  let #Previous_Price  = 0
+  let #TotalLog        = 0
+  let #StandardDev     = 0
+  let #Volatility      = 0
+  let #Annualized      = 0
+  let $StockId         = rtrim($RC_STOCK_ID,' ')
+  let $PriceFrequency  = rtrim($RC_ST_FREQUENCY_TYPE,' ')
+  let $ExcludeDtFlag   = rtrim($RC_EXCLUDE_DATE_FLAG,' ')
+  let $RC_FromDate     = rtrim($RC_FromDate,' ')
+  let $RC_ThruDate     = rtrim($RC_ThruDate,' ')
+  do Convert-To-DTU-Date($RC_FromDate, $FromDate)
+  do Convert-To-DTU-Date($RC_ThruDate, $ThruDate)
+  do Convert-To-DTU-Date($RC_Exclude_Begin_Dt, $Exclude_Begin_Dt)
+  do Convert-To-DTU-Date($RC_Exclude_End_Dt, $Exclude_End_Dt)
+  do Determine-Frequency
+  do Get-Rules
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Create-Array
+! Descr:   Creates array used for computing
+!-----------------------------------------------------------------------
+Begin-Procedure Create-Array
+
+  create-array name  = Volitility          -
+               size  = 1000                -
+               field = Date:char           -
+               field = Price:number        -
+               field = ChangeReturn:number -
+               field = NaturalLog:number
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Main-Process
+! Descr:   
+!-----------------------------------------------------------------------
+Begin-Procedure Main-Process
+
+  while 1 = 1
+    let #Var     = #Count * #Frequency
+    let #Count   = #Count + 1
+    do Get-Fmv-Date
+    if $FMVDate <= $ThruDate
+      if $Trading-Day = 'Y'
+        if $ExcludeDtFlag = 'N' or ($ExcludeDtFlag = 'Y'
+                                      and ($FMVDate < $Exclude_Begin_Dt
+                                      or $FMVDate > $Exclude_End_Dt))
+                                      
+          do Convert-From-DTU-Date ($FMVDate, $Date)
+          do Get_FMV_Prices ($Fmv_Method,$StockId,$Date,$HolidayRule,$WeekendRule,#Current_Price)
+          if #Current_Price > 0
+            add 1 to #Rows
+            if #Previous_Price <> 0
+              let #Change_Return = #Current_Price / #Previous_Price
+              let #Natural_Log   = log(#Change_Return)
+            end-if
+            let #Previous_Price  = #Current_Price
+            let #TotalLog        = #TotalLog + #Natural_Log
+            put $FMVDate #Current_Price #Change_Return #Natural_Log into Volitility(#Rows) Date Price ChangeReturn NaturalLog
+          end-if
+        end-if
+      end-if
+    else
+      break
+    end-if
+  end-while
+
+  if #Rows > 1
+    let #LogAverage = #TotalLog / (#Rows - 1)
+    while #X <= #Rows
+      get $ArrayDate #ArrayPrice #ArrayChange #ArrayLog from Volitility(#X) Date Price ChangeReturn NaturalLog
+      if #X > 1
+        let #StandardDev = #StandardDev + power(#ArrayLog - #LogAverage, 2)
+      end-if
+      do Print-Detail
+      add 1 to #X
+    end-while
+    if #Rows > 2
+      let #Volatility = sqrt((#StandardDev / (#Rows - 2)) * #Annualized)
+      do Print-Summary
+    end-if
+  end-if
+
+  if #Rows <= 2
+    print $Message1Lbl                                     (+2,001,089)
+  end-if
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Determine-Frequency
+! Descr:   Sets the #Frequency
+!-----------------------------------------------------------------------
+Begin-Procedure Determine-Frequency
+
+  evaluate $PriceFrequency
+  when = 'D'  ! Daily
+    let #Frequency  = 1
+    let #Annualized = 255
+    break
+  when = 'M'  ! Monthly
+    let #Frequency  = 1
+    let #Annualized = 12
+    break
+  when = 'W'  ! Weekly
+    let #Frequency  = 7
+    let #Annualized = 52
+    break
+  when = 'B'  ! Bi-Weekly
+    let #Frequency  = 14
+    let #Annualized = 26
+    break
+  when = 'S'  ! Semi-Monthly
+    let #Frequency  = .5
+    let #Annualized = 24
+    break
+  when = 'Q'  ! Quarterly
+    let #Frequency  = 3
+    let #Annualized = 4
+    break
+  when = 'A'  ! Annually
+    let #Frequency  = 12
+    let #Annualized = 1
+    break
+  end-evaluate
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Fmv-Date
+! Descr:   
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Fmv-Date
+
+  evaluate $PriceFrequency
+  when = 'D'  ! Daily
+    do dtu-add-days($FromDate, #Var, $FMVDate)
+    do Determine-If-Trading-Day
+    break
+  when = 'W'  ! Weekly
+  when = 'B'  ! Bi-Weekly
+    do dtu-add-days($FromDate, #Var, $FMVDate)
+    let $Trading-Day = 'Y'
+    break
+  when = 'M'  ! Monthly
+    let $Trading-Day = 'Y'
+    if $RC_ST_MONTH_END_FLAG = 'Y'
+        do dtu-add-months($FromDate, #Var, $FMVDate)
+        do dtu-month-end($FMVDate, $FMVDate)
+        break
+    else
+        do dtu-add-months($FromDate, #Var, $FMVDate)
+        break
+    end-if
+  when = 'S'  ! Semi-Monthly
+  when = 'Q'  ! Quarterly
+  when = 'A'  ! Annually
+    do dtu-add-months($FromDate, #Var, $FMVDate)
+    let $Trading-Day = 'Y'
+    break
+  end-evaluate
+ 
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Rules
+! Descr:   Retrieve the info to be passed to the FMV function
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Rules
+
+Begin-Select
+
+A1.FMV_METHOD
+A1.FMV_HOLIDAY_RULE
+A1.FMV_WEEKEND_RULE
+
+  let $Fmv_Method  = rtrim(&a1.fmv_method, ' ')
+  let $HolidayRule = rtrim(&a1.fmv_holiday_rule, ' ')
+  let $WeekendRule = rtrim(&a1.fmv_weekend_rule, ' ')
+
+from  PS_STOCK_DTL A1
+where A1.STOCK_ID = $StockId
+  and A1.EFFDT    = (select MAX(EFFDT) 
+                       from PS_STOCK_DTL
+                      where STOCK_ID  = A1.STOCK_ID
+                        and EFFDT    <= $AsOfToday )
+  
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Determine-If-Trading-Day
+! Descr:   Determines if the current fmv date is a trading day.  This
+!          procedure is only called when using the daily frequency.
+!-----------------------------------------------------------------------
+Begin-Procedure Determine-If-Trading-Day
+
+  let $Trading-Day = 'N'
+  do Convert-From-DTU-Date ($FMVDate, $Date)
+
+Begin-Select
+
+B.ST_DAY_TYPE
+
+  let $Trading-Day = 'Y'
+
+from  PS_ST_DAILY_PRICES B
+where B.STOCK_ID    = $StockId
+  and B.ST_FMV_DT   = $Date
+  and B.ST_DAY_TYPE = 'TRD'
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Print-Detail
+! Descr:   Prints the report
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Detail
+
+  do Convert-From-DTU-Date ($ArrayDate, $ArrayDate)
+  do Format-DateTime ($ArrayDate, $ArrayDate, {DEFDATE}, '', '')
+  print $ArrayDate                                         (+1,001,010)
+  print #ArrayPrice                                        (  ,016,015) edit $$$$$999.999999
+  print #ArrayChange                                       (  ,042,008) edit 9.999999
+  print #ArrayLog                                          (  ,058,010) edit 9.999999ps
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Print-Summary
+! Descr:   Prints the report
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Summary
+
+  print $VolatilityLbl                                     (+2,001,010)
+  print ':'                                                (  ,   ,   )
+  print #Volatility                                        (  ,016,008) edit 9.999999
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! SQC Includes
+!-----------------------------------------------------------------------
+#include 'strunctl.sqc'   ! Stock Admin's Run Control Record
+#include 'stgetfmv.sqc'   ! Get Grant FMV
+#include 'prcsapi.sqc'
+#include 'prcsdef.sqc'    ! Update Process Open_Trans variable declaration
+#include 'eoj.sqc'        ! End of Report Format
+#include 'sqrtrans.sqc'   ! Access Strings Table
+#include 'reset.sqc'      ! Reset printer procedure
+#include 'curdttim.sqc'   ! Get-Current-DateTime procedure
+#include 'datemath.sqc'
+#include 'datetime.sqc'   ! Routines for date and time formatting
+                          ! Procedures: Init-Datetime
+                          ! Procedures: Format-DateTime
+                          ! Procedures: Diff-Date
+                          ! Procedures: many others.
+#include 'number.sqc'     ! Procedures: Init-Number
+#include 'askftd.sqc'     ! From Thru Date input
+#include 'getrplng.sqc'   !Gets the report language

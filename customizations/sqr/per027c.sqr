@@ -1,0 +1,2049 @@
+!********************************************************
+!  PER027C.SQR - VETS-100 Federal Contractors Report     !
+!********************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2016, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  22180377                                            !
+!                                                                      *
+!***********************************************************************
+! 05/30/00 - Rewritten for release 8 - this is the third of three      *                                                       
+!      JDL   processes that need to be run to produce a compliant      *
+!            digital file for submission to the VA                     *
+!***********************************************************************
+
+! Uncomment the following line to have debug values put into the sqr.log
+!----------------------------------------------------------------------
+! #DEFINE DEBUGPER027
+
+
+#include 'setenv.sqc'   !Set environment
+Begin-Setup
+#include 'setupdb.sqc'
+End-Setup
+
+!----------------------------------------------------------------------
+!---------Program------------------------------------------------------
+!----------------------------------------------------------------------
+! This process will take Vets 100 data from the temp table and ouput
+! it to a flat file in the format specified by the VA, then copy the
+! current values into a history table.
+!----------------------------------------------------------------------
+Begin-Program
+
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Begin Program'
+#ENDIF
+
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Report
+ 
+
+  ! If we're only running for one HQ Unit, populate the dynamic
+  ! where clause with a conditional to limit to the appropriate
+  ! establishments
+  !------------------------------------------------------------
+  !**********Begin Resolution 631970 *********
+  !IF $ReportChoice = '3' 
+  !   LET $Where-Clause = 'WHERE CTL_ESTABID = ' || $Quote || $CtlEstabID || $Quote
+  !ELSE
+  !   LET $Where-Clause = ''
+  !END-IF
+  
+  IF $ReportChoice = '1'
+    LET $Where-Clause = 'WHERE V100_HIRING_LOC IN (SELECT B.ESTABID FROM PS_COMPANY_TBL A, PS_ESTAB_TBL B WHERE A.COMPANY=B.COMPANY AND A.COMPANY=' || $Quote || $COMPANY || $Quote || ')'
+    LET $Where-Clause3 = $Where-Clause
+  ELSE
+    IF $ReportChoice = '2'
+!Begin Of Incident 1481930001 
+      LET $Where-Clause = 'WHERE V100_HIRING_LOC = ' || $Quote || $Estab || $Quote || 'OR V100_HIRING_LOC = (SELECT F.CTL_ESTABID FROM PS_ESTAB_TBL_USA F WHERE F.ESTABID = ' || $Quote || $Estab || $Quote || ')'
+!End Of Incident 1481930001 
+      LET $Where-Clause3 = 'WHERE V100_HIRING_LOC = ' || $Quote || $Estab || $Quote
+    ELSE
+      IF $ReportChoice = '3' 
+        LET $Where-Clause = 'WHERE CTL_ESTABID = ' || $Quote || $CtlEstabID || $Quote
+        LET $Where-Clause3 = $Where-Clause
+      ELSE
+        LET $Where-Clause = ''
+        LET $Where-Clause3 = $Where-Clause
+      END-IF
+    END-IF
+  END-IF
+  !**********End Resolution 631970 *********
+  
+  ! We need to get the reporting year from the temp table to
+  ! know if any rows need to be deleted from the history 
+  ! table.
+  !---------------------------------------------------------
+
+BEGIN-SELECT
+MAX(V100_ENDING_PD) &Current_Period
+   LET $Current_Year = {ps-substr}(&Current_Period,7,4)
+FROM PS_V100_TEMP_TBL
+END-SELECT
+ 
+  IF IsBlank($Where-Clause)
+      IF $Run_From_Current = 'Y'
+           LET $Where-Clause2 = 'WHERE V100_REPORTING_YR = ' || $Quote || $Current_Year || $Quote || ' AND V100_REPORT_TYPE = ' || $Quote || $V100ReportType || $Quote
+           LET $Where-Clause = 'WHERE V100_REPORT_TYPE = ' || $Quote || $V100ReportType || $Quote
+           LET $Where-Clause3 = $Where-Clause
+      ELSE
+           LET $Where-Clause2 = 'WHERE V100_REPORTING_YR = ' || $Quote || $History_Year || $Quote || ' AND V100_REPORT_TYPE = ' || $Quote || $V100HistRptType || $Quote
+           LET $Where-Clause = 'WHERE V100_REPORT_TYPE = ' || $Quote || $V100HistRptType || $Quote
+           LET $Where-Clause3 = $Where-Clause
+      END-IF
+  ELSE
+      IF $Run_From_Current = 'Y'
+           LET $Where-Clause2 = $Where-Clause3 || ' AND V100_REPORTING_YR = ' || $Quote || $Current_Year || $Quote || ' AND V100_REPORT_TYPE = ' || $Quote || $V100ReportType || $Quote
+           LET $Where-Clause = $Where-Clause || ' AND V100_REPORT_TYPE = ' || $Quote || $V100ReportType || $Quote
+           LET $Where-Clause3 = $Where-Clause3 || ' AND V100_REPORT_TYPE = ' || $Quote || $V100ReportType || $Quote
+      ELSE
+           LET $Where-Clause2 = $Where-Clause3 || ' AND V100_REPORTING_YR = ' || $Quote || $History_Year || $Quote || ' AND V100_REPORT_TYPE = ' || $Quote || $V100HistRptType || $Quote
+           LET $Where-Clause = $Where-Clause || ' AND V100_REPORT_TYPE = ' || $Quote || $V100HistRptType || $Quote
+           LET $Where-Clause3 = $Where-Clause3 || ' AND V100_REPORT_TYPE = ' || $Quote || $V100HistRptType || $Quote
+      END-IF
+  END-IF
+
+  ! Open the output file for writing
+  !------------------------------------------------------------
+  DO Open-File
+
+  ! Use dynamic SQL to pick table data comes from
+  !------------------------------------------------------------
+  IF $Run_From_Current = 'N'
+      LET $From-Clause = ' PS_V100_HISTORY'
+      LET $Where-Clause = $Where-Clause2
+  ELSE
+      LET $From-Clause = ' PS_V100_TEMP_TBL'
+  END-IF
+
+
+  ! Begin the process - main SQL Select Loop
+  !------------------------------------------------------------
+  DO Process-Main
+
+
+  ! The rest of the processing should only be done if we're
+  ! running from current (not history) rows
+  !------------------------------------------------------------
+  IF $Run_From_Current = 'Y'
+
+      ! Before we insert, let's delete any conflicting rows
+      !------------------------------------------------------------
+      LET $Calendar_Year = {ps-substr}(&V100_ENDING_PD,7,4)
+      LET $Delete_Rows = 'FALSE'
+      Do Check-Existing-Rows
+
+      ! Copy the values into the history rows if appropriate
+      !------------------------------------------------------------
+      DO Backup-Submitted-Rows
+    
+      ! Delete the values in the temp table
+      !------------------------------------------------------------
+      DO Delete-Submitted-Rows
+
+  ! End of current-only processing
+  !------------------------------------------------------------
+  END-IF
+
+  ! Update the Process Scheduler
+  !------------------------------------------------------------
+  DO Stdapi-Term
+
+End-Program
+
+!----------------------------------------------------------------------
+!---------Init-Report--------------------------------------------------
+!----------------------------------------------------------------------
+! We need to get the calendar year from the process instance
+!----------------------------------------------------------------------
+
+begin-procedure Init-Report
+
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Init-Report'
+#ENDIF
+
+  move 'PER027C' to $ReportID
+
+#IFDEF DEBUGPER027
+  display 'Report ID: ' NOLINE
+  display $ReportID
+#ENDIF
+
+  do Stdapi-Init
+
+  if $prcs_process_instance = ''
+     display ''
+     display 'REPORT CAN NOT BE EXECUTED OUTSIDE OF PEOPLESOFT,PLEASE USE PROCESS SCHEDULER.'
+     display ''
+     STOP QUIET
+  else
+     do Select-Parameters
+  end-if
+
+  EVALUATE $V100ReportType 
+  WHEN = 'A'
+     move 'VETS-100A Federal Contractors Report' to $ReportTitle
+  WHEN = 'B'
+     move 'VETS-100 Federal Contractors Report' to $ReportTitle
+  WHEN = 'C'
+     move 'VETS-4212 Federal Contractors Report' to $ReportTitle
+  END-EVALUATE
+  
+  display $ReportTitle
+
+end-procedure
+
+!----------------------------------------------------------------------
+!---------Get-Values---------------------------------------------------
+!----------------------------------------------------------------------
+! Fetch run control parameters
+!----------------------------------------------------------------------
+begin-procedure Get-Values
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Get-Values'
+#ENDIF
+
+   do Get-Run-Scope
+   do Get-CTL_ESTABID
+   do Get-Run-From-Current
+   do Get-History-Year
+!**********Begin Resolution 631970 *********
+   do Get-Establishment
+   do Get-Company
+!**********End Resolution 631970 *********
+   
+   IF $Run_From_Current = 'Y'
+     do Get-V100-Report-Type
+   ELSE
+     do Get-V100-History-Report-Type
+     LET $V100ReportType = $V100HistRptType
+   END-IF
+
+   LET $Quote = ''''
+
+#IFDEF DEBUGPER027
+!**********Begin Resolution 631970 *********
+  DISPLAY '   $Estab: ' NOLINE
+  DISPLAY $Estab
+  DISPLAY '   $COMPANY: ' NOLINE
+  DISPLAY $COMPANY
+!**********End Resolution 631970 *********
+  DISPLAY '   $CtlEstabID: ' NOLINE
+  DISPLAY $CtlEstabID
+  DISPLAY '   $ReportChoice: ' NOLINE
+  DISPLAY $ReportChoice
+  DISPLAY '   $Run_From_Current: ' NOLINE
+  DISPLAY $Run_From_Current
+  DISPLAY '   $History_Year: ' NOLINE
+  DISPLAY $History_Year
+#ENDIF
+
+end-procedure Get-Values
+
+!----------------------------------------------------------------------
+!---------Process-Main-------------------------------------------------
+!----------------------------------------------------------------------
+! This routine will be run once - this SQL loop controls the flow of 
+! the program.
+!----------------------------------------------------------------------
+begin-procedure Process-Main
+
+! Debugging stuff
+!----------------------------------------------------
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Process-Main'
+  DISPLAY '   $Where-Clause: ' NOLINE
+  DISPLAY $Where-Clause
+#ENDIF
+
+BEGIN-SELECT
+CTL_ESTABID
+V100_REPORT_TYPE
+V100_ROW
+V100_COMPANY_NO
+V100_ENDING_PD
+V100_ORG_TYPE 
+V100_FORM_TYPE
+V100_MSCNUMBER 
+V100_PARENT_CO                           
+V100_STREET
+V100_STREET2
+V100_CITY
+V100_COUNTY          
+V100_STATE 
+V100_ZIPCODE 
+V100_HIRING_LOC      
+V100_HL_NAME                             
+V100_HL_STREET    
+V100_HL_STREET2
+V100_HL_CITY         
+V100_HL_COUNTY       
+V100_HL_STATE
+V100_HL_ZIP 
+V100_NAICS   
+V100_DUNS_NUM        
+V100_EIN             
+V100_A1
+V100_B1
+V100_C1
+V100_D1
+V100_L1
+V100_M1
+V100_N1
+V100_O1
+V100_P1
+V100_Q1
+V100_R1
+V100_S1
+V100_T1
+V100_U1
+V100_A2
+V100_B2
+V100_C2
+V100_D2
+V100_L2
+V100_M2
+V100_N2
+V100_O2
+V100_P2
+V100_Q2
+V100_R2
+V100_S2
+V100_T2
+V100_U2
+V100_A3
+V100_B3
+V100_C3
+V100_D3
+V100_L3
+V100_M3
+V100_N3
+V100_O3
+V100_P3
+V100_Q3
+V100_R3
+V100_S3
+V100_T3
+V100_U3
+V100_A4
+V100_B4
+V100_C4
+V100_D4
+V100_L4
+V100_M4
+V100_N4
+V100_O4
+V100_P4
+V100_Q4
+V100_R4
+V100_S4
+V100_T4
+V100_U4
+V100_A5
+V100_B5
+V100_C5
+V100_D5
+V100_L5
+V100_M5
+V100_N5
+V100_O5
+V100_P5
+V100_Q5
+V100_R5
+V100_S5
+V100_T5
+V100_U5
+V100_A6
+V100_B6
+V100_C6
+V100_D6
+V100_L6
+V100_M6
+V100_N6
+V100_O6
+V100_P6
+V100_Q6
+V100_R6
+V100_S6
+V100_T6
+V100_U6
+V100_A7
+V100_B7
+V100_C7
+V100_D7
+V100_L7
+V100_M7
+V100_N7
+V100_O7
+V100_P7
+V100_Q7
+V100_R7
+V100_S7
+V100_T7
+V100_U7
+V100_A8
+V100_B8
+V100_C8
+V100_D8
+V100_L8
+V100_M8
+V100_N8
+V100_O8
+V100_P8
+V100_Q8
+V100_R8
+V100_S8
+V100_T8
+V100_U8
+V100_A9
+V100_B9
+V100_C9
+V100_D9
+V100_L9
+V100_M9
+V100_N9
+V100_O9
+V100_P9
+V100_Q9
+V100_R9
+V100_S9
+V100_T9
+V100_U9
+V100_A10
+V100_B10
+V100_C10
+V100_D10
+V100_L10
+V100_M10
+V100_N10
+V100_O10
+V100_P10
+V100_Q10
+V100_R10
+V100_S10
+V100_T10
+V100_U10
+V100_A11
+V100_B11
+V100_C11
+V100_D11
+V100_L11
+V100_M11
+V100_N11
+V100_O11
+V100_P11
+V100_Q11
+V100_R11
+V100_S11
+V100_T11
+V100_U11
+V100_MAX_NUMBER
+V100_MIN_NUMBER
+ 
+          Do Get-Contact-Info
+          Do Write-Line-To-File
+
+FROM [$From-Clause]
+[$Where-Clause]
+ORDER BY CTL_ESTABID, V100_ROW
+
+END-SELECT
+
+end-procedure
+
+!----------------------------------------------------------------------
+!---------Open-File----------------------------------------------------
+!----------------------------------------------------------------------
+! This procedure opens the output file 'VETS100' used for              
+! electronic submission in order to write the VETS-100 values into it. 
+
+begin-procedure Open-File
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Open-File'
+#ENDIF
+  ! open the output-file 'VETS100' for writing
+  ! the path given in the variable IMPORTPREFIX is defined in SETENV.SQC
+  !-------------------------------------------------------------------
+
+  ! 05/30/00 - Release 8 uses SQR6 - if the PSSQR.INI file has been 
+  !            Modified to use a default ENCODING of anything other
+  !            than ASCII, the ENCODING_FILE_OUTPUT parameter in  
+  !            PSSQR.INI must be uncommented and set to 
+  !  
+  !                          ENCODING_FILE_OUTPUT=ASCII
+  !
+  !-------------------------------------------------------------------
+  
+  !............................Begin Incident 1530206001...................................!  
+  
+  !Open '{IMPORTPREFIX}VETS100.TXT' As 1
+  !                                       For-Writing
+  !                                       Record=1500:Vary
+  !                                       Status=#FileStatus
+  
+  #ifdef UNIX
+      let $slash = '/'
+    #else
+      let $slash = '\'
+    #endif
+  
+    if $slash <> ''   !If Slash has a value then...
+      let #start = 1
+      let #location = 0
+      while #location <> -1
+         let #start = #location + 1
+         Find $slash In $SQR-Report #start #location
+      end-while
+      let $path     = substr($SQR-Report,          1, #start)
+      let $filename = substr($SQR-Report, #start + 1, length($SQR-Report)-#start)
+    end-if
+  
+     if $V100ReportType ='C' 
+       let $Filename1  = $path || 'VETS4212.CSV'
+       open $Filename1  as 1   for-writing record=1500
+       status = #filestat
+        
+      else
+        !let $Filename1  = $path || 'VETS100.TXT'
+       let $Filename1  = $path || 'VETS100.TXT'
+       open $Filename1  as 1   for-writing record=1500
+       status = #filestat     
+    end-if
+     if #filestat != 0
+        display $Filename1 noline
+        display ' not found '
+      else
+        display 'Processing ' noline
+     end-if
+   
+   !.............................End Incident 1530206001....................................! 
+     
+    IF #FileStatus = -1
+          DISPLAY '    WARNING: Cannot Open File VETS100.TXT in directory {IMPORTPREFIX}'
+           STOP QUIET
+    END-IF
+
+end-procedure Open-File
+
+
+!----------------------------------------------------------------------
+!-----------Write-Line-To-File-----------------------------------------
+!----------------------------------------------------------------------
+                  
+!----------------------------------------------------------------------
+begin-procedure Write-Line-To-File
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Write-Line-To-File'
+#ENDIF
+! RTrim and concatenate the text strings
+!--------------------------------------------
+
+Let $invalid_char = '!!~@#$%^&*()_+=[]|\:;,"<>/?'|| chr(123) || chr(125)
+
+EVALUATE $V100ReportType 
+ 
+ WHEN = 'A'
+
+  LET $Input1 = rtrim(&V100_COMPANY_NO,' ')
+  LET $Input2 = rtrim(&V100_ORG_TYPE,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Input1 || ',' || $Input2 || ','
+
+  LET $Input1 = rtrim(&V100_FORM_TYPE,' ')
+  LET #Input2 = &V100_MSCNUMBER
+  LET $Input2 = TO_CHAR(#Input2)
+  DO Strip-Char($Input1, $Input1, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+  
+  
+  LET $Input1 = rtrim(&V100_ENDING_PD,' ') 
+  LET $Input2 = rtrim(&V100_PARENT_CO,' ')
+  DO Strip-Char($Input1, $Input1, '-,')  
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+
+  LET $Input1 = rtrim(&V100_STREET,' ')
+  LET $Input2 = rtrim(&V100_STREET2,' ')
+  LET $Input3 = rtrim(&V100_CITY,' ')
+  !DO Strip-Char($Input1, $Input1, '-,')
+  Let $Input1 = Translate($Input1,$invalid_char,'')
+  Let $Input2 = Translate($Input2,$invalid_char,'')
+  Let $Input3 = Translate($Input3,$invalid_char,'')
+
+
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ',' || $Input3 || ','
+
+  LET $Input1 = rtrim(&V100_COUNTY,' ')
+  LET $Input2 = rtrim(&V100_STATE,' ')
+  !DO Strip-Char($Input1, $Input1, '-,')
+  Let $Input1 = Translate($Input1,$invalid_char,'')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+
+  LET $Input1 = rtrim(&V100_ZIPCODE,' ')
+  LET $Input2 = rtrim($CertName,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+  
+  LET $Input1 = rtrim($CertPhone,' ')
+  LET $Input2 = rtrim($CertEmail,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input1, $Input1, '/,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+
+  LET $Input1 = rtrim(&V100_HL_NAME,' ')
+  LET $Input2 = rtrim(&V100_HL_STREET,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  !DO Strip-Char($Input2, $Input2, '-,')
+  Let $Input2 = Translate($Input2,$invalid_char,'')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+
+  LET $Input1 = rtrim(&V100_HL_STREET2,' ')
+  LET $Input2 = rtrim(&V100_HL_CITY,' ')
+  LET $Input3 = rtrim(&V100_HL_COUNTY,' ')
+  !DO Strip-Char($Input1, $Input1, '-,')
+  !DO Strip-Char($Input2, $Input2, '-,')
+  !DO Strip-Char($Input3, $Input3, '-,')
+  Let $Input1 = Translate($Input1,$invalid_char,'')
+  Let $Input2 = Translate($Input2,$invalid_char,'')
+  Let $Input3 = Translate($Input3,$invalid_char,'')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ',' || $Input3 || ','
+ 
+  LET $Input1 = rtrim(&V100_HL_STATE,' ')
+  LET $Input2 = rtrim(&V100_HL_ZIP,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+
+  LET $Input1 = rtrim(&V100_NAICS,' ')
+  LET $Input2 = rtrim(&V100_DUNS_NUM,' ')
+  LET $Input3 = rtrim(&V100_EIN,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  DO Strip-Char($Input3, $Input3, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ',' || $Input3 || ','
+
+  ! We need convert the values to chars and output 
+  !--------------------------------------------    
+  LET #Output = &V100_L1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_L2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_L3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_L4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_L5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_L6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_L7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_L8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_L9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_L10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_L11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','    
+
+  LET #Output = &V100_M1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_M3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M6
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_M8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_M9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_M10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_M11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','    
+
+  LET #Output = &V100_N1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_N2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_N4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_N5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_N6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_N7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_N11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','    
+
+  LET #Output = &V100_O1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_O3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_O8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_O9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_O10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_O11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','    
+
+  LET #Output = &V100_P1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_P3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_P8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_P9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_P10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_P11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','    
+
+  LET #Output = &V100_Q1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_Q3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_Q8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_Q9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_Q10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_Q11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','    
+
+  LET #Output = &V100_R1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_R3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_R8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_R9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_R10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_R11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','    
+
+  LET #Output = &V100_S1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_S2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_S3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_S4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_S5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_S6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_S7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_S8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_S9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_S10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_S11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  
+  LET #Output = &V100_T1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_T2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_T3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_T4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_T5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_T6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_T7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_T8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_T9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_T10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_T11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','    
+
+  LET #Output = &V100_U1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_U2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_U3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_U4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_U5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_U6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_U7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_U8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_U9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_U10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_U11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','    
+
+  LET #Output = &V100_MAX_NUMBER
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_MIN_NUMBER 
+  LET $Output = $Output ||  TO_CHAR(#Output)
+
+ WHEN = 'B'
+
+  LET $Input1 = rtrim(&V100_COMPANY_NO,' ')
+  LET $Input2 = rtrim(&V100_ENDING_PD,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Input1 || ',' || $Input2 || ','
+
+  LET $Input1 = rtrim(&V100_ORG_TYPE,' ')
+  LET $Input2 = rtrim(&V100_FORM_TYPE,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+  
+  LET #Input1 = &V100_MSCNUMBER
+  LET $Input1 = TO_CHAR(#Input1)
+  LET $Input2 = rtrim(&V100_PARENT_CO,' ')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+  
+  LET $Input1 = rtrim(&V100_STREET,' ')
+  LET $Input2 = rtrim(&V100_STREET2,' ')
+  LET $Input3 = rtrim(&V100_CITY,' ')
+  !DO Strip-Char($Input1, $Input1, '-,')
+  !DO Strip-Char($Input2, $Input2, '-,')
+  !DO Strip-Char($Input3, $Input3, '-,')
+  Let $Input1 = Translate($Input1,$invalid_char,'')
+  Let $Input2 = Translate($Input2,$invalid_char,'')
+  Let $Input3 = Translate($Input3,$invalid_char,'')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ',' || $Input3 || ','
+  
+  LET $Input1 = rtrim(&V100_COUNTY,' ')
+  LET $Input2 = rtrim(&V100_STATE,' ')
+  !DO Strip-Char($Input1, $Input1, '-,')
+  Let $Input1 = Translate($Input1,$invalid_char,'')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+
+  LET $Input1 = rtrim(&V100_ZIPCODE,' ')
+  LET $Input2 = rtrim($CertName,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+  
+  LET $Input1 = rtrim($CertPhone,' ')
+  LET $Input2 = rtrim($CertEmail,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input1, $Input1, '/,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+  
+  LET $Input1 = rtrim(&V100_HIRING_LOC,' ')
+  LET $Input2 = rtrim(&V100_HL_NAME,' ')  
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+
+  LET $Input1 = rtrim(&V100_HL_STREET,' ')
+  LET $Input2 = rtrim(&V100_HL_STREET2,' ')
+  !DO Strip-Char($Input1, $Input1, '-,')
+  !DO Strip-Char($Input2, $Input2, '-,')
+  Let $Input1 = Translate($Input1,$invalid_char,'')
+  Let $Input2 = Translate($Input2,$invalid_char,'')  
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+
+  LET $Input1 = rtrim(&V100_HL_CITY,' ')
+  LET $Input2 = rtrim(&V100_HL_COUNTY,' ')
+  !DO Strip-Char($Input1, $Input1, '-,')
+  !DO Strip-Char($Input2, $Input2, '-,')
+  Let $Input1 = Translate($Input1,$invalid_char,'')
+  Let $Input2 = Translate($Input2,$invalid_char,'')   
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+ 
+  LET $Input1 = rtrim(&V100_HL_STATE,' ')
+  LET $Input2 = rtrim(&V100_HL_ZIP,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+
+  LET $Input1 = rtrim(&V100_NAICS,' ')
+  LET $Input2 = rtrim(&V100_DUNS_NUM,' ')
+  LET $Input3 = rtrim(&V100_EIN,' ')
+  DO Strip-Char($Input1, $Input1, '-,')
+  DO Strip-Char($Input2, $Input2, '-,')
+  DO Strip-Char($Input3, $Input3, '-,')
+  LET $Output =  $Output || $Input1 || ',' || $Input2 || ',' || $Input3 || ','
+
+  ! We need convert the values to chars and output 
+  !--------------------------------------------    
+  LET #Output = &V100_L1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_S1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_T1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+
+  LET #Output = &V100_L2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_S2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_T2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+
+  LET #Output = &V100_L3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_S3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_T3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+
+  LET #Output = &V100_L4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_S4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_T4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+
+  LET #Output = &V100_L5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_S5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_T5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+
+  LET #Output = &V100_L6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_S6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_T6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+
+  LET #Output = &V100_L7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_S7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_T7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  
+  LET #Output = &V100_L8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_S8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_T8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+
+  LET #Output = &V100_L9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_S9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_T9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+
+  LET #Output = &V100_L10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_M10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_N10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_O10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_P10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_Q10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_R10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_S10 
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_T10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+
+  LET #Output = &V100_MAX_NUMBER
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_MIN_NUMBER 
+  LET $Output = $Output ||  TO_CHAR(#Output)
+  
+ WHEN = 'C'
+
+  LET $Input1 = rtrim(&V100_COMPANY_NO,' ')
+    LET $Input2 = rtrim(&V100_ORG_TYPE,' ')
+    DO Strip-Char($Input1, $Input1, '-,')
+    DO Strip-Char($Input2, $Input2, '-,')
+    LET $Output =  $Input1 || ',' || $Input2 || ','
+  
+    LET $Input1 = rtrim(&V100_FORM_TYPE,' ')
+    LET #Input2 = &V100_MSCNUMBER
+    LET $Input2 = TO_CHAR(#Input2)
+    DO Strip-Char($Input1, $Input1, '-,')
+    LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+    
+    
+    LET $Input1 = rtrim(&V100_ENDING_PD,' ') 
+    LET $Input2 = rtrim(&V100_PARENT_CO,' ')
+    DO Strip-Char($Input1, $Input1, '-,')  
+    DO Strip-Char($Input2, $Input2, '-,')
+    LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+  
+    LET $Input1 = rtrim(&V100_STREET,' ')
+    LET $Input2 = rtrim(&V100_STREET2,' ')
+    LET $Input3 = rtrim(&V100_CITY,' ')
+    !DO Strip-Char($Input1, $Input1, '-,')
+    Let $Input1 = Translate($Input1,$invalid_char,'')
+    Let $Input2 = Translate($Input2,$invalid_char,'')
+    Let $Input3 = Translate($Input3,$invalid_char,'')
+  
+  
+    LET $Output =  $Output || $Input1 || ',' || $Input2 || ',' || $Input3 || ','
+  
+    LET $Input1 = rtrim(&V100_COUNTY,' ')
+    LET $Input2 = rtrim(&V100_STATE,' ')
+    !DO Strip-Char($Input1, $Input1, '-,')
+    Let $Input1 = Translate($Input1,$invalid_char,'')
+    DO Strip-Char($Input2, $Input2, '-,')
+    LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+  
+    LET $Input1 = rtrim(&V100_ZIPCODE,' ')
+    LET $Input2 = rtrim($CertName,' ')
+    DO Strip-Char($Input1, $Input1, '-,')
+    DO Strip-Char($Input2, $Input2, '-,')
+    LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+    
+    LET $Input1 = rtrim($CertPhone,' ')
+    LET $Input2 = rtrim($CertEmail,' ')
+    DO Strip-Char($Input1, $Input1, '-,')
+    DO Strip-Char($Input1, $Input1, '/,')
+    DO Strip-Char($Input1, $Input1, '.,')
+    DO Strip-Char($Input2, $Input2, '-,')
+    LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+  
+    LET $Input1 = rtrim(&V100_HL_NAME,' ')
+    LET $Input2 = rtrim(&V100_HL_STREET,' ')
+    DO Strip-Char($Input1, $Input1, '-,')
+    !DO Strip-Char($Input2, $Input2, '-,')
+    Let $Input2 = Translate($Input2,$invalid_char,'')
+    LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+  
+    LET $Input1 = rtrim(&V100_HL_STREET2,' ')
+    LET $Input2 = rtrim(&V100_HL_CITY,' ')
+    LET $Input3 = rtrim(&V100_HL_COUNTY,' ')
+    !DO Strip-Char($Input1, $Input1, '-,')
+    !DO Strip-Char($Input2, $Input2, '-,')
+    !DO Strip-Char($Input3, $Input3, '-,')
+    Let $Input1 = Translate($Input1,$invalid_char,'')
+    Let $Input2 = Translate($Input2,$invalid_char,'')
+    Let $Input3 = Translate($Input3,$invalid_char,'')
+    LET $Output =  $Output || $Input1 || ',' || $Input2 || ',' || $Input3 || ','
+   
+    LET $Input1 = rtrim(&V100_HL_STATE,' ')
+    LET $Input2 = rtrim(&V100_HL_ZIP,' ')
+    DO Strip-Char($Input1, $Input1, '-,')
+    DO Strip-Char($Input2, $Input2, '-,')
+    LET $Output =  $Output || $Input1 || ',' || $Input2 || ','
+  
+    LET $Input1 = rtrim(&V100_NAICS,' ')
+    LET $Input2 = rtrim(&V100_DUNS_NUM,' ')
+    LET $Input3 = rtrim(&V100_EIN,' ')
+    DO Strip-Char($Input1, $Input1, '-,')
+    DO Strip-Char($Input2, $Input2, '-,')
+    DO Strip-Char($Input3, $Input3, '-,')
+    LET $Output =  $Output || $Input1 || ',' || $Input2 || ',' || $Input3 || ','
+     
+  ! We need convert the values to chars and output 
+  !--------------------------------------------    
+  LET #Output = &V100_A1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_A2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_A3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_A4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_A5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_A6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_A7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_A8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_A9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_A10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_A11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','       
+    
+  LET #Output = &V100_B1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_B2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_B3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_B4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_B5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_B6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_B7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_B8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_B9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_B10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_B11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','    
+ 
+  LET #Output = &V100_C1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_C2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_C3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_C4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_C5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_C6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_C7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_C8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_C9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_C10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_C11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','    
+  
+  LET #Output = &V100_D1   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_D2   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_D3   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_D4   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_D5   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_D6   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','  
+  LET #Output = &V100_D7   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_D8   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_D9   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_D10   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','
+  LET #Output = &V100_D11   
+  LET $Output = $Output ||  TO_CHAR(#Output) || ','       
+   
+  LET #Output = &V100_MAX_NUMBER
+  LET $Output = $Output ||  TO_CHAR(#Output) || ',' 
+  LET #Output = &V100_MIN_NUMBER 
+  LET $Output = $Output ||  TO_CHAR(#Output) 
+    
+END-EVALUATE
+
+uppercase $Output
+
+! Now write the output to the file
+!-------------------------------------
+WRITE 1 from                    $Output
+                                Status=#FileStatus
+
+        IF #FileStatus != 0
+                DISPLAY '    WARNING: Error writing file record'
+                STOP QUIET
+        END-IF
+   
+! Blank out $Output, just in case
+!-------------------------------------
+LET $Output = ''       
+
+end-procedure Write-Line-To-File
+
+!----------------------------------------------------------------------
+!-----------Backup-Submitted-Rows--------------------------------------
+!----------------------------------------------------------------------
+! If appropriate, copy the values from the PS_V100_TEMP_TBL into the
+! Vets 100 history table                  
+!----------------------------------------------------------------------
+begin-procedure Backup-Submitted-Rows
+#IFDEF DEBUGPER027
+   DISPLAY 'FLOW: Backup-Submitted-Rows'
+#ENDIF
+
+BEGIN-SELECT
+A.CTL_ESTABID
+A.V100_REPORT_TYPE
+A.V100_ROW
+A.V100_COMPANY_NO
+A.V100_ENDING_PD
+A.V100_ORG_TYPE
+A.V100_FORM_TYPE
+A.V100_MSCNUMBER
+A.V100_PARENT_CO
+A.V100_STREET
+A.V100_STREET2
+A.V100_CITY
+A.V100_COUNTY
+A.V100_STATE
+A.V100_ZIPCODE
+A.V100_HIRING_LOC    
+A.V100_HL_NAME
+A.V100_HL_STREET
+A.V100_HL_STREET2
+A.V100_HL_CITY
+A.V100_HL_COUNTY
+A.V100_HL_STATE
+A.V100_HL_ZIP
+A.V100_NAICS
+A.V100_DUNS_NUM
+A.V100_EIN
+A.V100_A1
+A.V100_B1
+A.V100_C1
+A.V100_D1
+A.V100_L1
+A.V100_M1
+A.V100_N1
+A.V100_O1
+A.V100_P1
+A.V100_Q1
+A.V100_R1
+A.V100_S1
+A.V100_T1
+A.V100_U1
+A.V100_A2
+A.V100_B2
+A.V100_C2
+A.V100_D2
+A.V100_L2
+A.V100_M2
+A.V100_N2
+A.V100_O2
+A.V100_P2
+A.V100_Q2
+A.V100_R2
+A.V100_S2
+A.V100_T2
+A.V100_U2
+A.V100_A3
+A.V100_B3
+A.V100_C3
+A.V100_D3
+A.V100_L3
+A.V100_M3
+A.V100_N3
+A.V100_O3
+A.V100_P3
+A.V100_Q3
+A.V100_R3
+A.V100_S3
+A.V100_T3
+A.V100_U3
+A.V100_A4
+A.V100_B4
+A.V100_C4
+A.V100_D4
+A.V100_L4
+A.V100_M4
+A.V100_N4
+A.V100_O4
+A.V100_P4
+A.V100_Q4
+A.V100_R4
+A.V100_S4
+A.V100_T4
+A.V100_U4
+A.V100_A5
+A.V100_B5
+A.V100_C5
+A.V100_D5
+A.V100_L5
+A.V100_M5
+A.V100_N5
+A.V100_O5
+A.V100_P5
+A.V100_Q5
+A.V100_R5
+A.V100_S5
+A.V100_T5
+A.V100_U5
+A.V100_A6
+A.V100_B6
+A.V100_C6
+A.V100_D6
+A.V100_L6
+A.V100_M6
+A.V100_N6
+A.V100_O6
+A.V100_P6
+A.V100_Q6
+A.V100_R6
+A.V100_S6
+A.V100_T6
+A.V100_U6
+A.V100_A7
+A.V100_B7
+A.V100_C7
+A.V100_D7
+A.V100_L7
+A.V100_M7
+A.V100_N7
+A.V100_O7
+A.V100_P7
+A.V100_Q7
+A.V100_R7
+A.V100_S7
+A.V100_T7
+A.V100_U7
+A.V100_A8
+A.V100_B8
+A.V100_C8
+A.V100_D8
+A.V100_L8
+A.V100_M8
+A.V100_N8
+A.V100_O8
+A.V100_P8
+A.V100_Q8
+A.V100_R8
+A.V100_S8
+A.V100_T8
+A.V100_U8
+A.V100_A9
+A.V100_B9
+A.V100_C9
+A.V100_D9
+A.V100_L9
+A.V100_M9
+A.V100_N9
+A.V100_O9
+A.V100_P9
+A.V100_Q9
+A.V100_R9
+A.V100_S9
+A.V100_T9
+A.V100_U9
+A.V100_A10
+A.V100_B10
+A.V100_C10
+A.V100_D10
+A.V100_L10
+A.V100_M10
+A.V100_N10
+A.V100_O10
+A.V100_P10
+A.V100_Q10
+A.V100_R10
+A.V100_S10
+A.V100_T10
+A.V100_U10
+A.V100_A11
+A.V100_B11
+A.V100_C11
+A.V100_D11
+A.V100_L11
+A.V100_M11
+A.V100_N11
+A.V100_O11
+A.V100_P11
+A.V100_Q11
+A.V100_R11
+A.V100_S11
+A.V100_T11
+A.V100_U11
+A.V100_MAX_NUMBER
+A.V100_MIN_NUMBER 
+
+  DO Insert-Backup-Row
+
+FROM PS_V100_TEMP_TBL A
+ !**********Begin Resolution 631970 *********
+ ![$Where-Clause]
+[$Where-Clause3]
+ !**********End Resolution 631970 *********
+ORDER BY A.CTL_ESTABID, A.V100_ROW
+END-SELECT
+
+end-procedure Backup-Submitted-Rows
+
+
+!----------------------------------------------------------------------
+!-----------Insert-Backup-Row------------------------------------------
+!----------------------------------------------------------------------
+! If we've written current values from PS_V100_TEMP_TBL, we need to
+! delete the values from the temp table.                  
+!----------------------------------------------------------------------
+begin-procedure Insert-Backup-Row
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Insert-Backup-Row'
+#ENDIF
+
+! Calculate the Year value to put into the first row
+!----------------------------------------------------
+LET $Calendar_Year = {ps-substr}(&V100_ENDING_PD,7,4)
+DISPLAY ' $Calendar_Year: ' NOLINE
+DISPLAY $Calendar_Year
+BEGIN-SQL
+INSERT INTO PS_V100_HISTORY
+ !**********Begin Resolution 631970 *********
+ !(V100_REPORTING_YR,CTL_ESTABID,V100_ROW,V100_COMPANY_NO,V100_ENDING_PD,V100_ORG_TYPE,
+ !V100_FORM_TYPE,V100_MSCNUMBER,V100_PARENT_CO,V100_STREET,V100_CITY,V100_COUNTY,V100_STATE,V100_ZIPCODE,V100_HIRING_LOC,
+ !V100_HL_NAME,V100_HL_STREET,V100_HL_CITY,V100_HL_COUNTY,V100_HL_STATE,V100_HL_ZIP,V100_SIC,V100_NAICS,V100_DUNS_NUM,
+ !V100_EIN,V100_L1,V100_M1,V100_N1,V100_O1,V100_P1,V100_Q1,V100_R1,V100_L2,V100_M2,V100_N2,V100_O2,V100_P2, V100_Q2,
+ !V100_R2,V100_L3,V100_M3,V100_N3,V100_O3,V100_P3,V100_Q3,V100_R3,V100_L4,V100_M4,V100_N4,V100_O4,V100_P4,V100_Q4,V100_R4,
+ !V100_L5,V100_M5,V100_N5,V100_O5,V100_P5,V100_Q5,V100_R5,V100_L6,V100_M6,V100_N6,V100_O6,V100_P6,V100_Q6,V100_R6,
+ !V100_L7,V100_M7,V100_N7,V100_O7,V100_P7,V100_Q7,V100_R7,V100_L8,V100_M8,V100_N8,V100_O8,V100_P8,V100_Q8,V100_R8,
+ !V100_L9,V100_M9,V100_N9,V100_O9,V100_P9,V100_Q9,V100_R9,V100_L10,V100_M10,V100_N10,V100_O10,V100_P10,V100_Q10,V100_R10,
+ !V100_MAX_NUMBER,V100_MIN_NUMBER,V100_S1,V100_S2,V100_S3,V100_S4,V100_S5,V100_S6,V100_S7,V100_S8,V100_S9,V100_S10) 
+ !**********End Resolution 631970 *********
+ !**********Begin Resolution 875037 *********
+ (V100_REPORTING_YR,CTL_ESTABID,V100_REPORT_TYPE,V100_ROW,V100_COMPANY_NO,V100_ENDING_PD,V100_ORG_TYPE,V100_FORM_TYPE,V100_MSCNUMBER,V100_PARENT_CO,V100_STREET,V100_STREET2,
+   V100_CITY,V100_COUNTY,V100_STATE,V100_ZIPCODE,V100_HIRING_LOC,V100_HL_NAME,V100_HL_STREET,V100_HL_STREET2,V100_HL_CITY,V100_HL_COUNTY,V100_HL_STATE,V100_HL_ZIP,V100_SIC,
+   V100_NAICS,V100_DUNS_NUM,V100_EIN,V100_A1,V100_B1,V100_C1,V100_D1,V100_L1,V100_M1,V100_N1,V100_O1,V100_P1,V100_Q1,V100_R1,V100_S1,V100_T1,V100_U1,V100_A2,V100_B2,V100_C2,
+   V100_D2,V100_L2,V100_M2,V100_N2,V100_O2,V100_P2,V100_Q2,V100_R2,V100_S2,V100_T2,V100_U2,V100_A3,V100_B3,V100_C3,V100_D3,V100_L3,V100_M3,V100_N3,V100_O3,V100_P3,V100_Q3,
+   V100_R3,V100_S3,V100_T3,V100_U3,V100_A4,V100_B4,V100_C4,V100_D4,V100_L4,V100_M4,V100_N4,V100_O4,V100_P4,V100_Q4,V100_R4,V100_S4,V100_T4,V100_U4,V100_A5,V100_B5,V100_C5,
+   V100_D5,V100_L5,V100_M5,V100_N5,V100_O5,V100_P5,V100_Q5,V100_R5,V100_S5,V100_T5,V100_U5,V100_A6,V100_B6,V100_C6,V100_D6,V100_L6,V100_M6,V100_N6,V100_O6,V100_P6,V100_Q6,
+   V100_R6,V100_S6,V100_T6,V100_U6,V100_A7,V100_B7,V100_C7,V100_D7,V100_L7,V100_M7,V100_N7,V100_O7,V100_P7,V100_Q7,V100_R7,V100_S7,V100_T7,V100_U7,V100_A8,V100_B8,V100_C8,
+   V100_D8,V100_L8,V100_M8,V100_N8,V100_O8,V100_P8,V100_Q8,V100_R8,V100_S8,V100_T8,V100_U8,V100_A9,V100_B9,V100_C9,V100_D9,V100_L9,V100_M9,V100_N9,V100_O9,V100_P9,V100_Q9,
+   V100_R9,V100_S9,V100_T9,V100_U9,V100_A10,V100_B10,V100_C10,V100_D10,V100_L10,V100_M10,V100_N10,V100_O10,V100_P10,V100_Q10,V100_R10,V100_S10,V100_T10,V100_U10,V100_A11,
+   V100_B11,V100_C11,V100_D11,V100_L11,V100_M11,V100_N11,V100_O11,V100_P11,V100_Q11,V100_R11,V100_S11,V100_T11,V100_U11,V100_MAX_NUMBER,V100_MIN_NUMBER)
+ !**********End Resolution 875037 *********
+ VALUES
+ (
+ $Calendar_Year
+ ,&A.CTL_ESTABID
+ ,&A.V100_REPORT_TYPE
+ ,&A.V100_ROW
+ ,&A.V100_COMPANY_NO
+ ,&A.V100_ENDING_PD
+ ,&A.V100_ORG_TYPE 
+ ,&A.V100_FORM_TYPE
+ ,&A.V100_MSCNUMBER 
+ ,&A.V100_PARENT_CO                           
+ ,&A.V100_STREET
+ ,&A.V100_STREET2
+ ,&A.V100_CITY
+ ,&A.V100_COUNTY          
+ ,&A.V100_STATE 
+ ,&A.V100_ZIPCODE 
+ ,&A.V100_HIRING_LOC      
+ ,&A.V100_HL_NAME                             
+ ,&A.V100_HL_STREET   
+ ,&A.V100_HL_STREET2
+ ,&A.V100_HL_CITY         
+ ,&A.V100_HL_COUNTY       
+ ,&A.V100_HL_STATE
+ ,&A.V100_HL_ZIP
+ ,' ' 
+ ,&A.V100_NAICS   
+ ,&A.V100_DUNS_NUM        
+ ,&A.V100_EIN             
+ ,&A.V100_A1
+ ,&A.V100_B1
+ ,&A.V100_C1
+ ,&A.V100_D1
+ ,&A.V100_L1
+ ,&A.V100_M1
+ ,&A.V100_N1
+ ,&A.V100_O1
+ ,&A.V100_P1
+ ,&A.V100_Q1
+ ,&A.V100_R1
+ ,&A.V100_S1
+ ,&A.V100_T1
+ ,&A.V100_U1
+ ,&A.V100_A2
+ ,&A.V100_B2
+ ,&A.V100_C2
+ ,&A.V100_D2
+ ,&A.V100_L2
+ ,&A.V100_M2
+ ,&A.V100_N2
+ ,&A.V100_O2
+ ,&A.V100_P2
+ ,&A.V100_Q2
+ ,&A.V100_R2
+ ,&A.V100_S2
+ ,&A.V100_T2
+ ,&A.V100_U2
+ ,&A.V100_A3
+ ,&A.V100_B3
+ ,&A.V100_C3
+ ,&A.V100_D3
+ ,&A.V100_L3
+ ,&A.V100_M3
+ ,&A.V100_N3
+ ,&A.V100_O3
+ ,&A.V100_P3
+ ,&A.V100_Q3
+ ,&A.V100_R3
+ ,&A.V100_S3
+ ,&A.V100_T3
+ ,&A.V100_U3
+ ,&A.V100_A4
+ ,&A.V100_B4
+ ,&A.V100_C4
+ ,&A.V100_D4
+ ,&A.V100_L4
+ ,&A.V100_M4
+ ,&A.V100_N4
+ ,&A.V100_O4
+ ,&A.V100_P4
+ ,&A.V100_Q4
+ ,&A.V100_R4
+ ,&A.V100_S4
+ ,&A.V100_T4
+ ,&A.V100_U4
+ ,&A.V100_A5
+ ,&A.V100_B5
+ ,&A.V100_C5
+ ,&A.V100_D5
+ ,&A.V100_L5
+ ,&A.V100_M5
+ ,&A.V100_N5
+ ,&A.V100_O5
+ ,&A.V100_P5
+ ,&A.V100_Q5
+ ,&A.V100_R5
+ ,&A.V100_S5
+ ,&A.V100_T5
+ ,&A.V100_U5
+ ,&A.V100_A6
+ ,&A.V100_B6
+ ,&A.V100_C6
+ ,&A.V100_D6
+ ,&A.V100_L6
+ ,&A.V100_M6
+ ,&A.V100_N6
+ ,&A.V100_O6
+ ,&A.V100_P6
+ ,&A.V100_Q6
+ ,&A.V100_R6
+ ,&A.V100_S6
+ ,&A.V100_T6
+ ,&A.V100_U6
+ ,&A.V100_A7
+ ,&A.V100_B7
+ ,&A.V100_C7
+ ,&A.V100_D7
+ ,&A.V100_L7
+ ,&A.V100_M7
+ ,&A.V100_N7
+ ,&A.V100_O7
+ ,&A.V100_P7
+ ,&A.V100_Q7
+ ,&A.V100_R7
+ ,&A.V100_S7
+ ,&A.V100_T7
+ ,&A.V100_U7
+ ,&A.V100_A8
+ ,&A.V100_B8
+ ,&A.V100_C8
+ ,&A.V100_D8
+ ,&A.V100_L8
+ ,&A.V100_M8
+ ,&A.V100_N8
+ ,&A.V100_O8
+ ,&A.V100_P8
+ ,&A.V100_Q8
+ ,&A.V100_R8
+ ,&A.V100_S8
+ ,&A.V100_T8
+ ,&A.V100_U8
+ ,&A.V100_A9
+ ,&A.V100_B9
+ ,&A.V100_C9
+ ,&A.V100_D9
+ ,&A.V100_L9
+ ,&A.V100_M9
+ ,&A.V100_N9
+ ,&A.V100_O9
+ ,&A.V100_P9
+ ,&A.V100_Q9
+ ,&A.V100_R9
+ ,&A.V100_S9
+ ,&A.V100_T9
+ ,&A.V100_U9
+ ,&A.V100_A10
+ ,&A.V100_B10
+ ,&A.V100_C10
+ ,&A.V100_D10
+ ,&A.V100_L10
+ ,&A.V100_M10
+ ,&A.V100_N10
+ ,&A.V100_O10
+ ,&A.V100_P10
+ ,&A.V100_Q10
+ ,&A.V100_R10
+ ,&A.V100_S10
+ ,&A.V100_T10
+ ,&A.V100_U10
+ ,&A.V100_A11
+ ,&A.V100_B11
+ ,&A.V100_C11
+ ,&A.V100_D11
+ ,&A.V100_L11
+ ,&A.V100_M11
+ ,&A.V100_N11
+ ,&A.V100_O11
+ ,&A.V100_P11
+ ,&A.V100_Q11
+ ,&A.V100_R11
+ ,&A.V100_S11
+ ,&A.V100_T11
+ ,&A.V100_U11
+ ,&A.V100_MAX_NUMBER
+,&A.V100_MIN_NUMBER )
+END-SQL
+end-procedure Insert-Backup-Row
+
+!----------------------------------------------------------------------
+!-----------Delete-Submitted-Rows--------------------------------------
+!----------------------------------------------------------------------
+! If we've written current values from PS_V100_TEMP_TBL, we need to
+! delete the values from the temp table.                  
+!----------------------------------------------------------------------
+begin-procedure Delete-Submitted-Rows
+#IFDEF DEBUGPER027
+   DISPLAY 'FLOW: Delete-Submitted-Rows'
+#ENDIF
+
+BEGIN-SELECT
+COUNT(*) &TheCount1
+    IF &TheCount1 >0
+       LET $Delete_Rows = 'TRUE'
+    END-IF 
+FROM PS_V100_TEMP_TBL
+[$Where-Clause]
+END-SELECT
+
+IF $Delete_Rows = 'TRUE'
+    BEGIN-SQL
+    DELETE FROM PS_V100_TEMP_TBL 
+    [$Where-Clause]
+    END-SQL
+    LET $Delete_Rows = 'FALSE'
+END-IF
+
+end-procedure Delete-Submitted-Rows
+
+
+!----------------------------------------------------------------------
+!-----------Check-Existing-Rows----------------------------------------
+!----------------------------------------------------------------------
+!
+!----------------------------------------------------------------------
+begin-procedure Check-Existing-Rows
+#IFDEF DEBUGPER027
+   DISPLAY 'FLOW: Check-Existing-Rows'
+#ENDIF
+
+DISPLAY '$Where-Clause: ' NOLINE
+DISPLAY $Where-Clause
+
+DISPLAY '$Where-Clause2: ' NOLINE
+DISPLAY $Where-Clause2
+
+BEGIN-SELECT
+COUNT(*) &TheCount
+    IF &TheCount >0
+       LET $Delete_Rows = 'TRUE'
+    END-IF 
+FROM PS_V100_HISTORY
+[$Where-Clause2]
+END-SELECT
+  
+IF $Delete_Rows = 'TRUE'
+    BEGIN-SQL
+    DELETE FROM PS_V100_HISTORY
+    [$Where-Clause2]
+    END-SQL
+    LET $Delete_Rows = 'FALSE'
+END-IF
+
+end-procedure Check-Existing-Rows
+
+!----------------------------------------------------------------------
+!-----------Strip-Char-------------------------------------------------
+!----------------------------------------------------------------------
+! This procedure is called in 'Check-Variables. It loops through all   
+! characters in the value string provided and removes all occurrences  
+! of ANY CHARACTER in $strip. This is used to remove characters like   
+! dashes, periods etc. Note: This function is also provided in the     
+! ECBUSDOC.SQC under the name Process-Strip-Char()                     
+!----------------------------------------------------------------------
+begin-procedure Strip-Char($invalue,:$outvalue,$strip)
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Strip-Char'
+  DISPLAY '   $invalue: ' NOLINE
+  DISPLAY $invalue
+  DISPLAY '   $strip: ' NOLINE
+  DISPLAY $strip
+#ENDIF
+  let #val_len = {PS-length}($invalue)
+  let #i = 1
+  let $cur_char = ''
+  let $outvalue = ''
+
+  while #i <= #val_len
+
+     let $cur_char = {PS-substr}($invalue,#i,1)
+
+     if instr($strip, $cur_char, 1) = 0
+
+        let $outvalue = $outvalue || $cur_char
+
+     end-if
+
+     add 1 to #i
+  end-while
+#IFDEF DEBUGPER027
+  DISPLAY '   :$outvalue: ' NOLINE
+  DISPLAY $outvalue
+#ENDIF
+end-procedure
+
+!----------------------------------------------------------------------
+!---------Get-Contact-Info---------------------------------------------
+!----------------------------------------------------------------------
+! Retrieves name and address information for the specific location
+!----------------------------------------------------------------------
+
+Begin-Procedure Get-Contact-Info
+
+Do Get-From-Thru-Date
+
+#IFDEF DEBUGPER025
+  DISPLAY 'FLOW: Get-Contact-Info'
+#ENDIF
+
+! For DB2/All we need to trim this before feeding
+! the value back in the conditional
+!-------------------------------------------------
+LET $Hiring_Location = RTRIM(&V100_HIRING_LOC,' ')
+
+BEGIN-SELECT
+EST2.CERTIF_OFFICIAL
+
+   MOVE &EST2.CERTIF_OFFICIAL TO $CertOffic      !Emplid of Certifying Official
+
+   IF NOT IsBlank($CertOffic)
+        
+      do Get-Official-Name
+      do Get-Phone-Number
+      do Get-Email-Address 
+   
+   ELSE
+   
+      LET $CertName = ''
+      LET $CertPhone = ''
+      LET $CertEmail = ''
+      
+   END-IF
+
+FROM PS_ESTAB_TBL_USA EST2
+where EST2.ESTABID = $Hiring_Location
+AND   EST2.EFFDT =
+              (SELECT MAX(E2.EFFDT)
+               FROM   PS_ESTAB_TBL_USA E2
+               WHERE  E2.ESTABID = EST2.ESTABID
+                 AND  E2.EFFDT  <= $ThruDate)
+END-SELECT
+End-Procedure Get-Contact-Info
+
+!----------------------------------------------------------------------
+!---------Get-Official-Name--------------------------------------------
+!----------------------------------------------------------------------
+Begin-Procedure Get-Official-Name
+#IFDEF DEBUGPER016
+  DISPLAY 'FLOW: Get-Official-Name'
+#ENDIF
+
+BEGIN-SELECT
+
+PN.NAME
+
+  MOVE &PN.NAME to $CertName                    !Name of Certifying Official
+
+FROM PS_PERSON_NAME PN
+WHERE PN.EMPLID = $CertOffic
+
+END-SELECT
+
+End-Procedure Get-Official-Name
+
+!----------------------------------------------------------------------
+!---------Get-Phone-Number-----------------------------------------------
+!----------------------------------------------------------------------
+Begin-Procedure Get-Phone-Number
+#IFDEF DEBUGPER016
+  DISPLAY 'FLOW: Get-Phone-Number'
+#ENDIF
+
+BEGIN-SELECT
+
+PP.PHONE
+
+  MOVE &PP.PHONE to $CertPhone                  !Phone of Certifying Official
+
+FROM PS_PERSONAL_PHONE PP
+WHERE PP.EMPLID = $CertOffic
+AND PP.PHONE_TYPE = 'BUSN'
+
+END-SELECT
+
+End-Procedure Get-Phone-Number
+
+!----------------------------------------------------------------------
+!---------Get-Email-Address--------------------------------------------
+!----------------------------------------------------------------------
+Begin-Procedure Get-Email-Address
+#IFDEF DEBUGPER016
+  DISPLAY 'FLOW: Get-Email-Address'
+#ENDIF
+
+BEGIN-SELECT
+
+PM.EMAIL_ADDR
+
+  MOVE &PM.EMAIL_ADDR to $CertEmail             !Email of Certifying Official
+
+FROM PS_EMAIL_ADDRESSES PM
+WHERE PM.EMPLID = $CertOffic
+AND PM.E_ADDR_TYPE = 'BUSN'
+
+END-SELECT
+
+End-Procedure Get-Email-Address
+
+!----------------------------------------------------------------------
+!---------SQCs---------------------------------------------------------
+!----------------------------------------------------------------------
+#include 'stdapi.sqc'      !Routine to update run status
+#include 'rgrnctl1.sqc'    !Get run control parameter values
+#include 'rggetval.sqc'    !Get values mask routines
+#include 'askcalyr.sqc'    !Ask Calendar Year input
+#Include 'curdttim.sqc'    !Get-Current-DateTime procedure
+#Include 'datetime.sqc'    !Routines for date and time formatting
+#Include 'datemath.sqc'    !Routines for date and time calculations
+#Include 'number.sqc'      !Routines to format numbers

@@ -1,0 +1,5052 @@
+!***********************************************************************
+!  BAC020:  Create ACA 1095-C XML Files                                *
+!***********************************************************************
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  31640707                                            !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc'   !Set environment
+#Include 'setup07.sqc'
+
+#define OthALEMemGrpMax 30
+#define DepBenMax       18
+#define DepBenXmitMax   99
+!#define PhoneLength     15
+#define PrefixIRS       irs:
+#define PrefixN1        n1:
+#define PrefixP         p:
+#define PrefixP1        p1:
+#define PrefixP2        p2:
+
+begin-report
+  do Init-Report
+  do Stdapi-Term
+end-report
+
+
+begin-procedure Init-Report
+  display ''
+  display 'Creating ACA Transmittal Files'
+  display ''
+
+  do Init-DateTime
+  do Init-Number
+  do Stdapi-Init
+  do Initialization
+
+!!  date-time () hh24:mi:ss &t1
+  let $t1 = edit(datenow(), 'DD/MM/YYYY HH24:MI:SS')
+  display 'Start at: '  noline
+  display $t1
+
+!**** XML Publisher
+
+  do Init-XML-Tags-Variables
+  do Get-XMLP-Definitions
+
+  do Format-DateTime($AsOfToday, $out, {DEFYMD},'','')
+  do Format-DateTime($out, $IssueDate, {DEFYMD},'','native')
+
+  do Clear-Guide-Temp
+
+  do Report-File-Create
+
+  if $EmployeeFound = 'N'
+     and $ACA_XML_RUNCTL.ACA_PROCESS_TYPE <> 'R'
+    display ' '
+
+    if $ER_Correction_Flg = 'Y'
+       and $EE_Correction_Flg = 'N'
+
+      display '****** Employer Only Correction ******'
+    end-if
+
+    display '****** No Employee Records Selected ******'
+    display ' '
+  end-if
+
+  if $EmployeeFound = 'Y'
+    if #EE_Count_Print > 0
+      do Close-Print-Files
+    end-if
+
+    if #EE_Count > 0
+       and NOT ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R'
+         or $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'P'
+         or $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'Q')
+      do Close-XMIT-File
+
+      if $ACA_XML_RUNCTL.ACA_FINAL_PRINT = 'Y'
+        do Update-ACA-ALE
+
+        let #ALE_Sub_EE_Count = #EE_Count
+        do Update-ACA-ALE-Submission
+        do Insert-ACA-Xmit-Files-Rec
+      end-if
+    end-if
+  end-if
+
+  date-time () hh:mi:ss &t2
+  display 'End at: '  noline
+  display &t2
+
+end-procedure
+
+
+begin-procedure Initialization
+
+  do Select-ACA-Froms-Parameters
+
+  move #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR to $ACA_Calendar_Year 9999
+  move $ACA_XML_RUNCTL.ACA_SORT_CODE1 to $SortCode1
+  move $ACA_XML_RUNCTL.ACA_SORT_CODE2 to $SortCode2
+
+  let $nsPrefixNull = ''
+  evaluate $ACA_Calendar_Year
+    when = '2015'
+      let $nsPrefix_1 = ''
+      let $nsPrefix_2 = '{PrefixIRS}'
+      let $nsPrefix_3 = '{PrefixIRS}'
+      let $nsPrefix_4 = '{PrefixN1}'
+      break
+    when-other
+      let $nsPrefix_1 = '{PrefixP1}'
+      let $nsPrefix_2 = '{PrefixP1}'
+      let $nsPrefix_3 = '{PrefixP2}'
+      let $nsPrefix_4 = '{PrefixP}'
+      break
+  end-evaluate
+
+  evaluate $ACA_Calendar_Year
+    when = '2015'
+    when = '2016'
+      let #PhoneLength = 15
+    when-other
+      let #PhoneLength = 30
+  end-evaluate
+
+  move ''  to $ALE_MEM_EffSeq_SQL
+  move ''  to $ALE_MEM_EffSeq_S1
+  move ''  to $ALE_MEM_EffSeq_S2
+  move ''  to $ALE_MEM_EffSeq_S3
+  move ''  to $ALE_MEM_EffSeq_S4
+  move ''  to $ALE_MEM_EffSeq_S5
+  move ''  to $ALE_MEM_Status_Select
+  move ''  to $ALE_MEM_Corr_Select
+  move ''  to $ALE_MEM_EffSeq_S6
+
+  move ''  to $EECNT_EmplID_SQL
+  move ''  to $EECNT_EmplID_S1
+  move ''  to $EECNT_EmplID_S2
+  move ''  to $EECNT_EmplID_S3
+  move ''  to $EECNT_EmplID_S4
+  move ''  to $EECNT_EmplID_S5
+  move ''  to $EECNT_EmplID_S6
+  move ''  to $EECNT_EmplID_S7
+  move ''  to $EECNT_EmplID_S8
+  move ''  to $EECNT_EmplID_S9
+  move ''  to $EECNT_EmplID_S10
+  move ''  to $EECNT_EffSeq_SQL
+  move ''  to $EECNT_EffSeq_S1
+  move ''  to $EECNT_EffSeq_S2
+  move ''  to $EECNT_EffSeq_S3
+  move ''  to $EECNT_EffSeq_S4
+  move ''  to $EECNT_EffSeq_S5
+  move ''  to $EECNT_EffSeq_S6
+  move ''  to $EECNT_EffSeq_S7
+  move ''  to $EECNT_EffSeq_S8
+  move ''  to $EECNT_EffSeq_S9
+  move ''  to $EECNT_EffSeq_S10
+  move ''  to $EECNT_EffSeq_S11
+  move ''  to $EECNT_EffSeq_S12
+  move ''  to $EECNT_EffSeq_S13
+  move ''  to $EECNT_EffSeq_S14
+  move ''  to $EECNT_EffSeq_S15
+  move ''  to $EECNT_EffSeq_S16
+  move ''  to $EECNT_EffSeq_S17
+  move ''  to $EECNT_EffSeq_S18
+  move ''  to $EECNT_EffSeq_S19
+  move ''  to $EECNT_EffSeq_S20
+  move ''  to $EECNT_EffSeq_S21
+  move ''  to $EECNT_EffSeq_S22
+  move ''  to $EECNT_EffSeq_S23
+  move ''  to $EECNT_EffSeq_S24
+  move ''  to $EECNT_EffSeq_S25
+  move ''  to $EECNT_EffSeq_S26
+  move ''  to $EECNT_EffSeq_S27
+  move ''  to $EECNT_EffSeq_S28
+  move ''  to $EECNT_EffSeq_S29
+  move ''  to $EECNT_EffSeq_S30
+  move ''  to $EECNT_Status_Select
+  move ''  to $EECNT_Reissue_Select
+  move ''  to $EECNT_Corr_Select
+  move ''  to $EECNT_Void_Select
+
+  move ''  to $ACA_EE_EmplID_SQL
+  move ''  to $ACA_EE_EmplID_S1
+  move ''  to $ACA_EE_EmplID_S2
+  move ''  to $ACA_EE_EmplID_S3
+  move ''  to $ACA_EE_EmplID_S4
+  move ''  to $ACA_EE_EmplID_S5
+  move ''  to $ACA_EE_EmplID_S6
+  move ''  to $ACA_EE_EmplID_S7
+  move ''  to $ACA_EE_EmplID_S8
+  move ''  to $ACA_EE_EmplID_S9
+  move ''  to $ACA_EE_EmplID_S10
+  move ''  to $ACA_EE_EffSeq_SQL
+  move ''  to $ACA_EE_EffSeq_S1
+  move ''  to $ACA_EE_EffSeq_S2
+  move ''  to $ACA_EE_EffSeq_S3
+  move ''  to $ACA_EE_EffSeq_S4
+  move ''  to $ACA_EE_EffSeq_S5
+  move ''  to $ACA_EE_EffSeq_S6
+  move ''  to $ACA_EE_EffSeq_S7
+  move ''  to $ACA_EE_EffSeq_S8
+  move ''  to $ACA_EE_EffSeq_S9
+  move ''  to $ACA_EE_EffSeq_S10
+  move ''  to $ACA_EE_EffSeq_S11
+  move ''  to $ACA_EE_EffSeq_S12
+  move ''  to $ACA_EE_EffSeq_S13
+  move ''  to $ACA_EE_EffSeq_S14
+  move ''  to $ACA_EE_EffSeq_S15
+  move ''  to $ACA_EE_EffSeq_S16
+  move ''  to $ACA_EE_EffSeq_S17
+  move ''  to $ACA_EE_EffSeq_S18
+  move ''  to $ACA_EE_EffSeq_S19
+  move ''  to $ACA_EE_EffSeq_S20
+  move ''  to $ACA_EE_EffSeq_S21
+  move ''  to $ACA_EE_EffSeq_S22
+  move ''  to $ACA_EE_EffSeq_S23
+  move ''  to $ACA_EE_EffSeq_S24
+  move ''  to $ACA_EE_EffSeq_S25
+  move ''  to $ACA_EE_EffSeq_S26
+  move ''  to $ACA_EE_EffSeq_S27
+  move ''  to $ACA_EE_EffSeq_S28
+  move ''  to $ACA_EE_EffSeq_S29
+  move ''  to $ACA_EE_EffSeq_S30
+  move ''  to $ACA_EE_Status_Select
+  move ''  to $ACA_EE_Reissue_Select
+  move ''  to $ACA_EE_Corr_Select
+  move ''  to $ACA_EE_Void_Select
+
+  move ''  to $Replace_1094_SQL
+
+  If $ACA_XML_RUNCTL.ACA_RERUN_FLG = 'N'
+    evaluate $ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+! Original or Correction
+      when = 'O'
+      when = 'C'
+        let $ALE_MEM_EffSeq_S1     = ' AND ALE_MEM.EFFSEQ = '
+        let $ALE_MEM_EffSeq_S2     = ' (SELECT MAX(ALE_MEM1.EFFSEQ) '
+        let $ALE_MEM_EffSeq_S3     = ' FROM PS_ACA_ALE_MEMBER ALE_MEM1 '
+        let $ALE_MEM_EffSeq_S4     = ' WHERE ALE_MEM1.ACA_DAT_EXTRACT_ID = ALE_MEM.ACA_DAT_EXTRACT_ID '
+        let $ALE_MEM_EffSeq_S5     = ' AND ALE_MEM1.ACA_ALE_MEMBER = ALE_MEM.ACA_ALE_MEMBER '
+        let $ALE_MEM_EffSeq_S6     = ' AND ALE_MEM1.ACA_CALENDAR_YEAR = ALE_MEM.ACA_CALENDAR_YEAR) '
+        let $ALE_MEM_EffSeq_SQL    = $ALE_MEM_EffSeq_S1 || $ALE_MEM_EffSeq_S2 || $ALE_MEM_EffSeq_S3 || $ALE_MEM_EffSeq_S4 || -
+                                     $ALE_MEM_EffSeq_S5 || $ALE_MEM_EffSeq_S6
+        let $ALE_MEM_Status_Select = ' AND ALE_MEM.ACA_PRO_FLG IN (''F'')'
+        let $EECNT_EffSeq_S1       = ' AND EECNT.EFFSEQ = '
+        let $EECNT_EffSeq_S2       = ' (SELECT MAX(EECNT1.EFFSEQ) '
+        let $EECNT_EffSeq_S3       = ' FROM PS_ACA_EMPLOYEE EECNT1 '
+        let $EECNT_EffSeq_S4       = ' WHERE EECNT1.ACA_DAT_EXTRACT_ID = EECNT.ACA_DAT_EXTRACT_ID '
+        let $EECNT_EffSeq_S5       = ' AND EECNT1.ACA_ALE_MEMBER = EECNT.ACA_ALE_MEMBER '
+        let $EECNT_EffSeq_S6       = ' AND EECNT1.ACA_CALENDAR_YEAR = EECNT.ACA_CALENDAR_YEAR '
+        let $EECNT_EffSeq_S7       = ' AND EECNT1.EMPLID = EECNT.EMPLID) '
+        let $EECNT_EffSeq_SQL      = $EECNT_EffSeq_S1 || $EECNT_EffSeq_S2 || $EECNT_EffSeq_S3 || $EECNT_EffSeq_S4 || $EECNT_EffSeq_S5 || -
+                                     $EECNT_EffSeq_S6 || $EECNT_EffSeq_S7
+        let $EECNT_Status_Select   = ' AND EECNT.ACA_PRO_FLG IN (''F'')'
+        let $ACA_EE_EffSeq_S1      = ' AND ACA_EE.EFFSEQ = '
+        let $ACA_EE_EffSeq_S2      = ' (SELECT MAX(ACA_EE1.EFFSEQ) '
+        let $ACA_EE_EffSeq_S3      = ' FROM PS_ACA_EMPLOYEE ACA_EE1 '
+        let $ACA_EE_EffSeq_S4      = ' WHERE ACA_EE1.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+        let $ACA_EE_EffSeq_S5      = ' AND ACA_EE1.ACA_ALE_MEMBER = ACA_EE.ACA_ALE_MEMBER '
+        let $ACA_EE_EffSeq_S6      = ' AND ACA_EE1.ACA_CALENDAR_YEAR = ACA_EE.ACA_CALENDAR_YEAR '
+        let $ACA_EE_EffSeq_S7      = ' AND ACA_EE1.EMPLID = ACA_EE.EMPLID) '
+        let $ACA_EE_EffSeq_SQL     = $ACA_EE_EffSeq_S1 || $ACA_EE_EffSeq_S2 ||$ACA_EE_EffSeq_S3 || $ACA_EE_EffSeq_S4 || $ACA_EE_EffSeq_S5 || -
+                                     $ACA_EE_EffSeq_S6 || $ACA_EE_EffSeq_S7
+        let $ACA_EE_Status_Select  = ' AND ACA_EE.ACA_PRO_FLG IN (''F'')'
+        break
+! Reissue
+! Replace
+      when = 'R'
+      When = 'P'
+      When = 'Q'
+        let $ALE_MEM_EffSeq_S1     = ' AND ALE_MEM.EFFSEQ = '
+        let $ALE_MEM_EffSeq_S2     = ' (SELECT MAX(ALE_MEM1.EFFSEQ) '
+        let $ALE_MEM_EffSeq_S3     = ' FROM PS_ACA_ALE_MEMBER ALE_MEM1 '
+        let $ALE_MEM_EffSeq_S4     = ' WHERE ALE_MEM1.ACA_DAT_EXTRACT_ID = ALE_MEM.ACA_DAT_EXTRACT_ID '
+        let $ALE_MEM_EffSeq_S5     = ' AND ALE_MEM1.ACA_ALE_MEMBER = ALE_MEM.ACA_ALE_MEMBER '
+        let $ALE_MEM_EffSeq_S6     = ' AND ALE_MEM1.ACA_CALENDAR_YEAR = ALE_MEM.ACA_CALENDAR_YEAR) '
+        let $ALE_MEM_EffSeq_SQL    = $ALE_MEM_EffSeq_S1 || $ALE_MEM_EffSeq_S2 || $ALE_MEM_EffSeq_S3 || $ALE_MEM_EffSeq_S4 || -
+                                     $ALE_MEM_EffSeq_S5 || $ALE_MEM_EffSeq_S6
+        let $ALE_MEM_Status_Select = ' AND ALE_MEM.ACA_PRO_FLG IN (''F'', ''T'') '
+
+        let $EECNT_EffSeq_S1       = ' AND (EECNT.EFFSEQ = '
+        let $EECNT_EffSeq_S2       = ' (SELECT MAX(EECNT1.EFFSEQ) '
+        let $EECNT_EffSeq_S3       = ' FROM PS_ACA_EMPLOYEE EECNT1 '
+        let $EECNT_EffSeq_S4       = ' WHERE EECNT1.ACA_DAT_EXTRACT_ID = EECNT.ACA_DAT_EXTRACT_ID '
+        let $EECNT_EffSeq_S5       = ' AND EECNT1.ACA_ALE_MEMBER = EECNT.ACA_ALE_MEMBER '
+        let $EECNT_EffSeq_S6       = ' AND EECNT1.ACA_CALENDAR_YEAR = EECNT.ACA_CALENDAR_YEAR '
+        let $EECNT_EffSeq_S7       = ' AND EECNT1.EMPLID = EECNT.EMPLID) '
+        let $EECNT_EffSeq_S8       = ' OR EECNT.EFFSEQ = '
+        let $EECNT_EffSeq_S9       = ' (SELECT MAX(EECNT2.EFFSEQ) '
+        let $EECNT_EffSeq_S10      = ' FROM PS_ACA_EMPLOYEE EECNT2 '
+        let $EECNT_EffSeq_S11      = ' WHERE EECNT2.ACA_DAT_EXTRACT_ID = EECNT.ACA_DAT_EXTRACT_ID '
+        let $EECNT_EffSeq_S12      = ' AND EECNT2.ACA_ALE_MEMBER = EECNT.ACA_ALE_MEMBER '
+        let $EECNT_EffSeq_S13      = ' AND EECNT2.ACA_CALENDAR_YEAR = EECNT.ACA_CALENDAR_YEAR '
+        let $EECNT_EffSeq_S14      = ' AND EECNT2.EMPLID = EECNT.EMPLID '
+        let $EECNT_EffSeq_S15      = ' AND EECNT2.ACA_PRO_FLG = ''T'' '
+        let $EECNT_EffSeq_S16      = ' AND EXISTS (SELECT ''X'' FROM PS_ACA_EMPLOYEE CN2_A '
+        let $EECNT_EffSeq_S17      = ' WHERE CN2_A.ACA_DAT_EXTRACT_ID = EECNT.ACA_DAT_EXTRACT_ID '
+        let $EECNT_EffSeq_S18      = ' AND CN2_A.ACA_ALE_MEMBER = EECNT.ACA_ALE_MEMBER '
+        let $EECNT_EffSeq_S19      = ' AND CN2_A.ACA_CALENDAR_YEAR = EECNT.ACA_CALENDAR_YEAR '
+        let $EECNT_EffSeq_S20      = ' AND CN2_A.EMPLID = EECNT.EMPLID '
+        let $EECNT_EffSeq_S21      = ' AND CN2_A.EFFSEQ = '
+        let $EECNT_EffSeq_S22      = ' (SELECT MAX(CN2_B.EFFSEQ) '
+        let $EECNT_EffSeq_S23      = ' FROM PS_ACA_EMPLOYEE CN2_B '
+        let $EECNT_EffSeq_S24      = ' WHERE CN2_B.ACA_DAT_EXTRACT_ID = EECNT.ACA_DAT_EXTRACT_ID '
+        let $EECNT_EffSeq_S25      = ' AND CN2_B.ACA_ALE_MEMBER = EECNT.ACA_ALE_MEMBER '
+        let $EECNT_EffSeq_S26      = ' AND CN2_B.ACA_CALENDAR_YEAR = EECNT.ACA_CALENDAR_YEAR '
+        let $EECNT_EffSeq_S27      = ' AND CN2_B.EMPLID  = EECNT.EMPLID '
+        let $EECNT_EffSeq_S28      = ' AND CN2_B.ACA_PRO_FLG = ''V'' )) ) ) '
+        let $EECNT_EffSeq_SQL      = $EECNT_EffSeq_S1 || $EECNT_EffSeq_S2 || $EECNT_EffSeq_S3 || $EECNT_EffSeq_S4 || $EECNT_EffSeq_S5 || -
+                                     $EECNT_EffSeq_S6 || $EECNT_EffSeq_S7 || $EECNT_EffSeq_S8 || $EECNT_EffSeq_S9 || $EECNT_EffSeq_S10 || -
+                                     $EECNT_EffSeq_S11 || $EECNT_EffSeq_S12 || $EECNT_EffSeq_S13 || $EECNT_EffSeq_S14 || $EECNT_EffSeq_S15 || -
+                                     $EECNT_EffSeq_S16 || $EECNT_EffSeq_S17 || $EECNT_EffSeq_S18 || $EECNT_EffSeq_S19 || $EECNT_EffSeq_S20 || -
+                                     $EECNT_EffSeq_S21 || $EECNT_EffSeq_S22 || $EECNT_EffSeq_S23 || $EECNT_EffSeq_S24 || $EECNT_EffSeq_S25 || -
+                                     $EECNT_EffSeq_S26 || $EECNT_EffSeq_S27 || $EECNT_EffSeq_S28
+        let $EECNT_Status_Select   = ' AND EECNT.ACA_PRO_FLG IN (''F'', ''T'')'
+        let $ACA_EE_EffSeq_S1      = ' AND (ACA_EE.EFFSEQ = '
+        let $ACA_EE_EffSeq_S2      = ' (SELECT MAX(ACA_EE1.EFFSEQ) '
+        let $ACA_EE_EffSeq_S3      = ' FROM PS_ACA_EMPLOYEE ACA_EE1 '
+        let $ACA_EE_EffSeq_S4      = ' WHERE ACA_EE1.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+        let $ACA_EE_EffSeq_S5      = ' AND ACA_EE1.ACA_ALE_MEMBER = ACA_EE.ACA_ALE_MEMBER '
+        let $ACA_EE_EffSeq_S6      = ' AND ACA_EE1.ACA_CALENDAR_YEAR = ACA_EE.ACA_CALENDAR_YEAR '
+        let $ACA_EE_EffSeq_S7      = ' AND ACA_EE1.EMPLID = ACA_EE.EMPLID) '
+        let $ACA_EE_EffSeq_S8      = ' OR ACA_EE.EFFSEQ = '
+        let $ACA_EE_EffSeq_S9      = ' (SELECT MAX(ACA_EE2.EFFSEQ) '
+        let $ACA_EE_EffSeq_S10     = ' FROM PS_ACA_EMPLOYEE ACA_EE2 '
+        let $ACA_EE_EffSeq_S11     = ' WHERE ACA_EE2.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+        let $ACA_EE_EffSeq_S12     = ' AND ACA_EE2.ACA_ALE_MEMBER = ACA_EE.ACA_ALE_MEMBER '
+        let $ACA_EE_EffSeq_S13     = ' AND ACA_EE2.ACA_CALENDAR_YEAR = ACA_EE.ACA_CALENDAR_YEAR '
+        let $ACA_EE_EffSeq_S14     = ' AND ACA_EE2.EMPLID = ACA_EE.EMPLID '
+        let $ACA_EE_EffSeq_S15     = ' AND ACA_EE2.ACA_PRO_FLG = ''T'' '
+        let $ACA_EE_EffSeq_S16     = ' AND EXISTS (SELECT ''X'' FROM PS_ACA_EMPLOYEE EE2_A '
+        let $ACA_EE_EffSeq_S17     = ' WHERE EE2_A.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+        let $ACA_EE_EffSeq_S18     = ' AND EE2_A.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+        let $ACA_EE_EffSeq_S19     = ' AND EE2_A.ACA_ALE_MEMBER = ACA_EE.ACA_ALE_MEMBER '
+        let $ACA_EE_EffSeq_S20     = ' AND EE2_A.ACA_CALENDAR_YEAR = ACA_EE.ACA_CALENDAR_YEAR '
+        let $ACA_EE_EffSeq_S21     = ' AND EE2_A.EMPLID = ACA_EE.EMPLID '
+        let $ACA_EE_EffSeq_S22     = ' AND EE2_A.EFFSEQ = '
+        let $ACA_EE_EffSeq_S23     = ' (SELECT MAX(EE2_B.EFFSEQ) '
+        let $ACA_EE_EffSeq_S24     = ' FROM PS_ACA_EMPLOYEE EE2_B '
+        let $ACA_EE_EffSeq_S25     = ' WHERE EE2_B.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+        let $ACA_EE_EffSeq_S26     = ' AND EE2_B.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+        let $ACA_EE_EffSeq_S27     = ' AND EE2_B.ACA_CALENDAR_YEAR = ACA_EE.ACA_CALENDAR_YEAR '
+        let $ACA_EE_EffSeq_S28     = ' AND EE2_B.EMPLID  = ACA_EE.EMPLID '
+        let $ACA_EE_EffSeq_S29     = ' AND EE2_B.ACA_PRO_FLG = ''V'' ))) ) '
+        let $ACA_EE_EffSeq_SQL     = $ACA_EE_EffSeq_S1 || $ACA_EE_EffSeq_S2 || $ACA_EE_EffSeq_S3 || $ACA_EE_EffSeq_S4 || $ACA_EE_EffSeq_S5 || -
+                                     $ACA_EE_EffSeq_S6 || $ACA_EE_EffSeq_S7 || $ACA_EE_EffSeq_S8 || $ACA_EE_EffSeq_S9 || $ACA_EE_EffSeq_S10 || -
+                                     $ACA_EE_EffSeq_S11 || $ACA_EE_EffSeq_S12 || $ACA_EE_EffSeq_S13 || $ACA_EE_EffSeq_S14 || $ACA_EE_EffSeq_S15 || -
+                                     $ACA_EE_EffSeq_S16 || $ACA_EE_EffSeq_S17 || $ACA_EE_EffSeq_S18 || $ACA_EE_EffSeq_S19 || $ACA_EE_EffSeq_S20 || -
+                                     $ACA_EE_EffSeq_S21 || $ACA_EE_EffSeq_S22 || $ACA_EE_EffSeq_S23 || $ACA_EE_EffSeq_S24 || $ACA_EE_EffSeq_S25 || -
+                                     $ACA_EE_EffSeq_S26 || $ACA_EE_EffSeq_S27 || $ACA_EE_EffSeq_S28 || $ACA_EE_EffSeq_S29
+        let $ACA_EE_Status_Select  = ' AND ACA_EE.ACA_PRO_FLG IN (''F'', ''T'')'
+        break
+    end-evaluate
+  else
+    evaluate $ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+! Rerun - Original and Correction
+      when = 'O'
+      when = 'C'
+        do Format-Number (#ACA_XML_RUNCTL.ACA_ALE_SEQNO, $Rerun_Effseq, '999')
+        let $Rerun_Effseq = ltrim($Rerun_Effseq, ' ')
+        let $ALE_MEM_EffSeq_S1     = ' AND ALE_MEM.EFFSEQ = '
+        let $ALE_MEM_EffSeq_S2     = $Rerun_Effseq
+        let $ALE_MEM_EffSeq_SQL    = $ALE_MEM_EffSeq_S1 || $ALE_MEM_EffSeq_S2
+        let $ALE_MEM_Status_Select = ' AND ALE_MEM.ACA_PRO_FLG IN (''T'')'
+        let $EECNT_EffSeq_S1       = ' AND EECNT.EFFSEQ IN '
+        let $EECNT_EffSeq_S2       = ' (SELECT MAX(EECNT1.EFFSEQ) '
+        let $EECNT_EffSeq_S3       = ' FROM PS_ACA_EE_XMT_HIST EECNT1 '
+        let $EECNT_EffSeq_S4       = ' WHERE EECNT1.ACA_DAT_EXTRACT_ID = EECNT.ACA_DAT_EXTRACT_ID '
+        let $EECNT_EffSeq_S5       = ' AND EECNT1.ACA_ALE_MEMBER = EECNT.ACA_ALE_MEMBER '
+        let $EECNT_EffSeq_S6       = ' AND EECNT1.ACA_CALENDAR_YEAR = EECNT.ACA_CALENDAR_YEAR '
+        let $EECNT_EffSeq_S7       = ' AND EECNT1.ACA_PROCESS_TYPE = ' || '''' || $ACA_XML_RUNCTL.ACA_PROCESS_TYPE || ''''
+        let $EECNT_EffSeq_S8       = ' AND EECNT1.ACA_ALE_SEQNO = '
+        let $EECNT_EffSeq_S9       = $Rerun_Effseq
+        let $EECNT_EffSeq_S10      = ' AND EECNT1.EMPLID = EECNT.EMPLID '
+        let $EECNT_EffSeq_S11      = ' ) '
+        let $EECNT_EffSeq_SQL      = $EECNT_EffSeq_S1 || $EECNT_EffSeq_S2 || $EECNT_EffSeq_S3 || $EECNT_EffSeq_S4 || $EECNT_EffSeq_S5 ||   -
+                                     $EECNT_EffSeq_S6 || $EECNT_EffSeq_S7 || $EECNT_EffSeq_S8 || $EECNT_EffSeq_S9  || $EECNT_EffSeq_S10 || -
+                                     $EECNT_EffSeq_S11
+        let $EECNT_Status_Select   = ' AND EECNT.ACA_PRO_FLG IN (''T'')'
+        let $ACA_EE_EffSeq_S1      = ' AND ACA_EE.EFFSEQ IN '
+        let $ACA_EE_EffSeq_S2      = ' (SELECT MAX(ACA_EE1.EFFSEQ) '
+        let $ACA_EE_EffSeq_S3      = ' FROM PS_ACA_EE_XMT_HIST ACA_EE1 '
+        let $ACA_EE_EffSeq_S4      = ' WHERE ACA_EE1.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+        let $ACA_EE_EffSeq_S5      = ' AND ACA_EE1.ACA_ALE_MEMBER = ACA_EE.ACA_ALE_MEMBER '
+        let $ACA_EE_EffSeq_S6      = ' AND ACA_EE1.ACA_CALENDAR_YEAR = ACA_EE.ACA_CALENDAR_YEAR '
+        let $ACA_EE_EffSeq_S7      = ' AND ACA_EE1.ACA_PROCESS_TYPE = ' || '''' || $ACA_XML_RUNCTL.ACA_PROCESS_TYPE || ''''
+        let $ACA_EE_EffSeq_S8      = ' AND ACA_EE1.ACA_ALE_SEQNO = '
+        let $ACA_EE_EffSeq_S9      = $Rerun_Effseq
+        let $ACA_EE_EffSeq_S10     = ' AND ACA_EE1.EMPLID = ACA_EE.EMPLID '
+        let $ACA_EE_EffSeq_S11     = ' ) '
+        let $ACA_EE_EffSeq_SQL     = $ACA_EE_EffSeq_S1 || $ACA_EE_EffSeq_S2 || $ACA_EE_EffSeq_S3 || $ACA_EE_EffSeq_S4 || $ACA_EE_EffSeq_S5 ||  -
+                                     $ACA_EE_EffSeq_S6 || $ACA_EE_EffSeq_S7 || $ACA_EE_EffSeq_S8 || $ACA_EE_EffSeq_S9 || $ACA_EE_EffSeq_S10 || -
+                                     $ACA_EE_EffSeq_S11
+        let $ACA_EE_Status_Select  = ' AND ACA_EE.ACA_PRO_FLG IN (''T'')'
+        break
+    end-evaluate
+  end-if
+
+  evaluate $ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+! Original
+    when = 'O'
+      let $ALE_MEM_Corr_Select   = ' AND ALE_MEM.ACA_CORRECTION = ''N'' '
+      let $EECNT_Corr_Select     = ' AND EECNT.ACA_REISSUE = ''N'' '
+      let $ACA_EE_Corr_Select    = ' AND ACA_EE.ACA_REISSUE = ''N'' '
+      break
+! Reissue
+    when = 'R'
+      let $ALE_MEM_Corr_Select   = ' AND ALE_MEM.ACA_CORRECTION = ''N'' '
+      let $EECNT_Corr_Select     = ' AND EECNT.ACA_REISSUE <> ''C'' '
+      let $EECNT_Void_Select     = ' AND NOT (EECNT.ACA_REISSUE = ''Y'' AND EECNT.ACA_VOID = ''Y'') '
+      let $ACA_EE_Corr_Select    = ' AND ACA_EE.ACA_REISSUE <> ''C'' '
+      break
+! Replace Transmission or Replace Submission
+    when = 'P'
+    when = 'Q'
+      let $EECNT_Corr_Select     = ' AND EECNT.ACA_REISSUE <> ''C'' '
+      let $ACA_EE_Corr_Select    = ' AND ACA_EE.ACA_REISSUE <> ''C'' '
+
+      do Get-ALE-EffSeq-for-Replace
+      let $ALE_MEM_Status_Select = ' AND ALE_MEM.ACA_PRO_FLG IN (''F'', ''T'')'
+      let $ALE_MEM_EffSeq_S1     = ' AND ALE_MEM.EFFSEQ = '
+      let $ALE_MEM_EffSeq_S2     = ' (SELECT MAX(ALE_MEM1.EFFSEQ) '
+      let $ALE_MEM_EffSeq_S3     = ' FROM PS_ACA_ALE_MEMBER ALE_MEM1 '
+      let $ALE_MEM_EffSeq_S4     = ' WHERE ALE_MEM1.ACA_DAT_EXTRACT_ID = ALE_MEM.ACA_DAT_EXTRACT_ID '
+      let $ALE_MEM_EffSeq_S5     = ' AND ALE_MEM1.ACA_ALE_MEMBER = ALE_MEM.ACA_ALE_MEMBER '
+      let $ALE_MEM_EffSeq_S6     = ' AND ALE_MEM1.ACA_CALENDAR_YEAR = ALE_MEM.ACA_CALENDAR_YEAR) '
+      let $ALE_MEM_EffSeq_SQL    = $ALE_MEM_EffSeq_S1 || $ALE_MEM_EffSeq_S2 || $ALE_MEM_EffSeq_S3 || $ALE_MEM_EffSeq_S4 || -
+                                   $ALE_MEM_EffSeq_S5 || $ALE_MEM_EffSeq_S6
+      let $ALE_MEM_Status_Select = ' AND ALE_MEM.ACA_PRO_FLG IN (''F'', ''T'')'
+      let $EECNT_EmplID_S1       = ' AND EECNT.EMPLID IN '
+      let $EECNT_EmplID_S2       = ' (SELECT EECNT1.EMPLID '
+      let $EECNT_EmplID_S3       = ' FROM PS_ACA_EE_XMT_HIST EECNT1 '
+      let $EECNT_EmplID_S4       = ' WHERE EECNT1.ACA_DAT_EXTRACT_ID = EECNT.ACA_DAT_EXTRACT_ID '
+      let $EECNT_EmplID_S5       = ' AND EECNT1.ACA_ALE_MEMBER = EECNT.ACA_ALE_MEMBER '
+      let $EECNT_EmplID_S6       = ' AND EECNT1.ACA_CALENDAR_YEAR = EECNT.ACA_CALENDAR_YEAR '
+
+      if $A.Replace_Reissue = 'Y'
+        let $EECNT_EmplID_S7     = ' AND EECNT1.ACA_ALE_SEQNO = ' || $A.Replace_ALE_Seq || ' AND EECNT1.ACA_PROCESS_TYPE = ''R'' ) '
+      else
+        let $EECNT_EmplID_S7     = ' AND EECNT1.ACA_ALE_SEQNO = ' || $A.Replace_ALE_Seq || ' AND EECNT1.ACA_PROCESS_TYPE = ''O'' ) '
+      end-if
+
+      let $EECNT_EmplID_SQL      = $EECNT_EmplID_S1 || $EECNT_EmplID_S2 || $EECNT_EmplID_S3 || $EECNT_EmplID_S4 || $EECNT_EmplID_S5 || -
+                                   $EECNT_EmplID_S6 || $EECNT_EmplID_S7
+      let $EECNT_EffSeq_S1       = ' AND EECNT.EFFSEQ = '
+      let $EECNT_EffSeq_S2       = ' (SELECT MAX(EECNT1.EFFSEQ) '
+      let $EECNT_EffSeq_S3       = ' FROM PS_ACA_EMPLOYEE EECNT1 '
+      let $EECNT_EffSeq_S4       = ' WHERE EECNT1.ACA_DAT_EXTRACT_ID = EECNT.ACA_DAT_EXTRACT_ID '
+      let $EECNT_EffSeq_S5       = ' AND EECNT1.ACA_ALE_MEMBER = EECNT.ACA_ALE_MEMBER '
+      let $EECNT_EffSeq_S6       = ' AND EECNT1.ACA_CALENDAR_YEAR = EECNT.ACA_CALENDAR_YEAR '
+      let $EECNT_EffSeq_S7       = ' AND EECNT1.EMPLID = EECNT.EMPLID) '
+      let $EECNT_EffSeq_SQL      = $EECNT_EffSeq_S1 || $EECNT_EffSeq_S2 || $EECNT_EffSeq_S3 || $EECNT_EffSeq_S4 || $EECNT_EffSeq_S5 || -
+                                   $EECNT_EffSeq_S6 || $EECNT_EffSeq_S7
+      let $EECNT_Status_Select   = ' AND EECNT.ACA_PRO_FLG IN (''F'', ''T'')'
+      let $ACA_EE_EmplID_S1      = ' AND ACA_EE.EMPLID IN '
+      let $ACA_EE_EmplID_S2      = ' (SELECT ACA_EE1.EMPLID '
+      let $ACA_EE_EmplID_S3      = ' FROM PS_ACA_EE_XMT_HIST ACA_EE1 '
+      let $ACA_EE_EmplID_S4      = ' WHERE ACA_EE1.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+      let $ACA_EE_EmplID_S5      = ' AND ACA_EE1.ACA_ALE_MEMBER = ACA_EE.ACA_ALE_MEMBER '
+      let $ACA_EE_EmplID_S6      = ' AND ACA_EE1.ACA_CALENDAR_YEAR = ACA_EE.ACA_CALENDAR_YEAR '
+      let $ACA_EE_EmplID_S7      = ' AND ACA_EE1.ACA_RECEIPT_ID = ''' || $ACA_XML_RUNCTL.ACA_RECEIPT_ID || ''')'
+      let $ACA_EE_EmplID_SQL     = $ACA_EE_EmplID_S1 || $ACA_EE_EmplID_S2 || $ACA_EE_EmplID_S3 || $ACA_EE_EmplID_S4 || $ACA_EE_EmplID_S5 || -
+                                   $ACA_EE_EmplID_S6 || $ACA_EE_EmplID_S7
+      let $ACA_EE_EffSeq_S1      = ' AND ACA_EE.EFFSEQ = '
+      let $ACA_EE_EffSeq_S2      = ' (SELECT MAX(ACA_EE1.EFFSEQ) '
+      let $ACA_EE_EffSeq_S3      = ' FROM PS_ACA_EMPLOYEE ACA_EE1 '
+      let $ACA_EE_EffSeq_S4      = ' WHERE ACA_EE1.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+      let $ACA_EE_EffSeq_S5      = ' AND ACA_EE1.ACA_ALE_MEMBER = ACA_EE.ACA_ALE_MEMBER '
+      let $ACA_EE_EffSeq_S6      = ' AND ACA_EE1.ACA_CALENDAR_YEAR = ACA_EE.ACA_CALENDAR_YEAR '
+      let $ACA_EE_EffSeq_S7      = ' AND ACA_EE1.EMPLID = ACA_EE.EMPLID) '
+      let $ACA_EE_EffSeq_SQL     = $ACA_EE_EffSeq_S1 || $ACA_EE_EffSeq_S2 || $ACA_EE_EffSeq_S3 || $ACA_EE_EffSeq_S4 || $ACA_EE_EffSeq_S5 || -
+                                   $ACA_EE_EffSeq_S6 || $ACA_EE_EffSeq_S7
+      let $ACA_EE_Status_Select  = ' AND ACA_EE.ACA_PRO_FLG IN (''F'', ''T'')'
+      break
+! Correction
+    when = 'C'
+      let $EECNT_Corr_Select     = ' AND EECNT.ACA_REISSUE = ''C'' '
+      let $ACA_EE_Corr_Select    = ' AND ACA_EE.ACA_REISSUE = ''C'' '
+      break
+  end-evaluate
+
+  move '1095' to $ACA_Form_Type
+  move ''     to $Last_ALE
+  move ''     to $Last_EmplID
+  move 1      to #Submission_Count
+  do Format-Number (#Submission_Count, $A.Submission_Count, '9999999999')
+  let $A.Submission_Count = ltrim($A.Submission_Count, ' ')
+
+  move 'N'  to $Print_Files_Opened
+
+  move 0    to #DGE_Count
+  move 0    to #EE_Count
+  move 0    to #EE_Count_Print
+  move 0    to #Rec_Remaining
+  move 0    to #ALE_Sub_EE_Count
+
+  move 43   to #YE_ER_Name_Box_Size
+  move 43   to #YE_ER_Address1_Box_Size
+  move 43   to #YE_ER_Address2_Box_Size
+  move 43   to #YE_EE_FullName_Box_Size
+  move 43   to #YE_EE_Address1_Box_Size
+  move 43   to #YE_EE_Address2_Box_Size
+  move 43   to #YE_State_City_Zip_Box_Size
+  move 43   to #YE_EE_Country_Box_Size
+
+  do Get-Current-DateTime
+
+  let $AsOfDate = $ACA_Calendar_Year || '1231'
+  do Format-DateTime($AsOfDate, $AsOfDate, {DEFCMP}, '', 'native')
+
+  do Create-Order-By
+
+  do Create-OthALEMemGrp-Array
+  do Create-DepBen-Array
+
+  do Clear-ACA-Xmit-Files-Rec
+
+end-procedure
+
+
+begin-procedure Init-Reissue
+
+  let $EECNT_EmplID_S1       = ' AND EECNT.EMPLID IN '
+  let $EECNT_EmplID_S2       = ' (SELECT EECNT1.EMPLID '
+  let $EECNT_EmplID_S3       = ' FROM PS_ACA_EE_XMT_HIST EECNT1 '
+  let $EECNT_EmplID_S4       = ' WHERE EECNT1.ACA_DAT_EXTRACT_ID = EECNT.ACA_DAT_EXTRACT_ID '
+  let $EECNT_EmplID_S5       = ' AND EECNT1.ACA_ALE_MEMBER = EECNT.ACA_ALE_MEMBER '
+  let $EECNT_EmplID_S6       = ' AND EECNT1.ACA_CALENDAR_YEAR = EECNT.ACA_CALENDAR_YEAR '
+
+  if $ACA_XML_RUNCTL.ACA_RERUN_FLG = 'N'
+    let $EECNT_EmplID_S7       = ' AND (EECNT1.ACA_PROCESS_TYPE = ''O'' or EECNT1.ACA_PROCESS_TYPE = ''P'' or EECNT1.ACA_PROCESS_TYPE = ''Q'')'
+  else
+    let $EECNT_EmplID_S7       = ' AND EECNT1.ACA_PROCESS_TYPE = ''R''  '
+  end-if
+
+  let $EECNT_EmplID_S8       = ' AND EECNT1.ACA_ALE_SEQNO IN '
+  let $EECNT_EmplID_S9       = $Reissue_Effseq
+  let $EECNT_EmplID_S10      = $EECNT_Void_Select || ' ) '
+  let $EECNT_EmplID_SQL      = $EECNT_EmplID_S1 || $EECNT_EmplID_S2 || $EECNT_EmplID_S3 || $EECNT_EmplID_S4 || $EECNT_EmplID_S5 || -
+                               $EECNT_EmplID_S6 || $EECNT_EmplID_S7 || $EECNT_EmplID_S8  || $EECNT_EmplID_S9  || $EECNT_EmplID_S10
+  let $ACA_EE_EmplID_S1      = ' AND ACA_EE.EMPLID IN '
+  let $ACA_EE_EmplID_S2      = ' (SELECT ACA_EE1.EMPLID '
+  let $ACA_EE_EmplID_S3      = ' FROM PS_ACA_EE_XMT_HIST ACA_EE1 '
+  let $ACA_EE_EmplID_S4      = ' WHERE ACA_EE1.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+  let $ACA_EE_EmplID_S5      = ' AND ACA_EE1.ACA_ALE_MEMBER = ACA_EE.ACA_ALE_MEMBER '
+  let $ACA_EE_EmplID_S6      = ' AND ACA_EE1.ACA_CALENDAR_YEAR = ACA_EE.ACA_CALENDAR_YEAR '
+
+  if $ACA_XML_RUNCTL.ACA_RERUN_FLG = 'N'
+    let $ACA_EE_EmplID_S7      = ' AND (ACA_EE1.ACA_PROCESS_TYPE = ''O'' or ACA_EE1.ACA_PROCESS_TYPE = ''P'' or ACA_EE1.ACA_PROCESS_TYPE = ''Q'')'
+  else
+    let $ACA_EE_EmplID_S7      = ' AND ACA_EE1.ACA_PROCESS_TYPE = ''R'' '
+  end-if
+
+  let $ACA_EE_EmplID_S8      = ' AND ACA_EE1.ACA_ALE_SEQNO IN '
+  let $ACA_EE_EmplID_S9      = $Reissue_Effseq
+
+  if $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'P' or $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'Q'
+    let $ACA_EE_EmplID_S10 = ' AND ACA_EE1.ACA_RECEIPT_ID = ''' || $ACA_XML_RUNCTL.ACA_RECEIPT_ID || ''' ) '
+  Else
+    let $ACA_EE_EmplID_S10     = ' ) '
+  End-if
+
+  let $ACA_EE_EmplID_SQL     = $ACA_EE_EmplID_S1 || $ACA_EE_EmplID_S2 || $ACA_EE_EmplID_S3 || $ACA_EE_EmplID_S4 || $ACA_EE_EmplID_S5 || -
+                               $ACA_EE_EmplID_S6 || $ACA_EE_EmplID_S7  || $ACA_EE_EmplID_S8 || $ACA_EE_EmplID_S9 || $ACA_EE_EmplID_S10
+
+  if $ACA_XML_RUNCTL.ACA_RERUN_FLG = 'Y'
+    let $ALE_MEM_EffSeq_S1     = ' AND ALE_MEM.EFFSEQ IN '
+    let $ALE_MEM_EffSeq_S2     = $Reissue_Effseq
+    let $ALE_MEM_EffSeq_SQL    = $ALE_MEM_EffSeq_S1 || $ALE_MEM_EffSeq_S2
+    let $ALE_MEM_Status_Select = ' AND ALE_MEM.ACA_PRO_FLG IN (''T'')'
+    let $EECNT_EffSeq_S1       = ' AND EECNT.EFFSEQ IN '
+    let $EECNT_EffSeq_S2       = ' (SELECT MAX(EECNT1.EFFSEQ) '
+    let $EECNT_EffSeq_S3       = ' FROM PS_ACA_EE_XMT_HIST EECNT1 '
+    let $EECNT_EffSeq_S4       = ' WHERE EECNT1.ACA_DAT_EXTRACT_ID = EECNT.ACA_DAT_EXTRACT_ID '
+    let $EECNT_EffSeq_S5       = ' AND EECNT1.ACA_ALE_MEMBER = EECNT.ACA_ALE_MEMBER '
+    let $EECNT_EffSeq_S6       = ' AND EECNT1.ACA_CALENDAR_YEAR = EECNT.ACA_CALENDAR_YEAR '
+    let $EECNT_EffSeq_S7       = ' AND EECNT1.ACA_PROCESS_TYPE = ' || '''' || $ACA_XML_RUNCTL.ACA_PROCESS_TYPE || ''''
+    let $EECNT_EffSeq_S8       = ' AND EECNT1.ACA_ALE_SEQNO IN '
+    let $EECNT_EffSeq_S9       = $Reissue_Effseq
+    let $EECNT_EffSeq_S10      = ' AND EECNT1.EMPLID = EECNT.EMPLID '
+    let $EECNT_EffSeq_S11      = ' ) '
+    let $EECNT_EffSeq_SQL      = $EECNT_EffSeq_S1 || $EECNT_EffSeq_S2 || $EECNT_EffSeq_S3 || $EECNT_EffSeq_S4 || $EECNT_EffSeq_S5 ||   -
+                                 $EECNT_EffSeq_S6 || $EECNT_EffSeq_S7 || $EECNT_EffSeq_S8 || $EECNT_EffSeq_S9  || $EECNT_EffSeq_S10 || -
+                                 $EECNT_EffSeq_S11
+    let $EECNT_Status_Select   = ' AND EECNT.ACA_PRO_FLG IN (''T'')'
+    let $ACA_EE_EffSeq_S1      = ' AND ACA_EE.EFFSEQ IN '
+    let $ACA_EE_EffSeq_S2      = ' (SELECT MAX(ACA_EE1.EFFSEQ) '
+    let $ACA_EE_EffSeq_S3      = ' FROM PS_ACA_EE_XMT_HIST ACA_EE1 '
+    let $ACA_EE_EffSeq_S4      = ' WHERE ACA_EE1.ACA_DAT_EXTRACT_ID = ACA_EE.ACA_DAT_EXTRACT_ID '
+    let $ACA_EE_EffSeq_S5      = ' AND ACA_EE1.ACA_ALE_MEMBER = ACA_EE.ACA_ALE_MEMBER '
+    let $ACA_EE_EffSeq_S6      = ' AND ACA_EE1.ACA_CALENDAR_YEAR = ACA_EE.ACA_CALENDAR_YEAR '
+    let $ACA_EE_EffSeq_S7      = ' AND ACA_EE1.ACA_PROCESS_TYPE = ' || '''' || $ACA_XML_RUNCTL.ACA_PROCESS_TYPE || ''''
+    let $ACA_EE_EffSeq_S8      = ' AND ACA_EE1.ACA_ALE_SEQNO IN '
+    let $ACA_EE_EffSeq_S9      = $Reissue_Effseq
+    let $ACA_EE_EffSeq_S10     = ' AND ACA_EE1.EMPLID = ACA_EE.EMPLID '
+    let $ACA_EE_EffSeq_S11     = ' ) '
+    let $ACA_EE_EffSeq_SQL     = $ACA_EE_EffSeq_S1 || $ACA_EE_EffSeq_S2 || $ACA_EE_EffSeq_S3 || $ACA_EE_EffSeq_S4 || $ACA_EE_EffSeq_S5 ||  -
+                                 $ACA_EE_EffSeq_S6 || $ACA_EE_EffSeq_S7 || $ACA_EE_EffSeq_S8 || $ACA_EE_EffSeq_S9 || $ACA_EE_EffSeq_S10 || -
+                                 $ACA_EE_EffSeq_S11
+    let $ACA_EE_Status_Select  = ' AND ACA_EE.ACA_PRO_FLG IN (''T'')'
+  end-if
+
+end-procedure
+
+
+begin-procedure Create-OthALEMemGrp-Array
+
+  create-array name=OthALEMemGrp size={OthALEMemGrpMax}
+    field=ALE_Member:char
+    field=BusinessNameLine1Txt:char
+    field=BusinessNameLine2Txt:char
+    field=BusinessNameControlTxt:char
+    field=TINRequestTypeCd:char
+    field=EIN:char
+
+end-procedure
+
+
+begin-procedure Create-DepBen-Array
+
+  create-array name=DepBenData size={DepBenXmitMax}
+    field=DependentBenef:char
+    field=CoveredIndividualName:char
+    field=PersonFirstNm:char
+    field=PersonMiddleNm:char
+    field=PersonLastNm:char
+    field=SuffixNm:char
+    field=PersonNameControlTxt:char
+    field=CoveredIndividualSSN1:char
+    field=CoveredIndividualSSNOrig:char
+    field=CoveredIndividualDOB:char
+    field=BirthDatePrt:char
+    field=CoveredIndividualAnnualInd1:char
+    field=JanInd:char
+    field=FebInd:char
+    field=MarInd:char
+    field=AprInd:char
+    field=MayInd:char
+    field=JunInd:char
+    field=JulInd:char
+    field=AugInd:char
+    field=SepInd:char
+    field=OctInd:char
+    field=NovInd:char
+    field=DecInd:char
+
+end-procedure
+
+
+begin-procedure Get-AuthoritativeTransmittalInd
+
+  let $A.AuthoritativeTransmittalInd = '1'
+  let $First_Orig_Found              = 'N'
+
+begin-SELECT DISTINCT
+AUTH.EFFSEQ
+AUTH.ACA_XMIT_STATUS
+
+  let $First_Orig_Found = 'Y'
+  if $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R'
+    do Get-Reissue-AuthTransmittalInd
+  end-if
+
+FROM PS_ACA_ALE_MEM_SUB AUTH
+WHERE AUTH.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND AUTH.ACA_ALE_MEMBER     = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND AUTH.ACA_CALENDAR_YEAR  = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND AUTH.ACA_AUTH_TRANSMIT = '1'
+  AND AUTH.EFFSEQ =
+      (SELECT MIN(AUTH1.EFFSEQ)
+       FROM PS_ACA_ALE_MEM_SUB AUTH1
+       WHERE AUTH1.ACA_DAT_EXTRACT_ID = AUTH.ACA_DAT_EXTRACT_ID
+         AND AUTH1.ACA_ALE_MEMBER     = AUTH.ACA_ALE_MEMBER
+         AND AUTH1.ACA_CALENDAR_YEAR  = AUTH.ACA_CALENDAR_YEAR
+         AND AUTH1.ACA_AUTH_TRANSMIT  = AUTH.ACA_AUTH_TRANSMIT
+         AND AUTH1.ACA_PROCESS_TYPE IN ('O'))
+  AND AUTH.ACA_XMIT_STATUS NOT IN ('O')
+end-SELECT
+
+! Original or Reissue
+  if $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'O'
+    if $First_Orig_Found = 'Y'
+       and &ALE_MEM.EFFSEQ > &AUTH.EFFSEQ
+      let $A.AuthoritativeTransmittalInd = '0'
+    end-if
+  end-if
+
+! Replace Transmission or Replace Submission
+  if $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'P'
+     or $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'Q'
+    if &REPSEQ.ACA_1094_SUBID = 1
+      let $A.AuthoritativeTransmittalInd = &REPSEQ.ACA_AUTH_TRANSMIT
+    else
+      let $A.AuthoritativeTransmittalInd = '0'
+    end-if
+  end-if
+
+end-procedure
+
+
+begin-procedure Get-Reissue-AuthTransmittalInd
+
+  let $Second_Orig_Found = 'N'
+
+begin-SELECT DISTINCT
+AUTHB.EFFSEQ
+
+  let $Second_Orig_Found = 'Y'
+
+FROM PS_ACA_ALE_MEM_SUB AUTHB
+WHERE AUTHB.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND AUTHB.ACA_ALE_MEMBER     = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND AUTHB.ACA_CALENDAR_YEAR  = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND AUTHB.EFFSEQ =
+      (SELECT MIN(AUTHB1.EFFSEQ)
+       FROM PS_ACA_ALE_MEM_SUB AUTHB1
+       WHERE AUTHB1.ACA_DAT_EXTRACT_ID = AUTHB.ACA_DAT_EXTRACT_ID
+         AND AUTHB1.ACA_ALE_MEMBER     = AUTHB.ACA_ALE_MEMBER
+         AND AUTHB1.ACA_CALENDAR_YEAR  = AUTHB.ACA_CALENDAR_YEAR
+         AND AUTHB1.ACA_AUTH_TRANSMIT  = AUTHB.ACA_AUTH_TRANSMIT
+         AND AUTHB1.ACA_PROCESS_TYPE IN ('O')
+         AND AUTHB1.EFFSEQ > &AUTH.EFFSEQ)
+  AND AUTHB.ACA_XMIT_STATUS NOT IN ('O')
+end-SELECT
+
+  if $Second_Orig_Found = 'Y'
+    if (&AUTH.ACA_XMIT_STATUS <> 'N'
+         and &AUTH.ACA_XMIT_STATUS <> 'R')
+       or #Reissue_Count > 1
+      let $A.AuthoritativeTransmittalInd = '0'
+    end-if
+  end-if
+
+end-procedure
+
+
+begin-procedure Get-ALE-EffSeq-for-Replace
+
+  let $A.Replace_Reissue = 'N'
+
+begin-SELECT
+REPSEQ.EFFSEQ
+REPSEQ.ACA_1094_SUBID
+REPSEQ.ACA_AUTH_TRANSMIT
+
+  do Format-Number (&REPSEQ.EFFSEQ, $A.Replace_ALE_Seq, '999')
+  do Check-Reissue-Existence
+
+  do Format-Number (&REPSEQ.ACA_1094_SUBID, $A.Replace_1094_SubID, '9999999')
+  let $Replace_1094_SQL = ' AND ACA_1094_SUBID = ' || $A.Replace_1094_SubID
+  move ''  to $A.Replace_1094_SubID
+
+FROM PS_ACA_ALE_MEM_SUB REPSEQ
+WHERE REPSEQ.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND REPSEQ.ACA_ALE_MEMBER = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND REPSEQ.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND REPSEQ.ACA_RECEIPT_ID = $ACA_XML_RUNCTL.ACA_RECEIPT_ID
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Check-Reissue-Existence
+
+begin-SELECT
+RRSEQ.ACA_RECEIPT_ID
+
+  let $A.Replace_Reissue = 'Y'
+
+FROM PS_ACA_ALE_MEM_SUB RRSEQ
+WHERE RRSEQ.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND RRSEQ.ACA_ALE_MEMBER = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND RRSEQ.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND RRSEQ.ACA_PROCESS_TYPE = 'R'
+  AND RRSEQ.EFFSEQ = &REPSEQ.EFFSEQ
+  AND RRSEQ.ACA_1094_SUBID
+      = (SELECT MIN(RRSEQ1.ACA_1094_SUBID)
+         FROM PS_ACA_ALE_MEM_SUB RRSEQ1
+         WHERE RRSEQ1.ACA_DAT_EXTRACT_ID = RRSEQ.ACA_DAT_EXTRACT_ID
+           AND RRSEQ1.ACA_ALE_MEMBER = RRSEQ.ACA_ALE_MEMBER
+           AND RRSEQ1.ACA_CALENDAR_YEAR = RRSEQ.ACA_CALENDAR_YEAR
+           AND RRSEQ1.ACA_PROCESS_TYPE = RRSEQ.ACA_PROCESS_TYPE
+           AND RRSEQ1.EFFSEQ = RRSEQ.EFFSEQ)
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Prompts
+
+end-procedure
+
+
+begin-procedure Report-File-Create
+
+  move 'N' to $EmployeeFound
+
+  if $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R' or $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'P' or $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'Q'
+    if $ACA_XML_RUNCTL.ACA_RERUN_FLG = 'N'
+      do Get-ALE-EffSeq-for-Reissue
+    else
+      do Get-ALE-EffSeq-for-Reissue-Rerun
+    end-if
+  else
+    do Read-ALE-Member
+  end-if
+
+end-procedure
+
+
+begin-procedure Get-ALE-EffSeq-for-Reissue
+
+  move ''   to $Reissue_Effseq
+
+  let $Process_Type   = ' AND RISEQ.ACA_PROCESS_TYPE  = ''O'' '
+  let $Process_Status = ' AND RIEE.ACA_PRO_FLG IN (''F'', ''T'') '
+
+begin-SELECT DISTINCT
+RISEQ.EFFSEQ
+
+  do Format-Number (&RISEQ.EFFSEQ, $Effseq_R, '999')
+
+  if rtrim($Reissue_Effseq, ' ') = ''
+    let $Reissue_Effseq = ' ( ' || ltrim($Effseq_R, ' ')
+  else
+    let $Reissue_Effseq = $Reissue_Effseq || ', ' || ltrim($Effseq_R, ' ')
+  end-if
+
+FROM PS_ACA_ALE_MEM_SUB RISEQ, PS_ACA_EE_XMT_HIST RIEH, PS_ACA_EMPLOYEE RIEE
+WHERE RISEQ.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND RISEQ.ACA_ALE_MEMBER     = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND RISEQ.ACA_CALENDAR_YEAR  = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+[$Process_Type]
+  AND ((RISEQ.ACA_RECEIPT_ID     = ' '
+       AND RISEQ.ACA_XMIT_STATUS = 'N')
+       OR (RISEQ.ACA_RECEIPT_ID <> ' '
+           AND RISEQ.ACA_XMIT_STATUS = 'R'))
+  AND RISEQ.ACA_DAT_EXTRACT_ID = RIEH.ACA_DAT_EXTRACT_ID
+  AND RISEQ.ACA_ALE_MEMBER     = RIEH.ACA_ALE_MEMBER
+  AND RISEQ.ACA_CALENDAR_YEAR  = RIEH.ACA_CALENDAR_YEAR
+  AND RISEQ.ACA_PROCESS_TYPE   = RIEH.ACA_PROCESS_TYPE
+  AND RISEQ.EFFSEQ             = RIEH.ACA_ALE_SEQNO
+  AND RIEH.ACA_DAT_EXTRACT_ID  = RIEE.ACA_DAT_EXTRACT_ID
+  AND RIEH.ACA_ALE_MEMBER      = RIEE.ACA_ALE_MEMBER
+  AND RIEH.ACA_CALENDAR_YEAR   = RIEE.ACA_CALENDAR_YEAR
+  AND RIEH.EMPLID              = RIEE.EMPLID
+[$Process_Status]
+ORDER BY RISEQ.EFFSEQ ASC
+end-SELECT
+
+  move 'N'  to $EmployeeFound
+
+  move ''     to $Last_ALE
+  move ''     to $Last_EmplID
+  move 1      to #Submission_Count
+  do Format-Number (#Submission_Count, $A.Submission_Count, '9999999')
+  let $A.Submission_Count = ltrim($A.Submission_Count, ' ')
+
+  move 'N'  to $Print_Files_Opened
+
+  move 0    to #EE_Count
+  move 0    to #Rec_Remaining
+  move 0    to #ALE_Sub_EE_Count
+  do Get-Current-DateTime
+
+  if rtrim($Reissue_Effseq, ' ') <> ''
+    let $Reissue_Effseq = $Reissue_Effseq || ' ) '
+    do Init-Reissue
+    do Read-ALE-Member
+  end-if
+
+  if $EmployeeFound = 'N'
+    display ' '
+    let $Process_Message = '****** No Employee Records Selected for ACA ALE Sequence ' || $Reissue_Effseq || ' ******'
+    display $Process_Message
+    display ' '
+  end-if
+
+  if $EmployeeFound = 'Y'
+    if #EE_Count > 0
+      do Close-XMIT-File
+
+      if $ACA_XML_RUNCTL.ACA_FINAL_PRINT = 'Y'
+        do Update-ACA-ALE
+
+        let #ALE_Sub_EE_Count = #EE_Count
+        do Update-ACA-ALE-Submission
+        do Insert-ACA-Xmit-Files-Rec
+      end-if
+    end-if
+  end-if
+
+end-procedure
+
+
+begin-procedure Get-ALE-EffSeq-for-Reissue-Rerun
+
+  move 1    to #Reissue_Count
+
+  let $Process_Type   = ' AND RISEQR.ACA_PROCESS_TYPE  = ''R'' '
+  let $Process_Status = ' AND RIEER.ACA_PRO_FLG IN (''F'', ''T'') '
+
+begin-SELECT DISTINCT
+RISEQR.EFFSEQ
+
+  move 'N'  to $EmployeeFound
+
+  move ''     to $Last_ALE
+  move ''     to $Last_EmplID
+  move 1      to #Submission_Count
+  do Format-Number (#Submission_Count, $A.Submission_Count, '9999999')
+  let $A.Submission_Count = ltrim($A.Submission_Count, ' ')
+
+  move 'N'  to $Print_Files_Opened
+
+  move 0    to #EE_Count
+  move 0    to #Rec_Remaining
+  move 0    to #ALE_Sub_EE_Count
+  do Get-Current-DateTime
+
+  do Format-Number (&RISEQR.EFFSEQ, $Reissue_Effseq, '999')
+  let $Reissue_Effseq = ' (' || ltrim($Reissue_Effseq, ' ') || ') '
+
+  do Init-Reissue
+  do Read-ALE-Member
+
+  if $EmployeeFound = 'N'
+    display ' '
+    let $Process_Message = '****** No Employee Records Selected for ACA ALE Sequence ' || $Reissue_Effseq || ' ******'
+    display $Process_Message
+    display ' '
+  end-if
+
+  if $EmployeeFound = 'Y'
+    if #EE_Count > 0
+      do Close-XMIT-File
+
+      if $ACA_XML_RUNCTL.ACA_FINAL_PRINT = 'Y'
+        do Update-ACA-ALE
+
+        let #ALE_Sub_EE_Count = #EE_Count
+        do Update-ACA-ALE-Submission
+        do Insert-ACA-Xmit-Files-Rec
+      end-if
+
+      add 1    to #Reissue_Count
+    end-if
+  end-if
+
+FROM PS_ACA_ALE_MEM_SUB RISEQR, PS_ACA_EE_XMT_HIST RIEHR, PS_ACA_EMPLOYEE RIEER
+WHERE RISEQR.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND RISEQR.ACA_ALE_MEMBER     = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND RISEQR.ACA_CALENDAR_YEAR  = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+[$Process_Type]
+  AND ((RISEQR.ACA_RECEIPT_ID     = ' '
+       AND RISEQR.ACA_XMIT_STATUS = 'N')
+       OR (RISEQR.ACA_RECEIPT_ID <> ' '
+           AND RISEQR.ACA_XMIT_STATUS = 'R'))
+  AND RISEQR.ACA_DAT_EXTRACT_ID = RIEHR.ACA_DAT_EXTRACT_ID
+  AND RISEQR.ACA_ALE_MEMBER     = RIEHR.ACA_ALE_MEMBER
+  AND RISEQR.ACA_CALENDAR_YEAR  = RIEHR.ACA_CALENDAR_YEAR
+  AND RISEQR.ACA_PROCESS_TYPE   = RIEHR.ACA_PROCESS_TYPE
+  AND RISEQR.EFFSEQ             = RIEHR.ACA_ALE_SEQNO
+  AND RIEHR.ACA_DAT_EXTRACT_ID  = RIEER.ACA_DAT_EXTRACT_ID
+  AND RIEHR.ACA_ALE_MEMBER      = RIEER.ACA_ALE_MEMBER
+  AND RIEHR.ACA_CALENDAR_YEAR   = RIEER.ACA_CALENDAR_YEAR
+  AND RIEHR.EMPLID              = RIEER.EMPLID
+ORDER BY RISEQR.EFFSEQ ASC
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Read-ALE-Member
+
+  move ''     to $A.TestScenarioId
+  move ''     to $A.BusinessNameControlTxt
+  move ''     to $A.recordType
+  move '0'     to $A.lineNum
+  move 'N'    to $ER_Correction_Flg
+  move 'N'    to $EE_Correction_Flg
+  move 'BUSINESS_TIN'  to $A.TINRequestTypeCd
+
+begin-SELECT
+ALE_MEM.ACA_ALE_MEMBER
+ALE_MEM.EFFSEQ
+ALE_MEM.ACA_CORRECTION
+ALE_ADR.ACA_DESCR
+ALE_ADR.FEDERAL_EIN
+ALE_ADR.ADDRESS1
+ALE_ADR.ADDRESS2
+ALE_ADR.CITY
+ALE_ADR.STATE
+ALE_ADR.COUNTRY
+ALE_ADR.POSTAL
+ALE_ADR.CONTACT_NAME_SUFFX
+ALE_ADR.CONTACT_LAST_NAME
+ALE_ADR.CONTACT_FIRST_NAME
+ALE_ADR.CONTACT_MID_NAME
+ALE_ADR.CONTACT_PHONE_ACA
+ALE_ADR.COUNTRY_2CHAR
+
+  if $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R' or $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'P' or $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'Q'
+    if $ACA_XML_RUNCTL.ACA_RERUN_FLG = 'Y'
+      let #Upd_ALE_Seq = &RISEQR.EFFSEQ
+    else
+      let #Upd_ALE_Seq = &ALE_MEM.EFFSEQ
+    end-if
+  else
+    let #Upd_ALE_Seq = &ALE_MEM.EFFSEQ
+  end-if
+
+  if $ACA_XML_RUNCTL.ACA_FINAL_PRINT = 'Y'
+    do Clear-ALE-History
+  end-if
+
+  do Clear-ALE-Data
+  do Clear-OtherALEMemGrp-Array
+
+  do Get-TCC
+
+  let $A.TaxYr = edit(#ACA_XML_RUNCTL.ACA_CALENDAR_YEAR, '9999')
+
+  let $NC_ALE_Member = &ALE_MEM.ACA_ALE_MEMBER
+  let $NC_Entity_Type = 'ALE'
+  do Get-Name-Control
+  let $A.BusinessNameControlTxt = $Name_Control
+
+  let $A.Name       = rtrim(&ALE_ADR.ACA_DESCR, ' ')
+  move &ALE_ADR.FEDERAL_EIN    to $Federal_EIN 099999999
+  move $Federal_EIN            to $A.Federal_EIN xx-xxxxxxx
+  let $A.Address1   = rtrim(&ALE_ADR.ADDRESS1, ' ')
+  let $A.Address2   = rtrim(&ALE_ADR.ADDRESS2, ' ')
+  let $A.City       =  RTRIM(&ALE_ADR.City,' ')
+  move $A.City to $A.CityNm
+
+  let $A.Address1_Xmit  = $A.Address1
+  let $A.Address2_Xmit  = $A.Address2
+
+  let $A.Descr    = substr($A.Name,1,#YE_ER_Name_Box_Size)
+  let $A.Address1 = substr($A.Address1,1,#YE_ER_Address1_Box_Size)
+  let $A.Address2 = substr($A.Address2,1,#YE_ER_Address2_Box_Size)
+
+  let $A.BusinessNameLine1Txt  = rtrim(substr($A.Name, 1, 75), ' ')
+  let $A.BusinessNameLine2Txt  = ''
+  let $A.EmployerEIN           = $A.Federal_EIN
+  let $A.AddressLine1Txt       = rtrim(&ALE_ADR.ADDRESS1, ' ')
+  let $A.AddressLine2Txt       = rtrim(&ALE_ADR.ADDRESS2, ' ')
+
+  let $A.State = rtrim(&ALE_ADR.STATE, ' ')
+  let $A.USStateCd = $A.State
+  move &ALE_ADR.COUNTRY        to $A.CountryCd
+  move &ALE_ADR.POSTAL         to $A.Zip
+
+  if rtrim($A.CountryCd, ' ') <> 'USA'
+    let $PRV.State = $A.State
+    let $PRV.Cntry = $A.CountryCd
+    do Get-Province-Name
+    let $A.ForeignProvinceNm = &PRV.DESCR
+
+    let $CountryCd = $A.CountryCd
+    do Get-Country-Code
+    let $A.CountryNm = &CT.DESCR
+    let $A.ForeignPostalCd    = $A.Zip
+    move &ALE_ADR.COUNTRY_2CHAR to $A.CountryCd_2char
+  end-if
+
+  evaluate $ACA_Calendar_Year
+    when = '2015'
+      let $A.PersonFirstNm  = rtrim(&ALE_ADR.CONTACT_FIRST_NAME, ' ')
+      let $A.PersonMiddleNm = rtrim(&ALE_ADR.CONTACT_MID_NAME, ' ')
+      let $A.PersonLastNm   = rtrim(&ALE_ADR.CONTACT_LAST_NAME, ' ')
+      break
+    when-other
+      let $A.PersonFirstNm  = rtrim(substr(&ALE_ADR.CONTACT_FIRST_NAME, 1, 20), ' ')
+      let $A.PersonMiddleNm = rtrim(substr(&ALE_ADR.CONTACT_MID_NAME, 1, 20), ' ')
+      let $A.PersonLastNm   = rtrim(substr(&ALE_ADR.CONTACT_LAST_NAME, 1, 20), ' ')
+      break
+  end-evaluate
+  let $A.SuffixNm       = rtrim(&ALE_ADR.CONTACT_NAME_SUFFX, ' ')
+
+  move &ALE_ADR.CONTACT_PHONE_ACA  to $A.Contact_Phone
+  move &ALE_ADR.CONTACT_PHONE_ACA  to $Phone_In
+  move ''                          to $Phone_Out
+  do Process-Phone-Num($Phone_In, $Phone_Out, #PhoneLength)
+  move $Phone_Out                  to $A.ContactPhoneNum
+
+  do Get-DGE-Data
+
+  do Read-ALE-EE-Count
+  do Get-AggregatedGroupMemInd
+  do Get-Cert-of-Elig
+  do Read-ALE-Monthly-Count
+  do Read-ALE-Monthly-Indicator
+  do Get-OthALEMemGrp
+
+  do Get-Setup-Viewing-Date
+
+  evaluate $ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+! Original and Reissue
+    when = 'O'
+    when = 'R'
+      if #DGE_Count = 0
+        do Get-AuthoritativeTransmittalInd
+      end-if
+
+      do Read-Employee-Data
+      break
+! Replace Transmission
+    when = 'P'
+      if #DGE_Count = 0
+        do Get-AuthoritativeTransmittalInd
+      end-if
+
+      do Read-Employee-Data
+      break
+! Replace Submission
+    when = 'Q'
+      do Format-Number (&REPSEQ.ACA_1094_SUBID, $A.Replace_1094_SubID, '9999999')
+      let $A.OriginalUniqueSubmissionId = $ACA_XML_RUNCTL.ACA_RECEIPT_ID || '|' || ltrim($A.Replace_1094_SubID, ' ')
+
+      if #DGE_Count = 0
+        do Get-AuthoritativeTransmittalInd
+      end-if
+
+      do Read-Employee-Data
+      break
+! Correction
+    when = 'C'
+      if &ALE_MEM.ACA_CORRECTION = 'Y'
+        let $ER_Correction_Flg = 'Y'
+        do Get-ALE-Correction-SubID
+      end-if
+
+      evaluate $ER_Correction_Flg
+        when = 'Y'
+          let $A.CorrectedInd = '1'
+          evaluate $EE_Correction_Flg
+            When = 'Y'
+              let $SaveA.Form1095CAttachedCnt = $A.Form1095CAttachedCnt
+              let $A.Form1095CAttachedCnt = '0'
+              do Open-XMIT-File
+
+              do XML-Open-Tag('Form1094CUpstreamDetail recordType="String" lineNum="0"', $openTag3, $nsPrefix_1)
+
+              do Write-XML-Line(#Fnum3, $openTag3)
+              do Write-1094C-Xmit
+              do Close-ER-XMIT-File
+              let $A.Form1095CAttachedCnt = $SaveA.Form1095CAttachedCnt
+
+              if $ACA_XML_RUNCTL.ACA_FINAL_PRINT = 'Y'
+                do Update-ACA-ALE
+                do Update-ACA-ALE-Submission
+                do Insert-ACA-Xmit-Files-Rec
+              end-if
+
+              add 1  to #Submission_Count
+              do Format-Number (#Submission_Count, $A.Submission_Count, '9999999')
+              let $A.AuthoritativeTransmittalInd = '0'
+              let $A.Submission_Count = ltrim($A.Submission_Count, ' ')
+              let $A.CorrectedInd = '0'
+              do Read-Employee-Data
+              break
+            When = 'N'
+              let $SaveA.Form1095CAttachedCnt = $A.Form1095CAttachedCnt
+              let $A.Form1095CAttachedCnt = '0'
+              do Open-XMIT-File
+
+              do XML-Open-Tag('Form1094CUpstreamDetail recordType="String" lineNum="0"', $openTag3, $nsPrefix_1)
+
+              do Write-XML-Line(#Fnum3, $openTag3)
+              do Write-1094C-Xmit
+              do Close-ER-XMIT-File
+              let $A.Form1095CAttachedCnt = $SaveA.Form1095CAttachedCnt
+
+              if $ACA_XML_RUNCTL.ACA_FINAL_PRINT = 'Y'
+                do Update-ACA-ALE
+                do Update-ACA-ALE-Submission
+                do Insert-ACA-Xmit-Files-Rec
+              end-if
+              break
+          end-evaluate
+          break
+        when = 'N'
+          if $EE_Correction_Flg = 'Y'
+            let $A.AuthoritativeTransmittalInd = '0'
+            do Read-Employee-Data
+          end-if
+          break
+      end-evaluate
+  end-evaluate
+
+FROM  PS_ACA_ALE_MEMBER ALE_MEM, PS_ACA_ALE_MEM_ADR ALE_ADR
+WHERE ALE_MEM.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND ALE_MEM.ACA_ALE_MEMBER = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND ALE_MEM.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+[$ALE_MEM_EffSeq_SQL]
+  AND ALE_MEM.ACA_DAT_EXTRACT_ID = ALE_ADR.ACA_DAT_EXTRACT_ID
+  AND ALE_MEM.ACA_ALE_MEMBER = ALE_ADR.ACA_ALE_MEMBER
+  AND ALE_MEM.ACA_CALENDAR_YEAR = ALE_ADR.ACA_CALENDAR_YEAR
+[$ALE_MEM_Status_Select]
+[$ALE_MEM_Corr_Select]
+  AND ALE_MEM.EFFSEQ = ALE_ADR.EFFSEQ
+  and ALE_ADR.ACA_ENTITY_TYPE = 'ALE'
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Get-TCC
+
+begin-SELECT
+ACA_TCC.ACA_XMIT_CTL_CODE
+
+  let $A.TCC = rtrim(&ACA_TCC.ACA_XMIT_CTL_CODE, ' ')
+
+FROM PS_ACA_ALE_TBL ACA_TCC
+WHERE ACA_TCC.ACA_ALE_MEMBER = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND ACA_TCC.EFFDT =
+      (SELECT MAX(ACA_TCC1.EFFDT)
+       FROM PS_ACA_ALE_TBL ACA_TCC1
+       WHERE ACA_TCC1.ACA_ALE_MEMBER = ACA_TCC.ACA_ALE_MEMBER
+         AND ACA_TCC1.EFFDT <= $AsOfDate)
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Get-Name-Control
+
+  let $Name_Control = ''
+
+begin-SELECT
+ACA_NC.ACA_NAME_CONTROL
+
+  let $Name_Control = rtrim(&ACA_NC.ACA_NAME_CONTROL, ' ')
+
+FROM PS_ACA_ALE_TBL_ADR ACA_NC
+WHERE ACA_NC.ACA_ALE_MEMBER = $NC_ALE_Member
+  AND ACA_NC.ACA_ENTITY_TYPE = $NC_Entity_Type
+  AND ACA_NC.EFFDT =
+      (SELECT MAX(ACA_NC1.EFFDT)
+       FROM PS_ACA_ALE_TBL_ADR ACA_NC1
+       WHERE ACA_NC1.ACA_ALE_MEMBER = ACA_NC.ACA_ALE_MEMBER
+         AND ACA_NC1.EFFDT <= $AsOfDate
+         AND ACA_NC1.ACA_ENTITY_TYPE = ACA_NC.ACA_ENTITY_TYPE)
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Get-DGE-Data
+
+  move ''              to $A.DGEBusinessNameControlTxt
+  move 'BUSINESS_TIN'  to $A.DGETINRequestTypeCd        ! BUSINESS_TIN
+
+begin-SELECT
+DGE.ACA_DESCR
+DGE.FEDERAL_EIN
+DGE.ADDRESS1
+DGE.ADDRESS2
+DGE.CITY
+DGE.STATE
+DGE.COUNTRY
+DGE.COUNTRY_2CHAR
+DGE.POSTAL
+DGE.CONTACT_FIRST_NAME
+DGE.CONTACT_MID_NAME
+DGE.CONTACT_LAST_NAME
+DGE.CONTACT_NAME_SUFFX
+DGE.CONTACT_PHONE_ACA
+
+  let $A.DGEBusinessNameLine1Txt  = rtrim(&DGE.ACA_DESCR, ' ')
+  let $A.DGEBusinessNameLine2Txt  = ''
+
+  let $NC_ALE_Member = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  let $NC_Entity_Type = 'DGE'
+  do Get-Name-Control
+  let $A.DGEBusinessNameControlTxt = rtrim($Name_Control, ' ')
+
+  move &DGE.FEDERAL_EIN  to $A.DGEEmployerEIN   099999999
+  let $A.DGEAddressLine1Txt       = rtrim(&DGE.ADDRESS1, ' ')
+  let $A.DGEAddressLine2Txt       = rtrim(&DGE.ADDRESS2, ' ')
+  let $A.DGECityNm                = rtrim(&DGE.CITY, ' ')
+
+  move &DGE.POSTAL        to $G.Zip
+  move &DGE.COUNTRY       to $A.DGECountryCd
+
+  if &DGE.COUNTRY = 'USA'
+    move $G.Zip            to $G.ZipExtsn ~~~~~~xxxx
+
+    if instr($G.Zip,'-',6) = 0
+       and $G.ZipExtsn <> '    '
+      let $G.Zip = substr($G.Zip,1,5) || '-' || substr($G.Zip,6,4)
+    end-if
+
+    let $G.Zip = rtrim($G.Zip, ' ')
+  end-if
+
+  if &DGE.COUNTRY = 'USA'
+    move &DGE.STATE         to $A.DGEUSStateCd
+    let $G.ZipCd = substr($G.Zip,1,5)
+    move $G.Zip  to $G.ZIPExtensionCd ~~~~~~xxxx
+    move $G.ZipCd           to $A.DGEUSZIPCd
+    move $G.ZIPExtensionCd  to $A.DGEUSZIPExtensionCd
+  else
+
+    let $PRV.State = $A.DGEUSStateCd
+    let $PRV.Cntry = $A.DGECountryCd
+    do Get-Province-Name
+    let $A.DGEForeignProvinceNm = &PRV.DESCR
+
+    let $CountryCd = $A.DGECountryCd
+    do Get-Country-Code
+    let $A.DGECountryNm = &CT.DESCR
+    move &DGE.COUNTRY_2CHAR to $A.DGECountryCd_2char
+    move &DGE.POSTAL        to $A.DGEForeignPostalCd
+  end-if
+
+  evaluate $ACA_Calendar_Year
+    when = '2015'
+      move &DGE.CONTACT_FIRST_NAME   to $A.DGEPersonFirstNm
+      move &DGE.CONTACT_MID_NAME     to $A.DGEPersonMiddleNm
+      move &DGE.CONTACT_LAST_NAME    to $A.DGEPersonLastNm
+      break
+    when-other
+      let $A.DGEPersonFirstNm   = rtrim(substr(&DGE.CONTACT_FIRST_NAME, 1, 20), ' ')
+      let $A.DGEPersonMiddleNm  = rtrim(substr(&DGE.CONTACT_MID_NAME, 1, 20), ' ')
+      let $A.DGEPersonLastNm    = rtrim(substr(&DGE.CONTACT_LAST_NAME, 1, 20), ' ')
+      break
+  end-evaluate
+
+  move &DGE.CONTACT_NAME_SUFFX   to $A.DGESuffixNm
+
+  move &DGE.CONTACT_PHONE_ACA    to $Phone_In
+  move ''                        to $Phone_Out
+  do Process-Phone-Num($Phone_In, $Phone_Out,#PhoneLength)
+  move $Phone_out                to $A.DGEContactPhoneNum
+
+  add 1  to #DGE_Count
+
+FROM PS_ACA_ALE_MEM_ADR DGE
+WHERE DGE.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND DGE.ACA_ALE_MEMBER = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND DGE.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND DGE.EFFSEQ = &ALE_MEM.EFFSEQ
+  AND DGE.ACA_ENTITY_TYPE = 'DGE'
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Get-ALE-Correction-SubID
+
+  let $A.AuthoritativeTransmittalInd = '0'
+
+begin-SELECT
+ERCORR.ACA_RECEIPT_ID
+ERCORR.ACA_1094_SUBID
+ERCORR_ADR.ACA_DESCR
+ERCORR_ADR.FEDERAL_EIN
+ERCORR.ACA_AUTH_TRANSMIT
+
+  let $A.Corr_Receipt_ID = rtrim(&ERCORR.ACA_RECEIPT_ID, ' ')
+  do Format-Number (&ERCORR.ACA_1094_SUBID, $A.Corr_1094_SubID, '9999999')
+  let $A.CorrectedUniqueSubmissionId = $A.Corr_Receipt_ID || '|' || ltrim($A.Corr_1094_SubID, ' ')
+
+  let $A.Corr_BusinessNameLine1Txt = rtrim(&ERCORR_ADR.ACA_DESCR, ' ')
+
+  move &ERCORR_ADR.FEDERAL_EIN     to $A.CorrectedSubmissionPayerTIN 099999999
+
+  let $A.AuthoritativeTransmittalInd = &ERCORR.ACA_AUTH_TRANSMIT
+
+FROM  PS_ACA_ALE_MEM_SUB ERCORR, PS_ACA_ALE_MEM_ADR ERCORR_ADR
+WHERE ERCORR.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND ERCORR.ACA_ALE_MEMBER     = &ALE_MEM.ACA_ALE_MEMBER
+  AND ERCORR.ACA_CALENDAR_YEAR  = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND ERCORR.ACA_RECEIPT_ID =
+      (SELECT MAX(ERCORR1.ACA_RECEIPT_ID)
+       FROM PS_ACA_ALE_MEM_SUB ERCORR1
+       WHERE ERCORR1.ACA_DAT_EXTRACT_ID = ERCORR.ACA_DAT_EXTRACT_ID
+         AND ERCORR1.ACA_ALE_MEMBER     = ERCORR.ACA_ALE_MEMBER
+         AND ERCORR1.ACA_CALENDAR_YEAR  = ERCORR.ACA_CALENDAR_YEAR
+         AND ERCORR1.ACA_XMIT_STATUS    IN ('A', 'E')
+         AND ERCORR1.ACA_AUTH_TRANSMIT  = '1'
+         AND ERCORR1.ACA_RECEIPT_ID     <> ' ')
+  AND ERCORR.ACA_DAT_EXTRACT_ID  = ERCORR_ADR.ACA_DAT_EXTRACT_ID
+  AND ERCORR.ACA_ALE_MEMBER      = ERCORR_ADR.ACA_ALE_MEMBER
+  AND ERCORR.ACA_CALENDAR_YEAR   = ERCORR_ADR.ACA_CALENDAR_YEAR
+  AND ERCORR.EFFSEQ              = ERCORR_ADR.EFFSEQ
+  AND ERCORR_ADR.ACA_ENTITY_TYPE = 'ALE'
+end-SELECT
+
+  if rtrim($A.Corr_Receipt_ID, ' ') = ''
+    display ''
+    display 'Receipt ID with Accepted or Accepted with Errors transmittal status not found for the Authoritative Transmitter.'
+    display ''
+  end-if
+
+end-procedure
+
+
+begin-procedure Read-ALE-EE-Count
+
+  let #Rec_Remaining = #ACA_XML_RUNCTL.ACA_NUM_OF_REC
+  let $A.Form1095CAttachedCnt = '0'
+
+begin-SELECT
+COUNT(EECNT.EMPLID) &A.TotalForm1095CALEMemberCnt
+
+  if $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'C'
+     and &A.TotalForm1095CALEMemberCnt > 0
+    let $EE_Correction_Flg = 'Y'
+  end-if
+
+  move &A.TotalForm1095CALEMemberCnt  to #A.TotalForm1095CALEMemberCnt
+
+  do Format-Number (&A.TotalForm1095CALEMemberCnt, $A.TotalForm1095CALEMemberCnt, '9999999999')
+  let $A.TotalForm1095CALEMemberCnt = ltrim($A.TotalForm1095CALEMemberCnt, ' ')
+
+FROM  PS_ACA_EMPLOYEE EECNT
+WHERE EECNT.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND EECNT.ACA_ALE_MEMBER = &ALE_MEM.ACA_ALE_MEMBER
+  AND EECNT.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+[$EECNT_EmplID_SQL]
+[$EECNT_EffSeq_SQL]
+[$EECNT_Status_Select]
+[$EECNT_Reissue_Select]
+[$EECNT_Corr_Select]
+end-SELECT
+
+  if &A.TotalForm1095CALEMemberCnt > #ACA_XML_RUNCTL.ACA_NUM_OF_REC
+    move #ACA_XML_RUNCTL.ACA_NUM_OF_REC  to  #A.Form1095CAttachedCnt
+    do Format-Number (#A.Form1095CAttachedCnt, $A.Form1095CAttachedCnt, '9999999')
+    let $A.Form1095CAttachedCnt = ltrim($A.Form1095CAttachedCnt, ' ')
+    let #Rec_Remaining  = &A.TotalForm1095CALEMemberCnt
+                        - #ACA_XML_RUNCTL.ACA_NUM_OF_REC
+  else
+    move &A.TotalForm1095CALEMemberCnt  to  #A.Form1095CAttachedCnt
+    do Format-Number (&A.TotalForm1095CALEMemberCnt, $A.Form1095CAttachedCnt, '9999999999')
+    let $A.Form1095CAttachedCnt = ltrim($A.Form1095CAttachedCnt, ' ')
+    move 0  to #Rec_Remaining
+  end-if
+
+end-procedure
+
+
+begin-procedure Get-AggregatedGroupMemInd
+
+begin-SELECT
+'1'  &AggregatedGroupMemberInd
+
+  move &AggregatedGroupMemberInd  to $A.AggregatedGroupMemberInd
+
+FROM PS_ACA_ALE_MEM_GRP AGGRP
+WHERE AGGRP.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND AGGRP.ACA_ALE_MEMBER = &ALE_MEM.ACA_ALE_MEMBER
+  AND AGGRP.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND AGGRP.EFFSEQ = &ALE_MEM.EFFSEQ
+  AND AGGRP.ACA_ALE_MEM_GRP <> ' '
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Get-Cert-of-Elig
+
+begin-SELECT
+CELG.ACA_ALE_CERT_ELIG
+
+  let $A.Cert_Elig = substr(&CELG.ACA_ALE_CERT_ELIG, 1, 1)
+  evaluate $A.Cert_Elig
+    when = 'A'
+      move '1'  to $A.QualifyingOfferMethodInd
+      break
+    when = 'B'
+      move '1'  to $A.QlfyOfferMethodTrnstReliefInd
+      break
+    when = 'C'
+      move '1'  to $A.Section4980HReliefInd
+      break
+    when = 'D'
+      move '1'  to $A.NinetyEightPctOfferMethodInd
+      break
+  end-evaluate
+
+FROM  PS_ACA_ALE_CERTELG CELG
+WHERE CELG.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND CELG.ACA_ALE_MEMBER = &ALE_MEM.ACA_ALE_MEMBER
+  AND CELG.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND CELG.EFFSEQ = &ALE_MEM.EFFSEQ
+ORDER BY CELG.ACA_ALE_CERT_ELIG
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Read-ALE-Monthly-Count
+
+begin-SELECT
+ER_CNT.ACA_ALE_DATA_ID
+ER_CNT.COUNT12_ALL
+ER_CNT.COUNT12_01
+ER_CNT.COUNT12_02
+ER_CNT.COUNT12_03
+ER_CNT.COUNT12_04
+ER_CNT.COUNT12_05
+ER_CNT.COUNT12_06
+ER_CNT.COUNT12_07
+ER_CNT.COUNT12_08
+ER_CNT.COUNT12_09
+ER_CNT.COUNT12_10
+ER_CNT.COUNT12_11
+ER_CNT.COUNT12_12
+
+  evaluate &ER_CNT.ACA_ALE_DATA_ID
+    when = 'FTCT'
+      do Format-Number (&ER_CNT.COUNT12_ALL, $A.YrlyALEMemberFTECnt, '9999999999')
+      let $A.YrlyALEMemberFTECnt  = ltrim($A.YrlyALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_01, $A.JanALEMemberFTECnt, '9999999999')
+      let $A.JanALEMemberFTECnt  = ltrim($A.JanALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_02, $A.FebALEMemberFTECnt, '9999999999')
+      let $A.FebALEMemberFTECnt  = ltrim($A.FebALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_03, $A.MarALEMemberFTECnt, '9999999999')
+      let $A.MarALEMemberFTECnt  = ltrim($A.MarALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_04, $A.AprALEMemberFTECnt, '9999999999')
+      let $A.AprALEMemberFTECnt  = ltrim($A.AprALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_05, $A.MayALEMemberFTECnt, '9999999999')
+      let $A.MayALEMemberFTECnt  = ltrim($A.MayALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_06, $A.JunALEMemberFTECnt, '9999999999')
+      let $A.JunALEMemberFTECnt  = ltrim($A.JunALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_07, $A.JulALEMemberFTECnt, '9999999999')
+      let $A.JulALEMemberFTECnt  = ltrim($A.JulALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_08, $A.AugALEMemberFTECnt, '9999999999')
+      let $A.AugALEMemberFTECnt  = ltrim($A.AugALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_09, $A.SepALEMemberFTECnt, '9999999999')
+      let $A.SepALEMemberFTECnt  = ltrim($A.SepALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_10, $A.OctALEMemberFTECnt, '9999999999')
+      let $A.OctALEMemberFTECnt  = ltrim($A.OctALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_11, $A.NovALEMemberFTECnt, '9999999999')
+      let $A.NovALEMemberFTECnt  = ltrim($A.NovALEMemberFTECnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_12, $A.DecALEMemberFTECnt, '9999999999')
+      let $A.DecALEMemberFTECnt  = ltrim($A.DecALEMemberFTECnt, ' ')
+
+      break
+    when = 'EMCT'
+      move &ER_CNT.COUNT12_ALL to $A.YrlyTotalEmployeeCnt
+      do Format-Number (&ER_CNT.COUNT12_ALL, $A.YrlyTotalEmployeeCnt, '9999999999')
+      let $A.YrlyTotalEmployeeCnt  = ltrim($A.YrlyTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_01, $A.JanTotalEmployeeCnt, '9999999999')
+      let $A.JanTotalEmployeeCnt  = ltrim($A.JanTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_02, $A.FebTotalEmployeeCnt, '9999999999')
+      let $A.FebTotalEmployeeCnt  = ltrim($A.FebTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_03, $A.MarTotalEmployeeCnt, '9999999999')
+      let $A.MarTotalEmployeeCnt  = ltrim($A.MarTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_04, $A.AprTotalEmployeeCnt, '9999999999')
+      let $A.AprTotalEmployeeCnt  = ltrim($A.AprTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_05, $A.MayTotalEmployeeCnt, '9999999999')
+      let $A.MayTotalEmployeeCnt  = ltrim($A.MayTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_06, $A.JunTotalEmployeeCnt, '9999999999')
+      let $A.JunTotalEmployeeCnt   = ltrim($A.JunTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_07, $A.JulTotalEmployeeCnt, '9999999999')
+      let $A.JulTotalEmployeeCnt  = ltrim($A.JulTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_08, $A.AugTotalEmployeeCnt, '9999999999')
+      let $A.AugTotalEmployeeCnt  = ltrim($A.AugTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_09, $A.SepTotalEmployeeCnt, '9999999999')
+      let $A.SepTotalEmployeeCnt  = ltrim($A.SepTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_10, $A.OctTotalEmployeeCnt, '9999999999')
+      let $A.OctTotalEmployeeCnt  = ltrim($A.OctTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_11, $A.NovTotalEmployeeCnt, '9999999999')
+      let $A.NovTotalEmployeeCnt  = ltrim($A.NovTotalEmployeeCnt, ' ')
+
+      do Format-Number (&ER_CNT.COUNT12_12, $A.DecTotalEmployeeCnt, '9999999999')
+      let $A.DecTotalEmployeeCnt  = ltrim($A.DecTotalEmployeeCnt, ' ')
+
+      break
+  end-evaluate
+
+FROM PS_ACA_ALE_MO_CNT ER_CNT
+WHERE ER_CNT.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND ER_CNT.ACA_ALE_MEMBER = &ALE_MEM.ACA_ALE_MEMBER
+  AND ER_CNT.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND ER_CNT.EFFSEQ = &ALE_MEM.EFFSEQ
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Read-ALE-Monthly-Indicator
+
+begin-SELECT
+ER_IND.ACA_ALE_DATA_ID
+ER_IND.CHAR1_ALL
+ER_IND.CHAR1_01
+ER_IND.CHAR1_02
+ER_IND.CHAR1_03
+ER_IND.CHAR1_04
+ER_IND.CHAR1_05
+ER_IND.CHAR1_06
+ER_IND.CHAR1_07
+ER_IND.CHAR1_08
+ER_IND.CHAR1_09
+ER_IND.CHAR1_10
+ER_IND.CHAR1_11
+ER_IND.CHAR1_12
+
+  evaluate &ER_IND.ACA_ALE_DATA_ID
+    when = 'MECF'
+      if rtrim(&ER_IND.CHAR1_ALL, ' ') = 'Y'
+        move '1'  to $A.YrlyMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_ALL, ' ') = 'N'
+          move '2'  to $A.YrlyMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_01, ' ') = 'Y'
+        move '1'  to $A.JanMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_01, ' ') = 'N'
+          move '2'  to $A.JanMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_02, ' ') = 'Y'
+        move '1'  to $A.FebMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_02, ' ') = 'N'
+          move '2'  to $A.FebMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_03, ' ') = 'Y'
+        move '1'  to $A.MarMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_03, ' ') = 'N'
+          move '2'  to $A.MarMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_04, ' ') = 'Y'
+        move '1'  to $A.AprMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_04, ' ') = 'N'
+          move '2'  to $A.AprMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_05, ' ') = 'Y'
+        move '1'  to $A.MayMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_05, ' ') = 'N'
+          move '2'  to $A.MayMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_06, ' ') = 'Y'
+        move '1'  to $A.JunMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_06, ' ') = 'N'
+          move '2'  to $A.JunMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_07, ' ') = 'Y'
+        move '1'  to $A.JulMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_07, ' ') = 'N'
+          move '2'  to $A.JulMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_08, ' ') = 'Y'
+        move '1'  to $A.AugMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_08, ' ') = 'N'
+          move '2'  to $A.AugMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_09, ' ') = 'Y'
+        move '1'  to $A.SepMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_09, ' ') = 'N'
+          move '2'  to $A.SepMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_10, ' ') = 'Y'
+        move '1'  to $A.OctMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_10, ' ') = 'N'
+          move '2'  to $A.OctMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_11, ' ') = 'Y'
+        move '1'  to $A.NovMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_11, ' ') = 'N'
+          move '2'  to $A.NovMinEssentialCvrOffrInd
+        end-if
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_12, ' ') = 'Y'
+        move '1'  to $A.DecMinEssentialCvrOffrInd
+      else
+        if rtrim(&ER_IND.CHAR1_12, ' ') = 'N'
+          move '2'  to $A.DecMinEssentialCvrOffrInd
+        end-if
+      end-if
+      break
+    when = 'AGID'
+      if rtrim(&ER_IND.CHAR1_ALL, ' ') = 'Y'
+        move '1'  to $A.YrlyAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_01, ' ') = 'Y'
+        move '1'  to $A.JanAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_02, ' ') = 'Y'
+        move '1'  to $A.FebAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_03, ' ') = 'Y'
+        move '1'  to $A.MarAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_04, ' ') = 'Y'
+        move '1'  to $A.AprAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_05, ' ') = 'Y'
+        move '1'  to $A.MayAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_06 , ' ') = 'Y'
+        move '1'  to $A.JunAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_07, ' ') = 'Y'
+        move '1'  to $A.JulAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_08, ' ') = 'Y'
+        move '1'  to $A.AugAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_09, ' ') = 'Y'
+        move '1'  to $A.SepAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_10, ' ') = 'Y'
+        move '1'  to $A.OctAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_11, ' ') = 'Y'
+        move '1'  to $A.NovAggregatedGroupInd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_12, ' ') = 'Y'
+        move '1'  to $A.DecAggregatedGroupInd
+      end-if
+      break
+    when = 'TRID'
+      if rtrim(&ER_IND.CHAR1_ALL, ' ') <> ''
+        move &ER_IND.CHAR1_ALL  to $A.YrlyALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_01, ' ') <> ''
+        move &ER_IND.CHAR1_01   to $A.JanALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_02, ' ') <> ''
+        move &ER_IND.CHAR1_02   to $A.FebALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_03, ' ') <> ''
+        move &ER_IND.CHAR1_03   to $A.MarALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_04, ' ') <> ''
+        move &ER_IND.CHAR1_04   to $A.AprALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_05, ' ') <> ''
+        move &ER_IND.CHAR1_05   to $A.MayALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_06, ' ') <> ''
+        move &ER_IND.CHAR1_06   to $A.JunALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_07, ' ') <> ''
+        move &ER_IND.CHAR1_07   to $A.JulALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_08, ' ') <> ''
+        move &ER_IND.CHAR1_08   to $A.AugALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_09, ' ') <> ''
+        move &ER_IND.CHAR1_09   to $A.SepALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_10, ' ') <> ''
+        move &ER_IND.CHAR1_10   to $A.OctALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_11, ' ') <> ''
+        move &ER_IND.CHAR1_11   to $A.NovALESect4980HTrnstReliefCd
+      end-if
+
+      if rtrim(&ER_IND.CHAR1_12, ' ') <> ''
+        move &ER_IND.CHAR1_12   to $A.DecALESect4980HTrnstReliefCd
+      end-if
+      break
+  end-evaluate
+
+FROM PS_ACA_ALE_MO_CH1 ER_IND
+WHERE ER_IND.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND ER_IND.ACA_ALE_MEMBER = &ALE_MEM.ACA_ALE_MEMBER
+  AND ER_IND.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND ER_IND.EFFSEQ = &ALE_MEM.EFFSEQ
+end-SELECT
+
+! Section 4980H Transition Relief Indicator
+  evaluate $ACA_Calendar_Year
+    when = '2017'
+    when = '2018'
+    when = '2019'
+    when = '2020'
+      move ''  to $A.Section4980HReliefInd
+      move ''  to $A.YrlyALESect4980HTrnstReliefCd
+      move ''  to $A.JanALESect4980HTrnstReliefCd
+      move ''  to $A.FebALESect4980HTrnstReliefCd
+      move ''  to $A.MarALESect4980HTrnstReliefCd
+      move ''  to $A.AprALESect4980HTrnstReliefCd
+      move ''  to $A.MayALESect4980HTrnstReliefCd
+      move ''  to $A.JunALESect4980HTrnstReliefCd
+      move ''  to $A.JulALESect4980HTrnstReliefCd
+      move ''  to $A.AugALESect4980HTrnstReliefCd
+      move ''  to $A.SepALESect4980HTrnstReliefCd
+      move ''  to $A.OctALESect4980HTrnstReliefCd
+      move ''  to $A.NovALESect4980HTrnstReliefCd
+      move ''  to $A.DecALESect4980HTrnstReliefCd
+    end-evaluate
+
+end-procedure
+
+
+begin-procedure Get-OthALEMemGrp
+
+  let #i = 0
+
+begin-SELECT
+MGRP.ACA_DAT_EXTRACT_ID
+MGRP.ACA_ALE_MEMBER
+MGRP.ACA_CALENDAR_YEAR
+MGRP.EFFSEQ
+MGRP.ACA_ALE_MEM_GRP
+
+  if #i < {OthALEMemGrpMax}
+    do Read-OthALEMemGrp-Data
+  end-if
+
+FROM PS_ACA_ALE_MEM_GRP MGRP
+WHERE MGRP.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND MGRP.ACA_ALE_MEMBER = &ALE_MEM.ACA_ALE_MEMBER
+  AND MGRP.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND MGRP.EFFSEQ = &ALE_MEM.EFFSEQ
+ORDER BY MGRP.ACA_ALE_MEM_GRP
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Read-OthALEMemGrp-Data
+
+  move 'N'  to $OthALE_Found
+
+  move ' '  to $OthALE.Federal_EIN
+  move ' '  to $OthALE.BusinessNameLine2Txt
+  move ' '  to $OthALE.BusinessNameControlTxt
+  move 'BUSINESS_TIN'  to $OthALE.TINRequestTypeCd        ! BUSINESS_TIN
+
+begin-SELECT
+MGRPADR.ACA_ALE_MEMBER
+MGRPADR.ACA_DESCR
+MGRPADR.FEDERAL_EIN
+
+  let $NC_ALE_Member = &MGRPADR.ACA_ALE_MEMBER
+  let $NC_Entity_Type = 'ALE'
+  do Get-Name-Control
+  let $OthALE.BusinessNameControlTxt = rtrim($Name_Control, ' ')
+
+  move &MGRPADR.FEDERAL_EIN  to $OthALE.Federal_EIN 099999999
+
+  put                   &MGRPADR.ACA_ALE_MEMBER        -
+                        &MGRPADR.ACA_DESCR             -
+                        $OthALE.BusinessNameLine2Txt   -
+                        $OthALE.BusinessNameControlTxt -
+                        $OthALE.TINRequestTypeCd       -
+                        $OthALE.Federal_EIN            -
+  into OthALEMemGrp(#i)
+                        ALE_Member                     -
+                        BusinessNameLine1Txt           -
+                        BusinessNameLine2Txt           -
+                        BusinessNameControlTxt         -
+                        TINRequestTypeCd               -
+                        EIN
+
+  move 'Y'  to $OthALE_Found
+
+  add 1  to #i
+
+FROM PS_ACA_ALE_MEM_ADR MGRPADR
+WHERE MGRPADR.ACA_DAT_EXTRACT_ID = &MGRP.ACA_DAT_EXTRACT_ID
+  AND MGRPADR.ACA_ALE_MEMBER = &MGRP.ACA_ALE_MEM_GRP
+  AND MGRPADR.ACA_CALENDAR_YEAR = &MGRP.ACA_CALENDAR_YEAR
+  AND MGRPADR.ACA_ENTITY_TYPE = 'ALE'
+  AND MGRPADR.EFFSEQ =
+      (SELECT MAX(MGRPADR1.EFFSEQ)
+       FROM PS_ACA_ALE_MEM_ADR MGRPADR1
+       WHERE MGRPADR1.ACA_DAT_EXTRACT_ID = MGRPADR.ACA_DAT_EXTRACT_ID
+         AND MGRPADR1.ACA_ALE_MEMBER = MGRPADR.ACA_ALE_MEMBER
+         AND MGRPADR1.ACA_CALENDAR_YEAR = MGRPADR.ACA_CALENDAR_YEAR)
+end-SELECT
+
+  if $OthALE_Found = 'N'
+    do Read-OthALETbl-Data
+  end-if
+
+end-procedure
+
+
+begin-procedure Read-OthALETbl-Data
+
+begin-SELECT
+ADRTBL.ACA_ALE_MEMBER
+ADRTBL.ACA_DESCR
+ADRTBL.FEDERAL_EIN
+
+
+  move &ADRTBL.FEDERAL_EIN  to $OthALE.Federal_EIN 099999999
+
+  put                   &ADRTBL.ACA_ALE_MEMBER         -
+                        &ADRTBL.ACA_DESCR              -
+                        $OthALE.BusinessNameLine2Txt   -
+                        $OthALE.BusinessNameControlTxt -
+                        $OthALE.TINRequestTypeCd       -
+                        $OthALE.Federal_EIN            -
+  into OthALEMemGrp(#i)
+                        ALE_Member                     -
+                        BusinessNameLine1Txt           -
+                        BusinessNameLine2Txt           -
+                        BusinessNameControlTxt         -
+                        TINRequestTypeCd               -
+                        EIN
+
+  move 'Y'  to $OthALE_Found
+
+  add 1  to #i
+
+FROM PS_ACA_ALE_TBL_ADR ADRTBL
+WHERE ADRTBL.ACA_ALE_MEMBER = &MGRP.ACA_ALE_MEM_GRP
+  AND ADRTBL.ACA_ENTITY_TYPE = 'ALE'
+  AND ADRTBL.EFFDT =
+      (SELECT MAX(ADRTBL1.EFFDT)
+       FROM PS_ACA_ALE_TBL_ADR ADRTBL1
+       WHERE ADRTBL1.ACA_ALE_MEMBER = ADRTBL.ACA_ALE_MEMBER
+         AND ADRTBL1.ACA_ENTITY_TYPE = ADRTBL.ACA_ENTITY_TYPE
+         AND ADRTBL1.EFFDT <= $AsOfDate)
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Read-Employee-Data
+
+  move ''    to $E.PersonNameControlTxt
+  move 'INDIVIDUAL_TIN'  to $E.TINRequestTypeCd  ! INDIVIDUAL_TIN
+  move ''    to $A.recordType
+  move '0'   to $E.lineNum
+
+begin-SELECT
+ACA_EE.ACA_ALE_MEMBER
+ACA_EE.ACA_CALENDAR_YEAR
+ACA_EE.EMPLID           () on-break level=1 print=never before=Before-EmplID
+ACA_EE.EFFSEQ           () on-break level=2 print=never after=After-Seq
+ACA_EE.ACA_1094_SUBID
+ACA_EE.ACA_1095_RECID
+ACA_EE.ACA_1095_RECEIPT
+ACA_EE.ACA_PRO_FLG
+ACA_EE.ACA_REISSUE
+ACA_EE.ACA_VOID
+ACA_EE.ACA_TRANSMIT_GROUP
+ACA_EE.NAME
+ACA_EE.FIRST_NAME
+ACA_EE.LAST_NAME
+ACA_EE.MIDDLE_NAME
+ACA_EE.NAME_SUFFIX
+ACA_EE.SSN
+ACA_EE.ADDRESS1
+ACA_EE.ADDRESS2
+ACA_EE.CITY
+ACA_EE.STATE
+ACA_EE.COUNTRY
+ACA_EE.COUNTRY_2CHAR
+ACA_EE.POSTAL
+ACA_EE.CONTACT_PHONE_ACA
+ACA_EE.ACA_PLAN_START_MON
+ACA_EE.AGE
+
+  move 'Y' to $EmployeeFound
+
+  move &ACA_EE.ACA_ALE_MEMBER  to $E.ACA_ALE_MEMBER
+  move &ACA_EE.EFFSEQ          to #E.Sequence_Number
+
+  if not ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R'
+       and rtrim(&ACA_EE.ACA_REISSUE, ' ') = 'Y'
+       and rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y')
+    add 1  to #EE_Count
+  end-if
+
+  evaluate $ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+! Original
+    when = 'O'
+      add 1     to #EE_Count_print
+      break
+! Reissue
+    when = 'R'
+      if rtrim(&ACA_EE.ACA_REISSUE, ' ') = 'Y'
+         and rtrim(&ACA_EE.ACA_PRO_FLG, ' ') = 'F'
+
+        move 'Y'                 to $E.Reissue
+!       do Validate-Reissue
+      end-if
+
+      if $E.Reissue = 'Y'
+        if rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y'
+          move 'VOID'  to $E.Reissue_Prt
+        else
+          move 'CORRECTED'  to $E.Reissue_Prt
+        end-if
+
+        move 'R'          to $E.ACA_Form_Status
+
+        if $ACA_XML_RUNCTL.ACA_RERUN_FLG = 'N'
+          add 1  to #EE_Count_Print
+        end-if
+      end-if
+
+      if rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y'
+         and rtrim(&ACA_EE.ACA_PRO_FLG, ' ') = 'F'
+
+        move 'Y'                 to $E.Void
+      end-if
+      break
+! Replace Transmission or Repalce Submission
+    when = 'P'
+    when = 'Q'
+      let #Submission_Count = &REPSEQ.ACA_1094_SUBID
+      do Format-Number (#Submission_Count, $A.Submission_Count, '9999999')
+      let $A.Submission_Count = ltrim($A.Submission_Count, ' ')
+
+      if rtrim(&ACA_EE.ACA_REISSUE, ' ') = 'Y'
+         and rtrim(&ACA_EE.ACA_PRO_FLG, ' ') = 'F'
+
+        move 'Y'                 to $E.Reissue
+      end-if
+
+      if $E.Reissue = 'Y'
+        if rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y'
+        else
+          move 'CORRECTED'  to $E.Reissue_Prt
+        end-if
+        move 'R'          to $E.ACA_Form_Status
+
+        if $ACA_XML_RUNCTL.ACA_RERUN_FLG = 'N'
+          add 1  to #EE_Count_Print
+        end-if
+      end-if
+      break
+! Correction
+    when = 'C'
+      if rtrim(&ACA_EE.ACA_REISSUE, ' ') = 'C'
+        move 'Y'                 to $E.Correction
+      end-if
+
+      if rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y'
+        move 'Y'                 to $E.Void
+      end-if
+
+      if rtrim(&ACA_EE.ACA_REISSUE, ' ') = 'C'
+        move 'C'  to $E.ACA_Form_Status
+
+! Correction and Void indicators - Bulk Print and Self-Service
+        move 'Yes'  to $E.Corrected_Ind
+        if rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y'
+          move 'Yes'  to $E.Void_Ind
+        end-if
+
+! Correction indicator - Transmittal
+        move '1'  to $E.CorrectedInd
+        do Get-EE-Correction-RecordID
+
+        add 1  to #EE_Count_Print
+      end-if
+      break
+  end-evaluate
+
+  do Clear-DepBen-Array
+
+  if rtrim($ACA_XML_RUNCTL.ACA_Plan_Start_Non, ' ') = 'Y'
+    move ' '  to $E.PlanStartMonth
+  else
+    do format-number(&ACA_EE.ACA_PLAN_START_MON, $E.PlanStartMonth, '09')
+  end-if
+
+  do format-number(&ACA_EE.AGE, $E.AgeJan1, '999')
+
+  do Read-EE-Monthly-Codes
+  do Read-EE-Monthly-Amount
+  do Read-EE-Monthly-ZipCode
+
+! Part III Covered Individual data skipped if IRS Correction/Void.
+  if not ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'C'
+       and rtrim(&ACA_EE.ACA_REISSUE, ' ') = 'C'
+       and rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y')
+    do Read-DepBen-Data
+  else
+    move ''   to $D.CoveredIndividualInd
+  end-if
+
+  if rtrim($Last_ALE, ' ') = ''
+    if #EE_Count_Print = 1
+
+      let $UserFlag = 'Y'
+      do Open-Print-Files
+      let $Print_Files_Opened = 'Y'
+    end-if
+
+    do Open-XMIT-File
+
+    if $ACA_XML_RUNCTL.ACA_FINAL_PRINT = 'Y'
+      do Clear-Employee-History
+    end-if
+  else
+    if $Print_Files_Opened = 'N'
+       and #EE_Count_Print = 1
+      let $UserFlag = 'Y'
+      do Open-Print-Files
+      let $Print_Files_Opened = 'Y'
+    end-if
+  end-if
+
+  if #EE_Count = 1
+       and not ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R'
+       and rtrim(&ACA_EE.ACA_REISSUE, ' ') = 'Y'
+       and rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y')
+
+    do XML-Open-Tag('Form1094CUpstreamDetail recordType="String" lineNum="0"', $openTag3, $nsPrefix_1)
+    do Write-XML-Line(#Fnum3, $openTag3)
+    do Write-1094C-Xmit
+
+    do XML-Open-Tag('Form1095CUpstreamDetail recordType="String" lineNum="0"', $openTag3, $nsPrefix_1)
+    do Write-XML-Line(#Fnum3, $openTag3)
+  else
+    if rtrim($Last_Emplid, ' ') <> &ACA_EE.EMPLID
+         and #EE_Count <= #ACA_XML_RUNCTL.ACA_NUM_OF_REC
+         and not ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R'
+         and rtrim(&ACA_EE.ACA_REISSUE, ' ') = 'Y'
+         and rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y')
+
+      do XML-Close-Tag('Form1095CUpstreamDetail', $closeTag3, $nsPrefix_1)
+      do Write-XML-Line(#Fnum3, $closeTag3)
+
+      do XML-Open-Tag('Form1095CUpstreamDetail recordType="String" lineNum="0"', $openTag3, $nsPrefix_1)
+      do Write-XML-Line(#Fnum3, $openTag3)
+    end-if
+  end-if
+
+  if not ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R'
+       and rtrim(&ACA_EE.ACA_REISSUE, ' ') = 'Y'
+       and rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y')
+    if #EE_Count > #ACA_XML_RUNCTL.ACA_NUM_OF_REC
+         and not ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R'
+         and rtrim(&ACA_EE.ACA_REISSUE, ' ') = 'Y'
+         and rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y')
+
+      let #ALE_Sub_EE_Count = #EE_Count - 1
+      do Format-Number (#ACA_XML_RUNCTL.ACA_NUM_OF_REC, $A.Form1095CAttachedCnt, '9999999')
+      let $A.Form1095CAttachedCnt = ltrim($A.Form1095CAttachedCnt, ' ')
+
+      if #Rec_Remaining > #ACA_XML_RUNCTL.ACA_NUM_OF_REC
+        let #Rec_Remaining  = #Rec_Remaining
+                            - #ACA_XML_RUNCTL.ACA_NUM_OF_REC
+      else
+         move #Rec_Remaining  to #A.Form1095CAttachedCnt
+         do Format-Number (#A.Form1095CAttachedCnt, $A.Form1095CAttachedCnt, '9999999')
+         let $A.Form1095CAttachedCnt = ltrim($A.Form1095CAttachedCnt, ' ')
+      end-if
+
+      if $ACA_XML_RUNCTL.ACA_FINAL_PRINT = 'Y'
+        do Update-ACA-ALE
+        do Update-ACA-ALE-Submission
+        do Insert-ACA-Xmit-Files-Rec
+      end-if
+
+      do Close-XMIT-File
+      do Open-XMIT-File
+
+      if $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'P'
+         or $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'Q'
+  ! Replace Transmission or Replace Submission
+        let #Submission_Count = &REPSEQ.ACA_1094_SUBID
+      else
+        add 1  to #Submission_Count
+      end-if
+
+      do Format-Number (#Submission_Count, $A.Submission_Count, '9999999')
+      let $A.Submission_Count = ltrim($A.Submission_Count, ' ')
+
+      do XML-Open-Tag('Form1094CUpstreamDetail recordType="String" lineNum="0"', $openTag3, $nsPrefix_1)
+      do Write-XML-Line(#Fnum3, $openTag3)
+      let $A.AuthoritativeTransmittalInd = '0'
+      do Write-1094C-Xmit-Part1
+      do Write-1094C-Xmit-Part2A
+      do XML-Open-Tag('Form1095CUpstreamDetail recordType="String" lineNum="0"', $openTag3, $nsPrefix_1)
+      do Write-XML-Line(#Fnum3, $openTag3)
+      move 1  to #EE_Count
+    else
+      let #ALE_Sub_EE_Count = #EE_Count
+    end-if
+  end-if
+
+  if $ACA_XML_RUNCTL.ACA_FINAL_PRINT = 'Y'
+       and not ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R'
+       and rtrim(&ACA_EE.ACA_REISSUE, ' ') = 'Y'
+       and rtrim(&ACA_EE.ACA_VOID, ' ') = 'Y')
+    do Update-ACA-EE
+    do Update-ACE-EE-Sub-Hist
+  end-if
+
+  let $Last_ALE     = &ACA_EE.ACA_ALE_MEMBER
+  let $Last_EmplID  = &ACA_EE.EMPLID
+
+FROM  PS_ACA_EMPLOYEE ACA_EE
+WHERE ACA_EE.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND ACA_EE.ACA_ALE_MEMBER = &ALE_MEM.ACA_ALE_MEMBER
+  AND ACA_EE.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+[$ACA_EE_EmplID_SQL]
+[$ACA_EE_EffSeq_SQL]
+[$ACA_EE_Status_Select]
+[$ACA_EE_Reissue_Select]
+[$ACA_EE_Corr_Select]
+[$ACA_EE_Void_Select]
+[$SortEE]
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Validate-Reissue
+
+begin-SELECT
+COUNT(EE_XMT_HIST.EMPLID)  &EE_XMT_HIST.Receipt_Count
+
+FROM PS_ACA_EE_XMT_HIST EE_XMT_HIST
+WHERE EE_XMT_HIST.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND EE_XMT_HIST.ACA_ALE_MEMBER = &ACA_EE.ACA_ALE_MEMBER
+  AND EE_XMT_HIST.ACA_CALENDAR_YEAR = &ACA_EE.ACA_CALENDAR_YEAR
+  AND EE_XMT_HIST.EMPLID = &ACA_EE.EMPLID
+  AND EE_XMT_HIST.EFFSEQ =
+      (SELECT MAX(EE_XMT_HIST1.EFFSEQ)
+       FROM PS_ACA_EE_XMT_HIST EE_XMT_HIST1
+       WHERE EE_XMT_HIST1.ACA_DAT_EXTRACT_ID = EE_XMT_HIST.ACA_DAT_EXTRACT_ID
+         AND EE_XMT_HIST1.ACA_ALE_MEMBER = EE_XMT_HIST.ACA_ALE_MEMBER
+         AND EE_XMT_HIST1.ACA_CALENDAR_YEAR = EE_XMT_HIST.ACA_CALENDAR_YEAR
+         AND EE_XMT_HIST1.EMPLID = EE_XMT_HIST.EMPLID)
+  AND (EE_XMT_HIST.ACA_RECEIPT_ID <> ' '
+       AND EE_XMT_HIST.ACA_RECEIPT_ID <> '0')
+end-SELECT
+
+  if &EE_XMT_HIST.Receipt_Count > 0
+    let $E.Reissue = 'N'
+  end-if
+
+end-procedure
+
+
+begin-procedure Get-EE-Correction-RecordID
+
+begin-SELECT
+EEHIST.ACA_RECEIPT_ID
+EEHIST.ACA_1094_SUBID
+EEHIST.ACA_1095_RECID
+EE_CORR.FIRST_NAME
+EE_CORR.LAST_NAME
+EE_CORR.MIDDLE_NAME
+EE_CORR.NAME_SUFFIX
+EE_CORR.SSN
+
+  let $E.Corr_Receipt_ID = rtrim(&EEHIST.ACA_RECEIPT_ID, ' ')
+  do Format-Number (&EEHIST.ACA_1094_SUBID, $E.Corr_1094C_SubID, '9999999')
+  do Format-Number (&EEHIST.ACA_1095_RECID, $E.Corr_1095_RecID, '999999999')
+  let $E.CorrectedUniqueRecordId = $E.Corr_Receipt_ID || '|' || ltrim($E.Corr_1094C_SubID, ' ') || '|' || ltrim($E.Corr_1095_RecID, ' ')
+
+  evaluate $ACA_Calendar_Year
+    when = '2015'
+      let $E.Corr_First_Name = rtrim(&EE_CORR.FIRST_NAME, ' ')
+      let $E.Corr_Last_Name = rtrim(&EE_CORR.LAST_NAME, ' ')
+      let $E.Corr_MiddleNm = rtrim(&EE_CORR.MIDDLE_NAME, ' ')
+    when-other
+      let $E.Corr_First_Name = rtrim(substr(&EE_CORR.FIRST_NAME, 1, 20), ' ')
+      let $E.Corr_Last_Name = rtrim(substr(&EE_CORR.LAST_NAME, 1, 20), ' ')
+      let $E.Corr_MiddleNm = rtrim(substr(&EE_CORR.MIDDLE_NAME, 1, 20), ' ')
+      break
+  end-evaluate
+
+  let $E.Corr_Name_Suffix = rtrim(&EE_CORR.NAME_SUFFIX, ' ')
+  let $E.CorrectedRecordPayeeTIN = rtrim(&EE_CORR.SSN, ' ')
+
+FROM PS_ACA_EE_XMT_HIST EEHIST, PS_ACA_ALE_MEM_SUB ERHIST, PS_ACA_EMPLOYEE EE_CORR
+WHERE EEHIST.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND EEHIST.ACA_ALE_MEMBER     = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND EEHIST.ACA_CALENDAR_YEAR  = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND EEHIST.ACA_DAT_EXTRACT_ID = ERHIST.ACA_DAT_EXTRACT_ID
+  AND EEHIST.ACA_ALE_MEMBER     = ERHIST.ACA_ALE_MEMBER
+  AND EEHIST.ACA_CALENDAR_YEAR  = ERHIST.ACA_CALENDAR_YEAR
+  AND EEHIST.ACA_PROCESS_TYPE   = ERHIST.ACA_PROCESS_TYPE
+  AND EEHIST.ACA_ALE_SEQNO      = ERHIST.EFFSEQ
+  AND EEHIST.ACA_1094_SUBID     = ERHIST.ACA_1094_SUBID
+  AND EEHIST.ACA_RECEIPT_ID     = ERHIST.ACA_RECEIPT_ID
+  AND ERHIST.ACA_XMIT_STATUS   IN ('A', 'E')
+  AND ERHIST.EFFSEQ =
+      (SELECT MAX(ERHIST1.EFFSEQ)
+         FROM PS_ACA_ALE_MEM_SUB ERHIST1
+       WHERE ERHIST1.ACA_DAT_EXTRACT_ID = ERHIST.ACA_DAT_EXTRACT_ID
+          AND ERHIST1.ACA_ALE_MEMBER     = ERHIST.ACA_ALE_MEMBER
+          AND ERHIST1.ACA_CALENDAR_YEAR  = ERHIST.ACA_CALENDAR_YEAR
+          AND ERHIST1.EFFSEQ = EEHIST.ACA_ALE_SEQNO
+          AND ERHIST1.ACA_XMIT_STATUS = ERHIST.ACA_XMIT_STATUS)
+  AND EEHIST.EMPLID             = &ACA_EE.EMPLID
+  AND EEHIST.ACA_RECEIPT_ID =
+      (SELECT MAX(EEHIST1.ACA_RECEIPT_ID)
+         FROM PS_ACA_EE_XMT_HIST EEHIST1
+        WHERE EEHIST1.ACA_DAT_EXTRACT_ID = EEHIST.ACA_DAT_EXTRACT_ID
+          AND EEHIST1.ACA_ALE_MEMBER     = EEHIST.ACA_ALE_MEMBER
+          AND EEHIST1.ACA_CALENDAR_YEAR  = EEHIST.ACA_CALENDAR_YEAR
+          AND EEHIST1.EMPLID             = EEHIST.EMPLID
+          AND EEHIST1.ACA_ALE_SEQNO      = EEHIST.ACA_ALE_SEQNO)
+  AND EEHIST.ACA_DAT_EXTRACT_ID = EE_CORR.ACA_DAT_EXTRACT_ID
+  AND EEHIST.ACA_ALE_MEMBER = EE_CORR.ACA_ALE_MEMBER
+  AND EEHIST.ACA_CALENDAR_YEAR = EE_CORR.ACA_CALENDAR_YEAR
+  AND EEHIST.EMPLID = EE_CORR.EMPLID
+  AND EEHIST.EFFSEQ = EE_CORR.EFFSEQ
+end-SELECT
+
+  if rtrim($E.Corr_Receipt_ID, ' ') = ''
+    let $E.Blank_Receipt_Msg = 'Employee ' || &ACA_EE.EMPLID || ': Receipt ID with Accepted with Errors transmittal status not found.'
+    display ''
+    display $E.Blank_Receipt_Msg
+    display ''
+  else
+    let $E.Blank_Receipt_ID = ''
+  end-if
+
+end-procedure
+
+
+begin-procedure Read-EE-Monthly-Codes
+
+begin-SELECT
+EE_CD.ACA_EMP_DATA_ID
+EE_CD.CHAR4_ALL
+EE_CD.CHAR4_01
+EE_CD.CHAR4_02
+EE_CD.CHAR4_03
+EE_CD.CHAR4_04
+EE_CD.CHAR4_05
+EE_CD.CHAR4_06
+EE_CD.CHAR4_07
+EE_CD.CHAR4_08
+EE_CD.CHAR4_09
+EE_CD.CHAR4_10
+EE_CD.CHAR4_11
+EE_CD.CHAR4_12
+
+  Evaluate &EE_CD.ACA_EMP_DATA_ID
+    when = 'CDS1'
+      move &EE_CD.CHAR4_ALL  to $E.AnnualOfferCoverageCd
+      move &EE_CD.CHAR4_01   to $E.JanOfferCd
+      move &EE_CD.CHAR4_02   to $E.FebOfferCd
+      move &EE_CD.CHAR4_03   to $E.MarOfferCd
+      move &EE_CD.CHAR4_04   to $E.AprOfferCd
+      move &EE_CD.CHAR4_05   to $E.MayOfferCd
+      move &EE_CD.CHAR4_06   to $E.JunOfferCd
+      move &EE_CD.CHAR4_07   to $E.JulOfferCd
+      move &EE_CD.CHAR4_08   to $E.AugOfferCd
+      move &EE_CD.CHAR4_09   to $E.SepOfferCd
+      move &EE_CD.CHAR4_10   to $E.OctOfferCd
+      move &EE_CD.CHAR4_11   to $E.NovOfferCd
+      move &EE_CD.CHAR4_12   to $E.DecOfferCd
+      break
+    when = 'CDS2'
+      move &EE_CD.CHAR4_ALL  to $E.AnnualSafeHarborCd
+      move &EE_CD.CHAR4_01   to $E.JanSafeHarborCd
+      move &EE_CD.CHAR4_02   to $E.FebSafeHarborCd
+      move &EE_CD.CHAR4_03   to $E.MarSafeHarborCd
+      move &EE_CD.CHAR4_04   to $E.AprSafeHarborCd
+      move &EE_CD.CHAR4_05   to $E.MaySafeHarborCd
+      move &EE_CD.CHAR4_06   to $E.JunSafeHarborCd
+      move &EE_CD.CHAR4_07   to $E.JulSafeHarborCd
+      move &EE_CD.CHAR4_08   to $E.AugSafeHarborCd
+      move &EE_CD.CHAR4_09   to $E.SepSafeHarborCd
+      move &EE_CD.CHAR4_10   to $E.OctSafeHarborCd
+      move &EE_CD.CHAR4_11   to $E.NovSafeHarborCd
+      move &EE_CD.CHAR4_12   to $E.DecSafeHarborCd
+      break
+  end-evaluate
+
+FROM PS_ACA_EMP_MO_CH4 EE_CD
+WHERE EE_CD.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND EE_CD.ACA_ALE_MEMBER = &ACA_EE.ACA_ALE_MEMBER
+  AND EE_CD.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND EE_CD.EMPLID = &ACA_EE.EMPLID
+  AND EE_CD.EFFSEQ = &ACA_EE.EFFSEQ
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Read-EE-Monthly-ZipCode
+
+begin-SELECT
+EE_ZC.ACA_EMP_DATA_ID
+EE_ZC.CHAR20_ALL
+EE_ZC.CHAR20_01
+EE_ZC.CHAR20_02
+EE_ZC.CHAR20_03
+EE_ZC.CHAR20_04
+EE_ZC.CHAR20_05
+EE_ZC.CHAR20_06
+EE_ZC.CHAR20_07
+EE_ZC.CHAR20_08
+EE_ZC.CHAR20_09
+EE_ZC.CHAR20_10
+EE_ZC.CHAR20_11
+EE_ZC.CHAR20_12
+
+  Evaluate &EE_ZC.ACA_EMP_DATA_ID
+    when = 'HRZP'
+      move &EE_ZC.CHAR20_ALL to $E.AnnualICHRAZipCd
+      let $E.AnnualICHRAZipCd = ltrim($E.AnnualICHRAZipCd, ' ')
+      let $E.AnnualICHRAZipCd = substr($E.AnnualICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_01  to $E.JanICHRAZipCd
+      let $E.JanICHRAZipCd    = ltrim($E.JanICHRAZipCd, ' ')
+      let $E.JanICHRAZipCd    = substr($E.JanICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_02  to $E.FebICHRAZipCd
+      let $E.FebICHRAZipCd    = ltrim($E.FebICHRAZipCd, ' ')
+      let $E.FebICHRAZipCd    = substr($E.FebICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_03  to $E.MarICHRAZipCd
+      let $E.MarICHRAZipCd    = ltrim($E.MarICHRAZipCd, ' ')
+      let $E.MarICHRAZipCd    = substr($E.MarICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_04  to $E.AprICHRAZipCd
+      let $E.AprICHRAZipCd    = ltrim($E.AprICHRAZipCd, ' ')
+      let $E.AprICHRAZipCd    = substr($E.AprICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_05  to $E.MayICHRAZipCd
+      let $E.MayICHRAZipCd    = ltrim($E.MayICHRAZipCd, ' ')
+      let $E.MayICHRAZipCd    = substr($E.MayICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_06  to $E.JunICHRAZipCd
+      let $E.JunICHRAZipCd    = ltrim($E.JunICHRAZipCd, ' ')
+      let $E.JunICHRAZipCd    = substr($E.JunICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_07  to $E.JulICHRAZipCd
+      let $E.JulICHRAZipCd    = ltrim($E.JulICHRAZipCd, ' ')
+      let $E.JulICHRAZipCd    = substr($E.JulICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_08  to $E.AugICHRAZipCd
+      let $E.AugICHRAZipCd    = ltrim($E.AugICHRAZipCd, ' ')
+      let $E.AugICHRAZipCd    = substr($E.AugICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_09  to $E.SepICHRAZipCd
+      let $E.SepICHRAZipCd    = ltrim($E.SepICHRAZipCd, ' ')
+      let $E.SepICHRAZipCd    = substr($E.SepICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_10  to $E.OctICHRAZipCd
+      let $E.OctICHRAZipCd    = ltrim($E.OctICHRAZipCd, ' ')
+      let $E.OctICHRAZipCd    = substr($E.OctICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_11  to $E.NovICHRAZipCd
+      let $E.NovICHRAZipCd    = ltrim($E.NovICHRAZipCd, ' ')
+      let $E.NovICHRAZipCd    = substr($E.NovICHRAZipCd, 1, 5)
+      move &EE_ZC.CHAR20_12  to $E.DecICHRAZipCd
+      let $E.DecICHRAZipCd    = ltrim($E.DecICHRAZipCd, ' ')
+      let $E.DecICHRAZipCd    = substr($E.DecICHRAZipCd, 1, 5)
+      break
+  end-evaluate
+
+FROM PS_ACA_EMP_MO_CH20 EE_ZC
+WHERE EE_ZC.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND EE_ZC.ACA_ALE_MEMBER = &ACA_EE.ACA_ALE_MEMBER
+  AND EE_ZC.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND EE_ZC.EMPLID = &ACA_EE.EMPLID
+  AND EE_ZC.EFFSEQ = &ACA_EE.EFFSEQ
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Read-EE-Monthly-Amount
+
+begin-SELECT
+EE_AMT.ACA_EMP_DATA_ID
+EE_AMT.AMOUNT2_ALL
+EE_AMT.AMOUNT2_01
+EE_AMT.AMOUNT2_02
+EE_AMT.AMOUNT2_03
+EE_AMT.AMOUNT2_04
+EE_AMT.AMOUNT2_05
+EE_AMT.AMOUNT2_06
+EE_AMT.AMOUNT2_07
+EE_AMT.AMOUNT2_08
+EE_AMT.AMOUNT2_09
+EE_AMT.AMOUNT2_10
+EE_AMT.AMOUNT2_11
+EE_AMT.AMOUNT2_12
+
+  evaluate &EE_AMT.ACA_EMP_DATA_ID
+    when = 'LCST'
+      do Format-Number (&EE_AMT.AMOUNT2_ALL, $E.AnnlShrLowestCostMthlyPremAmt, '99999999999999999.99')
+      let $E.AnnlShrLowestCostMthlyPremAmt = ltrim($E.AnnlShrLowestCostMthlyPremAmt, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_01, $E.JanAmt_MonthlyShare, '99999999999999999.99')
+      let $E.JanAmt_MonthlyShare = ltrim($E.JanAmt_MonthlyShare, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_02, $E.FebAmt_MonthlyShare, '99999999999999999.99')
+      let $E.FebAmt_MonthlyShare = ltrim($E.FebAmt_MonthlyShare, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_03, $E.MarAmt_MonthlyShare, '99999999999999999.99')
+      let $E.MarAmt_MonthlyShare = ltrim($E.MarAmt_MonthlyShare, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_04, $E.AprAmt_MonthlyShare, '99999999999999999.99')
+      let $E.AprAmt_MonthlyShare = ltrim($E.AprAmt_MonthlyShare, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_05, $E.MayAmt_MonthlyShare, '99999999999999999.99')
+      let $E.MayAmt_MonthlyShare = ltrim($E.MayAmt_MonthlyShare, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_06, $E.JunAmt_MonthlyShare, '99999999999999999.99')
+      let $E.JunAmt_MonthlyShare = ltrim($E.JunAmt_MonthlyShare, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_07, $E.JulAmt_MonthlyShare, '99999999999999999.99')
+      let $E.JulAmt_MonthlyShare = ltrim($E.JulAmt_MonthlyShare, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_08, $E.AugAmt_MonthlyShare, '99999999999999999.99')
+      let $E.AugAmt_MonthlyShare = ltrim($E.AugAmt_MonthlyShare, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_09, $E.SepAmt_MonthlyShare, '99999999999999999.99')
+      let $E.SepAmt_MonthlyShare = ltrim($E.SepAmt_MonthlyShare, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_10, $E.OctAmt_MonthlyShare, '99999999999999999.99')
+      let $E.OctAmt_MonthlyShare = ltrim($E.OctAmt_MonthlyShare, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_11, $E.NovAmt_MonthlyShare, '99999999999999999.99')
+      let $E.NovAmt_MonthlyShare = ltrim($E.NovAmt_MonthlyShare, ' ')
+      do Format-Number (&EE_AMT.AMOUNT2_12, $E.DecAmt_MonthlyShare, '99999999999999999.99')
+      let $E.DecAmt_MonthlyShare = ltrim($E.DecAmt_MonthlyShare, ' ')
+      break
+  end-evaluate
+
+FROM PS_ACA_EMP_MO_AMT EE_AMT
+WHERE EE_AMT.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND EE_AMT.ACA_ALE_MEMBER = &ACA_EE.ACA_ALE_MEMBER
+  AND EE_AMT.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND EE_AMT.EMPLID = &ACA_EE.EMPLID
+  AND EE_AMT.EFFSEQ = &ACA_EE.EFFSEQ
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Read-DepBen-Data
+
+  let #i = 0
+  move ''   to $D.CoveredIndividualInd
+  move 'INDIVIDUAL_TIN'  to $D.TINRequestTypeCd
+
+begin-SELECT
+ACA_DEP.ACA_ALE_MEMBER
+ACA_DEP.ACA_CALENDAR_YEAR
+ACA_DEP.EMPLID
+ACA_DEP.EFFSEQ
+ACA_DEP.DEPENDENT_BENEF
+ACA_DEP.NAME
+ACA_DEP.FIRST_NAME
+ACA_DEP.LAST_NAME
+ACA_DEP.MIDDLE_NAME
+ACA_DEP.NAME_SUFFIX
+ACA_DEP.SSN
+ACA_DEP.BIRTHDATE
+
+  move &ACA_DEP.DEPENDENT_BENEF to $D.Dependent_Benef
+
+  move &ACA_DEP.FIRST_NAME   to $D.Name
+  move &ACA_DEP.FIRST_NAME   to $D.Fname
+  move &ACA_DEP.FIRST_NAME   to $D.YE_Fname
+  move &ACA_DEP.MIDDLE_NAME  to $D.MiddleName
+  move &ACA_DEP.MIDDLE_NAME  to $D.YE_MiddleName
+  move &ACA_DEP.LAST_NAME    to $D.Lname
+  move &ACA_DEP.LAST_NAME    to $D.YE_LName
+  move &ACA_DEP.NAME_SUFFIX  to $D.Suffix
+  move &ACA_DEP.NAME_SUFFIX  to $D.YE_Suffix
+
+  let $D.Fname = rtrim($D.Fname, ' ')  || ' '
+  let $D.Name = rtrim($D.Name, ' ')  || ' '
+
+  if rtrim($D.MiddleName, ' ') <> ''
+    let $D.MiddleName = substr($D.MiddleName, 1, 1) || ' '
+  else
+    let $D.MiddleName = ' '
+  end-if
+
+  let $D.Lname = rtrim($D.Lname, ' ')  || ' '
+  let $D.Suffix =rtrim($D.Suffix, ' ')
+
+  if $D.MiddleName <> ' '
+    let $D.YE_Name = $D.Name || $D.MiddleName || $D.Lname  || $D.Suffix
+  else
+    let $D.YE_Name = $D.Name || $D.Lname  || $D.Suffix
+  end-if
+
+  move $D.YE_Name to $YE_Name
+
+  let $D.PersonNameControlTxt = ''
+  let $TempNameControl = &ACA_DEP.LAST_NAME
+
+  move 1 to #j
+  while #j <= LENGTH($TempNameControl)
+    let $NextChar = SUBSTR($TempNameControl,#j,1)
+
+    if $NextChar <> ' ' and $NextChar <> ''''
+      let $D.PersonNameControlTxt = $D.PersonNameControlTxt || $NextChar
+
+      if LENGTH($D.PersonNameControlTxt) = 4
+        break
+      end-if
+    end-if
+    add 1 to #j
+  end-while
+
+  let $string_in = $D.PersonNameControlTxt
+  let $SpecialChar = ' '       ! remove adjacent spaces
+  do Remove-Adjacent-Char($SpecialChar, $string_in, $xmlValueOut)
+  let $string_in   = $xmlValueOut
+  let $ValidCharacters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-'' '
+
+  if rtrim($ValidCharacters, ' ') <> ''
+
+    do Replace-Accented-Char($string_in, $xmlValueOut)
+    let $string_in   = $xmlValueOut
+
+    do Validate-String ($ValidCharacters, $string_in, $string_validated)
+    let $string_out = $string_validated
+  else
+    let $string_out = $string_in
+  end-if
+
+  let $string_out = Ltrim(Rtrim($string_out,' '),' ')
+  let $D.PersonNameControlTxt = $string_out
+  uppercase $D.PersonNameControlTxt
+
+  move &ACA_DEP.SSN to $D.SSNOrig
+
+  if $MaskingIsOn = 'Y'
+    let $FullSSN = &ACA_DEP.SSN
+    let $MaskedSSN = ''
+
+    do Mask-SSN($FullSSN, $MaskedSSN)
+
+    if rtrim($MaskedSSN, ' ') <> ''
+
+      let $D.SSN = rtrim($MaskedSSN, ' ')
+      move $D.SSN        to $D.SSN xxx-xx-xxxx
+    else
+      let $D.SSN = ''
+    end-if
+  else
+    if rtrim(&ACA_DEP.SSN, ' ') <> ''
+      move &ACA_DEP.SSN  to $D.SSN xxx-xx-xxxx
+    else
+      let $D.SSN = ''
+    end-if
+  end-if
+
+  move '' to $D.BirthDatePrt
+  move '' to $D.BirthDateXmit
+  do Format-DateTime(&ACA_DEP.BIRTHDATE, $out, {DEFCMP}, '', '')
+
+  if rtrim($out, ' ') <> ''
+     move $out to $D.BirthDateXmit  XXXX-XX-XX
+  end-if
+
+  move $D.BirthDateXmit  to $D.BirthDatePrt
+
+  do Read-DepBen-Monthly-Codes
+
+  if #i < {DepBenXmitMax}
+    put          $D.Dependent_Benef          -
+                 $D.YE_Name                  -
+                 $D.YE_Fname                 -
+                 $D.YE_MiddleName            -
+                 $D.YE_LName                 -
+                 $D.YE_Suffix                -
+                 $D.PersonNameControlTxt     -
+                 $D.SSN                      -
+                 $D.SSNOrig                  -
+                 $D.BirthDateXmit            -
+                 $D.BirthDatePrt             -
+    into DepBenData(#i)
+                 DependentBenef              -
+                 CoveredIndividualName       -
+                 PersonFirstNm               -
+                 PersonMiddleNm              -
+                 PersonLastNm                -
+                 SuffixNm                    -
+                 PersonNameControlTxt        -
+                 CoveredIndividualSSN1       -
+                 CoveredIndividualSSNOrig    -
+                 CoveredIndividualDOB        -
+                 BirthDatePrt
+  end-if
+
+  add 1 to #i
+
+FROM  PS_ACA_DEPENDENT ACA_DEP
+WHERE ACA_DEP.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND ACA_DEP.ACA_ALE_MEMBER = &ACA_EE.ACA_ALE_MEMBER
+  AND ACA_DEP.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND ACA_DEP.EMPLID = &ACA_EE.EMPLID
+  AND ACA_DEP.EFFSEQ = &ACA_EE.EFFSEQ
+ORDER BY ACA_DEP.DEPENDENT_BENEF
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Read-DepBen-Monthly-Codes
+
+begin-SELECT
+DEP_MTH.EMPLID
+DEP_MTH.DEPENDENT_BENEF
+DEP_MTH.ACA_DEP_DATA_ID
+DEP_MTH.ACA_BOX_ID
+DEP_MTH.CHAR1_ALL
+DEP_MTH.CHAR1_01
+DEP_MTH.CHAR1_02
+DEP_MTH.CHAR1_03
+DEP_MTH.CHAR1_04
+DEP_MTH.CHAR1_05
+DEP_MTH.CHAR1_06
+DEP_MTH.CHAR1_07
+DEP_MTH.CHAR1_08
+DEP_MTH.CHAR1_09
+DEP_MTH.CHAR1_10
+DEP_MTH.CHAR1_11
+DEP_MTH.CHAR1_12
+
+  if #i = 0
+     and rtrim(&ACA_DEP.DEPENDENT_BENEF, ' ') <> ''
+    move '1'  to $D.CoveredIndividualInd
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_ALL, ' ') = 'Y'
+    let $CoveredIndividualAnnualInd1  = '1'
+  else
+    let $CoveredIndividualAnnualInd1  = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_01, ' ') = 'Y'
+    let $JanInd = '1'
+  else
+    let $JanInd = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_02, ' ') = 'Y'
+    let $FebInd = '1'
+  else
+    let $FebInd = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_03, ' ') = 'Y'
+    let $MarInd = '1'
+  else
+    let $MarInd = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_04, ' ') = 'Y'
+    let $AprInd = '1'
+  else
+    let $AprInd = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_05, ' ') = 'Y'
+    let $MayInd = '1'
+  else
+    let $MayInd = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_06, ' ') = 'Y'
+    let $JunInd = '1'
+  else
+    let $JunInd = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_07, ' ') = 'Y'
+    let $JulInd = '1'
+  else
+    let $JulInd = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_08, ' ') = 'Y'
+    let $AugInd = '1'
+  else
+    let $AugInd = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_09, ' ') = 'Y'
+    let $SepInd = '1'
+  else
+    let $SepInd = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_10, ' ') = 'Y'
+    let $OctInd = '1'
+  else
+    let $OctInd = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_11, ' ') = 'Y'
+    let $NovInd = '1'
+  else
+    let $NovInd = ''
+  end-if
+
+  if rtrim(&DEP_MTH.CHAR1_12, ' ') = 'Y'
+    let $DecInd = '1'
+  else
+    let $DecInd = ''
+  end-if
+
+  if #i < {DepBenXmitMax}
+    put          $CoveredIndividualAnnualInd1           -
+                 $JanInd           -
+                 $FebInd           -
+                 $MarInd            -
+                 $AprInd           -
+                 $MayInd           -
+                 $JunInd           -
+                 $JulInd           -
+                 $AugInd           -
+                 $SepInd           -
+                 $OctInd           -
+                 $NovInd           -
+                 $DecInd          -
+    into DepBenData(#i)
+                 CoveredIndividualAnnualInd1 -
+                 JanInd -
+                 FebInd -
+                 MarInd -
+                 AprInd -
+                 MayInd -
+                 JunInd -
+                 JulInd -
+                 AugInd -
+                 SepInd -
+                 OctInd -
+                 NovInd -
+                 DecInd
+  end-if
+
+FROM PS_ACA_DEP_MO_CH1 DEP_MTH
+WHERE DEP_MTH.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND DEP_MTH.ACA_ALE_MEMBER = &ALE_MEM.ACA_ALE_MEMBER
+  AND DEP_MTH.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND DEP_MTH.EMPLID = &ACA_DEP.EMPLID
+  AND DEP_MTH.EFFSEQ = &ACA_EE.EFFSEQ
+  AND DEP_MTH.DEPENDENT_BENEF = &ACA_DEP.DEPENDENT_BENEF
+  AND DEP_MTH.ACA_DEP_DATA_ID = 'CVRG'
+ORDER BY DEP_MTH.DEPENDENT_BENEF, DEP_MTH.EMPLID
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Before-EmplID
+
+  move ''  to $E.Reissue_Prt
+  move 'N' to $E.Reissue
+  move 'O' to $E.ACA_Form_Status
+  move 'N' to $E.Void
+  move ''  to $E.Void_Ind
+  move 'N' to $E.Correction
+  move ''  to $E.Corrected_Ind
+  move '0' to $E.CorrectedInd
+  move ''  to $E.Corr_RecordID
+  move ''  to $E.CorrectedUniqueRecordId
+  move ''  to $E.Corr_Receipt_ID
+  move ''  to $E.Corr_1094C_SubID
+  move ''  to $E.Corr_1095_RecID
+  move ''  to $E.Corr_First_Name
+  move ''  to $E.Corr_Last_Name
+  move ''  to $E.Corr_MiddleNm
+  move ''  to $E.Corr_Name_Suffix
+  move ''  to $E.CorrectedRecordPayeeTIN
+
+  move &ACA_EE.EMPLID   to $E.EmplID
+
+  move &ACA_EE.FIRST_NAME    to $E.Name
+  move &ACA_EE.FIRST_NAME    to $E.Fname
+  move &ACA_EE.MIDDLE_NAME   to $E.MiddleName
+  move &ACA_EE.LAST_NAME     to $E.Lname
+  move &ACA_EE.NAME_SUFFIX   to $E.Suffix
+
+  move &ACA_EE.FIRST_NAME    to $E.Xmit_Fname
+  move &ACA_EE.MIDDLE_NAME   to $E.Xmit_MiddleName
+  move &ACA_EE.LAST_NAME     to $E.Xmit_Lname
+  evaluate $ACA_Calendar_Year
+    when = '2016'
+    when = '2017'
+    when = '2018'
+    when = '2019'
+    when = '2020'
+      let $E.Xmit_Fname      = substr($E.Xmit_Fname, 1, 20)
+      let $E.Xmit_MiddleName = substr($E.Xmit_MiddleName, 1, 20)
+      let $E.Xmit_Lname      = substr($E.Xmit_Lname, 1, 20)
+      break
+  end-evaluate
+
+  move &ACA_EE.NAME_SUFFIX   to $E.Xmit_Suffix
+
+  let $E.Fname = rtrim($E.Fname, ' ')  || ' '
+  let $E.Name = rtrim($E.Name, ' ')  || ' '
+  let $E.MiddleName = rtrim($E.MiddleName, ' ') || ' '
+  let $E.Lname = rtrim($E.Lname, ' ')  || ' '
+  let $E.Suffix =rtrim($E.Suffix, ' ')
+
+  if $E.MiddleName <> ' '
+    let $E.YE_Name = $E.Name || $E.MiddleName || $E.Lname  || $E.Suffix
+  else
+    let $E.YE_Name = $E.Name || $E.Lname  || $E.Suffix
+  end-if
+
+  move $E.YE_Name to $YE_Name
+  move $YE_Name to $E.YE_Name
+
+  if $E.MiddleName <> ' '
+    let $E.YE_Fname = $E.Fname || $E.MiddleName
+  else
+    let $E.YE_Fname = $E.Fname
+  end-if
+
+  let $E.YE_Lname = $E.Lname
+  move $E.YE_Fname to $YE_Fname
+  move $YE_Fname to $E.YE_Fname
+
+  move $E.YE_LName to $YE_LName
+  move $YE_LName to $E.YE_LName
+
+  move $E.Suffix to $E.YE_Suffix
+  move $E.YE_Suffix to $E.Suffix
+
+  let $E.PersonNameControlTxt = ''
+  let $TempNameControl = &ACA_EE.LAST_NAME
+
+  move 1 to #j
+  while #j <= LENGTH($TempNameControl)
+    let $NextChar = SUBSTR($TempNameControl,#j,1)
+
+    if $NextChar <> ' ' and $NextChar <> ''''
+      let $E.PersonNameControlTxt = $E.PersonNameControlTxt || $NextChar
+
+      if LENGTH($E.PersonNameControlTxt) = 4
+        break
+      end-if
+    end-if
+    add 1 to #j
+  end-while
+
+  let $string_in = $E.PersonNameControlTxt
+  let $SpecialChar = ' '       ! remove adjacent spaces
+  do Remove-Adjacent-Char($SpecialChar, $string_in, $xmlValueOut)
+  let $string_in   = $xmlValueOut
+  let $ValidCharacters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-'' '
+
+  if rtrim($ValidCharacters, ' ') <> ''
+
+    do Replace-Accented-Char($string_in, $xmlValueOut)
+    let $string_in   = $xmlValueOut
+
+    do Validate-String ($ValidCharacters, $string_in, $string_validated)
+    let $string_out = $string_validated
+  else
+    let $string_out = $string_in
+  end-if
+
+  let $string_out = Ltrim(Rtrim($string_out,' '),' ')
+  let $E.PersonNameControlTxt = $string_out
+  uppercase $E.PersonNameControlTxt
+
+!new code
+  let $Use_Alternate_Name = 'N'
+
+  if Length($E.YE_FName) > #YE_EE_FName_Box_Size
+     or Length($E.YE_LName) > #YE_EE_LName_Box_Size
+    let $Use_Alternate_Name = 'Y'
+
+    if $E.MiddleName <> ' '
+      Let $Alternate_Name = substr($E.YE_FName,1,1) || ' ' || substr($E.MiddleName,1,1) || ' ' ||$E.YE_LName
+    else
+      Let $Alternate_Name = substr($E.YE_Fname,1,1) || ' ' || $E.YE_LName
+    end-if
+
+    if $Form_ID = 'LSR03' or $Form_ID = 'LSR03P' or $Form_ID = 'XMLP'
+      Let $Alternate_Name = substr($Alternate_Name,1,(#YE_EE_FName_Box_Size + #YE_EE_LName_Box_Size))
+    else
+      Let $Alternate_Name = substr($Alternate_Name,1,#YE_EE_FullName_Box_Size)
+    end-if
+
+    let $Alternate_FName = substr($Alternate_Name,1,#YE_EE_FName_Box_Size)
+    let $Alternate_LName = substr($Alternate_Name,(#YE_EE_FName_Box_Size + 1),#YE_EE_LName_Box_Size)
+  end-if
+
+  let $Use_Alternate_Name_flap = 'N'
+
+  if Length($E.YE_Name) > 55
+    let $Use_Alternate_Name_flap = 'Y'
+    if $E.MiddleName <> ' '
+      Let $Alternate_Name_flap = substr($E.YE_FName,1,1) || ' ' || substr($E.MiddleName,1,1) || ' ' || $E.YE_LName || $E.YE_Suffix
+    else
+      Let $Alternate_Name_flap = substr($E.YE_Fname,1,1) || ' ' || $E.YE_LName || $E.YE_Suffix
+    end-if
+  else
+    Let $E.YE_Name_flap = $E.YE_Name
+  end-if
+
+  move &ACA_EE.Address1        to $E.Address1
+  move &ACA_EE.Address2        to $E.Address2
+  let  $E.City                 =  RTRIM(&ACA_EE.City,' ')
+  let  $E.State                = rtrim(&ACA_EE.State, ' ')
+  move &ACA_EE.Country         to $E.Country
+  move &ACA_EE.Postal          to $E.Zip
+
+  !GLANE Add foreign address
+  if rtrim(&ACA_EE.Country,' ') <> 'USA'
+    let $PRV.State = $E.State
+    let $PRV.Cntry = $E.Country
+    do Get-Province-Name
+    let $E.ForeignProvinceNm = &PRV.DESCR
+
+    let $CountryCd = $E.Country
+    do Get-Country-Code
+    let $E.CountryNm = &CT.DESCR
+    let $E.ForeignPostalCd    = $E.Zip
+    move &ACA_EE.COUNTRY_2CHAR to $E.CountryCd_2char
+  end-if
+
+  move &ACA_EE.SSN      To $E.SSN_Orig
+  if $MaskingIsOn = 'Y'
+    let $FullSSN = &ACA_EE.SSN
+    let $MaskedSSN = ''
+
+    do Mask-SSN($FullSSN, $MaskedSSN)
+
+    if rtrim($MaskedSSN, ' ') <> ''
+
+      let $E.SSN = rtrim($MaskedSSN, ' ')
+      move $E.SSN       to $E.SSN xxx-xx-xxxx
+    else
+      let $E.SSN = ''
+    end-if
+  else
+    if rtrim(&ACA_EE.SSN ' ') <> ''
+      move &ACA_EE.SSN  to $E.SSN xxx-xx-xxxx
+    else
+      let $E.SSN = ''
+    end-if
+  end-if
+
+  let $E.YE_Name = substr($E.YE_Name,1,#YE_EE_FullName_Box_Size)
+  let $E.Address1 = substr($E.Address1,1,#YE_EE_Address1_Box_Size)
+  let $E.Address2 = substr($E.Address2,1,#YE_EE_Address2_Box_Size)
+
+  move &ACA_EE.CONTACT_PHONE_ACA  to $E.Contact_Phone_Prt
+  move &ACA_EE.CONTACT_PHONE_ACA  to $Phone_In
+  move ''                         to $Phone_Out
+  do Process-Phone-Num($Phone_In, $Phone_Out,#PhoneLength)
+  move $Phone_out                 to $E.Contact_Phone
+
+  do Get-SS-Consent
+  if #OPT_BLK.ACA_RPT_BATCH_SIZE > 0
+    if $Consent <> 'C'
+      add 1 to #BatchSize
+    end-if
+    if #BatchSize > #OPT_BLK.ACA_RPT_BATCH_SIZE
+      move 1 to #BatchSize
+      add 1 to #BatchId
+    end-if
+  end-if
+
+end-procedure
+
+
+begin-procedure After-Seq
+
+  do Print-1095C
+
+  if $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'O'
+       or ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R'
+             and $E.Reissue = 'Y')
+       or ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'C'
+             and $E.Correction = 'Y')
+       or ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'P'
+             and $E.Reissue = 'Y')
+       or ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'Q'
+             and $E.Reissue = 'Y')
+    do Insert-Guide-Data
+  end-if
+
+end-procedure
+
+
+begin-procedure Print-1095C
+
+! SELF-SERVICE AND BULK PRINT FORMS
+
+  if $ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'O'
+       or ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R'
+             and $E.Reissue = 'Y')
+       or ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'C'
+             and $E.Correction = 'Y')
+       or ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'P'
+             and $E.Reissue = 'Y')
+       or ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'Q'
+             and $E.Reissue = 'Y')
+    do Print-ALE-Data
+
+    do Print-EE-Data
+
+    let #i = 0
+    while #i < {DepBenMax}
+      do Prepare-DepBen-Data
+
+      do Print-DepBen-Data
+      let #i = #i + 1
+    end-while
+
+    do XML-Close-Tag('Form_Data', $closeTag, $nsPrefixNull)
+
+    if #FNum <> 0
+
+      do Write-XML-Line(#Fnum, $closeTag)
+    end-if
+
+    if $Consent <> 'C'
+
+      do Write-XML-Line(#Fnum2, $closeTag)
+    end-if
+  end-if
+
+! TRANSMITTAL FILE
+
+  if not ($ACA_XML_RUNCTL.ACA_PROCESS_TYPE = 'R'
+       and $E.Reissue = 'Y'
+       and $E.Void = 'Y')
+    do XMIT-EE-DepBen-Data
+  end-if
+
+end-procedure
+
+
+begin-procedure Print-ALE-Data
+
+! create burst value for this slip
+
+  let $BurstValue = rtrim($E.EmplID, ' ') || $ACA_Calendar_Year
+  let $BurstValue =  $BurstValue || rtrim($E.ACA_ALE_MEMBER, ' ') || $ACA_Form_Type || rtrim($ACA_XML_RUNCTL.ACA_PROCESS_TYPE, ' ')
+
+  do format-number(#E.Sequence_Number, $ACASeqNo, '009')
+  let $BurstValue = $BurstValue || $ACASeqNo
+!
+  if $BurstValue <> $BurstValueSave
+
+    if $BurstValueSave <> ''
+      do XML-Close-Tag('ACA_Create', $closeTag, $nsPrefixNull)
+      do Write-XML-Line(#Fnum, $closeTag)
+      do Close-XML-File(#FNum)
+    end-if
+
+    move $BurstValue to $BurstValueSave
+
+    let $FName = rtrim($BurstValue,' ') || '.xml'
+    let $sourceFile     = $FName || '{IMPORTSUFFIX}'
+    let $sourceLocation = '{IMPORTPREFIX}' || ''
+    let $sourceFileName = rtrim($sourceLocation,' ') || rtrim($sourceFile,' ')
+    let #FNum  = 3
+    let #FStat = 0
+    do Open-XML-File($FName, #FNum, #FStat)
+    do XML-Open-Tag('ACA_Create', $openTag, $nsPrefixNull)
+    do Write-XML-Line(#Fnum, $openTag)
+  end-if
+
+  do XML-Open-Tag('Form_Data', $openTag, $nsPrefixNull)
+
+  if #FNum <> 0
+    do Write-XML-Line(#Fnum, $openTag)
+  end-if
+
+  if $Consent <> 'C'
+    let $UserFlag = 'Y'
+    do Write-XML-Line(#Fnum2, $openTag)
+  else
+    let $UserFlag = 'N'
+  end-if
+
+! SELF-SERVICE AND BULK PRINT FORMS
+
+  do Build-XML-Line('BURST_VALUE', $BurstValue, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line('EMPLID', $E.EmplID, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  do format-number(#BatchId, $ACABatch, '09999')
+  do Build-XML-Line('BATCH_ID', $ACABatch, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  do Build-XML-Line('Void_Ind', $E.Void_Ind, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line('Corrected_Ind', $E.Corrected_Ind, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  do Build-XML-Line('ER_Name', $A.Name, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line('ER_Address1', $A.Address1, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  if RTRIM($A.Address2, ' ') <> ''
+    do Build-XML-Line('ER_Address2', $A.Address2, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  end-if
+
+  do Get-ALE-Address-Line3
+
+  if RTRIM($A.Address2, ' ') <> ''
+    do Build-XML-Line('ER_Address3', $C4, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  else
+    do Build-XML-Line('ER_Address2', $C4, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  end-if
+
+  do Build-XML-Line('ER_Contact_Phone', $E.Contact_Phone_Prt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+end-procedure
+
+
+begin-procedure Print-EE-Data
+
+  if $Consent <> 'C'
+    let $UserFlag = 'Y'
+  else
+    let $UserFlag = 'N'
+  end-if
+
+! SELF-SERVICE AND BULK PRINT FORMS
+
+  do Build-XML-Line('EE_FullName', $E.YE_Name, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  do Build-XML-Line('Reissue', $E.Reissue_Prt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  do Build-XML-Line('Void_Ind', $E.Void_Ind, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  do Build-XML-Line('Corrected_Ind', $E.Corrected_Ind, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  do Build-XML-Line('EE_Address1', $E.Address1, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  if RTRIM($E.Address2, ' ') <> ''
+    do Build-XML-Line('EE_Address2', $E.Address2, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  end-if
+
+  do Get-EE-Address-Line3
+
+  if RTRIM($E.Address2, ' ') <> ''
+    do Build-XML-Line('EE_Address3', $F3, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+!!     do Build-XML-Line('EE_Address3_flap', $F3_flap, 'Y', #FNum, #FNum2, $UserFlag)
+  else
+    do Build-XML-Line('EE_Address2', $F3, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+!!     do Build-XML-Line('EE_Address2_flap', $F3_flap, 'Y', #FNum, #FNum2, $UserFlag)
+  end-if
+
+  do Build-XML-Line('ER_EIN', $A.Federal_EIN, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  do Build-XML-Line('EE_SSN', $E.SSN, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  do Set-Flags
+
+  evaluate $ACA_Calendar_Year
+    when = '2020'
+      if $ZIPFlag = 'Y'
+         or $JanZIPFlag = 'Y'
+         or $FebZIPFlag = 'Y'
+         or $MarZIPFlag = 'Y'
+         or $AprZIPFlag = 'Y'
+         or $MayZIPFlag = 'Y'
+         or $JunZIPFlag = 'Y'
+         or $JulZIPFlag = 'Y'
+         or $AugZIPFlag = 'Y'
+         or $SepZIPFlag = 'Y'
+         or $OctZIPFlag = 'Y'
+         or $NovZIPFlag = 'Y'
+         or $DecZIPFlag = 'Y'
+        do Build-XML-Line('AgeJan1', $E.AgeJan1, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+      end-if
+      break
+  end-evaluate
+
+  do Build-XML-Line('PlanStartMonth', $E.PlanStartMonth, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  ! Box 14 - Annual Offer of Coverage
+
+  if rtrim($E.AnnualOfferCoverageCd, ' ') <> ''
+    do Build-XML-Line('AnnualOfferCoverageCd', $E.AnnualOfferCoverageCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  end-if
+
+  ! Box 14 - Monthly Offer of Coverage
+
+  if rtrim($E.AnnualOfferCoverageCd, ' ') = ''
+    if rtrim($E.JanOfferCd, ' ') <> ''
+      do Build-XML-Line('JanOfferCd', $E.JanOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if rtrim($E.FebOfferCd, ' ') <> ''
+      do Build-XML-Line('FebOfferCd', $E.FebOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if rtrim($E.MarOfferCd, ' ') <> ''
+      do Build-XML-Line('MarOfferCd', $E.MarOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if rtrim($E.AprOfferCd, ' ') <> ''
+      do Build-XML-Line('AprOfferCd', $E.AprOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if rtrim($E.MayOfferCd, ' ') <> ''
+      do Build-XML-Line('MayOfferCd', $E.MayOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if rtrim($E.JunOfferCd, ' ') <> ''
+      do Build-XML-Line('JunOfferCd', $E.JunOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if rtrim($E.JulOfferCd, ' ') <> ''
+      do Build-XML-Line('JulOfferCd', $E.JulOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if rtrim($E.AugOfferCd, ' ') <> ''
+      do Build-XML-Line('AugOfferCd', $E.AugOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if rtrim($E.SepOfferCd, ' ') <> ''
+      do Build-XML-Line('SepOfferCd', $E.SepOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if rtrim($E.OctOfferCd, ' ') <> ''
+      do Build-XML-Line('OctOfferCd', $E.OctOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if rtrim($E.NovOfferCd, ' ') <> ''
+      do Build-XML-Line('NovOfferCd', $E.NovOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if rtrim($E.DecOfferCd, ' ') <> ''
+      do Build-XML-Line('DecOfferCd', $E.DecOfferCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+  end-if
+
+  ! Box 15 - Annual Employee Required Contribution
+
+  evaluate $ACA_Calendar_Year
+    when = '2015'
+    when = '2016'
+      if $AmountFlag = 'Y'
+        if rtrim($E.AnnlShrLowestCostMthlyPremAmt, ' ') <> '0.00'
+          do Build-XML-Line('AnnlShrLowestCostMthlyPremAmt', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+      end-if
+      break
+    when = '2017'
+    when = '2018'
+    when = '2019'
+    when = '2020'
+      if $AmountFlag = 'Y'
+        if rtrim($E.AnnlShrLowestCostMthlyPremAmt, ' ') <> '0.00'
+          do Build-XML-Line('AnnlShrLowestCostMthlyPremAmt', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+      end-if
+      break
+  end-evaluate
+
+  ! Box 15 - Monthly Employee Required Contribution
+
+  if rtrim($E.AnnlShrLowestCostMthlyPremAmt, ' ') = '0.00'
+    if $JanAmountFlag = 'Y'
+      do Build-XML-Line('JanAmt_MonthlyShare', $E.JanAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $FebAmountFlag = 'Y'
+      do Build-XML-Line('FebAmt_MonthlyShare', $E.FebAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $MarAmountFlag = 'Y'
+      do Build-XML-Line('MarAmt_MonthlyShare', $E.MarAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $AprAmountFlag = 'Y'
+      do Build-XML-Line('AprAmt_MonthlyShare', $E.AprAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $MayAmountFlag = 'Y'
+      do Build-XML-Line('MayAmt_MonthlyShare', $E.MayAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $JunAmountFlag = 'Y'
+      do Build-XML-Line('JunAmt_MonthlyShare', $E.JunAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $JulAmountFlag = 'Y'
+      do Build-XML-Line('JulAmt_MonthlyShare', $E.JulAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $AugAmountFlag = 'Y'
+      do Build-XML-Line('AugAmt_MonthlyShare', $E.AugAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $SepAmountFlag = 'Y'
+      do Build-XML-Line('SepAmt_MonthlyShare', $E.SepAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $OctAmountFlag = 'Y'
+      do Build-XML-Line('OctAmt_MonthlyShare', $E.OctAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $NovAmountFlag = 'Y'
+      do Build-XML-Line('NovAmt_MonthlyShare', $E.NovAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $DecAmountFlag = 'Y'
+      do Build-XML-Line('DecAmt_MonthlyShare', $E.DecAmt_MonthlyShare, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+  else
+
+    if $JanAmountFlag = 'Y'
+      do Build-XML-Line('JanAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $FebAmountFlag = 'Y'
+      do Build-XML-Line('FebAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $MarAmountFlag = 'Y'
+      do Build-XML-Line('MarAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $AprAmountFlag = 'Y'
+      do Build-XML-Line('AprAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $MayAmountFlag = 'Y'
+      do Build-XML-Line('MayAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $JunAmountFlag = 'Y'
+      do Build-XML-Line('JunAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $JulAmountFlag = 'Y'
+      do Build-XML-Line('JulAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $AugAmountFlag = 'Y'
+      do Build-XML-Line('AugAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $SepAmountFlag = 'Y'
+      do Build-XML-Line('SepAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $OctAmountFlag = 'Y'
+      do Build-XML-Line('OctAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $NovAmountFlag = 'Y'
+      do Build-XML-Line('NovAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $DecAmountFlag = 'Y'
+      do Build-XML-Line('DecAmt_MonthlyShare', $E.AnnlShrLowestCostMthlyPremAmt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+  end-if
+
+  ! Box 16 - SafeHarbor
+
+  evaluate $ACA_Calendar_Year
+    when = '2015'
+    when = '2016'
+    when = '2017'
+    when = '2018'
+    when = '2019'
+    when = '2020'
+      if rtrim($E.AnnualSafeHarborCd, ' ') = ''
+
+        if rtrim($E.JanSafeHarborCd, ' ') <> ''
+          do Build-XML-Line('JanSafeHarborCd', $E.JanSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+
+        if rtrim($E.FebSafeHarborCd, ' ') <> ''
+          do Build-XML-Line('FebSafeHarborCd', $E.FebSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+
+        if rtrim($E.MarSafeHarborCd, ' ') <> ''
+          do Build-XML-Line('MarSafeHarborCd', $E.MarSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+
+        if rtrim($E.AprSafeHarborCd, ' ') <> ''
+          do Build-XML-Line('AprSafeHarborCd', $E.AprSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+
+        if rtrim($E.MaySafeHarborCd, ' ') <> ''
+          do Build-XML-Line('MaySafeHarborCd', $E.MaySafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+
+        if rtrim($E.JunSafeHarborCd, ' ') <> ''
+          do Build-XML-Line('JunSafeHarborCd', $E.JunSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+
+        if rtrim($E.JulSafeHarborCd, ' ') <> ''
+          do Build-XML-Line('JulSafeHarborCd', $E.JulSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+
+        if rtrim($E.AugSafeHarborCd, ' ') <> ''
+          do Build-XML-Line('AugSafeHarborCd', $E.AugSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+
+        if rtrim($E.SepSafeHarborCd, ' ') <> ''
+          do Build-XML-Line('SepSafeHarborCd', $E.SepSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+
+        if rtrim($E.OctSafeHarborCd, ' ') <> ''
+          do Build-XML-Line('OctSafeHarborCd', $E.OctSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+
+        if rtrim($E.NovSafeHarborCd, ' ') <> ''
+          do Build-XML-Line('NovSafeHarborCd', $E.NovSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+
+        if rtrim($E.DecSafeHarborCd, ' ') <> ''
+          do Build-XML-Line('DecSafeHarborCd', $E.DecSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+      else
+        do Build-XML-Line('AnnualSafeHarborCd', $E.AnnualSafeHarborCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+      end-if
+      break
+  end-evaluate
+
+  ! Box 17 - Annual Employee Zip Code
+
+  evaluate $ACA_Calendar_Year
+    when = '2020'
+      if $ZipFlag = 'Y'
+        if rtrim($E.AnnualICHRAZipCd, ' ') <> ''
+          do Build-XML-Line('AnnualICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+        end-if
+      end-if
+      break
+
+  end-evaluate
+
+  ! Box 17 - Monthly Employee Zip Code
+
+  if rtrim($E.AnnualICHRAZipCd, ' ') = ''
+    if $JanZIPFlag = 'Y'
+      do Build-XML-Line('JanICHRAZipCd', $E.JanICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $FebZIPFlag = 'Y'
+      do Build-XML-Line('FebICHRAZipCd', $E.FebICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $MarZIPFlag = 'Y'
+      do Build-XML-Line('MarICHRAZipCd', $E.MarICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $AprZIPFlag = 'Y'
+      do Build-XML-Line('AprICHRAZipCd', $E.AprICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $MayZIPFlag = 'Y'
+      do Build-XML-Line('MayICHRAZipCd', $E.MayICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $JunZIPFlag = 'Y'
+      do Build-XML-Line('JunICHRAZipCd', $E.JunICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $JulZIPFlag = 'Y'
+      do Build-XML-Line('JulICHRAZipCd', $E.JulICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $AugZIPFlag = 'Y'
+      do Build-XML-Line('AugICHRAZipCd', $E.AugICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $SepZIPFlag = 'Y'
+      do Build-XML-Line('SepICHRAZipCd', $E.SepICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $OctZIPFlag = 'Y'
+      do Build-XML-Line('OctICHRAZipCd', $E.OctICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $NovZIPFlag = 'Y'
+      do Build-XML-Line('NovICHRAZipCd', $E.NovICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $DecZIPFlag = 'Y'
+      do Build-XML-Line('DecICHRAZipCd', $E.DecICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+  else
+
+    if $JanZIPFlag = 'Y'
+      do Build-XML-Line('JanICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $FebZIPFlag = 'Y'
+      do Build-XML-Line('FebICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $MarZIPFlag = 'Y'
+      do Build-XML-Line('MarICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $AprZIPFlag = 'Y'
+      do Build-XML-Line('AprICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $MayZIPFlag = 'Y'
+      do Build-XML-Line('MayICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $JunZIPFlag = 'Y'
+      do Build-XML-Line('JunICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $JulZIPFlag = 'Y'
+      do Build-XML-Line('JulICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $AugZIPFlag = 'Y'
+      do Build-XML-Line('AugICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $SepZIPFlag = 'Y'
+      do Build-XML-Line('SepICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $OctZIPFlag = 'Y'
+      do Build-XML-Line('OctICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $NovZIPFlag = 'Y'
+      do Build-XML-Line('NovICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+
+    if $DecZIPFlag = 'Y'
+      do Build-XML-Line('DecICHRAZipCd', $E.AnnualICHRAZipCd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+    end-if
+  end-if
+end-procedure
+
+
+begin-procedure Prepare-DepBen-Data
+
+  get $DependentBenef                        -
+      $CoveredIndividualName                 -
+      $PersonFirstNm                         -
+      $PersonMiddleNm                        -
+      $PersonLastNm                          -
+      $SuffixNm                              -
+      $PersonNameControlTxt                  -
+      $CoveredIndividualSSN1                 -
+      $CoveredIndividualSSNOrig              -
+      $CoveredIndividualDOB                  -
+      $BirthDatePrt                          -
+      $CoveredIndividualAnnualInd1           -
+      $JanInd                                -
+      $FebInd                                -
+      $MarInd                                -
+      $AprInd                                -
+      $MayInd                                -
+      $JunInd                                -
+      $JulInd                                -
+      $AugInd                                -
+      $SepInd                                -
+      $OctInd                                -
+      $NovInd                                -
+      $DecInd
+  from DepBenData(#i) DependentBenef         -
+      CoveredIndividualName                  -
+      PersonFirstNm                          -
+      PersonMiddleNm                         -
+      PersonLastNm                           -
+      SuffixNm                               -
+      PersonNameControlTxt                   -
+      CoveredIndividualSSN1                  -
+      CoveredIndividualSSNOrig               -
+      CoveredIndividualDOB                   -
+      BirthDatePrt                           -
+      CoveredIndividualAnnualInd1            -
+      JanInd                                 -
+      FebInd                                 -
+      MarInd                                 -
+      AprInd                                 -
+      MayInd                                 -
+      JunInd                                 -
+      JulInd                                 -
+      AugInd                                 -
+      SepInd                                 -
+      OctInd                                 -
+      NovInd                                 -
+      DecInd
+
+  evaluate #i
+    when = 0
+      let $DepBen_Num = '_01'
+      break
+
+    when = 1
+      let $DepBen_Num = '_02'
+      break
+
+    when = 2
+      let $DepBen_Num = '_03'
+      break
+
+    when = 3
+      let $DepBen_Num = '_04'
+      break
+
+    when = 4
+      let $DepBen_Num = '_05'
+      break
+
+    when = 5
+      let $DepBen_Num = '_06'
+      break
+
+    when = 6
+      let $DepBen_Num = '_07'
+      break
+
+    when = 7
+      let $DepBen_Num = '_08'
+      break
+
+    when = 8
+      let $DepBen_Num = '_09'
+      break
+
+    when = 9
+      let $DepBen_Num = '_10'
+      break
+
+    when = 10
+      let $DepBen_Num = '_11'
+      break
+
+    when = 11
+      let $DepBen_Num = '_12'
+      break
+
+    when = 12
+      let $DepBen_Num = '_13'
+      break
+
+    when = 13
+      let $DepBen_Num = '_14'
+      break
+
+    when = 14
+      let $DepBen_Num = '_15'
+      break
+
+    when = 15
+      let $DepBen_Num = '_16'
+      break
+
+    when = 16
+      let $DepBen_Num = '_17'
+      break
+
+    when = 17
+      let $DepBen_Num = '_18'
+        break
+  end-evaluate
+
+  let $CoveredIndividualNameTag      = 'CoveredIndividualName'      || $DepBen_Num
+  let $CoveredIndividualSSNTag       = 'CoveredIndividualSSN'       || $DepBen_Num
+  let $CoveredIndividualDOBTag       = 'CoveredIndividualDOB'       || $DepBen_Num
+  let $CoveredIndividualAnnualIndTag = 'CoveredIndividualAnnualInd' || $DepBen_Num
+  let $JanIndTag = 'JanInd' || $DepBen_Num
+  let $FebIndTag = 'FebInd' || $DepBen_Num
+  let $MarIndTag = 'MarInd' || $DepBen_Num
+  let $AprIndTag = 'AprInd' || $DepBen_Num
+  let $MayIndTag = 'MayInd' || $DepBen_Num
+  let $JunIndTag = 'JunInd' || $DepBen_Num
+  let $JulIndTag = 'JulInd' || $DepBen_Num
+  let $AugIndTag = 'AugInd' || $DepBen_Num
+  let $SepIndTag = 'SepInd' || $DepBen_Num
+  let $OctIndTag = 'OctInd' || $DepBen_Num
+  let $NovIndTag = 'NovInd' || $DepBen_Num
+  let $DecIndTag = 'DecInd' || $DepBen_Num
+
+end-procedure
+
+
+begin-procedure Print-DepBen-Data
+
+! SELF-SERVICE AND BULK PRINT FORMS
+
+  if $Consent <> 'C'
+    let $UserFlag = 'Y'
+  else
+    let $UserFlag = 'N'
+  end-if
+
+  if #i = 0
+    do Build-XML-Line('CoveredInd', $D.CoveredIndividualInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  end-if
+
+  ! Covered Individual(s)
+  do Build-XML-Line($CoveredIndividualNameTag, $CoveredIndividualName, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($CoveredIndividualSSNTag, $CoveredIndividualSSN1, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($CoveredIndividualDOBTag, $BirthDatePrt, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($CoveredIndividualAnnualIndTag, $CoveredIndividualAnnualInd1, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+  ! Months of Coverage
+  do Build-XML-Line($JanIndTag, $JanInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($FebIndTag, $FebInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($MarIndTag, $MarInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($AprIndTag, $AprInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($MayIndTag, $MayInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($JunIndTag, $JunInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($JulIndTag, $JulInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($AugIndTag, $AugInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($SepIndTag, $SepInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($OctIndTag, $OctInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($NovIndTag, $NovInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+  do Build-XML-Line($DecIndTag, $DecInd, 'Y', #FNum, #FNum2, $UserFlag, $nsPrefixNull)
+
+end-procedure
+
+
+begin-procedure Get-ALE-Address-Line3
+
+  if $A.CountryCd = 'USA'
+    move $A.Zip            to $A.ZipExtsn ~~~~~~xxxx
+    if instr($A.Zip,'-',6) = 0
+       and $A.ZipExtsn <> '    '
+      let $A.Zip = substr($A.Zip,1,5) || '-' || substr($A.Zip,6,4)
+    end-if
+
+    let $A.Zip = rtrim($A.Zip, ' ')
+    let $C4 = $A.City || ' ' || $A.State || ' ' || $A.Zip
+    let $C4_flap = $F3
+
+    if length($C4) > #YE_EE_Country_Box_Size
+      let #newlen = length($A.City) + #YE_State_City_Zip_Box_Size - length($C4)
+      let $C4 = substr($A.City,1,#newlen) || ' ' || $A.State || ' ' || $A.Zip
+    end-if
+
+    let $A.Zip5 = substr($A.Zip,1,5)
+    let $A.USZIPCd  = $A.Zip5
+    let $A.USZIPExtensionCd = $A.ZipExtsn
+  else
+    let $CountryCd = $A.CountryCd
+    do Get-Country-Code
+    let $Country = SUBSTR(&CT.Descr,1,15)
+    let $Country = rtrim($Country, ' ')
+    let $A.Zip = rtrim($A.Zip, ' ')
+    let $C4 = $A.City || ' ' || $A.State || ' ' ||
+              $A.Zip  || ' '  || $Country
+    let $C4_flap = $C4
+
+    if length($C4) > 55
+      let #flaplen = length($A.City) + 55 - length($C4)
+      let $C4_flap = substr($A.City,1,#flaplen) || ' ' || $A.State || ' ' ||
+                       $A.Zip  || ' '  || $Country
+    end-if
+
+    if length($C4) > #YE_EE_Country_Box_Size
+      let #newlen = length($A.City) + #YE_EE_Country_Box_Size - length($C4)
+      let $C4 = substr($A.City,1,#newlen) || ' ' || $A.State || ' ' ||
+                $A.Zip  || ' '  || $Country
+    end-if
+  end-if
+
+end-procedure
+
+
+begin-procedure Get-EE-Address-Line3
+
+  if $E.Country = 'USA'
+    move $E.Zip            to $E.ZipExtsn ~~~~~~xxxx
+    if instr($E.Zip,'-',6) = 0
+       and $E.ZipExtsn <> '    '
+      let $E.Zip = substr($E.Zip,1,5) || '-' || substr($E.Zip,6,4)
+    end-if
+
+    let $E.Zip = rtrim($E.Zip, ' ')
+    let $F3 = $E.City || ' ' || $E.State || ' ' || $E.Zip
+    let $F3_flap = $F3
+
+    if length($F3) > #YE_EE_Country_Box_Size
+      let #newlen = length($E.City) + #YE_EE_Country_Box_Size - length($F3)
+      let $F3 = substr($E.City,1,#newlen) || ' ' || $E.State || ' ' || $E.Zip
+    end-if
+
+    let $E.Zip5 = substr($E.Zip,1,5)
+  else
+    let $CountryCd = $E.Country
+    do Get-Country-Code
+   !Comment out the old code, added longer length
+    !let $Country = SUBSTR(&CT.Descr,1,15)
+    let $Country = SUBSTR(&CT.Descr,1,35)
+    let $Country = rtrim($Country, ' ')
+    let $E.Zip = rtrim($E.Zip, ' ')
+    let $F3 = $E.City || ' ' || $E.State || ' ' ||
+              $E.Zip  || ' '  || $Country
+    let $F3_flap = $F3
+
+    if length($F3) > 55
+      let #flaplen = length($E.City) + 55 - length($F3)
+      let $F3_flap = substr($E.City,1,#flaplen) || ' ' || $E.State || ' ' ||
+                       $E.Zip  || ' '  || $Country
+    end-if
+
+    if length($F3) > #YE_EE_Country_Box_Size
+      let #newlen = length($E.City) + #YE_EE_Country_Box_Size - length($F3)
+      let $F3 = substr($E.City,1,#newlen) || ' ' || $E.State || ' ' ||
+                $E.Zip  || ' '  || $Country
+    end-if
+  end-if
+
+end-procedure
+
+
+begin-procedure Get-Country-Code
+
+begin-SELECT
+CT.DESCR
+
+FROM  PS_COUNTRY_TBL CT
+WHERE CT.COUNTRY = $CountryCd
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Clear-ALE-Data
+
+  ! Part I Applicable Large Employer Member (ALE Member)
+  move '0'     to $A.CorrectedInd
+  move ''      to $A.Corr_Receipt_ID
+  move ''      to $A.Corr_1094_SubID
+  move ''      to $A.CorrectedUniqueSubmissionId
+  move ''      to $A.Corr_BusinessNameLine1Txt
+  move ''      to $A.Corr_BusinessNameLine2Txt
+  move ''      to $A.CorrectedSubmissionPayerTIN
+  move ''      to $A.OriginalUniqueSubmissionId
+  move ''      to $A.Replace_1094_SubID
+
+  move ''      to $A.BusinessNameLine1Txt
+  move ''      to $A.BusinessNameLine2Txt
+  move ''      to $A.EmployerEIN
+  move ''      to $A.AddressLine1Txt
+  move ''      to $A.AddressLine2Txt
+  move ''      to $A.CityNm
+  move ''      to $A.USStateCd
+  move ''      to $A.USZIPCd
+  move ''      to $A.USZIPExtensionCd
+  move ''      to $A.CountryCd
+  move ''      to $A.CountryCd_2Char
+  move ''      to $A.CountryNm
+  move ''      to $A.ForeignProvinceNm
+  move ''      to $A.ForeignPostalCd
+  move ''      to $A.PersonFirstNm
+  move ''      to $A.PersonMiddleNm
+  move ''      to $A.PersonLastNm
+  move ''      to $A.SuffixNm
+  move ''      to $A.ContactPhoneNum
+  move ''      to $A.DGEBusinessName
+  move ''      to $A.DGEBusinessNameLine1Txt
+  move ''      to $A.DGEBusinessNameLine2Txt
+  move ''      to $A.DGEEmployerEIN
+  move ''      to $A.DGEAddressLine1Txt
+  move ''      to $A.DGEAddressLine2Txt
+  move ''      to $A.DGECityNm
+  move ''      to $A.DGEUSStateCd
+  move ''      to $A.DGEUSZIPCd
+  move ''      to $A.DGEUSZIPExtensionCd
+  move ''      to $A.DGECountryCd
+  move ''      to $A.DGECountryNm
+  move ''      to $A.DGECountryCd_2char
+  move ''      to $A.DGEForeignProvinceNm
+  move ''      to $A.DGEForeignPostalCd
+  move ''      to $A.DGEMailingAddressGrp
+  move ''      to $A.DGEPersonFirstNm
+  move ''      to $A.DGEPersonMiddleNm
+  move ''      to $A.DGEPersonLastNm
+  move ''      to $A.DGESuffixNm
+  move ''      to $A.DGEContactPhoneNum
+  move ''      to $A.DGETINRequestTypeCd
+  move ''      to $A.Form1095AttachedCnt
+  move 0       to #A.Form1095AttachedCnt
+    ! Part II ALE Member Information
+  move '0'     to $A.AuthoritativeTransmittalInd
+  move ''      to $A.TotalForm1095CALEMemberCnt
+  move 0       to #A.TotalForm1095CALEMemberCnt
+  move ''      to $A.AggregatedGroupMemberInd
+  move ''      to $A.QualifyingOfferMethodInd
+  move ''      to $A.QlfyOfferMethodTrnstReliefInd
+  move ''      to $A.Section4980HReliefInd
+  move ''      to $A.NinetyEightPctOfferMethodInd
+  move ''      to $A.JuratSignaturePIN
+  move ''      to $A.PersonTitleTxt
+  move ''      to $A.SignatureDt
+    ! Part III ALE Member Information - Monthly
+  move ''      to $A.YrlyMinEssentialCvrOffrInd
+  move ''      to $A.JanMinEssentialCvrOffrInd
+  move ''      to $A.FebMinEssentialCvrOffrInd
+  move ''      to $A.MarMinEssentialCvrOffrInd
+  move ''      to $A.AprMinEssentialCvrOffrInd
+  move ''      to $A.MayMinEssentialCvrOffrInd
+  move ''      to $A.JunMinEssentialCvrOffrInd
+  move ''      to $A.JulMinEssentialCvrOffrInd
+  move ''      to $A.AugMinEssentialCvrOffrInd
+  move ''      to $A.SepMinEssentialCvrOffrInd
+  move ''      to $A.OctMinEssentialCvrOffrInd
+  move ''      to $A.NovMinEssentialCvrOffrInd
+  move ''      to $A.DecMinEssentialCvrOffrInd
+  move ''      to $A.JanALEMemberFTECnt
+  move ''      to $A.FebALEMemberFTECnt
+  move ''      to $A.MarALEMemberFTECnt
+  move ''      to $A.AprALEMemberFTECnt
+  move ''      to $A.MayALEMemberFTECnt
+  move ''      to $A.JunALEMemberFTECnt
+  move ''      to $A.JulALEMemberFTECnt
+  move ''      to $A.AugALEMemberFTECnt
+  move ''      to $A.SepALEMemberFTECnt
+  move ''      to $A.OctALEMemberFTECnt
+  move ''      to $A.NovALEMemberFTECnt
+  move ''      to $A.DecALEMemberFTECnt
+  move ''      to $A.YrlyTotalEmployeeCnt
+  move ''      to $A.JanTotalEmployeeCnt
+  move ''      to $A.FebTotalEmployeeCnt
+  move ''      to $A.MarTotalEmployeeCnt
+  move ''      to $A.AprTotalEmployeeCnt
+  move ''      to $A.MayTotalEmployeeCnt
+  move ''      to $A.JunTotalEmployeeCnt
+  move ''      to $A.JulTotalEmployeeCnt
+  move ''      to $A.AugTotalEmployeeCnt
+  move ''      to $A.SepTotalEmployeeCnt
+  move ''      to $A.OctTotalEmployeeCnt
+  move ''      to $A.NovTotalEmployeeCnt
+  move ''      to $A.DecTotalEmployeeCnt
+  move ''      to $A.YrlyAggregatedGroupInd
+  move ''      to $A.JanAggregatedGroupInd
+  move ''      to $A.FebAggregatedGroupInd
+  move ''      to $A.MarAggregatedGroupInd
+  move ''      to $A.AprAggregatedGroupInd
+  move ''      to $A.MayAggregatedGroupInd
+  move ''      to $A.JunAggregatedGroupInd
+  move ''      to $A.JulAggregatedGroupInd
+  move ''      to $A.AugAggregatedGroupInd
+  move ''      to $A.SepAggregatedGroupInd
+  move ''      to $A.OctAggregatedGroupInd
+  move ''      to $A.NovAggregatedGroupInd
+  move ''      to $A.DecAggregatedGroupInd
+  move ''      to $A.YrlyALESect4980HTrnstReliefCd
+  move ''      to $A.JanALESect4980HTrnstReliefCd
+  move ''      to $A.FebALESect4980HTrnstReliefCd
+  move ''      to $A.MarALESect4980HTrnstReliefCd
+  move ''      to $A.AprALESect4980HTrnstReliefCd
+  move ''      to $A.MayALESect4980HTrnstReliefCd
+  move ''      to $A.JunALESect4980HTrnstReliefCd
+  move ''      to $A.JulALESect4980HTrnstReliefCd
+  move ''      to $A.AugALESect4980HTrnstReliefCd
+  move ''      to $A.SepALESect4980HTrnstReliefCd
+  move ''      to $A.OctALESect4980HTrnstReliefCd
+  move ''      to $A.NovALESect4980HTrnstReliefCd
+  move ''      to $A.DecALESect4980HTrnstReliefCd
+
+end-procedure
+
+
+begin-procedure Clear-OtherALEMemGrp-Array
+
+  move 0 to #i
+  while #i < {OthALEMemGrpMax}
+    put ' ' into OthALEMemGrp(#i) ALE_Member
+    put ' ' into OthALEMemGrp(#i) BusinessNameLine1Txt
+    put ' ' into OthALEMemGrp(#i) BusinessNameLine2Txt
+    put ' ' into OthALEMemGrp(#i) BusinessNameControlTxt
+    put ' ' into OthALEMemGrp(#i) TINRequestTypeCd
+    put ' ' into OthALEMemGrp(#i) EIN
+    add 1 to #i
+  end-while
+
+end-procedure
+
+
+begin-procedure Clear-DepBen-Array
+
+  move 0 to #i
+  while #i < {DepBenXmitMax}
+    put '' into DepBenData(#i) DependentBenef
+    put '' into DepBenData(#i) CoveredIndividualName
+    put '' into DepBenData(#i) PersonFirstNm
+    put '' into DepBenData(#i) PersonMiddleNm
+    put '' into DepBenData(#i) PersonLastNm
+    put '' into DepBenData(#i) SuffixNm
+    put '' into DepBenData(#i) PersonNameControlTxt
+    put '' into DepBenData(#i) CoveredIndividualSSN1
+    put '' into DepBenData(#i) CoveredIndividualSSNOrig
+    put '' into DepBenData(#i) CoveredIndividualDOB
+    put '' into DepBenData(#i) BirthDatePrt
+    put '' into DepBenData(#i) CoveredIndividualAnnualInd1
+    put '' into DepBenData(#i) JanInd
+    put '' into DepBenData(#i) FebInd
+    put '' into DepBenData(#i) MarInd
+    put '' into DepBenData(#i) AprInd
+    put '' into DepBenData(#i) MayInd
+    put '' into DepBenData(#i) JunInd
+    put '' into DepBenData(#i) JulInd
+    put '' into DepBenData(#i) AugInd
+    put '' into DepBenData(#i) SepInd
+    put '' into DepBenData(#i) OctInd
+    put '' into DepBenData(#i) NovInd
+    put '' into DepBenData(#i) DecInd
+    add 1 to #i
+  end-while
+
+end-procedure
+
+
+begin-procedure Create-Order-By
+
+  move ''  to $Sort1
+  move ''  to $Sort2
+  evaluate $SortCode1
+    when = '1'
+      evaluate $SortCode2
+        when = '1'
+          move 'ORDER BY ACA_EE.EMPLID'     to $Sort2
+          break
+        when = '2'
+          move 'ORDER BY ACA_EE.SSN'        to $Sort2
+          break
+        when = '3'
+          move 'ORDER BY ACA_EE.LAST_NAME, ACA_EE.EMPLID'  to $Sort2
+          break
+      end-evaluate
+      break
+    when = '5'
+      move 'ORDER BY ACA_EE.POSTAL, ' to $Sort1
+      evaluate $SortCode2
+        when = '1'
+          move 'ACA_EE.EMPLID'     to $Sort2
+          break
+        when = '2'
+          move 'ACA_EE.SSN'        to $Sort2
+          break
+        when = '3'
+          move 'ACA_EE.LAST_NAME, ACA_EE.EMPLID'  to $Sort2
+          break
+      end-evaluate
+      break
+  end-evaluate
+
+  let $SortEE = $Sort1 || $Sort2
+
+end-procedure
+
+
+begin-procedure Clear-ALE-History
+
+begin-SQL On-Error=Ignore
+DELETE FROM PS_ACA_ALE_MEM_SUB
+WHERE ACA_DAT_EXTRACT_ID  = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND ACA_ALE_MEMBER      = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND ACA_CALENDAR_YEAR   = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND ACA_PROCESS_TYPE    = $ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+  AND EFFSEQ = #Upd_ALE_Seq
+[$Replace_1094_SQL]
+end-SQL
+
+end-procedure
+
+
+begin-procedure Clear-Employee-History
+
+begin-SQL On-Error=Ignore
+DELETE FROM PS_ACA_EE_XMT_HIST
+WHERE ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND ACA_ALE_MEMBER     = &ACA_EE.ACA_ALE_MEMBER
+  AND ACA_CALENDAR_YEAR  = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND ACA_PROCESS_TYPE   = $ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+  AND ACA_ALE_SEQNO      = #Upd_ALE_Seq
+[$Replace_1094_SQL]
+end-SQL
+
+end-procedure
+
+
+begin-procedure Update-ACA-EE
+
+  let $err-statement = 'Update-ACA-EE, UPDATE PS_ACA_EMPLOYEE'
+
+  evaluate $ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+! Replace Transmission or Replace Submission
+    when = 'P'
+    when = 'Q'
+      let #Submission_Count = &REPSEQ.ACA_1094_SUBID
+      break
+  end-evaluate
+
+begin-SQL On-Error=SQL-Error
+
+UPDATE PS_ACA_EMPLOYEE
+  SET ACA_1094_SUBID = #Submission_Count,
+      ACA_1095_RECID = #EE_Count,
+      ACA_PRO_FLG = 'T'
+WHERE ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND ACA_ALE_MEMBER = &ACA_EE.ACA_ALE_MEMBER
+  AND ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND EMPLID = &ACA_EE.EMPLID
+  AND EFFSEQ = &ACA_EE.EFFSEQ
+end-SQL
+
+end-procedure
+
+
+begin-procedure Update-ACE-EE-Sub-Hist
+
+  let $err-statement = 'Insert-ACA-EE-Hist, INSERT PS_ACA_EE_XMT_HIST'
+
+  evaluate $ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+! Replace Transmission or Replace Submission
+    when = 'P'
+    when = 'Q'
+      let #Submission_Count = &REPSEQ.ACA_1094_SUBID
+      break
+  end-evaluate
+
+begin-SQL on-error=Sql-Statement-Error
+INSERT INTO PS_ACA_EE_XMT_HIST
+(ACA_DAT_EXTRACT_ID
+,ACA_ALE_MEMBER
+,ACA_CALENDAR_YEAR
+,ACA_PROCESS_TYPE
+,ACA_ALE_SEQNO
+,ACA_1094_SUBID
+,EMPLID
+,EFFSEQ
+,ACA_1095_RECID
+,ACA_REISSUE
+,ACA_VOID
+,ACA_XMIT_FILENAME
+,ACA_RECEIPT_ID)
+VALUES
+($ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+,&ACA_EE.ACA_ALE_MEMBER
+,#ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+,$ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+,#Upd_ALE_Seq
+,#Submission_Count
+,&ACA_EE.EMPLID
+,&ACA_EE.EFFSEQ
+,#EE_Count
+,&ACA_EE.ACA_REISSUE
+,&ACA_EE.ACA_VOID
+,$FName3
+,' ')
+end-SQL
+
+end-procedure
+
+
+begin-procedure Update-ACA-ALE
+
+begin-SQL
+UPDATE PS_ACA_ALE_MEMBER
+  SET ACA_PRO_FLG = 'T',
+      LASTUPDDTTM = {DateTimeIn-Prefix}$SysDateTime{DateTimeIn-Suffix},
+      LASTUPDOPRID = $Prcs_OprID
+WHERE PS_ACA_ALE_MEMBER.ACA_DAT_EXTRACT_ID = $ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+  AND PS_ACA_ALE_MEMBER.ACA_ALE_MEMBER = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND PS_ACA_ALE_MEMBER.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND PS_ACA_ALE_MEMBER.EFFSEQ = &ALE_MEM.EFFSEQ
+end-SQL
+
+end-procedure
+
+
+begin-procedure Update-ACA-ALE-Submission
+
+  if rtrim($A.YrlyAggregatedGroupInd, ' ') = ''
+    let $Insert.YrlyAggregatedGroupInd = ' '
+  else
+    let $Insert.YrlyAggregatedGroupInd = $A.YrlyAggregatedGroupInd
+  end-if
+
+  do Insert-ACA-ALE-MEM-SUB
+
+end-procedure
+
+
+begin-procedure Insert-ACA-ALE-MEM-SUB
+
+  let $err-statement = 'Insert-ACA-ALE-MEM-SUB, INSERT PS_ACA_ALE_MEM_SUB'
+
+  evaluate $ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+! Replace Transmission or Replace Submission
+    when = 'P'
+    when = 'Q'
+      let #Submission_Count = &REPSEQ.ACA_1094_SUBID
+      break
+  end-evaluate
+
+begin-SQL on-error=Sql-Statement-Error
+INSERT INTO PS_ACA_ALE_MEM_SUB
+(ACA_DAT_EXTRACT_ID
+,ACA_ALE_MEMBER
+,ACA_CALENDAR_YEAR
+,ACA_PROCESS_TYPE
+,EFFSEQ
+,ACA_1094_SUBID
+,ACA_RECEIPT_ID
+,ACA_TOT_PER_XMIT
+,ACA_AUTH_TRANSMIT
+,ACA_TOT_FORMS_ALE
+,ACA_MEM_AGGREG_GRP
+,ACA_UUID
+,ACA_XMIT_FILENAME
+,ACA_XMIT_STATUS
+,LASTUPDDTTM
+,LASTUPDOPRID)
+VALUES
+($ACA_XML_RUNCTL.ACA_DAT_EXTRACT_ID
+,$ACA_XML_RUNCTL.ACA_ALE_MEMBER
+,#ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+,$ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+,#Upd_ALE_Seq
+,#Submission_Count
+,' '
+,#ALE_Sub_EE_Count
+,$A.AuthoritativeTransmittalInd
+,#A.TotalForm1095CALEMemberCnt
+,$Insert.YrlyAggregatedGroupInd
+,' '
+,$FName3
+,'N'
+,{DateTimeIn-Prefix}$SysDateTime{DateTimeIn-Suffix}
+,$Prcs_OprID)
+end-SQL
+
+end-procedure
+
+
+begin-procedure Clear-ACA-Xmit-Files-Rec
+
+  let $err-statement = 'Clear-ACA-Xmit-Files-Rec, DELETE PS_ACA_XMIT_FILES'
+
+begin-SQL on-error=Sql-Statement-Error
+DELETE FROM PS_ACA_XMIT_FILES
+WHERE OPRID = $Prcs_OprID
+  AND RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-SQL
+
+end-procedure
+
+
+begin-procedure Insert-ACA-Xmit-Files-Rec
+
+  let $err-statement = 'Insert-ACA-Xmit-Files-Rec, DINSERT INTO PS_ACA_XMIT_FILES'
+
+begin-SQL on-error=Sql-Statement-Error
+INSERT INTO PS_ACA_XMIT_FILES
+(OPRID
+,RUN_CNTL_ID
+,PRCSINSTANCE
+,ACA_1094_SUBID
+,SEQNUM
+,JOBINSTANCE
+,ACA_SOURCEFILE
+,ACA_SOURCELOC)
+VALUES
+($Prcs_OprID
+,$Prcs_Run_Cntl_ID
+,#prcs_process_instance
+,#Submission_Count
+,#Upd_ALE_Seq
+,#prcs_job_instance
+,$FName3
+,$sourceLocation3)
+end-SQL
+
+end-procedure
+
+
+begin-procedure Open-Print-Files
+
+  if $Consent <> 'C'
+    move 1 to #BatchSize
+  else
+    move 0 to #BatchSize
+  end-if
+
+  move 1 to #BatchId
+  let $BurstValueSave = ''
+
+! SELF-SERVICE FORMS
+  let #FNum  = 0
+  let #FStat = 0
+
+! BULK PRINT FORMS
+  let $FName2 = 'ACA1095C.xml'
+  let $sourceFile2     = $FName2 || '{IMPORTSUFFIX}'
+  let $sourceLocation2 = '{IMPORTPREFIX}' || ''
+  let $sourceFileName2 = rtrim($sourceLocation2,' ') || rtrim($sourceFile2,' ')
+  let #FNum2  = 4
+  let #FStat2 = 0
+  do Open-XML-File($FName2, #FNum2, #FStat2)
+
+  do XML-Open-Tag('ACA_Create', $openTag2, $nsPrefixNull)
+  do Write-XML-Line(#Fnum2, $openTag2)
+
+end-procedure
+
+
+begin-procedure Close-Print-Files
+
+  do Capture-OS
+  do Insert-ACA-Runcontrol
+
+  do XML-Close-Tag('ACA_Create', $closeTag, $nsPrefixNull)
+  do Write-XML-Line(#Fnum, $closeTag)
+  do Close-XML-File(#FNum)
+
+  do XML-Close-Tag('ACA_Create', $closeTag2, $nsPrefixNull)
+  do Write-XML-Line(#Fnum2, $closeTag2)
+  do Close-XML-File(#FNum2)
+
+end-procedure
+
+
+begin-procedure Open-XMIT-File
+
+! TRANSMITTAL FILE
+
+  let $XmitDate = datetostr(datenow(),'YYYYMMDD')
+  Let $EditTime = edit(datenow(), 'HH24:MI:SS.NNNNNN')
+  let $EditTime_hh = substr($EditTime, 1, 2)
+  let $EditTime_mi = substr($EditTime, 4, 2)
+  let $EditTime_ss = substr($EditTime, 7, 2)
+  let $EditTime_ms = substr($EditTime, 10, 3)
+  let $XmitTime = $EditTime_hh || $EditTime_mi || $EditTime_ss || $EditTime_ms
+
+  if $ACA_XML_RUNCTL.ACA_FINAL_PRINT = 'N'
+    let $FName3 = 'PREXMIT' ||  $A.TCC || $XmitDate ||'T' || $XmitTime || 'Z' || '.xml'
+  else
+    let $FName3 = '1094C_Request_' || $A.TCC || '_' || $XmitDate ||'T' || $XmitTime || 'Z' || '.xml'
+  end-if
+
+  let $sourceFile3     = $FName3 || '{IMPORTSUFFIX}'
+  let $sourceLocation3 = '{IMPORTPREFIX}' || ''
+  let $sourceFileName3 = rtrim($sourceLocation3,' ') || rtrim($sourceFile3,' ')
+  let #FNum3  = 8
+  let #FStat3 = 0
+  do Open-XML-File($FName3, #FNum3, #FStat3)
+
+  evaluate $ACA_Calendar_Year
+    when = '2015'
+      let $Form109495CT_1 = 'n1:Form109495CTransmittalUpstream xmlns="urn:us:gov:treasury:irs:ext:aca:air:7.0" '
+      let $Form109495CT_2 = 'xmlns:irs="urn:us:gov:treasury:irs:common" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+      let $Form109495CT_3 = 'xmlns:n1="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage" '
+      let $Form109495CT_4 = 'xsi:schemaLocation="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage IRS-Form1094-1095CTransmitterUpstreamMessage.xsd"'
+      break
+    when = '2016'
+      let $Form109495CT_1 = 'p:Form109495CTransmittalUpstream xmlns:p="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage" xmlns:p1="urn:us:gov:treasury:irs:ext:aca:air:ty16" '
+      let $Form109495CT_2 = 'xmlns:p2="urn:us:gov:treasury:irs:common" xmlns:p3="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" '
+      let $Form109495CT_3 = 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage '
+      let $Form109495CT_4 = 'IRS-Form1094-1095CTransmitterUpstreamMessage.xsd "'
+      break
+    when = '2017'
+      let $Form109495CT_1 = 'p:Form109495CTransmittalUpstream xmlns:p="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage" xmlns:p1="urn:us:gov:treasury:irs:ext:aca:air:ty17" '
+      let $Form109495CT_2 = 'xmlns:p2="urn:us:gov:treasury:irs:common" xmlns:p3="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" '
+      let $Form109495CT_3 = 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage '
+      let $Form109495CT_4 = 'IRS-Form1094-1095CTransmitterUpstreamMessage.xsd "'
+      break
+    when = '2018'
+      let $Form109495CT_1 = 'p:Form109495CTransmittalUpstream xmlns:p="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage" xmlns:p1="urn:us:gov:treasury:irs:ext:aca:air:ty18" '
+      let $Form109495CT_2 = 'xmlns:p2="urn:us:gov:treasury:irs:common" xmlns:p3="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" '
+      let $Form109495CT_3 = 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage '
+      let $Form109495CT_4 = 'IRS-Form1094-1095CTransmitterUpstreamMessage.xsd "'
+      break
+    when = '2019'
+      let $Form109495CT_1 = 'p:Form109495CTransmittalUpstream xmlns:p="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage" xmlns:p1="urn:us:gov:treasury:irs:ext:aca:air:ty19" '
+      let $Form109495CT_2 = 'xmlns:p2="urn:us:gov:treasury:irs:common" xmlns:p3="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" '
+      let $Form109495CT_3 = 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage '
+      let $Form109495CT_4 = 'IRS-Form1094-1095CTransmitterUpstreamMessage.xsd "'
+      break
+    when = '2020'
+      let $Form109495CT_1 = 'p:Form109495CTransmittalUpstream xmlns:p="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage" xmlns:p1="urn:us:gov:treasury:irs:ext:aca:air:ty20" '
+      let $Form109495CT_2 = 'xmlns:p2="urn:us:gov:treasury:irs:common" xmlns:p3="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" '
+      let $Form109495CT_3 = 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:us:gov:treasury:irs:msg:form1094-1095Ctransmitterupstreammessage '
+      let $Form109495CT_4 = 'IRS-Form1094-1095CTransmitterUpstreamMessage.xsd "'
+      break
+  end-evaluate
+
+  let $Form109495CT_All = $Form109495CT_1 || $Form109495CT_2 || $Form109495CT_3 || $Form109495CT_4
+
+  do XML-Open-Tag($Form109495CT_All, $openTag3, $nsPrefixNull)
+  do Write-XML-Line(#Fnum3, $openTag3)
+
+end-procedure
+
+
+begin-procedure Close-XMIT-File
+
+! TRANSMITTAL FILE
+
+  do XML-Close-Tag('Form1095CUpstreamDetail', $closeTag3, $nsPrefix_1)
+  do Write-XML-Line(#Fnum3, $closeTag3)
+
+  do XML-Close-Tag('Form1094CUpstreamDetail', $closeTag3, $nsPrefix_1)
+  do Write-XML-Line(#Fnum3, $closeTag3)
+
+  do XML-Close-Tag('Form109495CTransmittalUpstream', $closeTag3, $nsPrefix_4)
+  do Write-XML-Line(#Fnum3, $closeTag3)
+
+  do Close-XML-File(#FNum3)
+
+end-procedure
+
+
+begin-procedure Close-ER-XMIT-File
+
+! TRANSMITTAL FILE
+
+  do XML-Close-Tag('Form1094CUpstreamDetail', $closeTag3, $nsPrefix_1)
+  do Write-XML-Line(#Fnum3, $closeTag3)
+
+  do XML-Close-Tag('Form109495CTransmittalUpstream', $closeTag3, $nsPrefix_4)
+  do Write-XML-Line(#Fnum3, $closeTag3)
+
+  do Close-XML-File(#FNum3)
+
+end-procedure
+
+
+begin-procedure Get-XMLP-Definitions
+
+  do Get-XML-URLID
+  do Get-Report-Definitions
+
+  move 'N'  to $ACA_XML_RUNCTL.ACA_YE_RPT_BURST
+  move 'N'  to $ACA_YE_RPT_BURST
+
+  if $OPT_SS.ACA_YE_RPT_SS = 'Y'
+    move $OPT_SS.REPORT_DEFN_ID to $Report_Defn_ID
+
+!   do Check-Burst-Value
+!   move $ACA_YE_RPT_BURST  to $ACA_XML_RUNCTL.ACA_YE_RPT_BURST
+
+!   if $ACA_YE_RPT_BURST <> 'Y'
+!     move 'N' to $OPT_SS.ACA_YE_RPT_SS
+!     display 'No burst fieldname given for self-service report definition ' noline
+!     display $OPT_SS.REPORT_DEFN_ID
+!   end-if
+  end-if
+
+  move 'N'  to $ACA_YE_RPT_BURST
+
+  if #OPT_BLK.ACA_RPT_BATCH_SIZE <> 0
+    move $OPT_BLK.REPORT_DEFN_ID to $Report_Defn_ID
+    do Check-Burst-Value
+
+    if $ACA_YE_RPT_BURST <> 'Y'
+      display 'No burst fieldname given for batched report definition ' noline
+      display $OPT_BLK.REPORT_DEFN_ID
+    end-if
+  end-if
+
+end-procedure
+
+
+begin-procedure Get-XML-URLID
+
+! fetch XML data files URLID
+
+  move ' '  to $OPT_XML.ACA_YE_XMLURLID
+
+begin-SELECT
+OPT_XML.ACA_YE_XMLURLID
+
+  move &OPT_XML.ACA_YE_XMLURLID      to $OPT_XML.ACA_YE_XMLURLID
+
+  exit-SELECT
+
+FROM PS_ACA_YE_OPT  OPT_XML
+WHERE OPT_XML.ACA_CALENDAR_YEAR  = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND OPT_XML.ACA_FORM_TYPE      = $ACA_Form_Type
+end-SELECT
+
+  if $OPT_XML.ACA_YE_XMLURLID = ' '
+    display 'XML data file URLID is missing.'
+  end-if
+
+end-procedure
+
+
+begin-procedure Get-Report-Definitions
+
+! fetch definitions for self-service
+
+  move 'N'  to $OPT_SS.ACA_YE_RPT_SS
+  move ' '  to $OPT_SS.REPORT_DEFN_ID
+  move ' '  to $OPT_SS.TMPLDEFN_ID
+
+begin-SELECT
+OPT_SS.ACA_YE_RPT_SS
+OPT_SS.REPORT_DEFN_ID
+OPT_SS.TMPLDEFN_ID
+OPT_SS.ACA_RPT_BATCH_SIZE
+
+  move &OPT_SS.ACA_YE_RPT_SS      to $OPT_SS.ACA_YE_RPT_SS
+  move &OPT_SS.REPORT_DEFN_ID     to $OPT_SS.REPORT_DEFN_ID
+  move &OPT_SS.TMPLDEFN_ID        to $OPT_SS.TMPLDEFN_ID
+  move &OPT_SS.ACA_RPT_BATCH_SIZE to #OPT_SS.ACA_RPT_BATCH_SIZE
+
+  exit-SELECT
+
+FROM PS_ACA_YE_OPT_RPT OPT_SS
+WHERE OPT_SS.ACA_CALENDAR_YEAR  = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND OPT_SS.ACA_FORM_TYPE      = $ACA_Form_Type
+  AND OPT_SS.ACA_YE_RPT_SS      = 'Y'
+end-SELECT
+
+! fetch definitions for bulk report
+
+  move ' '  to $OPT_BLK.REPORT_DEFN_ID
+  move ' '  to $OPT_BLK.TMPLDEFN_ID
+  move 0    to #OPT_BLK.ACA_RPT_BATCH_SIZE
+
+begin-SELECT
+OPT_BLK.REPORT_DEFN_ID
+OPT_BLK.TMPLDEFN_ID
+OPT_BLK.ACA_RPT_BATCH_SIZE
+
+  move &OPT_BLK.REPORT_DEFN_ID    to $OPT_BLK.REPORT_DEFN_ID
+  move &OPT_BLK.TMPLDEFN_ID       to $OPT_BLK.TMPLDEFN_ID
+  move &OPT_BLK.ACA_RPT_BATCH_SIZE to #OPT_BLK.ACA_RPT_BATCH_SIZE
+
+  exit-SELECT
+
+FROM PS_ACA_YE_OPT_RPT OPT_BLK
+WHERE OPT_BLK.ACA_CALENDAR_YEAR     = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND OPT_BLK.ACA_FORM_TYPE     = $ACA_Form_Type
+  AND OPT_BLK.ACA_YE_RPT_SS    <> 'Y'
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Check-Burst-Value
+
+  let $ACA_YE_RPT_BURST = 'N'
+
+begin-SELECT
+burst.BURST_FIELDNAME
+
+  if rtrim(&burst.BURST_FIELDNAME, ' ') = ''
+    let $ACA_YE_RPT_BURST = 'N'
+  else
+    let $ACA_YE_RPT_BURST = 'Y'
+  end-if
+
+  exit-SELECT
+
+from PSXPRPTDEFN burst
+WHERE burst.REPORT_DEFN_ID = $Report_Defn_ID
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Clear-Guide-Temp
+
+  let $err-statement = 'Clear-Guide-Temp, DELETE PS_ACA_SS_GDE_TMP'
+
+begin-SQL on-error=Sql-Statement-Error
+DELETE FROM PS_ACA_SS_GDE_TMP
+WHERE ACA_SS_UPD_ACTION <> 'F'
+end-SQL
+
+end-procedure
+
+
+begin-procedure Insert-Guide-Data
+
+  if rtrim($A.ACA_ALE_MEM_GRP, ' ') = ''
+    let $Insert.ACA_ALE_MEM_GRP = ' '
+  else
+    let $Insert.ACA_ALE_MEM_GRP = $A.ACA_ALE_MEM_GRP
+  end-if
+
+  let $updateAction = 'I'
+  let $NotifyFlag = 'N'
+  do Get-Guide-Seqnum
+
+  let $err-statement = 'Insert-Guide-Data, INSERT PS_ACA_SS_GDE_TMP'
+
+begin-SQL on-error=Sql-Statement-Error
+INSERT INTO PS_ACA_SS_GDE_TMP
+(OPRID
+,RUN_CNTL_ID
+,PRCSINSTANCE
+,PRCSNAME
+,JOBINSTANCE
+,EMPLID
+,ACA_CALENDAR_YEAR
+,ACA_ALE_MEM_GRP
+,ACA_ALE_MEMBER
+,ACA_FORM_TYPE
+,ACA_SEQNO
+,ACA_YE_FORM_SEQNUM
+,ACA_PROCESS_TYPE
+,ACA_FORM_ISSUE_DT
+,ACA_FORM_VIEW_DT
+,ATTACHSYSFILENAME
+,ATTACHUSERFILE
+,ACA_YE_FILEURLID
+,ACA_REPORT_URL
+,ACA_BURST_ID
+,PROCESS_INSTANCE
+,REPORT_DEFN_ID
+,BURST_FIELDNAME
+,ACA_NOTIFY_FLG
+,ACA_FINAL_PRINT
+,ACA_FORM_STATUS
+,ACA_SS_UPD_ACTION)
+Values
+($Prcs_OprID
+,$Prcs_Run_Cntl_ID
+,#prcs_process_instance
+,'BAC020'
+,#prcs_job_instance
+,$E.EMPLID
+,#ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+,$Insert.ACA_ALE_MEM_GRP
+,$E.ACA_ALE_MEMBER
+,$ACA_Form_Type
+,#E.SEQUENCE_NUMBER
+,#GDE.ACA_YE_FORM_SEQNUM
+,$ACA_XML_RUNCTL.ACA_PROCESS_TYPE
+,$IssueDate
+,$ViewingDate1                 ! viewing date
+,$FName                        ! attachsysfilename
+,$FName                        ! attachuserfile
+,$OPT_XML.ACA_YE_XMLURLID      ! xml data file urlid
+,' '                           ! report url
+,$BurstValue
+,0
+,$OPT_SS.REPORT_DEFN_ID
+,'BURST_VALUE'
+,$NotifyFlag
+,$ACA_XML_RUNCTL.ACA_FINAL_PRINT
+,$E.ACA_Form_Status
+,$updateAction)
+end-SQL
+
+end-procedure
+
+
+begin-procedure Insert-ACA-Runcontrol
+
+  let $err-statement = 'Insert-ACA-Runcontrol, INSERT PS_ACA_FORM_RCTL'
+
+begin-SQL on-error=Sql-Statement-Error
+INSERT INTO PS_ACA_FORM_RCTL
+(OPRID
+,RUN_CNTL_ID
+,PRCSINSTANCE
+,PRCSNAME
+,JOBINSTANCE
+,REPORT_DEFN_ID
+,TMPLDEFN_ID
+,ACA_SOURCEFILE
+,ACA_SOURCELOC
+,ACA_SRC_FILENAME
+,ACA_OSPLATFORM
+,ACA_FORM_TYPE
+,ACA_FINAL_PRINT
+,ACA_COPY_TYPE
+,ACA_YE_RPT_BURST
+,ACA_YE_RPT_SS
+,ACA_RPT_DEFN_ID_SS
+,ACA_RPT_TMPL_ID_SS
+,ACA_SOURCEFILE2
+,ACA_SRC_FILENAM2
+,ACA_FILE_COUNT
+,ACA_YE_XMLURLID
+,ACA_CALENDAR_YEAR
+)
+Values
+($Prcs_OprID
+,$Prcs_Run_Cntl_ID
+,#prcs_process_instance
+,'BAC020'
+,#prcs_job_instance
+,$OPT_BLK.REPORT_DEFN_ID
+,$OPT_BLK.TMPLDEFN_ID
+,$sourceFile2
+,$sourceLocation2
+,$sourceFileName2
+,$yeOS
+,$ACA_Form_Type
+,$ACA_XML_RUNCTL.ACA_FINAL_PRINT
+,'1'
+,$ACA_XML_RUNCTL.ACA_YE_RPT_BURST
+,$OPT_SS.ACA_YE_RPT_SS
+,$OPT_SS.REPORT_DEFN_ID
+,$OPT_SS.TMPLDEFN_ID
+,$sourceFile2      ! $sourceFile2
+,$sourceFileName2  ! $sourceFileName2
+,0
+,$OPT_XML.ACA_YE_XMLURLID
+,#ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+)
+end-SQL
+
+end-procedure
+
+
+begin-procedure Get-Setup-Viewing-Date
+
+  let $yeopt.ACA_FORM_VIEW_DT = ''
+  let $yeopt.ACA_YE_SS_NOTE_DT   = ''
+
+  let $Year4 = '1'
+  do Format-DateTime('20491231', $ViewingDate, {DEFCMP},'','native')
+
+begin-SELECT
+YEOPT.ACA_FORM_VIEW_DT
+YEOPT.ACA_YE_SS_NOTE_DT
+
+  let $yeopt.ACA_FORM_VIEW_DT = &yeopt.ACA_FORM_VIEW_DT
+  let $yeopt.ACA_YE_SS_NOTE_DT   = &yeopt.ACA_YE_SS_NOTE_DT
+
+  if $yeopt.ACA_FORM_VIEW_DT <> ''
+     and $yeopt.ACA_FORM_VIEW_DT >= $IssueDate
+
+    let $ViewingDate = $yeopt.ACA_FORM_VIEW_DT
+
+  else
+    if $yeopt.ACA_FORM_VIEW_DT <> ''
+       and $yeopt.ACA_FORM_VIEW_DT < $IssueDate
+
+      let $ViewingDate = $IssueDate
+
+    end-if
+  end-if
+
+from PS_ACA_FORM_YEOPT YEOPT
+WHERE YEOPT.ACA_ALE_MEMBER = $ACA_XML_RUNCTL.ACA_ALE_MEMBER
+  AND YEOPT.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND YEOPT.ACA_FORM_TYPE = $ACA_Form_Type
+end-SELECT
+
+end-procedure
+
+
+begin-procedure Get-Guide-Seqnum
+
+  let #GDE.ACA_YE_FORM_SEQNUM =  0
+  let $ViewingDate1 = $ViewingDate
+
+begin-SELECT
+GDE.ACA_YE_FORM_SEQNUM
+GDE.ACA_FORM_VIEW_DT
+GDE.ACA_NOTIFY_FLG
+
+  let #GDE.ACA_YE_FORM_SEQNUM = &GDE.ACA_YE_FORM_SEQNUM
+  let $ViewingDate1 = &GDE.ACA_FORM_VIEW_DT
+  let $NotifyFlag = &GDE.ACA_NOTIFY_FLG
+  let $updateAction = 'C'
+
+  exit-SELECT
+
+from PS_ACA_SS_GDE GDE
+WHERE GDE.EMPLID = $E.EMPLID
+  AND GDE.ACA_CALENDAR_YEAR = #ACA_XML_RUNCTL.ACA_CALENDAR_YEAR
+  AND GDE.ACA_SEQNO = #E.SEQUENCE_NUMBER
+ORDER BY GDE.ACA_YE_FORM_SEQNUM DESC
+end-SELECT
+
+  if $updateAction <> 'C'
+    let #GDE.ACA_YE_FORM_SEQNUM = #GDE.ACA_YE_FORM_SEQNUM + 1
+  end-if
+
+! It is possible that an Original is run more than once. Therefore,
+! the forms must not be viewable until released.
+  if $updateAction = 'C' and $NotifyFlag = 'N'
+
+    let $ViewingDate1 = $ViewingDate
+  end-if
+
+end-procedure
+
+
+begin-procedure Capture-OS
+
+  let $yeOS = ' '
+
+  #ifdef NT
+    let $yeOS = 'NT'
+  #end-if
+
+  #ifdef MVS
+    let $yeOS = 'MVS'
+  #end-if
+
+  #ifdef UNIX
+    let $yeOS = 'UNIX'
+  #end-if
+
+end-procedure
+
+
+begin-procedure Get-SS-Consent
+
+  let $Consent = 'N'
+
+begin-SELECT
+CONS.ACA_SS_CON_CURRENT
+
+  move &CONS.ACA_SS_CON_CURRENT to $Consent
+
+FROM PS_ACA_SS_CON_DTL CONS
+WHERE CONS.EMPLID = $E.EmplID
+  AND CONS.LASTUPDDTTM =
+  (SELECT MAX(CONS1.LASTUPDDTTM)
+       FROM PS_ACA_SS_CON_DTL CONS1
+       WHERE CONS1.EMPLID = CONS.EMPLID)
+end-SELECT
+
+  if $Consent = 'C'
+    let $UserFlag = 'N'
+  else
+    let $UserFlag = 'Y'
+  end-if
+
+end-procedure
+
+
+!----------------------------------
+begin-procedure Get-Province-Name
+!----------------------------------
+
+begin-SELECT
+PRV.DESCR
+
+FROM  PS_STATE_TBL PRV
+WHERE PRV.COUNTRY = $PRV.Cntry
+  AND PRV.STATE = $PRV.State
+end-SELECT
+
+end-procedure
+
+
+!----------------------------------
+begin-procedure Sql-Statement-Error
+!----------------------------------
+
+  show $err-statement
+  show ' Error : ' $sql-error
+
+end-procedure
+
+
+begin-procedure Ignore
+
+! dummy procedure to avoid SQL error message on delete of empty table
+
+end-procedure
+
+
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+!#Include 'rotname1.sqc'  !Rotate-Name procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Update Process API
+!#Include 'readxlat.sqc'  !Reads from translate table
+#Include 'bacprt.sqc'    !ACA print routine
+#Include 'bacxmit.sqc'   !ACA transmittal routine
+#Include 'bacrnctl.sqc'  !ACA form reporting run control
+#Include 'bacxmlbl.sqc'  !Creates xml tags/elements
+

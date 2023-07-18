@@ -1,0 +1,1950 @@
+!***********************************************************************
+!   GPJPSC07:  Social Insurance Check Report                                *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/18:03:48:05                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  104                                                 !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc'   !Set environment
+#include 'setup32.sqc'  !Printer and page-size initialization, SETUP31 and
+                        !  SETUP32 SQCs to support HTML, HP PCL, PostScript,
+                        !  PDF and Window in addition to Line Printer as
+                        !  the output type.
+
+
+!***********************************************************************
+! begin-report                                                         *                                                          *
+!                                                                      *
+! Called By: N/A                                                       *
+! Calls:     Init-Processing                                           *
+!            Get-Values                                                *
+!            Process-Main                                              *
+!            Reset                                                     *
+!            Delete-From-AE-Tables                                     *
+!            End-Report                                                *
+!***********************************************************************
+
+begin-report
+
+  do Init-Processing
+
+  do Get-Values
+
+  do heading-csv
+
+  do Process-Main
+
+  do Print-Establis-details
+  do Print-Establis-details-csv
+
+  do Reset                        ! called from reset.sqc
+
+  Close 1
+
+  do Delete-From-AE-Tables
+
+  do Update-Prcs-Run-Status       ! called from prcsapi.sqc to update
+                                  ! the Process Monitor to Success
+end-report
+
+
+!***********************************************************************
+! Select-Parameters                                                    *                                                          *
+!                                                                      *
+! Called By: Get-Values                                                *
+!***********************************************************************
+
+begin-procedure Build-select
+
+let $Quote = ''''
+
+
+begin-SELECT
+
+#ifdef debugy
+    show 'BEGINNING RUNCONTROL SELECT'
+#end-if
+
+P.GPJP_HL_DIFF,
+P.GPJP_NC_DIFF,
+P.GPJP_PI_DIFF,
+P.GPJP_PF_DIFF
+P.DATE_YEAR_VAL
+P.GPJP_TAX_ESTAB
+P.MONTHCD
+P.GPJP_PAYEE_ID_TYPE
+ let $DATE_YEAR_VAL= &P.DATE_YEAR_VAL
+ let $MONTHCD=&P.MONTHCD
+ let $YEAR = edit ($DATE_YEAR_VAL ,'9999')
+  CONCAT '/'  with $YEAR
+  CONCAT $MONTHCD  with $YEAR
+  let $Payee_id_type = RTRIM(&P.GPJP_PAYEE_ID_TYPE,' ')
+
+  let $Difference = ''
+
+   if &P.GPJP_HL_DIFF = 'Y'
+        let $Difference = 'AND ((A.GPJP_TOTAL_HELPREM <> B.GPJP_PRE_TOTAL_HEL)'
+   end-if
+
+   if &P.GPJP_NC_DIFF = 'Y'
+        if $Difference = ''
+        LET $Difference = 'AND ((A.GPJP_TOTAL_NURPREM <> B.GPJP_PRE_TOTAL_NUR)'
+        else
+          LET $Difference = $Difference || ' OR (A.GPJP_TOTAL_NURPREM <> B.GPJP_PRE_TOTAL_NUR)'
+        end-if
+   end-if
+
+   if &P.GPJP_PI_DIFF = 'Y'
+        if $Difference = ''
+          let $Difference = ' AND ((A.GPJP_TOTAL_PENPREM <> B.GPJP_PRE_TOTAL_PEN)'
+        else
+          let $Difference = $Difference || ' OR (A.GPJP_TOTAL_PENPREM<> B.GPJP_PRE_TOTAL_PEN)'
+        end-if
+   end-if
+
+   if  &P.GPJP_PF_DIFF = 'Y'
+        if $Difference = ''
+          let $Difference = 'AND ((A.GPJP_TOTAL_PFPREM <> B.GPJP_PRE_TOTAL_PF)'
+        else
+          let $Difference = $Difference || ' OR (A.GPJP_TOTAL_PFPREM <> B.GPJP_PRE_TOTAL_PF)'
+        end-if
+    end-if
+   if $Difference != ''
+       let $Difference = $Difference ||')'
+      end-if
+FROM PS_GPJP_RC_SC_CHK P
+WHERE P.OPRID = $PRCS_OPRID
+AND P.RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+
+end-select
+
+
+end-procedure !Build-select
+
+!***********************************************************************
+! Init-Processing                                                      *
+!                                                                      *
+! Called By:    begin-report                                           *
+!                                                                      *
+! Calls:        Init-Datetime           - datetime.sqc                 *
+!               Get-Current-Datetime    - prcsapi.sqc (curdttim.sqc)   *
+!               Define-Prcs-Vars        - prcsapi.sqc (prcsdef.sqc)    *
+!               Get-Run-Control-Parms   - prcsapi.sqc                  *
+!               Init-Report                                            *
+!               Init-Number             - number.sqc                   *
+!               Get-Language-Codes      - prcslng.sqc                  *
+!                                                                      *
+! Description:  Standard PeopleSoft initialization processing.         *
+!***********************************************************************
+
+begin-procedure Init-Processing
+
+  do Init-Datetime                ! called from datetime.sqc
+
+  do Get-Current-Datetime         ! called from prcsapi.sqc (curdttim.sqc)
+
+  do Define-Prcs-Vars             ! called from prcsapi.sqc (prcsdef.sqc)
+
+  do Get-Run-Control-Parms        ! In prcsapi.sqc
+
+  do Init-Report
+
+  do Init-Number                  ! called from number.sqc
+
+  do Get-Language-Codes           ! called from prcslng.sqc
+
+  let $Report_Language       = $curr_language_cd   ! curr_language_cd resolved in prcslng.sqc
+
+  Let #FileCount = 1
+
+ end-procedure !Init-Processing
+
+!***********************************************************************
+! Init-Report                                                          *
+!                                                                      *
+! Called By: Init-Processing                                           *
+! Calls:     Init_Report_Translation    -   sqrtrans.sqc               *
+!            Append_Report_Translation  -   sqrtrans.sqc               *
+!            Get_Field_Information                                     *
+!            Format-DateTime                                           *
+!                                                                      *
+! Description:  Initializes variables, defines values for variables    *
+!               used in report header, date formatting, time           *
+!               formatting, translations & strings tables retrievals.  *
+!***********************************************************************
+
+begin-procedure Init-Report
+
+! Column definitons
+!Transaction Columns
+  #define Col_1         1
+  #define Col_2         5
+  #define Col_3         4
+  #define Col_4         12
+  #define Col_5         35
+  #define Col_6         52
+  #define Col_7         65
+  #define Col_7a         54
+  #define Col_8         80
+  #define Col_9         95
+  #define Col_10        105
+  #define Col_10a       93
+  #define Col_11        104
+  #define Col_12        119
+  #define Col_13        126
+  #define Col_14        135
+  #define Col_15        142
+  #define Col_16        149
+  #define Col_17        156
+  #define col_17a       158
+
+! Header Columns
+  #define Col_2h        9
+  #define Col_2h_1      15
+  #define Col_2h_2      20
+  #define Col_3h        22
+  #define Col_4h        64
+  #define Col_5h        76
+  #define Col_6h        88
+  #define Col_7h        98
+
+! Translations procedures & Strings Table retrievals.
+
+  do Init_Report_Translation ($ReportID,$curr_Language_Cd)
+  do Append_Report_Translation ('GPJPSC07')
+
+  do Get_Field_Information ('GPJPSC07','EMPLID',             $EMPLID_lbl,             #DW)
+  do Get_Field_Information ('GPJPSC07','EMPL_RCD',           $EMPL_RCD_lbl,           #DW)
+  do Get_Field_Information ('GPJPSC07','NAME',               $NAME_lbl,               #DW)
+  do Get_Field_Information ('GPJPSC07','AC_NAME',            $AC_NAME_lbl,            #DW)
+  do Get_Field_Information ('GPJPSC07','HI_CARDE',           $HI_CARDE_lbl,           #DW)
+  do Get_Field_Information ('GPJPSC07','PENS_CODE',          $PI_CODE_lbl,            #DW)
+  do Get_Field_Information ('GPJPSC07','OBJECT_MNTH',        $OBJECT_MNTH_lbl,        #DW)
+  do Get_Field_Information ('GPJPSC07','REASON',             $REASON_lbl,             #DW)
+  do Get_Field_Information ('GPJPSC07','HI_GRADE',           $HI_GRADE_lbl,           #DW)
+  do Get_Field_Information ('GPJPSC07','PI_GRADE',           $PI_GRADE_lbl,           #DW)
+  do Get_Field_Information ('GPJPSC07','HEALTH_INS',          $HELTH_INSURANCE_lbl,    #DW)
+  do Get_Field_Information ('GPJPSC07','HEALTH_INS2',         $HELTH_INSURANCE2_lbl,    #DW)
+  do Get_Field_Information ('GPJPSC07','NURSING_CARE_INS',   $NURSING_CARE_INSURANCE_lbl,   #DW)
+  do Get_Field_Information ('GPJPSC07','NURSING_CARE_INS2',  $NURSING_CARE_INSURANCE2_lbl,   #DW)
+  do Get_Field_Information ('GPJPSC07','PENSION_INS',        $EMPLOYEE_P_INSURANCE_lbl, #DW)
+  do Get_Field_Information ('GPJPSC07','PENSION_INS2',       $EMPLOYEE_P_INSURANCE2_lbl, #DW)
+  do Get_Field_Information ('GPJPSC07','PENSION_FOUND'      ,$INSURANCE_PENSION_FOUND_lbl,      #DW)
+  do Get_Field_Information ('GPJPSC07','EMPLOYEE_INS_PENSI', $EMPLOYEE_INS_PENSION_FOUND_lbl,      #DW)
+  do Get_Field_Information ('GPJPSC07','SI_ESTABLISHMENT',                 $SI_ESTABLISHMENT_lbl,               #DW)
+   do Get_Field_Information ('GPJPSC07','SI_ESTABLIS_NAME',                 $SI_ESTABLIS_NAME_lbl,               #DW)
+  do Get_Field_Information ('GPJPSC07','YEAR/MONTH',                 $MONTH_lbl,               #DW)
+
+  do Get_Field_Information ('GPJPSC07','EMPLOYEE_CONT', $EMPLOYEE_CONT_lbl,      #DW)
+  do Get_Field_Information ('GPJPSC07','PAYERS_CONTRI', $PAYERS_CONTRI_lbl,      #DW)
+  do Get_Field_Information ('GPJPSC07','SUM', $SUM_lbl,      #DW)
+  do Get_Field_Information ('GPJPSC07','HELTH_NURSING', $HELTH_NURSING_lbl,      #DW)
+  do Get_Field_Information ('GPJPSC07','PEN_PF', $PEN_PF_lbl,      #DW)
+  do Get_Field_Information ('GPJPSC07','GRADE',              $GRADE_lbl,              #DW)
+  do Get_Field_Information ('GPJPSC07','GRADE1',              $GRADE1_lbl,              #DW)
+  do Get_Field_Information ('GPJPSC07','PERMIUM',            $PERMIUM_lbl,            #DW)
+  do Get_Field_Information ('GPJPSC07','SUMMARY',            $SUMMARY_lbl,              #DW)
+  do Get_Field_Information ('GPJPSC07','ESTABLIS_TOTAL',            $ESTABLIS_TOTAL_lbl,              #DW)
+
+  do Get_Field_Information ('GPJPSC07','CURRENT',           $CURRENT_lbl,     #DW)
+  do Get_Field_Information ('GPJPSC07','PERVIOUS',          $PERVIOUS_lbl,    #DW)
+  do Get_Field_Information ('GPJPSC07','DELTA',             $DELTA_lbl,       #DW)
+
+  do Get_Field_Information ('GPJPSC07','RPT_TITLE',             $RPT_TITLE_lbl,       #DW)
+
+
+! Report variables.
+  let $ReportID       = 'GPJPSC07'
+  let $ReportTitle    = $RPT_TITLE_lbl
+  let $ReportDate     = $AsOfToday
+  let $ReportTime     = $AsOfNow
+
+
+! Initialize date formatting.                                          *
+
+    let $Date_Init = '1900-01-01 00:00:00.000'
+
+    #ifdef ORACLE
+           let $Date_Init = '01-NOV-1999'
+    #end-if
+
+    do Format-DateTime($Date_Init, $out999, {DEFDATE}, '', '')
+    let $_TableAlias = 'B'
+    do Security-Param
+
+   !Open record for writing
+
+    do Get-prcsoutputdir
+    if (rtrim($prcsoutputdir,' ') <> '')
+       move $prcsoutputdir to $Filename
+       concat 'gpjpsc07.csv' with $Filename
+    end-if
+
+    open $Filename as 1 for-writing record=2000
+
+
+end-procedure !Init-Report
+
+!***********************************************************************
+! Get-Values                                                           *
+!                                                                      *
+! Called By: begin-report                                              *
+! Calls:     Ask-Values         -   this program                       *
+!            Select-Parameters  -   tlrnctl1.sqc                       *
+!                                                                      *
+! Description:  If process instance blank, prompt user for input       *
+!               If populated, get values from run control              *
+!               Format dates to print in header                        *
+!***********************************************************************
+
+begin-procedure Get-Values
+
+    if $prcs_process_instance = ''
+        do Ask-Values
+    else
+       do Build-select
+    end-if
+    do Format-DateTime($FromDate,$HdgFromDt,{DEFDATE}, '', '')
+    do Format-DateTime($ThruDate,$HdgThruDt,{DEFDATE}, '', '')
+    !Select NAME Information
+    let $ESTAB =&P.GPJP_TAX_ESTAB
+    let $EstabType='SC'
+    do Get-Estab-Name
+
+end-procedure !Get-Values
+
+!***********************************************************************
+! Ask-Values                                                           *
+!                                                                      *
+! Called By: Get-Values                                                *
+! Calls:     none                                                      *
+!                                                                      *
+! Description: Prompt user to input values                             *
+!***********************************************************************
+
+begin-procedure Ask-Values
+
+  input $IncludeDetail 'Include Detail?  Y/N' TYPE=char maxlen=1
+
+end-procedure !Ask-Values
+
+!***************************
+begin-heading 8
+!***************************
+
+#include 'stdhdg01.sqc'
+
+!***********************************************************************
+! Print column definitions.  Some fields are lined up vertically with  *
+!   other fields on the report.  The first occurence of a column       *
+!   location is defined.  After that, fields that occur in the same    *
+!   column use the first field's column definition.  Field labels end  *
+!   in _lbl.  Other column definitions are for the field values.       *
+!***********************************************************************
+
+!Line 0
+print $SI_ESTABLISHMENT_lbl (+2,{Col_3})
+print  &P.GPJP_TAX_ESTAB (,{Col_5})
+print  $SI_ESTABLIS_NAME_lbl (,{Col_6})
+print  $EstabName (,{Col_10a})
+print  $MONTH_lbl (+1,{Col_3})
+print  $YEAR (,{Col_5})
+
+!Line 1
+print $GRADE_lbl (+1,{Col_10a})
+print $PERMIUM_lbl (,{Col_12})
+
+!Line 2
+!Transaction Header Line
+print $EMPLID_lbl (+2,{Col_3})
+print $NAME_lbl (,{Col_4})
+print  $AC_NAME_lbl (,{Col_5})
+if $Payee_id_type = '1'
+print  $HI_CARDE_lbl (,{Col_6})
+else
+print  $PI_CODE_lbl (,{Col_6})
+end-if
+print  $OBJECT_MNTH_lbl (,{Col_7})
+print  $REASON_lbl  (,{Col_8})
+print  $HI_GRADE_lbl (,{Col_9})
+print $PI_GRADE_lbl (,{Col_10})
+
+if &P.GPJP_HL_DIFF != 'Y' and &P.GPJP_NC_DIFF != 'Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+ print $HELTH_INSURANCE_lbl (,+2)
+ print $NURSING_CARE_INSURANCE_lbl (,+5)
+ print $EMPLOYEE_P_INSURANCE_lbl (,+5)
+ print $INSURANCE_PENSION_FOUND_lbl (,+5)
+end-if
+let #col = 115
+if &P.GPJP_HL_DIFF = 'Y'
+print $HELTH_INSURANCE_lbl (,#col)
+let #col =#col+15
+end-if
+
+if &P.GPJP_NC_DIFF = 'Y'
+print $NURSING_CARE_INSURANCE_lbl (,#col)
+let #col =#col+20
+end-if
+if &P.GPJP_PI_DIFF = 'Y'
+print $EMPLOYEE_P_INSURANCE_lbl (,#col)
+let #col =#col+15
+end-if
+if &P.GPJP_PF_DIFF = 'Y'
+print $INSURANCE_PENSION_FOUND_lbl (,#col)
+end-if
+
+print '-' (+1,1,176) fill
+
+end-heading
+
+!***********************************************************************
+! Process-Main                                                         *
+!                                                                      *
+! Called By: begin-report                                              *
+! Calls:       heading-csv                                                *
+!                                                                      *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure heading-csv
+!File Header line
+
+   Let $Write_Line = ''
+    Let $Write_Line = $Write_Line || '"'
+   Let $Write_Line = $Write_Line ||  $SI_ESTABLISHMENT_lbl
+   Let $Write_Line = $Write_Line || '","'
+   Let $Write_Line = $Write_Line ||  &P.GPJP_TAX_ESTAB
+   Let $Write_Line = $Write_Line || '","'
+   Let $Write_Line = $Write_Line ||  $SI_ESTABLIS_NAME_lbl
+   Let $Write_Line = $Write_Line || '","'
+   Let $Write_Line = $Write_Line ||  $EstabName
+   Let $Write_Line = $Write_Line || '"'
+
+   Write 1 from $Write_Line
+   Let $Write_Line = ''
+   Let $Write_Line = $Write_Line || '"'
+   Let $Write_Line = $Write_Line ||  $MONTH_lbl
+   Let $Write_Line = $Write_Line || '","'
+   Let $Write_Line = $Write_Line ||  $YEAR
+   Let $Write_Line = $Write_Line || '"'
+
+Write 1 from $Write_Line
+
+    Let $Write_Line = ''
+    Let $Write_Line = $Write_Line || '"'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line ||  $GRADE1_lbl
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line ||  $HELTH_INSURANCE2_lbl
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line ||  $NURSING_CARE_INSURANCE2_lbl
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line ||  $EMPLOYEE_P_INSURANCE2_lbl
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line ||  $INSURANCE_PENSION_FOUND_lbl
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line ||  $SUMMARY_lbl
+    Let $Write_Line = $Write_Line || '"'
+
+   Write 1 from $Write_Line
+
+         Let $Write_Line = ''
+         Let $Write_Line = $Write_Line || '"'
+         Let $Write_Line = $Write_Line || $EMPLID_lbl
+         Let $Write_Line = $Write_Line || '","'
+         Let $Write_Line = $Write_Line || $NAME_lbl
+         Let $Write_Line = $Write_Line || '","'
+         Let $Write_Line = $Write_Line || $AC_NAME_lbl
+         Let $Write_Line = $Write_Line || '","'
+         if $Payee_id_type = '1'
+         Let $Write_Line = $Write_Line || $HI_CARDE_lbl
+         else
+         Let $Write_Line = $Write_Line || $PI_CODE_lbl
+         end-if
+         Let $Write_Line = $Write_Line || '","'
+         Let $Write_Line = $Write_Line || $OBJECT_MNTH_lbl
+         Let $Write_Line = $Write_Line || '","'
+         Let $Write_Line = $Write_Line || $REASON_lbl
+         Let $Write_Line = $Write_Line || '","'
+         Let $Write_Line = $Write_Line || $HI_GRADE_lbl
+         Let $Write_Line = $Write_Line || '","'
+         Let $Write_Line = $Write_Line || $PI_GRADE_lbl
+         Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $EMPLOYEE_CONT_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $PAYERS_CONTRI_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line || $SUM_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $EMPLOYEE_CONT_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $PAYERS_CONTRI_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $SUM_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $EMPLOYEE_CONT_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $PAYERS_CONTRI_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $SUM_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $EMPLOYEE_CONT_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $PAYERS_CONTRI_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $SUM_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $HELTH_NURSING_lbl
+ Let $Write_Line = $Write_Line || '","'
+ Let $Write_Line = $Write_Line ||  $PEN_PF_lbl
+         Let $Write_Line = $Write_Line || '","'
+         Let $Write_Line = $Write_Line ||  $SUM_lbl
+         Let $Write_Line = $Write_Line || '"'
+         Write 1 from $Write_Line
+
+end-procedure !heading-csv
+!***********************************************************************
+! Process-Main                                                         *
+!                                                                      *
+! Called By: begin-report                                              *
+! Calls:       Get-Name                                                *
+!              Get-Change-Reason                                       *
+!              Print-General-details                                   *
+!              Print-Current-details                                   *
+!              Print-Previous-details                                  *
+!              Print-Delta-details                                     *
+!                                                                      *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Process-Main
+begin-select DISTINCT
+A.EMPLID
+A.GPJP_HEL_GRADE
+A.GPJP_PEN_GRADE
+A.GPJP_CHG_FLG
+A.GPJP_EMPLHEL_PREM
+A.GPJP_COHEL_PREM
+A.GPJP_TOTAL_HELPREM
+A.GPJP_HLTH_CARD_NUM
+A.GPJP_EMPNUR_PREM
+A.GPJP_CONUR_PREM
+A.GPJP_TOTAL_NURPREM
+A.GPJP_EMPPEN_PREM
+A.GPJP_COPEN_PREM
+A.GPJP_TOTAL_PENPREM
+A.GPJP_EMP_PF_PREM
+A.GPJP_CO_PF_PREM
+A.GPJP_TOTAL_PFPREM
+A.GPJP_TOTAL_HEL_NUR
+A.GPJP_TOTAL_2PEN
+A.GPJP_TOTAL_SI
+B.GPJP_PRE_HEL_GRADE
+B.EMPLID
+B.GPJP_PRE_CHG_FLG
+B.GPJP_PRE_PEN_GRADE
+
+B.GPJP_PRE_EMPHEL
+
+B.GPJP_PRE_COHEL
+B.GPJP_PRE_TOTAL_HEL
+B.GPJP_PRE_EMPNUR
+B.GPJP_PRE_CONUR
+B.GPJP_PRE_TOTAL_NUR
+B.GPJP_PRE_EMPPEN
+B.GPJP_PRE_CONPEN
+B.GPJP_PRE_TOTAL_PEN
+B.GPJP_PRE_EMP_PF
+B.GPJP_PRECO_PF_PREM
+B.GPJP_PRE_TOTAL_PF
+B.GPJP_PRE_TLTHELNUR
+B.GPJP_PRETOTAL_2PEN
+B.GPJP_PRE_TOTAL_SI
+
+   let $DIF_REASON = '-'
+    If &A.GPJP_CHG_FLG =''
+  let $CURRENT_REASON = 'N/A'
+   ELSE
+  let $CURRENT_REASON = &A.GPJP_CHG_FLG
+   END-IF
+
+   If &B.GPJP_PRE_CHG_FLG = ''
+  let $PREVIOUS_REASON = 'N/A'
+   ELSE
+  let $PREVIOUS_REASON = &B.GPJP_PRE_CHG_FLG
+   END-IF
+  let #HEL_GRADE = &A.GPJP_HEL_GRADE
+  let #PIGRADE   = &A.GPJP_PEN_GRADE
+  let #PRE_HEL_GRADE = &B.GPJP_PRE_HEL_GRADE
+  let #PRE_PIGRADE   = &B.GPJP_PRE_PEN_GRADE
+
+
+  if #HEL_GRADE  = 0
+     let #HEL_GRADE  = 1
+  end-if
+  if #HEL_GRADE  = 40
+     let #HEL_GRADE  = 39
+  end-if
+  if #PIGRADE = 0
+     let #PIGRADE = 1
+  end-if
+  if #PIGRADE = 31
+     let #PIGRADE = 30
+  end-if
+
+  if #PRE_HEL_GRADE  = 0
+     let #PRE_HEL_GRADE  = 1
+  end-if
+  if #PRE_HEL_GRADE  = 40
+     let #PRE_HEL_GRADE  = 39
+  end-if
+  if #PRE_PIGRADE = 0
+     let #PRE_PIGRADE = 1
+  end-if
+  if #PRE_PIGRADE = 31
+     let #PRE_PIGRADE = 30
+  end-if
+
+
+  let #DIF_HIGRADE = #HEL_GRADE - #PRE_HEL_GRADE
+  let #DIF_PIGRADE = #PIGRADE - #PRE_PIGRADE
+  let #DIF_EMPHEL_PREM = &A.GPJP_EMPLHEL_PREM - &B.GPJP_PRE_EMPHEL
+  let #DIF_COHEL_PREM = &A.GPJP_COHEL_PREM - &B.GPJP_PRE_COHEL
+  let #DIF_TOTAL_HELPREM = &A.GPJP_TOTAL_HELPREM - &B.GPJP_PRE_TOTAL_HEL
+  let #DIF_EMPNUR_PREM = &A.GPJP_EMPNUR_PREM - &B.GPJP_PRE_EMPNUR
+  let #DIF_CONUR_PREM = &A.GPJP_CONUR_PREM - &B.GPJP_PRE_CONUR
+  let #DIF_TOTAL_NURPREM = &A.GPJP_TOTAL_NURPREM - &B.GPJP_PRE_TOTAL_NUR
+  let #DIF_EMPPEN_PREM = &A.GPJP_EMPPEN_PREM - &B.GPJP_PRE_EMPPEN
+  let #DIF_COPEN_PREM = &A.GPJP_COPEN_PREM - &B.GPJP_PRE_CONPEN
+
+   let #DIF_TOTAL_PENPREM = &A.GPJP_TOTAL_PENPREM - &B.GPJP_PRE_TOTAL_PEN
+   let #DIF_EMP_PF_PREM = &A.GPJP_EMP_PF_PREM - &B.GPJP_PRE_EMP_PF
+   let #DIF_CO_PF_PREM = &A.GPJP_CO_PF_PREM - &B.GPJP_PRECO_PF_PREM
+   let #DIF_TOTAL_PFPREM = &A.GPJP_TOTAL_PFPREM - &B.GPJP_PRE_TOTAL_PF
+   let #DIF_TOTAL_HEL_NUR = &A.GPJP_TOTAL_HEL_NUR - &B.GPJP_PRE_TLTHELNUR
+   let #DIF_TOTAL_2PEN = &A.GPJP_TOTAL_2PEN - &B.GPJP_PRETOTAL_2PEN
+   let #DIF_TOTAL_SI = &A.GPJP_TOTAL_SI - &B.GPJP_PRE_TOTAL_SI
+
+
+
+    do Get-Name
+    do Get-Change-Reason
+    let #Total_rows = #Total_rows + 1
+    do Print-General-details
+    do Print-General-details-csv
+    do Print-Current-details
+    do Print-Current-details-csv
+    do Print-Previous-details
+    do Print-Delta-details
+    do Print-Previous-details-csv
+    do Print-Delta-details-csv
+    do Get-Cal-Establim
+    if #Total_rows = 7
+       new-page
+       let #Total_rows = 0
+    end-if
+
+
+FROM PS_GPJP_SC_CHK_CUR A, PS_GPJP_SC_CHK_PRE B
+WHERE
+ A.JOBINSTANCE = #prcs_job_instance
+ AND B.JOBINSTANCE =  #prcs_job_instance AND
+ A.EMPLID = B.EMPLID
+[$Difference]
+[$SecurityClauseWithoutERN]
+ ORDER BY A.EMPLID
+end-select
+
+end-procedure !Process-Main
+
+!***********************************************************************
+! Get-Name                                                             *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Get-Name
+
+!Select NAME Information
+begin-select
+N.NAME
+N.NAME_AC
+ From PS_NAMES N
+Where N.EMPLID = &B.EMPLID
+and N.EFFDT = (Select max(EFFDT)
+               From PS_NAMES
+               Where EMPLID = N.EMPLID)
+end-select
+
+
+
+end-procedure !Get-Name
+
+
+!***********************************************************************
+! Get-Change-Reason                                                   *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Get-Change-Reason
+  let $DIF_REASON = '-'
+  If &A.GPJP_CHG_FLG =''
+  let $CURRENT_REASON = 'N/A'
+  else
+ let $FieldName = 'GPJP_CHG_FLG'
+ let $FieldValue = &A.GPJP_CHG_FLG
+ do Read-Translate-Table
+ let $CURRENT_REASON = $XlatLongName
+ end-if
+If &B.GPJP_PRE_CHG_FLG = ''
+ let $PREVIOUS_REASON = 'N/A'
+ else
+  let $FieldName = 'GPJP_CHG_FLG'
+ let $FieldValue = &B.GPJP_PRE_CHG_FLG
+ do Read-Translate-Table
+ let $PREVIOUS_REASON = $XlatLongName
+ end-if
+
+end-procedure !Get-Change-Reason
+
+!***********************************************************************
+! Get-Cal-Establim                                                   *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+begin-procedure Get-Cal-Establim
+
+
+
+ let #ESTABLIS_HIGRADE=#HEL_GRADE+#ESTABLIS_HIGRADE
+ let #ESTABLIS_PREHIGRADE=#PRE_HEL_GRADE+#ESTABLIS_PREHIGRADE
+
+ let #ESTABLIS_PIGRADE=#PIGRADE+#ESTABLIS_PIGRADE
+ let #ESTABLIS_PREPIGRADE=#PRE_PIGRADE+#ESTABLIS_PREPIGRADE
+
+
+ let #ESTABLIS_HELPREM=&A.GPJP_EMPLHEL_PREM + #ESTABLIS_HELPREM
+ let #ESTABLIS_COHELPREM =&A.GPJP_COHEL_PREM + #ESTABLIS_COHELPREM
+  let #ESTABLIS_TOT_HELPREM=&A.GPJP_TOTAL_HELPREM + #ESTABLIS_TOT_HELPREM
+
+ let #ESTABLIS_HELPREMPRE=&B.GPJP_PRE_EMPHEL+#ESTABLIS_HELPREMPRE
+ let #ESTABLIS_COHELPREMPRE=&B.GPJP_PRE_COHEL+#ESTABLIS_COHELPREMPRE
+ let #ESTABLIS_TOT_HELPREMPRE=&B.GPJP_PRE_TOTAL_HEL+#ESTABLIS_TOT_HELPREMPRE
+
+ let #ESTABLIS_NURPREM=&A.GPJP_EMPNUR_PREM + #ESTABLIS_NURPREM
+ let #ESTABLIS_CONURPREM=&A.GPJP_CONUR_PREM + #ESTABLIS_CONURPREM
+ let #ESTABLIS_TOT_NURPREM=&A.GPJP_TOTAL_NURPREM + #ESTABLIS_TOT_NURPREM
+
+
+ let #ESTABLIS_NURPREMPRE=&B.GPJP_PRE_EMPNUR + #ESTABLIS_NURPREMPRE
+ let #ESTABLIS_CONURPREMPRE=&B.GPJP_PRE_CONUR + #ESTABLIS_CONURPREMPRE
+ let #ESTABLIS_TOT_NURPREMPRE=&B.GPJP_PRE_TOTAL_NUR+#ESTABLIS_TOT_NURPREMPRE
+
+ let #ESTABLIS_2PEN=&A.GPJP_TOTAL_2PEN+#ESTABLIS_2PEN
+ let #ESTABLIS_PRE2PEN=&B.GPJP_PRETOTAL_2PEN+#ESTABLIS_PRE2PEN
+
+
+ let #ESTABLIS_PENPREM=&A.GPJP_EMPPEN_PREM+ #ESTABLIS_PENPREM
+ let #ESTABLIS_COPENPREM=&A.GPJP_COPEN_PREM+ #ESTABLIS_COPENPREM
+ let #ESTABLIS_TOT_PENPREM=&A.GPJP_TOTAL_PENPREM + #ESTABLIS_TOT_PENPREM
+
+ let #ESTABLIS_PREPENPREM=&B.GPJP_PRE_EMPPEN + #ESTABLIS_PREPENPREM
+ let #ESTABLIS_COPREPENPREM=&B.GPJP_PRE_CONPEN + #ESTABLIS_COPREPENPREM
+ let #ESTABLIS_TOT_PREPENPREM=&B.GPJP_PRE_TOTAL_PEN + #ESTABLIS_TOT_PREPENPREM
+
+ let #ESTABLIS_PFPREM=&A.GPJP_EMP_PF_PREM + #ESTABLIS_PFPREM
+ let #ESTABLIS_COPFPREM =&A.GPJP_CO_PF_PREM + #ESTABLIS_COPFPREM
+ let #ESTABLIS_TOT_PFPREM=&A.GPJP_TOTAL_PFPREM + #ESTABLIS_TOT_PFPREM
+
+
+ let #ESTABLIS_PREPFPREM=&B.GPJP_PRE_EMP_PF+#ESTABLIS_PREPFPREM
+ let #ESTABLIS_PRECOPFPREM=&B.GPJP_PRECO_PF_PREM+#ESTABLIS_PRECOPFPREM
+ let #ESTABLIS_TOT_PREPFPREM=&B.GPJP_PRE_TOTAL_PF+#ESTABLIS_TOT_PREPFPREM
+
+
+ let #ESTABLIS_DIF_EMPHEL_PREM = #DIF_EMPHEL_PREM+ #ESTABLIS_DIF_EMPHEL_PREM
+ let #ESTABLIS_DIF_COHEL_PREM = #DIF_COHEL_PREM + #ESTABLIS_DIF_COHEL_PREM
+
+ let #ESTABLIS_DIF_EMPNUR_PREM = #DIF_EMPNUR_PREM + #ESTABLIS_DIF_EMPNUR_PREM
+ let #ESTABLIS_DIF_CONUR_PREM = #DIF_CONUR_PREM + #ESTABLIS_DIF_CONUR_PREM
+
+ let #ESTABLIS_DIF_EMPPEN_PREM = #DIF_EMPPEN_PREM + #ESTABLIS_DIF_EMPPEN_PREM
+ let #ESTABLIS_DIF_COPEN_PREM = #DIF_COPEN_PREM + #ESTABLIS_DIF_COPEN_PREM
+
+ let #ESTABLIS_DIF_EMPPFPREM=#DIF_EMP_PF_PREM + #ESTABLIS_DIF_EMPPFPREM
+ let #ESTABLIS_DIF_COPFPREM=#DIF_CO_PF_PREM +#ESTABLIS_DIF_COPFPREM
+
+
+
+ let #ESTABLIS_DIF_TOTAL_HELPREM =#DIF_TOTAL_HELPREM+#ESTABLIS_DIF_TOTAL_HELPREM
+ let #ESTABLIS_DIF_TOTAL_NURPREM =#DIF_TOTAL_NURPREM+#ESTABLIS_DIF_TOTAL_NURPREM
+ let #ESTABLIS_DIF_TOTAL_PENPREM=#DIF_TOTAL_PENPREM+#ESTABLIS_DIF_TOTAL_PENPREM
+
+ let #ESTABLIS_DIF_TOTAL_PFPREM=#DIF_TOTAL_PFPREM+#ESTABLIS_DIF_TOTAL_PFPREM
+
+
+ let #ESTABLIS_DIF_TOTAL_2PEN=#DIF_TOTAL_2PEN+#ESTABLIS_DIF_TOTAL_2PEN
+
+
+end-procedure !Get-Cal-Establim
+
+
+!***********************************************************************
+! Delete-From-AE-Tables                                                *
+!                                                                      *
+! Called By: begin-report                                              *
+!***********************************************************************
+
+begin-procedure Delete-From-AE-Tables
+
+begin-sql
+Delete from PS_GPJP_SC_CHK_PRE
+Where JOBINSTANCE = #prcs_job_instance;
+
+Delete from PS_GPJP_SC_CHK_CUR
+Where JOBINSTANCE = #prcs_job_instance;
+
+end-sql
+
+end-procedure !Delete-From-AE-Tables
+
+
+!***********************************************************************
+! Initialize-Totals                                                    *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Initialize-Totals
+
+
+let #DIF_HIGRADE = 0
+let #DIF_PIGRADE = 0
+let #DIF_EMPHEL_PREM = 0
+let #DIF_COHEL_PREM = 0
+let #DIF_TOTAL_HELPREM = 0
+let #DIF_EMPNUR_PREM = 0
+let #DIF_CONUR_PREM = 0
+let #DIF_TOTAL_NURPREM = 0
+let #DIF_EMPPEN_PREM = 0
+let #DIF_COPEN_PREM = 0
+
+let #DIF_TOTAL_PENPREM = 0
+let #DIF_EMP_PF_PREM = 0
+let #DIF_CO_PF_PREM = 0
+let #DIF_TOTAL_PFPREM = 0
+let #DIF_TOTAL_HEL_NUR = 0
+let #DIF_TOTAL_2PEN = 0
+let #DIF_TOTAL_SI = 0
+
+let #ESTABLIS_HIGRADE=0
+let #ESTABLIS_PREHIGRADE=0
+let #ESTABLIS_PIGRADE=0
+let #ESTABLIS_PREPIGRADE=0
+
+let #ESTABLIS_HELPREM=0
+let #ESTABLIS_HELPREMPRE=0
+let #ESTABLIS_NURPREM=0
+let #ESTABLIS_NURPREMPRE=0
+let #ESTABLIS_2PEN=0
+Let #ESTABLIS_PRE2PEN=0
+
+
+
+end-procedure !Initialize-Totals
+
+
+!***********************************************************************
+! Print-General-details                                                 *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Print-General-details
+next-listing   need=3  NO-ADVANCE
+print &A.EMPLID (+3,{Col_3})
+print &N.NAME (,{Col_4})
+print &N.NAME_AC (,{Col_5})
+print &A.GPJP_HLTH_CARD_NUM (,{Col_6}) edit 99999999
+
+end-procedure !Print-General-details
+
+!***********************************************************************
+! Print-Current-details                                                 *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Print-Current-details
+! Current details
+
+print $CURRENT_lbl (,{Col_7})
+print $CURRENT_REASON (,{Col_8})
+print #HEL_GRADE (,{Col_9}) edit 999
+print #PIGRADE (,{Col_10}) edit 999
+let #col=110
+if &P.GPJP_HL_DIFF !='Y' and &P.GPJP_NC_DIFF !='Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+print &A.GPJP_TOTAL_HELPREM  (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+print &A.GPJP_TOTAL_NURPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+print &A.GPJP_TOTAL_PENPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+13
+print &A.GPJP_TOTAL_PFPREM (,#col)   edit 999,999,999,999.99
+end-if
+
+if &P.GPJP_HL_DIFF = 'Y'
+print &A.GPJP_TOTAL_HELPREM  (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+end-if
+if &P.GPJP_NC_DIFF = 'Y'
+print &A.GPJP_TOTAL_NURPREM (,#col)   edit 999,999,999,999.99
+let #col=#col+18
+end-if
+
+if &P.GPJP_PI_DIFF = 'Y'  ! AND &P.GPJP_PF_DIFF != 'Y'
+print &A.GPJP_TOTAL_PENPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+13
+end-if
+if &P.GPJP_PF_DIFF = 'Y'  ! and &P.GPJP_PI_DIFF != 'Y'
+print &A.GPJP_TOTAL_PFPREM (,#col)   edit 999,999,999,999.99
+let #col=#col+20
+end-if
+end-procedure !Print-Current-details
+
+!***********************************************************************
+! Print-Previous-details                                               *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Print-Previous-details
+!pervious data
+let #col=110
+
+
+print $PERVIOUS_lbl (+1,{Col_7})
+print $PREVIOUS_REASON (,{Col_8})
+print #PRE_HEL_GRADE (,{Col_9}) edit 999
+print #PRE_PIGRADE (,{Col_10}) edit 999
+
+if &P.GPJP_HL_DIFF != 'Y' and &P.GPJP_NC_DIFF != 'Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+print &B.GPJP_PRE_TOTAL_HEL (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+print &B.GPJP_PRE_TOTAL_NUR (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+print &B.GPJP_PRE_TOTAL_PEN (,#col)    edit 999,999,999,999.99
+let #col=#col+13
+print &B.GPJP_PRE_TOTAL_PF (,#col)   edit 999,999,999,999.99
+end-if
+
+if &P.GPJP_HL_DIFF = 'Y'
+print &B.GPJP_PRE_TOTAL_HEL (,#col)   edit 999,999,999,999.99
+let #col=#col+20
+end-if
+if &P.GPJP_NC_DIFF = 'Y'
+print &B.GPJP_PRE_TOTAL_NUR (,#col)   edit 999,999,999,999.99
+let #col=#col+18
+end-if
+
+if &P.GPJP_PI_DIFF = 'Y'
+print &B.GPJP_PRE_TOTAL_PEN (,#col)    edit 999,999,999,999.99
+let #col=#col+13
+end-if
+
+if &P.GPJP_PF_DIFF = 'Y'
+print &B.GPJP_PRE_TOTAL_PF (,#col)   edit 999,999,999,999.99
+let #col=#col+20
+end-if
+end-procedure !Print-Previous-details
+
+!***********************************************************************
+! Print-Delta-details                                                  *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Print-Delta-details
+!differnce data
+let #col=110
+
+print $DELTA_lbl (+1,{Col_7})
+
+print $DIF_REASON (,{Col_8})
+
+print #DIF_HIGRADE  (,{Col_9}) edit 999
+print #DIF_PIGRADE  (,{Col_10}) edit 999
+if &P.GPJP_HL_DIFF != 'Y' and &P.GPJP_NC_DIFF != 'Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+print #DIF_TOTAL_HELPREM (,#col)   edit 999,999,999,999.99
+let #col=#col+20
+print #DIF_TOTAL_NURPREM (,#col)   edit 999,999,999,999.99
+let #col=#col+20
+print #DIF_TOTAL_PENPREM (,#col) edit 999,999,999,999.99
+let #col=#col+13
+print #DIF_TOTAL_PFPREM (,#col) edit 999,999,999,999.99
+
+end-if
+
+
+if &P.GPJP_HL_DIFF = 'Y'
+print #DIF_TOTAL_HELPREM (,#col) edit 999,999,999,999.99
+let #col=#col+20
+end-if
+if &P.GPJP_NC_DIFF = 'Y'
+print #DIF_TOTAL_NURPREM (,#col) edit 999,999,999,999.99
+let #col=#col+18
+end-if
+if &P.GPJP_PI_DIFF = 'Y' ! AND &P.GPJP_PF_DIFF != 'Y'
+print #DIF_TOTAL_PENPREM (,#col) edit 999,999,999,999.99
+let #col=#col+13
+end-if
+if &P.GPJP_PF_DIFF = 'Y' ! and &P.GPJP_PI_DIFF != 'Y'
+print #DIF_TOTAL_PFPREM (,#col) edit 999,999,999,999.99
+let #col=#col+20
+end-if
+
+end-procedure !Print-Delta-details
+
+
+!***********************************************************************
+! Print-Establis-details                                               *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Print-Establis-details
+!differnce data
+
+next-listing    need=3
+print $ESTABLIS_TOTAL_lbl (+3,{Col_3})
+print $CURRENT_lbl (,{Col_7})
+
+let #col=110
+if &P.GPJP_HL_DIFF !='Y' and &P.GPJP_NC_DIFF !='Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+
+print #ESTABLIS_TOT_HELPREM  (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+print #ESTABLIS_TOT_NURPREM (,#col)   edit 999,999,999,999.99
+let #col=#col+20
+print #ESTABLIS_TOT_PENPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+13
+print #ESTABLIS_TOT_PFPREM (,#col)   edit 999,999,999,999.99
+end-if
+
+if &P.GPJP_HL_DIFF = 'Y'
+print #ESTABLIS_HELPREM  (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+end-if
+if &P.GPJP_NC_DIFF = 'Y'
+print #ESTABLIS_TOT_NURPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+18
+end-if
+
+if &P.GPJP_PI_DIFF = 'Y'
+print #ESTABLIS_TOT_PREPENPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+13
+end-if
+if &P.GPJP_PF_DIFF = 'Y'
+print #ESTABLIS_TOT_PFPREM (,#col)   edit 999,999,999,999.99
+let #col=#col+20
+end-if
+
+
+let #col=110
+
+print $PERVIOUS_lbl (+1,{Col_7})
+
+if &P.GPJP_HL_DIFF != 'Y' and &P.GPJP_NC_DIFF != 'Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+print #ESTABLIS_TOT_HELPREMPRE (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+print #ESTABLIS_TOT_NURPREMPRE (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+print #ESTABLIS_TOT_PREPENPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+13
+print #ESTABLIS_TOT_PREPFPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+end-if
+
+if &P.GPJP_HL_DIFF = 'Y'
+print #ESTABLIS_TOT_HELPREMPRE (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+end-if
+if &P.GPJP_NC_DIFF = 'Y'
+print #ESTABLIS_TOT_NURPREMPRE (,#col)  edit 999,999,999,999.99
+let #col=#col+18
+end-if
+
+if &P.GPJP_PI_DIFF = 'Y'
+print #ESTABLIS_TOT_PREPENPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+13
+end-if
+
+if &P.GPJP_PF_DIFF = 'Y'
+print #ESTABLIS_TOT_PREPFPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+end-if
+
+let #col=110
+print $DELTA_lbl (+1,{Col_7})
+
+if &P.GPJP_HL_DIFF != 'Y' and &P.GPJP_NC_DIFF != 'Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+
+print #ESTABLIS_DIF_TOTAL_HELPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+print #ESTABLIS_DIF_TOTAL_NURPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+print #ESTABLIS_DIF_TOTAL_PENPREM (,#col)     edit 999,999,999,999.99
+let #col=#col+13
+print #ESTABLIS_DIF_TOTAL_PFPREM (,#col)     edit 999,999,999,999.99
+let #col=#col+20
+end-if
+
+
+if &P.GPJP_HL_DIFF = 'Y'
+print #ESTABLIS_DIF_TOTAL_HELPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+20
+end-if
+
+if &P.GPJP_NC_DIFF = 'Y'
+print #ESTABLIS_DIF_TOTAL_NURPREM (,#col)  edit 999,999,999,999.99
+let #col=#col+18
+end-if
+if &P.GPJP_PI_DIFF = 'Y'
+print #ESTABLIS_DIF_TOTAL_PENPREM (,#col)   edit 999,999,999,999.99
+let #col=#col+13
+end-if
+if &P.GPJP_PF_DIFF = 'Y'
+print #ESTABLIS_DIF_TOTAL_PFPREM (,#col)    edit 999,999,999,999.99
+let #col=#col+20
+end-if
+end-procedure !Print-Establis-details
+
+
+!***********************************************************************
+! Print-General-details-csv                                             *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Print-General-details-csv
+         Let $Write_Line = ''
+         Let $Write_Line = $Write_Line || '"'
+         do Prepare-for-Write-JPN('CHAR',&A.EMPLID,'Y',0,$result)
+         Let $Write_Line = $Write_Line || $result
+         Let $Write_Line = $Write_Line || '","'
+         Let $Write_Line = $Write_Line || &N.NAME
+
+         Let $Write_Line = $Write_Line || '","'
+         Let $Write_Line = $Write_Line || &N.NAME_AC
+         Let $Write_Line = $Write_Line || '","'
+         do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_HLTH_CARD_NUM,$result)
+         Let $Write_Line = $Write_Line || $result
+         Let $Write_Line = $Write_Line || '","'
+
+end-procedure !Print-General-details-csv
+
+!***********************************************************************
+! Print-Current-details-csv                                             *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Print-Current-details-csv
+! Current details
+
+
+   Let $Write_Line = $Write_Line ||$CURRENT_lbl
+   Let $Write_Line = $Write_Line || '","'
+   Let $Write_Line = $Write_Line ||$CURRENT_REASON
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#HEL_GRADE,$result)
+   Let $Write_Line = $Write_Line ||$result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#PIGRADE,$result)
+   Let $Write_Line = $Write_Line ||$result
+   Let $Write_Line = $Write_Line || '","'
+if &P.GPJP_HL_DIFF != 'Y' and &P.GPJP_NC_DIFF != 'Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_EMPLHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_COHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_TOTAL_HELPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_EMPNUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_CONUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_TOTAL_NURPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_EMPPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_COPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_TOTAL_PENPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_EMP_PF_PREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_CO_PF_PREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_TOTAL_PFPREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_TOTAL_HEL_NUR,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_TOTAL_2PEN,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_TOTAL_SI,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+
+  else
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,&A.GPJP_EMPLHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,&A.GPJP_COHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,&A.GPJP_TOTAL_HELPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,&A.GPJP_EMPNUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,&A.GPJP_CONUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,&A.GPJP_TOTAL_NURPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+    do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,&A.GPJP_EMPPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,&A.GPJP_COPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,&A.GPJP_TOTAL_PENPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,&A.GPJP_EMP_PF_PREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,&A.GPJP_CO_PF_PREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,&A.GPJP_TOTAL_PFPREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+end-if
+if &P.GPJP_HL_DIFF = 'Y' and &P.GPJP_NC_DIFF = 'Y'and &P.GPJP_PI_DIFF = 'Y' AND &P.GPJP_PF_DIFF = 'Y'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_TOTAL_HEL_NUR,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_TOTAL_2PEN,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&A.GPJP_TOTAL_SI,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+end-if
+  Let $Write_Line = $Write_Line || '"'
+  Write 1 from $Write_Line
+end-procedure !Print-Current-details
+
+!***********************************************************************
+! Print-Previous-details-csv                                           *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Print-Previous-details-csv
+!pervious data
+
+
+    Let $Write_Line = ''
+    Let $Write_Line = $Write_Line || '"'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+
+    Let $Write_Line = $Write_Line ||$PERVIOUS_lbl
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line ||$PREVIOUS_REASON
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#PRE_HEL_GRADE,$result)
+    Let $Write_Line = $Write_Line ||$result
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#PRE_PIGRADE,$result)
+    Let $Write_Line = $Write_Line ||$result
+    Let $Write_Line = $Write_Line || '","'
+if &P.GPJP_HL_DIFF != 'Y' and &P.GPJP_NC_DIFF != 'Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_EMPHEL,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_COHEL,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_TOTAL_HEL,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_EMPNUR,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_CONUR,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_TOTAL_NUR,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+    do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_EMPPEN,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_CONPEN,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_TOTAL_PEN,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_EMP_PF,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRECO_PF_PREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_TOTAL_PF,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_TLTHELNUR,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRETOTAL_2PEN,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_TOTAL_SI,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+
+else
+
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,&B.GPJP_PRE_EMPHEL,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,&B.GPJP_PRE_COHEL,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,&B.GPJP_PRE_TOTAL_HEL,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,&B.GPJP_PRE_EMPNUR,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,&B.GPJP_PRE_CONUR,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,&B.GPJP_PRE_TOTAL_NUR,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,&B.GPJP_PRE_EMPPEN,$result)
+  Let $Write_Line = $Write_Line || $result
+  Let $Write_Line = $Write_Line || '","'
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,&B.GPJP_PRE_CONPEN,$result)
+  Let $Write_Line = $Write_Line || $result
+  Let $Write_Line = $Write_Line || '","'
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,&B.GPJP_PRE_TOTAL_PEN,$result)
+  Let $Write_Line = $Write_Line || $result
+  Let $Write_Line = $Write_Line || '","'
+
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,&B.GPJP_PRE_EMP_PF,$result)
+  Let $Write_Line = $Write_Line ||  $result
+  Let $Write_Line = $Write_Line || '","'
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,&B.GPJP_PRECO_PF_PREM,$result)
+  Let $Write_Line = $Write_Line ||  $result
+  Let $Write_Line = $Write_Line || '","'
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,&B.GPJP_PRE_TOTAL_PF,$result)
+  Let $Write_Line = $Write_Line ||  $result
+  Let $Write_Line = $Write_Line || '","'
+end-if
+
+if &P.GPJP_HL_DIFF = 'Y' and &P.GPJP_NC_DIFF = 'Y'and &P.GPJP_PI_DIFF = 'Y' AND &P.GPJP_PF_DIFF = 'Y'
+  do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_TLTHELNUR,$result)
+  Let $Write_Line = $Write_Line ||  $result
+  Let $Write_Line = $Write_Line || '","'
+  do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRETOTAL_2PEN,$result)
+  Let $Write_Line = $Write_Line ||  $result
+  Let $Write_Line = $Write_Line || '","'
+  do Prepare-for-Write-JPN('NUM',' ','Y',&B.GPJP_PRE_TOTAL_SI,$result)
+  Let $Write_Line = $Write_Line ||  $result
+  Let $Write_Line = $Write_Line || '","'
+end-if
+  Let $Write_Line = $Write_Line || '"'
+  Write 1 from $Write_Line
+end-procedure !Print-Previous-details
+
+!***********************************************************************
+! Print-Delta-details-csv                                              *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Print-Delta-details-csv
+!differnce data
+
+    Let $Write_Line = ''
+    Let $Write_Line = $Write_Line || '"'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+
+    Let $Write_Line = $Write_Line ||$DELTA_lbl
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line ||$DIF_REASON
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_HIGRADE,$result)
+    Let $Write_Line = $Write_Line ||$result
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_PIGRADE,$result)
+    Let $Write_Line = $Write_Line ||$result
+    Let $Write_Line = $Write_Line || '","'
+if &P.GPJP_HL_DIFF != 'Y' and &P.GPJP_NC_DIFF != 'Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_EMPHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_COHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_TOTAL_HELPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_EMPNUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_CONUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_TOTAL_NURPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_EMPPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_COPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_TOTAL_PENPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_EMP_PF_PREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_CO_PF_PREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_TOTAL_PFPREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_TOTAL_HEL_NUR,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_TOTAL_2PEN,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_TOTAL_SI,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+
+else
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#DIF_EMPHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#DIF_COHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#DIF_TOTAL_HELPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#DIF_EMPNUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#DIF_CONUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#DIF_TOTAL_NURPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#DIF_EMPPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#DIF_COPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#DIF_TOTAL_PENPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#DIF_EMP_PF_PREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#DIF_CO_PF_PREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#DIF_TOTAL_PFPREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+
+end-if
+if &P.GPJP_HL_DIFF = 'Y' and &P.GPJP_NC_DIFF = 'Y'and &P.GPJP_PI_DIFF = 'Y' AND &P.GPJP_PF_DIFF = 'Y'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_TOTAL_HEL_NUR,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_TOTAL_2PEN,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#DIF_TOTAL_SI,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+end-if
+Let $Write_Line = $Write_Line || '"'
+Write 1 from $Write_Line
+end-procedure !Print-Delta-details
+
+!***********************************************************************
+! Print-Establis-details-csv                                               *
+!                                                                      *
+! Called By: Process-Main                                              *
+!***********************************************************************
+
+begin-procedure Print-Establis-details-csv
+!differnce data
+
+    Let $Write_Line = ''
+    Let $Write_Line = $Write_Line || '"'
+    Let $Write_Line = $Write_Line ||$ESTABLIS_TOTAL_lbl
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+
+    Let $Write_Line = $Write_Line ||$CURRENT_lbl
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+
+ if &P.GPJP_HL_DIFF !='Y' and &P.GPJP_NC_DIFF !='Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_HELPREM,$result)
+    Let $Write_Line = $Write_Line || $result
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_COHELPREM,$result)
+    Let $Write_Line = $Write_Line || $result
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_TOT_HELPREM,$result)
+    Let $Write_Line = $Write_Line || $result
+    Let $Write_Line = $Write_Line || '","'
+
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_NURPREM,$result)
+    Let $Write_Line = $Write_Line || $result
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_CONURPREM,$result)
+    Let $Write_Line = $Write_Line || $result
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_TOT_NURPREM,$result)
+    Let $Write_Line = $Write_Line || $result
+    Let $Write_Line = $Write_Line || '","'
+
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_PENPREM,$result)
+    Let $Write_Line = $Write_Line || $result
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_COPENPREM,$result)
+    Let $Write_Line = $Write_Line || $result
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_TOT_PENPREM,$result)
+    Let $Write_Line = $Write_Line || $result
+    Let $Write_Line = $Write_Line || '","'
+
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_PFPREM,$result)
+    Let $Write_Line = $Write_Line ||  $result
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_COPFPREM,$result)
+    Let $Write_Line = $Write_Line ||  $result
+    Let $Write_Line = $Write_Line || '","'
+    do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_TOT_PFPREM,$result)
+    Let $Write_Line = $Write_Line ||  $result
+    Let $Write_Line = $Write_Line || '","'
+
+else
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#ESTABLIS_HELPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#ESTABLIS_COHELPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#ESTABLIS_TOT_HELPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#ESTABLIS_NURPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#ESTABLIS_CONURPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#ESTABLIS_TOT_NURPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#ESTABLIS_PENPREM,$result)
+  Let $Write_Line = $Write_Line || $result
+  Let $Write_Line = $Write_Line || '","'
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#ESTABLIS_COPENPREM,$result)
+  Let $Write_Line = $Write_Line || $result
+  Let $Write_Line = $Write_Line || '","'
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#ESTABLIS_TOT_PENPREM,$result)
+  Let $Write_Line = $Write_Line || $result
+  let $Write_Line = $Write_Line || '","'
+
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#ESTABLIS_PFPREM,$result)
+  Let $Write_Line = $Write_Line ||  $result
+  Let $Write_Line = $Write_Line || '","'
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#ESTABLIS_COPFPREM,$result)
+  Let $Write_Line = $Write_Line ||  $result
+  Let $Write_Line = $Write_Line || '","'
+  do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#ESTABLIS_TOT_PFPREM,$result)
+  Let $Write_Line = $Write_Line ||  $result
+  Let $Write_Line = $Write_Line || '","'
+end-if
+
+  Let $Write_Line = $Write_Line || '"'
+  Write 1 from $Write_Line
+
+  Let $Write_Line = ''
+      Let $Write_Line = $Write_Line || '"'
+      Let $Write_Line = $Write_Line || '","'
+      Let $Write_Line = $Write_Line || '","'
+      Let $Write_Line = $Write_Line || '","'
+      Let $Write_Line = $Write_Line || '","'
+
+      Let $Write_Line = $Write_Line ||$PERVIOUS_lbl
+      Let $Write_Line = $Write_Line || '","'
+     Let $Write_Line = $Write_Line || '","'
+      Let $Write_Line = $Write_Line || '","'
+      Let $Write_Line = $Write_Line || '","'
+
+  if &P.GPJP_HL_DIFF != 'Y' and &P.GPJP_NC_DIFF != 'Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_HELPREMPRE,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_COHELPREMPRE,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_TOT_HELPREMPRE,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_NURPREMPRE,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_CONURPREMPRE,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_TOT_NURPREMPRE,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_PREPENPREM,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_COPREPENPREM,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_TOT_PREPENPREM,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_PREPFPREM,$result)
+     Let $Write_Line = $Write_Line ||  $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_PRECOPFPREM,$result)
+     Let $Write_Line = $Write_Line ||  $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_TOT_PREPFPREM,$result)
+     Let $Write_Line = $Write_Line ||  $result
+     Let $Write_Line = $Write_Line || '","'
+
+  else
+
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#ESTABLIS_HELPREMPRE,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#ESTABLIS_COHELPREMPRE,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#ESTABLIS_TOT_HELPREMPRE,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#ESTABLIS_NURPREMPRE,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#ESTABLIS_CONURPREMPRE,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#DIF_TOTAL_NURPREM,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#ESTABLIS_PREPENPREM,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#ESTABLIS_COPREPENPREM,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#ESTABLIS_TOT_PREPENPREM,$result)
+     Let $Write_Line = $Write_Line || $result
+     Let $Write_Line = $Write_Line || '","'
+
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#ESTABLIS_PREPFPREM,$result)
+     Let $Write_Line = $Write_Line ||  $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#ESTABLIS_PRECOPFPREM,$result)
+     Let $Write_Line = $Write_Line ||  $result
+     Let $Write_Line = $Write_Line || '","'
+     do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#ESTABLIS_TOT_PREPFPREM,$result)
+     Let $Write_Line = $Write_Line ||  $result
+     Let $Write_Line = $Write_Line || '","'
+
+  end-if
+
+  Let $Write_Line = $Write_Line || '"'
+Write 1 from $Write_Line
+
+Let $Write_Line = ''
+    Let $Write_Line = $Write_Line || '"'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+
+    Let $Write_Line = $Write_Line ||$DELTA_lbl
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+    Let $Write_Line = $Write_Line || '","'
+
+if &P.GPJP_HL_DIFF != 'Y' and &P.GPJP_NC_DIFF != 'Y'and &P.GPJP_PI_DIFF != 'Y' AND &P.GPJP_PF_DIFF != 'Y'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_EMPHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_COHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_TOTAL_HELPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_EMPNUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_CONUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_TOTAL_NURPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_EMPPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_COPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_TOTAL_PENPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_EMPPFPREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_COPFPREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ','Y',#ESTABLIS_DIF_TOTAL_PFPREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+
+
+else
+
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#ESTABLIS_DIF_EMPHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#ESTABLIS_DIF_COHEL_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_HL_DIFF,#ESTABLIS_DIF_TOTAL_HELPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#ESTABLIS_DIF_EMPNUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#ESTABLIS_DIF_CONUR_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_NC_DIFF,#ESTABLIS_DIF_TOTAL_NURPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#ESTABLIS_DIF_EMPPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#ESTABLIS_DIF_COPEN_PREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PI_DIFF,#ESTABLIS_DIF_TOTAL_PENPREM,$result)
+   Let $Write_Line = $Write_Line || $result
+   Let $Write_Line = $Write_Line || '","'
+
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#ESTABLIS_DIF_EMPPFPREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#ESTABLIS_DIF_COPFPREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+   do Prepare-for-Write-JPN('NUM',' ',&P.GPJP_PF_DIFF,#ESTABLIS_DIF_TOTAL_PFPREM,$result)
+   Let $Write_Line = $Write_Line ||  $result
+   Let $Write_Line = $Write_Line || '","'
+
+end-if
+
+Let $Write_Line = $Write_Line || '"'
+Write 1 from $Write_Line
+
+end-procedure !Print-Establis-details-csv
+
+!*************************************************************************************
+!*This procedure performs the following:                                             *
+!*1.  Places double quotes around string fields.  This is necessary to ensure that   *
+!*    a field holding the value of "I have a comma, in the middle" is treated as a   *
+!*    string and not 2 separate fields.                                              *
+!*2.  Converts decimal to 12.6 format, removing any extra spaces.                    *
+!*3.  Converts numbers to 12.0 format, removing any extra spaces.                    *
+!*                                                                                   *
+!*To use this procedure you need to specify the format of the field: CHAR for        *
+!*character fields, NUM for numeric, and DEC for decimal. In addition, you need to   *
+!*populate the $input parameter for character fields, and the #input parameter for   *
+!*decimal and numeric fields.  Since you have to specify both $input and #input each *
+!*time the procedure is called, use a space ' ' for the $input field when converting *
+!*numbers/decimals, and use a 0 for the #input field when converting characters.     *
+!*************************************************************************************
+
+begin-procedure Prepare-for-Write-JPN ($type, $input,$input1, #input, :$result)
+IF $input1 ='Y'
+If $type = 'DEC'
+  Let $result = ltrim(edit(#input,'999999999999.999999'),' ')
+Else
+  If $type = 'NUM'
+    Let $result=#input
+  Else !Type Char
+    Let $result =$input
+  End-If
+End-If
+ELSE
+LET $result = ''
+END-IF
+
+end-procedure !Prepare-for-Write-JPN
+
+
+
+#include 'datetime.sqc'     !Routines for date and time formatting
+#include 'datemath.sqc'     !Date conversion procedures
+#include 'hrsecty.sqc'      !Get SQR Security parameters
+#include 'sqrtrans.sqc'     !Translate SQR strings to given language
+#include 'prcsapi.sqc'      !Replaces stdapi.sqc
+#include 'prcslng.sqc'      !Replaces getrplng.sqc
+#include 'readxlat.sqc'     ! Procedure to read values from xlattable
+#include 'reset.sqc'        !Reset printer procedure
+#include 'number.sqc'       !Routines to format numbers
+#include 'getcodta.sqc'     !Retrieves Company Name
+#include 'getdptnm.sqc'     !Retrieves Department Name
+#include 'getlogou.sqc'     !get current logoutput directory
+#include 'getestab.sqc'     !Get Establishment Name from the ESTAB_TBL

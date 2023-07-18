@@ -1,0 +1,1858 @@
+!******************************************************************************
+!   Report Name: STOP001 - Plan Summaries
+!******************************************************************************
+!
+!
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!----------------------------------------------------------------------
+!                                                                      
+!          $Date:  2013/01/18:02:53:01                                 
+!       $Release:  HR92                                                
+!      $Revision:  101                                                 
+!
+!******************************************************************************
+! Program Descr:  Prints a summary of all activity that occurs within a stock 
+!                 plan or all plans.  It calculates the total shares 
+!                 outstanding and total shares remaining in a plan.
+!******************************************************************************
+! Prompts:       Stock ID, Stock Plan ID, From Date, Thru Date,
+!                Process Group, Emplid
+! Options:       None
+! Tables:        ST_PLAN_ALLOC
+!                ST_OPTION_PLAN
+!                ST_GRANT
+!                ST_GRNT_REPURCH
+!                ST_GRANT_EXER
+!                ST_EXER_RELEASE
+!                ST_GRNT_VST_DTL
+! Sorts:         STOCK_ID
+!                STOCK_PLAN
+!******************************************************************************
+
+#include 'setenv.sqc'
+
+!******************************************************************************
+Begin-Setup
+
+ #include 'ptpsl177.sqc'               ! Landscape 160 Columns
+
+End-Setup
+
+!******************************************************************************
+! Procedure: Begin-Program
+! Descr:     Main Report procedure.
+!******************************************************************************
+Begin-Program
+
+ do Init-Report
+ do Build-Where-Clause
+ do Get-Plans
+ do Delete-Temp
+ do Reset
+ do Successful-EOJ
+
+ show 'Process ended at:   ' $SysDateTime      !standard output info to sqr.log
+
+End-Program
+
+!******************************************************************************
+! Procedure: Begin-Heading
+! Descr:     Prints at the beginning of each page
+!******************************************************************************
+begin-heading 5
+
+ #include 'stdhdg01.sqc'
+
+ print $StockIDLbl      (-1,1,8)
+ print ':'              (,,1)
+ print $StockId         (,+3,10)
+
+ print $FromLbl         (,74,4)
+ print ':'              (,,1)
+ print $FromDate        (,+1,10)
+
+ print $ThruLbl         (,+2,4)
+ print ':'              (,,1)
+ print $ThruDate        (,+1,10)
+
+ print $StockPlanLbl    (+1,1,10)
+ print ':'              (,,1)
+ print $StockPlan       (,+1,10)
+
+end-heading
+
+!******************************************************************************
+! Procedure: Init-Report
+! Descr:     Report initialization procedure.  Set titles, parameters.
+!            This is called from the Begin-Program procedure.
+!******************************************************************************
+begin-procedure Init-Report
+
+ let $ReportID    = 'STOP001'
+ let $ReportTitle = $ReportTitle
+ let $PlanType    = 'O'   !option
+
+ !set input currency for formating, from the installation table - number.sqc
+ let $cur = $basecurr
+
+ do Init-DateTime
+ do Init-Number
+ do Get-Current-DateTime
+ do Define-Prcs-Vars
+ do Get-Run-Control-Parms
+
+ do Get-Report-Language    ! Procedure that decides the report language
+                           ! and then calls 'Report-Translation' procedure
+                           ! that reads the language dep. text.
+
+ if $prcs_process_instance = ''
+    input $RC_Stock_ID       MAXLEN=10 'Enter Stock ID or press enter for all'        Type=Char
+    input $RC_Stock_Plan     MAXLEN=10 'Enter Stock Plan ID or press enter for all'   Type=Char
+
+    uppercase $RC_Stock_ID
+    uppercase $RC_Stock_Plan
+
+    do Ask-From-Thru-Date
+
+    let $RC_FromDate = $FromDate
+    let $RC_ThruDate = $ThruDate
+
+ else
+    do Get-SQR-Parms                   ! Get Run Control Values
+
+    show 'From Date:    ' $RC_FromDate
+    show 'Thru Date:    ' $RC_ThruDate
+end-if
+
+ let $RC_Stock_ID   = rtrim($RC_Stock_ID,' ')
+ let $RC_Stock_Plan = rtrim($RC_Stock_Plan,' ')
+ let $RC_FromDate   = rtrim($RC_FromDate,' ')
+ let $RC_ThruDate   = rtrim($RC_ThruDate,' ')
+
+ show 'Stock ID:     ' $RC_Stock_ID
+ show 'Stock Plan:   ' $RC_Stock_Plan
+
+ show ' '
+ 
+ let $CurrentTime = datenow()
+ show 'Process started at: ' $SysDateTime      !standard output info to sqr.log
+
+ do Format-DateTime ($RC_FromDate, $FromDate, {DEFDATE}, '', '')
+ do Format-DateTime ($RC_ThruDate, $ThruDate, {DEFDATE}, '', '')
+ do Format-DateTime ($RC_ThruDate, $ThruCmp,  {DEFCMP}, '', '')
+
+end-procedure Init-Report
+
+!******************************************************************************
+! Procedure: Report-Translation
+! Descr:     This procedure is used to read language-dependent text from
+!            the database.
+!******************************************************************************
+begin-procedure Report-Translation
+ 
+ do Init_Report_Translation ('STOCK',$language_cd)
+ do Append_Report_Translation ($ReportId)
+
+ do Get_Field_Information ('STOCK', 'STOCK_ID',           $StockIDLbl,       #DW)
+ do Get_Field_Information ('STOCK', 'STOCK_PLAN_DESC',    $StockPlanLbl,     #DW)
+ do Get_Field_Information ('STOCK', 'SHARES_GRANTED',     $ShareGrantLbl,    #DW)
+ do Get_Field_Information ('STOCK', 'SHARES_CANCELLED',   $ShareCnclLbl,     #DW)
+ do Get_Field_Information ('STOCK', 'SHARES_EXPIRED',     $ShareExprLbl,     #DW)
+ do Get_Field_Information ('STOCK', 'SHARES_REPURCHASED', $ShareRepurchLbl,  #DW)
+ do Get_Field_Information ('STOCK', 'SHARES',             $SharesLbl,        #DW)
+ do Get_Field_Information ('STOCK', 'SHARES_EXERCISED',   $ShareExerLbl,     #DW)
+ do Get_Field_Information ('STOCK', 'FROM',               $FromLbl,          #DW)
+ do Get_Field_Information ('STOCK', 'THRU',               $ThruLbl,          #DW)
+
+ do Get_Field_Information ('STOP001', 'STOP001',            $ReportTitle,      #DW)
+ do Get_Field_Information ('STOP001', 'AVAIL_TO_GRANT',     $AvailGrantLbl,    #DW)
+ do Get_Field_Information ('STOP001', 'CURRENT_PERIOD',     $CurPeriodLbl,     #DW)
+ do Get_Field_Information ('STOP001', 'PLAN_TO_DATE',       $PlanToDtLbl,      #DW)
+ do Get_Field_Information ('STOP001', 'BEGIN_AVAIL',        $BeginAvailLbl,    #DW)
+ do Get_Field_Information ('STOP001', 'SHARES_ALLOCATED',   $ShareAllocLbl,    #DW)
+ do Get_Field_Information ('STOP001', 'PLAN_SHRS_EXPIRE',   $PlanExprLbl,      #DW)
+ do Get_Field_Information ('STOP001', 'TOTAL_AVAIL_GRANT',  $TotAvailGrantLbl, #DW)
+ do Get_Field_Information ('STOP001', 'PLAN_EXPIRE_ON',     $ExprOnLbl,        #DW)
+ do Get_Field_Information ('STOP001', 'SHARES_OUTSTAND',    $ShareOutstandLbl, #DW)
+ do Get_Field_Information ('STOP001', 'DOLLARS',            $DollarsLbl,       #DW)
+ do Get_Field_Information ('STOP001', 'PRIOR_OUTSTAND',     $PriorOutstandLbl, #DW)
+ do Get_Field_Information ('STOP001', 'VESTED',             $VestedLbl,        #DW)
+ do Get_Field_Information ('STOP001', 'UNVESTED',           $UnvestedLbl,      #DW)
+ do Get_Field_Information ('STOP001', 'TOTAL_OUTSTANDING',  $TotOutstandLbl,   #DW)
+ do Get_Field_Information ('STOP001', 'PRICE_RANGE',        $Range1Lbl,        #DW)
+ do Get_Field_Information ('STOP001', 'TO',                 $Range2Lbl,        #DW)
+ do Get_Field_Information ('STOP001', 'WITH_AVERAGE',       $Range3Lbl,        #DW)
+ do Get_Field_Information ('STOP001', 'AUTHORIZE_UNISSUE',  $AuthUnLbl,        #DW)
+ do Get_Field_Information ('STOP001', 'TOT_AUTH_UNISSUE',   $TotAuthUnLbl,     #DW)
+  
+end-procedure Report-Translation
+
+!******************************************************************************
+! Section: Build-Where-Clause
+! Descr:   Constructs portion of where clause, used in the retrieving the plans
+!******************************************************************************
+
+begin-procedure Build-Where-Clause
+
+ let $SQLQuote      = ''''
+
+ if $RC_Stock_ID <> ''
+   let $WhereStockID   = ' and STOCK_ID  = '     || $SQLQuote || $RC_Stock_ID   || $SQLQuote
+ else
+   let $WhereStockID   = ''
+ end-if
+
+ if $RC_Stock_Plan <> ''
+   let $WhereStockPlan = ' and STOCK_PLAN  = '   || $SQLQuote || $RC_Stock_Plan || $SQLQuote
+ else
+   let $WhereStockPlan = ''
+ end-if
+
+end-procedure Build-Where-Clause
+
+!******************************************************************************
+! Section: Get-Plans
+! Descr:   Retrieves all combinations of stock id and stock plan based on the
+!          parameters chosen. For each combination Check-Plan is called.
+!******************************************************************************
+begin-procedure Get-Plans
+
+ if $prcs_process_instance = ''
+    let #Instance = 0
+ else
+    let #Instance = to_number($prcs_process_instance)
+ end-if
+
+begin-select
+STOCK_ID        () on-break print=never level=1 procedure=Check-Plan  save=$StockID
+STOCK_PLAN      () on-break print=never level=1 procedure=Check-Plan  save=$StockPlan
+EXPIRATN_DT
+
+ do Format-DateTime (&EXPIRATN_DT, $ExpireDtCmp,  {DEFCMP}, '', '')     !for comparison
+ do Format-DateTime (&EXPIRATN_DT, $PlanExpireDt, {DEFDATE}, '', '')    !for printing
+
+FROM PS_STOCK_PLAN_TBL
+WHERE STOCK_PLAN_TYPE = $PlanType
+      [$WhereStockID]
+      [$WhereStockPlan]
+ORDER BY STOCK_ID,STOCK_PLAN
+end-select
+
+ do Check-Plan          !process last plan and stock combo
+
+end-procedure Get-Plans
+
+!******************************************************************************
+! Section: Check-Plan
+! Descr:   Checks to see if there is any activity for a given stock id and
+!          plan combo.  If there is any activity Main-Process is called.
+!******************************************************************************
+begin-procedure Check-Plan
+        
+  let $Exists = 'N'
+
+begin-select distinct
+'X'
+
+  let $Exists = 'Y'
+
+FROM PS_ST_GRANT
+WHERE GRANT_STATUS = 'A'
+  AND GRANT_DT    <= $RC_ThruDate
+  AND STOCK_ID     = $StockId
+  AND STOCK_PLAN   = $StockPlan
+end-select
+
+   if $Exists = 'Y'
+      do Main-Process
+   end-if
+
+end-procedure Check-Plan
+
+!******************************************************************************
+! Section: Main-Process
+! Descr:   Main repoting procedure.  Calls procedures to populate temp table 
+!          with vesting schedule; calls procedures to retrieve and calculate
+!          beginning balances, then calls procedures to retrieve and calculate
+!          current balances, then calculates plan to date balances.
+!******************************************************************************
+begin-procedure Main-Process
+
+ do Select-Vesting-Info
+ do Get-Shares-Exercised
+ do Process-Shares-Exercised
+
+ let $Select = 'Prior'
+
+ do Get-Allocated-Initial
+ do Get-Allocated-NotInitial
+ do Get-Granted
+ do Get-Cancelled
+ do Get-Cancelled-Reprice
+ do Get-Cancld-Plan
+ do Get-Cancld-Plan-Reprice
+ do Get-Expired
+ do Get-Expired-Reprice
+ do Get-Expired-Plan
+ do Get-Expired-Plan-Reprice
+ do Get-Repurchased
+ do Get-Exer-Swap
+ do Get-Rel-Swap
+ do Get-SAR
+ do Get-Exercise-Vested
+ do Get-Exercise-Unvested
+
+ let #PriorGrant         = #SharesGrant
+ let #PriorGrantAmt      = #GrantAmt
+ let #PriorAllocInit     = #SharesAllocInit
+ let #PriorAllocNonInit  = #SharesAllocNonInit
+ let #PriorCancel        = #SharesCancld  + #SharesCancldRprc + #SharesExerSwap +
+                           #SharesRelSwap + #SharesExerSar
+ let #PriorExpire        = #SharesExpire  + #SharesExpireRprc
+ let #PriorRepurch       = #SharesRepurch
+ let #PriorExerVest      = #SharesExerVest
+ let #PriorExerVestAmt   = #ExerVestAmt
+ let #PriorExerUnvest    = #SharesExerUnvest
+ let #PriorExerUnvestAmt = #ExerUnvestAmt
+ let #PriorCnclPlan      = #ShrCnclPlan + #ShrCnclPlanRprc
+ let #PriorCnclPlanAmt   = #CnclPlanAmt + #CnclPlanRprcAmt
+ let #PriorExprPlan      = #ShrExprPlan + #ShrExprPlanRprc
+ let #PriorExprPlanAmt   = #ExprPlanAmt + #ExprPlanRprcAmt
+
+ let #PriorBeginAvail    = #PriorCancel + #PriorExpire + #PriorRepurch + #PriorAllocInit
+                                + #PriorAllocNonInit - #PriorGrant
+ let #PriorOutstanding   = #PriorGrant - #PriorExerVest - #PriorExerUnvest
+                                - #PriorCnclPlan - #PriorExpire
+
+ let #PriorOutstandAmt   = #PriorGrantAmt - #PriorExerVestAmt - #PriorExerUnvestAmt
+                                - #PriorCnclPlanAmt - #PriorExprPlanAmt
+
+ let $Select = 'Current'
+
+ do Get-Allocated-Initial
+ do Get-Allocated-NotInitial
+ do Get-Granted
+ do Get-Cancelled
+ do Get-Cancelled-Reprice
+ do Get-Cancld-Plan
+ do Get-Cancld-Plan-Reprice
+ do Get-Expired
+ do Get-Expired-Reprice
+ do Get-Expired-Plan
+ do Get-Expired-Plan-Reprice
+ do Get-Repurchased
+ do Get-Exer-Swap
+ do Get-Rel-Swap
+ do Get-SAR
+ do Get-Exercise-Vested
+ do Get-Exercise-Unvested
+
+ let #CurGrant          = #SharesGrant
+ let #CurGrantAmt       = #GrantAmt
+ let #CurAllocInit      = #SharesAllocInit
+ let #CurAllocNonInit   = #SharesAllocNonInit
+ let #CurAlloc          = #CurAllocNonInit    + #CurAllocInit
+ let #CurCancel         = #SharesCancld       + #SharesCancldRprc + #SharesExerSwap +
+                          #SharesRelSwap      + #SharesExerSar
+
+ let #CurExpire         = #SharesExpire       + #SharesExpireRprc
+ let #CurRepurch        = #SharesRepurch
+
+ let #CurExerVest       = #SharesExerVest
+ let #CurExerVestAmt    = #ExerVestAmt
+ let #CurExerUnvest     = #SharesExerUnvest
+ let #CurExerUnvestAmt  = #ExerUnvestAmt
+ let #CurCnclPlan       = #ShrCnclPlan        + #ShrCnclPlanRprc
+ let #CurCnclPlanAmt    = #CnclPlanAmt        + #CnclPlanRprcAmt
+ let #CurExprPlan       = #ShrExprPlan        + #ShrExprPlanRprc
+ let #CurExprPlanAmt    = #ExprPlanAmt        + #ExprPlanRprcAmt
+
+ let #ThruBeginAvail    = #PriorAllocNonInit  + #CurAllocNonInit
+ let #ThruGrant         = #PriorGrant         + #CurGrant
+ let #ThruGrantAmt      = #PriorGrantAmt      + #CurGrantAmt
+ let #ThruAlloc         = #PriorAllocInit     + #CurAllocInit
+ let #ThruCancel        = #PriorCancel        + #CurCancel
+ let #ThruExpire        = #PriorExpire        + #CurExpire
+ let #ThruRepurch       = #PriorRepurch       + #CurRepurch
+
+ let #ThruExerVest      = #PriorExerVest      + #CurExerVest
+ let #ThruExerVestAmt   = #PriorExerVestAmt   + #CurExerVestAmt
+ let #ThruExerUnvest    = #PriorExerUnvest    + #CurExerUnvest
+ let #ThruExerUnvestAmt = #PriorExerUnvestAmt + #CurExerUnvestAmt
+ let #ThruCnclPlan      = #PriorCnclPlan      + #CurCnclPlan
+ let #ThruCnclPlanAmt   = #PriorCnclPlanAmt   + #CurCnclPlanAmt
+ let #ThruExprPlan      = #PriorExprPlan      + #CurExprPlan
+ let #ThruExprPlanAmt   = #PriorExprPlanAmt   + #CurExprPlanAmt
+ let #ThruOutstand      = 0
+ let #ThruOutstandAmt   = 0
+
+ let #CurTotalAvail      = #PriorBeginAvail - #CurGrant + #CurCancel
+                                + #CurExpire + #CurRepurch + #CurAlloc
+
+ let #ThruTotalAvail     = #ThruBeginAvail - #ThruGrant + #ThruCancel
+                                + #ThruExpire + #ThruRepurch + #ThruAlloc
+ 
+ !---------------------------------------------------------
+ ! If plan has expired as of the thru date the total must
+ ! be 0.  Calc Plan Shares Expired as the negative 
+ ! remainder and then add back to the total to arrive at 0. 
+ !---------------------------------------------------------
+ if $ExpireDtCmp <= $ThruCmp
+    let #CurPlanSharesExpire  = (#CurTotalAvail  * -1)
+    let #ThruPlanSharesExpire = (#ThruTotalAvail * -1)
+
+    let #CurTotalAvail  = #CurTotalAvail  + #CurPlanSharesExpire
+    let #ThruTotalAvail = #ThruTotalAvail + #ThruPlanSharesExpire
+ end-if
+
+ let #CurTotOutstand     = #PriorOutstanding + #CurGrant - #CurExerVest - #CurExerUnvest
+                                - #CurCnclPlan - #CurExprPlan
+
+ let #ThruTotOutstand    = #ThruOutstand + #ThruGrant - #ThruExerVest - #ThruExerUnvest
+                                - #ThruCnclPlan - #ThruExprPlan
+
+ let #CurTotOutstandAmt  = #PriorOutstandAmt + #CurGrantAmt - #CurExerVestAmt - #CurExerUnvestAmt
+                                - #CurCnclPlanAmt - #CurExprPlanAmt
+
+ let #ThruTotOutstandAmt = #ThruOutstandAmt + #ThruGrantAmt - #ThruExerVestAmt - #ThruExerUnvestAmt
+                                - #ThruCnclPlanAmt - #ThruExprPlanAmt
+
+ let #TotAuthUnissue     = #CurTotalAvail + #CurTotOutstand
+
+ if #ThruTotOutstand <> 0
+    let #AveragePrice    = round((#ThruTotOutstandAmt / #ThruTotOutstand),6)
+ else
+    let #AveragePrice    = 0
+ end-if
+
+ do Format-Amt(#AveragePrice,$AveragePrice,'888,888,888,888.888888',$Cur,$Curout)
+
+ do Get-Grant-Range
+
+ do Print-Plan
+
+ new-page
+
+end-procedure Main-Process
+
+!******************************************************************************
+! Section: Select-Vesting-Info
+! Descr:   Selects values to insert into ST_STOP001_TBL.
+!******************************************************************************
+begin-procedure Select-Vesting-Info
+
+ let $Alias = 'A'
+
+ let $WhereGrantDt = ' AND ' || $Alias || '.GRANT_DT <= ' || $SQLQuote || $RC_ThruDate   || $SQLQuote
+
+begin-select
+A.EMPLID
+A.STOCK_ID
+A.STOCK_PLAN
+A.GRANT_NBR
+B.VEST_DT
+A.GRANT_PRICE
+B.SHARES_VESTED
+B.EXPIRATN_DT
+B.TERM_EXPIRATN_DT
+A.ST_CANCEL_REASON
+A.ST_CANCEL_DT
+
+  let $MSCancelDt  = rtrim(&a.st_cancel_dt,' ')
+  let $MSTermExpDt = rtrim(&b.term_expiratn_dt,' ')
+  do Insert-Vesting-Info
+ 
+FROM PS_ST_GRANT        A,
+     PS_ST_GRNT_VST_DTL B
+WHERE A.GRANT_STATUS = 'A'
+  AND A.EMPLID     = B.EMPLID
+  AND A.STOCK_ID   = B.STOCK_ID
+  AND A.GRANT_NBR  = B.GRANT_NBR
+  [$WhereGrantDt]
+  AND B.VEST_EFFDT = (SELECT MAX(VEST_EFFDT)
+                        FROM PS_ST_GRNT_VST_DTL
+                       WHERE EMPLID       = B.EMPLID
+                          AND STOCK_ID    = B.STOCK_ID
+                          AND GRANT_NBR   = B.GRANT_NBR
+                          AND VEST_EFFDT <= $AsOfToday)
+  AND B.SEQ_NUM    = (SELECT MAX(SEQ_NUM)
+                        FROM PS_ST_GRNT_VST_DTL
+                       WHERE EMPLID     = B.EMPLID
+                         AND STOCK_ID   = B.STOCK_ID
+                         AND GRANT_NBR  = B.GRANT_NBR
+                         AND VEST_EFFDT = B.VEST_EFFDT )
+  AND A.STOCK_ID   = $StockID
+  AND A.STOCK_PLAN = $StockPlan
+end-select
+
+end-procedure Select-Vesting-Info
+
+!******************************************************************************
+! Section: Insert-Vesting-Info
+! Descr:   Inserts vesting info into a temp table as the first step in creating
+!          the vesting schedule.  CurrentTime and Instance are used to 
+!          eliminate the chance of data being accessed by two different run
+!          of the report at the same time.
+!******************************************************************************
+begin-procedure Insert-Vesting-Info
+
+ let $Procedure = 'Insert-Vesting-Temp'
+ let $SQL-Statement = 'Procedure: ' || $Procedure
+ 
+ let $Alias = 'A'
+
+begin-sql                           on-error = SQL-Error
+INSERT into PS_ST_STOP001_TBL
+
+(DATETIME_STAMP
+,PROCESSINSTANCE
+,EMPLID
+,STOCK_ID
+,STOCK_PLAN
+,GRANT_NBR
+,VEST_DT
+,GRANT_PRICE
+,SHARES_VESTED
+,SHARES_EXERCISED
+,EXPIRATN_DT
+,TERM_EXPIRATN_DT
+,ST_CANCEL_REASON
+,ST_CANCEL_DT)
+
+VALUES
+($CurrentTime
+,#Instance
+,&a.emplid
+,&a.stock_id
+,&a.stock_plan
+,&a.grant_nbr
+,&b.vest_dt
+,&a.grant_price
+,&b.shares_vested
+,0
+,&b.expiratn_dt,
+
+! Workaround for TPRD T-MLEAN-Q54CT
+#ifdef MICROSOFT
+   $MSTermExpDt
+  ,&a.st_cancel_reason
+  ,$MSCancelDt)
+#else
+   &b.term_expiratn_dt
+  ,&a.st_cancel_reason
+  ,&a.st_cancel_dt)
+#endif
+
+end-sql
+
+end-procedure Insert-Vesting-Info
+
+!******************************************************************************
+! Section: Get-Shares-Exercised
+! Descr:   Sums all exercises for a particular emplid, stock_id, grant_nbr
+!          and vest_dt. Report lumps the sum in a particular vesting date and
+!          then trickles the excess down to the next higher vesting date.
+!******************************************************************************
+begin-procedure Get-Shares-Exercised
+
+ let $Alias = 'C'
+
+ let $WhereExerDt = ' AND ' || $Alias || '.EXERCISE_DT <= ' || $SQLQuote || $RC_ThruDate   || $SQLQuote
+
+begin-select
+C.EMPLID
+C.STOCK_ID
+C.GRANT_NBR
+D.VEST_DT
+SUM(C.SHARES_EXERCISED) &SumExer
+
+  Do Update-Shares-ExercisedA
+
+FROM PS_ST_GRANT_EXER   C,
+     PS_ST_STOP001_TBL  D
+WHERE C.EMPLID          = D.EMPLID
+  AND C.GRANT_NBR       = D.GRANT_NBR
+  AND C.STOCK_ID        = D.STOCK_ID
+  AND C.EXERCISE_STATUS = 'A'
+  AND C.STOCK_ID        = $StockID
+  AND C.STOCK_PLAN      = $StockPlan
+  AND D.DATETIME_STAMP  = $CurrentTime
+  AND D.PROCESSINSTANCE = #Instance
+  [$WhereExerDt]
+  AND D.VEST_DT         = (SELECT MIN(VEST_DT)
+                            FROM  PS_ST_STOP001_TBL
+                            WHERE EMPLID              = C.EMPLID
+                              AND GRANT_NBR           = C.GRANT_NBR
+                              AND STOCK_ID            = C.STOCK_ID
+                              AND STOCK_PLAN          = C.STOCK_PLAN
+                              AND DATETIME_STAMP      = $CurrentTime
+                              AND PROCESSINSTANCE     = #Instance
+                              AND (C.EXERCISE_DT      < EXPIRATN_DT
+                              AND (C.EXERCISE_DT      < TERM_EXPIRATN_DT
+                               OR TERM_EXPIRATN_DT IS NULL)))
+GROUP BY C.EMPLID,C.STOCK_ID,C.GRANT_NBR,D.VEST_DT
+end-select
+
+end-procedure Get-Shares-Exercised
+
+!******************************************************************************
+! Section: Update-Shares-ExercisedA
+! Descr:   Updates the temp table with the sum of shares_exercised for a given
+!          emplid, stock_id, grant_nbr, and vest_dt.
+!******************************************************************************
+begin-procedure Update-Shares-ExercisedA
+
+ let $Procedure = 'Update-Shares-ExercisedA'
+ let $SQL-Statement = 'Procedure: ' || $Procedure
+
+begin-sql                           on-error = SQL-Error
+UPDATE PS_ST_STOP001_TBL
+  SET SHARES_EXERCISED = &SumExer
+
+WHERE EMPLID          = &c.emplid
+  AND STOCK_ID        = &c.stock_id
+  AND GRANT_NBR       = &c.grant_nbr
+  AND VEST_DT         = &d.vest_dt
+  AND DATETIME_STAMP  = $CurrentTime
+  AND PROCESSINSTANCE = #Instance
+end-sql
+
+end-procedure Update-Shares-ExercisedA
+
+!******************************************************************************
+! Section: Process-Shares-Exercised
+! Descr:   For each emplid and grant_nbr put info into array and call
+!          Update-Shares-ExercisedB.
+!******************************************************************************
+begin-procedure Process-Shares-Exercised
+
+  create-array name=Exer                -
+                  size=50               -
+                  field=VestDt:char     -
+                  field=Vest:number     -
+                  field=Exer:number     
+  let #x = 0
+
+begin-select
+E.EMPLID        () on-break print=never level=1 procedure=Update-Shares-ExercisedB  save=$OldEmp
+E.STOCK_ID     
+E.STOCK_PLAN   
+E.GRANT_NBR     () on-break print=never level=1 procedure=Update-Shares-ExercisedB  save=$OldGrant
+E.VEST_DT
+E.SHARES_VESTED
+E.SHARES_EXERCISED
+
+  put &e.vest_dt &e.shares_vested &e.shares_exercised into EXER(#x) VestDt Vest Exer
+  add 1 to #x
+  
+FROM PS_ST_STOP001_TBL E
+WHERE E.STOCK_ID        = $StockID
+  AND E.STOCK_PLAN      = $StockPlan
+  AND E.DATETIME_STAMP  = $CurrentTime
+  AND E.PROCESSINSTANCE = #Instance
+ORDER BY E.EMPLID,E.GRANT_NBR,E.VEST_DT
+end-select
+
+ do Update-Shares-ExercisedB    !to process last on-break
+
+end-procedure Process-Shares-Exercised
+
+!******************************************************************************
+! Section: Update-Shares-ExercisedB
+! Descr:   For each row in the array, check if shares exercised are greater
+!          than shares vested for a particular vest date. If so, trickle down
+!          the excess to the next vesting date.
+!******************************************************************************
+begin-procedure Update-Shares-ExercisedB
+
+  let #TotalRow  = 0
+  let #Remainder = 0
+  
+  while #totalRow <= #x   !to run thru all elements
+    
+    
+    get $VestDtArray #ShrVestArray #ShrExerArray  -
+         from EXER(#totalRow) VestDt Vest Exer
+
+    let #ShareToExer = #ShrExerArray + #Remainder
+    
+    if #ShareToExer > #ShrVestArray
+       let #UpdateExer  = #ShrVestArray
+       let #Remainder   = #ShareToExer  - #ShrVestArray
+       do Update-Shares-ExercisedC
+    else
+       if #Remainder > #ShrExerArray
+          let #UpdateExer = #Remainder
+          do Update-Shares-ExercisedC
+          let #Remainder = 0
+       end-if
+    end-if
+
+    add 1 to #totalRow
+   
+  end-while
+  
+  clear-array  name=EXER
+
+  let #x = 0
+
+end-procedure Update-Shares-ExercisedB
+
+!******************************************************************************
+! Section: Update-Shares-ExercisedC
+! Descr:   Updates the temp table.
+!******************************************************************************
+begin-procedure Update-Shares-ExercisedC
+
+ let $Procedure     = 'Update-Shares-ExercisedC'
+ let $SQL-Statement = 'Procedure: ' || $Procedure
+
+begin-sql                           on-error = SQL-Error
+UPDATE PS_ST_STOP001_TBL
+  SET SHARES_EXERCISED = #UpdateExer
+
+WHERE EMPLID          = $OldEmp
+  AND STOCK_ID        = $StockID
+  AND STOCK_PLAN      = $StockPlan
+  AND GRANT_NBR       = $OldGrant
+  AND VEST_DT         = $VestDtArray
+  AND DATETIME_STAMP  = $CurrentTime
+  AND PROCESSINSTANCE = #Instance
+end-sql
+
+end-procedure Update-Shares-ExercisedC
+
+!******************************************************************************
+! Section: Get-Allocated-Initial
+! Descr:   Sums shares allocated with an type = Initial.  Changes date
+!          criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-Allocated-Initial
+
+ let $Alias = 'G'
+
+ if $Select = 'Prior'
+    let $WhereAllocDt = ' AND ' || $Alias || '.ALLOCATION_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereAllocDt = ' AND (' || $Alias || '.ALLOCATION_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                        ' AND '  || $Alias || '.ALLOCATION_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #SharesAlloc = 0
+
+begin-select
+SUM(G.SHARES_ALLOCATED) &allocinit
+
+ let #SharesAllocInit =  &allocinit
+
+FROM PS_ST_PLAN_ALLOC G
+WHERE G.STOCK_ID           = $StockId
+  AND G.STOCK_PLAN         = $StockPlan
+  AND G.STOCK_PLAN_TYPE    = $PlanType
+  AND G.ST_ALLOCATION_TYPE = 'I'
+  [$WhereAllocDt]
+end-select
+
+end-procedure Get-Allocated-Initial
+
+!******************************************************************************
+! Section: Get-Allocated-NotInitial
+! Descr:   Sums shares allocated with an type <> Initial.  Changes date
+!          criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-Allocated-NotInitial
+
+ let $Alias = 'ZZ'
+
+ if $Select = 'Prior'
+    let $WhereAllocDt = ' AND ' || $Alias || '.ALLOCATION_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereAllocDt = ' AND (' || $Alias || '.ALLOCATION_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                        ' AND '  || $Alias || '.ALLOCATION_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #SharesAlloc = 0
+
+begin-select
+SUM(ZZ.SHARES_ALLOCATED) &AllocNonInit
+
+ let #SharesAllocNonInit = &AllocNonInit
+
+FROM PS_ST_PLAN_ALLOC ZZ
+WHERE ZZ.STOCK_ID            = $StockId
+  AND ZZ.STOCK_PLAN          = $StockPlan
+  AND ZZ.STOCK_PLAN_TYPE     = $PlanType
+  AND ZZ.ST_ALLOCATION_TYPE <> 'I'
+  [$WhereAllocDt]
+end-select
+
+end-procedure Get-Allocated-NotInitial
+
+!******************************************************************************
+! Section: Get-Granted
+! Descr:   Sums active shares granted and grant values.  Changes date
+!          criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-Granted
+
+ let $Alias = 'H'
+
+ if $Select = 'Prior'
+    let $WhereGrantDt = ' AND ' || $Alias || '.GRANT_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereGrantDt = ' AND (' || $Alias || '.GRANT_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                        ' AND '  || $Alias || '.GRANT_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #GrantAmt    = 0
+ let #SharesGrant = 0
+
+begin-select
+H.SHARES_GRANTED
+H.GRANT_PRICE
+
+ let #GrantAmt    = #GrantAmt    + (&h.shares_granted * &h.grant_price)
+ let #SharesGrant = #SharesGrant +  &h.shares_granted
+
+FROM PS_ST_GRANT H
+WHERE H.STOCK_ID = $StockID
+  AND H.STOCK_PLAN = $StockPlan                
+  AND H.GRANT_STATUS = 'A'
+  [$WhereGrantDt]
+end-select
+
+ let #GrantAmt = round(#GrantAmt,2)
+
+end-procedure Get-Granted
+
+!******************************************************************************
+! Section: Get-Cancelled
+! Descr:   Calculates shares cancelled where method is return to plan and cancel
+!          reason <> reprice.  Changes date criteria in select for prior and 
+!          current selections.
+!******************************************************************************
+begin-procedure Get-Cancelled
+
+ let $Alias = 'I'
+
+ if $Select = 'Prior'
+    let $WhereCancelDt = ' AND ' || $Alias || '.ST_CANCEL_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereCancelDt = ' AND (' || $Alias || '.ST_CANCEL_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                         ' AND '  || $Alias || '.ST_CANCEL_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #SharesCancld = 0
+
+begin-select
+SUM(I.SHARES_VESTED)    &vest1
+SUM(I.SHARES_EXERCISED) &exer1
+
+ let #SharesCancld = &vest1 - &exer1
+
+FROM PS_ST_STOP001_TBL   I,
+     PS_ST_OPTION_PLAN   J
+WHERE I.DATETIME_STAMP     = $CurrentTime
+  AND I.PROCESSINSTANCE    = #Instance
+  AND I.STOCK_ID           = $StockID
+  AND I.STOCK_PLAN         = $StockPlan
+  AND J.STOCK_ID           = I.STOCK_ID
+  AND J.STOCK_PLAN_TYPE    = $PlanType
+  AND J.STOCK_PLAN         = I.STOCK_PLAN
+  AND J.EFFDT              =(SELECT MAX(EFFDT)
+                             FROM PS_ST_OPTION_PLAN
+                             WHERE STOCK_ID        = J.STOCK_ID
+                               AND STOCK_PLAN_TYPE = J.STOCK_PLAN_TYPE
+                               AND STOCK_PLAN      = J.STOCK_PLAN
+                               AND EFFDT          <= I.ST_CANCEL_DT)
+  AND I.ST_CANCEL_DT      <= I.VEST_DT
+  AND I.ST_CANCEL_REASON   = 'TER'
+  AND J.CANCEL_SHARES_MTHD = 'P'
+  [$WhereCancelDt]
+end-select
+
+end-procedure Get-Cancelled
+
+!******************************************************************************
+! Section: Get-Cancelled-Reprice
+! Descr:   Calculates shares cancelled where method is return to plan and cancel
+!          reason = reprice.  Changes date criteria in select for prior and 
+!          current selections.
+!******************************************************************************
+begin-procedure Get-Cancelled-Reprice
+
+ let $Alias = 'K'
+
+ if $Select = 'Prior'
+    let $WhereCancelDt = ' AND ' || $Alias || '.ST_CANCEL_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereCancelDt = ' AND (' || $Alias || '.ST_CANCEL_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                         ' AND '  || $Alias || '.ST_CANCEL_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #SharesCancldRprc = 0
+
+begin-select
+SUM(K.SHARES_VESTED)    &vest2
+SUM(K.SHARES_EXERCISED) &exer2
+
+ let #SharesCancldRprc = &Vest2 - &Exer2
+
+FROM PS_ST_STOP001_TBL   K,
+     PS_ST_OPTION_PLAN   L
+WHERE K.DATETIME_STAMP      = $CurrentTime
+  AND K.PROCESSINSTANCE     = #Instance
+  AND K.STOCK_ID            = $StockID
+  AND K.STOCK_PLAN          = $StockPlan
+  AND L.STOCK_ID            = K.STOCK_ID
+  AND L.STOCK_PLAN_TYPE     = $PlanType
+  AND L.STOCK_PLAN          = K.STOCK_PLAN
+  AND L.EFFDT               =(SELECT MAX(EFFDT)
+                              FROM PS_ST_OPTION_PLAN
+                              WHERE STOCK_ID        = L.STOCK_ID
+                                AND STOCK_PLAN_TYPE = L.STOCK_PLAN_TYPE
+                                AND STOCK_PLAN      = L.STOCK_PLAN
+                                AND EFFDT          <= K.ST_CANCEL_DT)
+  and (K.ST_CANCEL_REASON   = 'RPRC'
+   or K.ST_CANCEL_REASON    = 'RESC')
+  AND L.CANCEL_SHARES_MTHD  = 'P'
+  AND K.ST_CANCEL_DT        < K.EXPIRATN_DT
+  AND (K.ST_CANCEL_DT       < K.TERM_EXPIRATN_DT
+   OR K.TERM_EXPIRATN_DT   IS NULL)
+  [$WhereCancelDt]
+end-select
+
+end-procedure Get-Cancelled-Reprice
+
+!******************************************************************************
+! Section: Get-Cancld-Plan
+! Descr:   Calculates shares cancelled where cancel reason <> reprice. Changes 
+!          date criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-Cancld-Plan
+
+ let $Alias = 'M'
+
+ if $Select = 'Prior'
+    let $WhereCancelDt = ' AND ' || $Alias || '.ST_CANCEL_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereCancelDt = ' AND (' || $Alias || '.ST_CANCEL_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                         ' AND '  || $Alias || '.ST_CANCEL_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #ShrCnclPlan = 0
+ let #CnclPlanAmt = 0
+
+begin-select
+M.SHARES_VESTED
+M.SHARES_EXERCISED
+M.GRANT_PRICE
+
+ let #ShrCnclPlan = #ShrCnclPlan + (&m.shares_vested - &m.shares_exercised)
+ let #CnclPlanAmt = #CnclPlanAmt + ((&m.shares_vested - &m.shares_exercised) * &m.grant_price)
+
+FROM PS_ST_STOP001_TBL   M
+WHERE M.DATETIME_STAMP     = $CurrentTime
+  AND M.PROCESSINSTANCE    = #Instance
+  AND M.STOCK_ID           = $StockID
+  AND M.STOCK_PLAN         = $StockPlan
+  AND M.ST_CANCEL_REASON   = 'TER'
+  AND M.ST_CANCEL_DT      <= M.VEST_DT
+  [$WhereCancelDt]
+end-select
+
+ let #CnclPlanAmt = round(#CnclPlanAmt,2)
+
+end-procedure Get-Cancld-Plan
+
+!******************************************************************************
+! Section: Get-Cancld-Plan-Reprice
+! Descr:   Calculates shares cancelled where method is return to plan and cancel
+!          reason = reprice.  Changes date criteria in select for prior and 
+!          current selections.
+!******************************************************************************
+begin-procedure Get-Cancld-Plan-Reprice
+
+ let $Alias = 'N'
+
+ if $Select = 'Prior'
+    let $WhereCancelDt = ' AND ' || $Alias || '.ST_CANCEL_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereCancelDt = ' AND (' || $Alias || '.ST_CANCEL_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                         ' AND '  || $Alias || '.ST_CANCEL_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #ShrCnclPlanRprc = 0
+ let #CnclPlanRprcAmt = 0
+
+begin-select
+N.SHARES_VESTED
+N.SHARES_EXERCISED
+N.GRANT_PRICE
+
+ let #ShrCnclPlanRprc = #ShrCnclPlanRprc + (&n.shares_vested - &n.shares_exercised)
+ let #CnclPlanRprcAmt = #CnclPlanRprcAmt + ((&n.shares_vested - &n.shares_exercised) * &n.grant_price)
+
+FROM PS_ST_STOP001_TBL   N
+WHERE N.DATETIME_STAMP     = $CurrentTime
+  AND N.PROCESSINSTANCE    = #Instance
+  AND N.STOCK_ID           = $StockID
+  AND N.STOCK_PLAN         = $StockPlan
+  and (N.ST_CANCEL_REASON  = 'RPRC'
+   or N.ST_CANCEL_REASON   = 'RESC')
+  AND N.ST_CANCEL_DT       < N.EXPIRATN_DT
+  AND (N.ST_CANCEL_DT      < N.TERM_EXPIRATN_DT
+   OR N.TERM_EXPIRATN_DT  IS NULL)
+  [$WhereCancelDt]
+end-select
+
+ let #CnclPlanRprcAmt = round(#CnclPlanRprcAmt,2)
+
+end-procedure Get-Cancld-Plan-Reprice
+
+!******************************************************************************
+! Section: Get-Expired
+! Descr:   Calculates shares expired where method is return to plan and cancel
+!          reason <> reprice.  Changes date criteria in select for prior and 
+!          current selections.
+!******************************************************************************
+begin-procedure Get-Expired
+
+ let $Alias = 'O'
+
+ if $Select = 'Prior'
+    let $WhereExpireDt = ' AND ((' || $Alias || '.EXPIRATN_DT <= ' || $SQLQuote || $RC_FromDate         || $SQLQuote ||
+                         ' AND ('  || $Alias || '.EXPIRATN_DT < '  || $Alias    || '.TERM_EXPIRATN_DT ' || 'OR '     ||
+                         $Alias    || '.TERM_EXPIRATN_DT IS NULL ))' ||
+                         ' OR ('   || $Alias || '.TERM_EXPIRATN_DT <= ' || $SQLQuote || $RC_FromDate    || $SQLQuote ||
+                         ' AND '   || $Alias || '.EXPIRATN_DT > '    || $Alias || '.TERM_EXPIRATN_DT ))'
+ else
+    let $WhereExpireDt = ' AND (((' || $Alias || '.EXPIRATN_DT > ' || $SQLQuote || $RC_FromDate        || $SQLQuote ||
+                         ' AND '    || $Alias || '.EXPIRATN_DT <= '     || $SQLQuote || $RC_ThruDate   || $SQLQuote ||
+                         ') AND ('  || $Alias || '.EXPIRATN_DT < ' || $Alias || '.TERM_EXPIRATN_DT '   || 'OR ' ||
+                         $Alias     || '.TERM_EXPIRATN_DT IS NULL ))'   ||
+                         'OR (('    || $Alias || '.TERM_EXPIRATN_DT > ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                         ' AND '    || $Alias || '.TERM_EXPIRATN_DT <= '|| $SQLQuote || $RC_ThruDate   || $SQLQuote ||
+                         ') AND '   || $Alias || '.EXPIRATN_DT > ' || $Alias || '.TERM_EXPIRATN_DT ))'
+ end-if
+
+ let #SharesExpire = 0
+
+begin-select
+SUM(O.SHARES_VESTED)    &vest3
+SUM(O.SHARES_EXERCISED) &exer3
+
+ let #SharesExpire = &vest3 - &exer3
+
+FROM PS_ST_STOP001_TBL   O,
+     PS_ST_OPTION_PLAN   P
+WHERE O.DATETIME_STAMP     = $CurrentTime
+  AND O.PROCESSINSTANCE    = #Instance
+  AND O.STOCK_ID           = $StockID
+  AND O.STOCK_PLAN         = $StockPlan
+  AND P.STOCK_ID           = O.STOCK_ID
+  AND P.STOCK_PLAN_TYPE    = $PlanType
+  AND P.STOCK_PLAN         = O.STOCK_PLAN
+  AND P.EFFDT              =(SELECT MAX(EFFDT)
+                             FROM PS_ST_OPTION_PLAN
+                             WHERE STOCK_ID        = P.STOCK_ID
+                               AND STOCK_PLAN_TYPE = P.STOCK_PLAN_TYPE
+                               AND STOCK_PLAN      = P.STOCK_PLAN
+                               AND (EFFDT         <= O.EXPIRATN_DT
+                                OR EFFDT          <= O.TERM_EXPIRATN_DT))
+  AND (O.ST_CANCEL_REASON  = 'TER'
+   or O.ST_CANCEL_REASON   = ' ' )
+  AND P.EXPIRED_SHARE_MTHD = 'P'
+  AND (O.ST_CANCEL_DT      > O.VEST_DT
+   OR O.ST_CANCEL_DT      IS NULL)
+  AND O.EXPIRATN_DT       >= O.VEST_DT
+  AND (O.TERM_EXPIRATN_DT >= O.VEST_DT
+   OR O.TERM_EXPIRATN_DT  IS NULL)
+  [$WhereExpireDt]
+end-select
+
+end-procedure Get-Expired
+
+!******************************************************************************
+! Section: Get-Expired-Reprice
+! Descr:   Calculates shares expired where method is return to plan and cancel
+!          reason = reprice.  Changes date criteria in select for prior and 
+!          current selections.
+!******************************************************************************
+begin-procedure Get-Expired-Reprice
+
+ let $Alias = 'Q'
+
+ if $Select = 'Prior'
+    let $WhereExpireDt = ' AND ((' || $Alias || '.EXPIRATN_DT <= ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                         ' AND (' || $Alias || '.EXPIRATN_DT < ' || $Alias || '.TERM_EXPIRATN_DT ' || 'OR ' ||
+                         $Alias || '.TERM_EXPIRATN_DT IS NULL ))' ||
+                      ' OR (' || $Alias || '.TERM_EXPIRATN_DT <= ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                      ' AND ' || $Alias || '.EXPIRATN_DT > '|| $Alias || '.TERM_EXPIRATN_DT ))'
+ else
+    let $WhereExpireDt = ' AND (((' || $Alias || '.EXPIRATN_DT > ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                      ' AND ' || $Alias || '.EXPIRATN_DT <= '     || $SQLQuote || $RC_ThruDate   || $SQLQuote ||
+                      ') AND (' || $Alias || '.EXPIRATN_DT < ' || $Alias || '.TERM_EXPIRATN_DT ' || 'OR ' ||
+                         $Alias || '.TERM_EXPIRATN_DT IS NULL ))' ||
+                    'OR ((' || $Alias || '.TERM_EXPIRATN_DT > ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                      ' AND ' || $Alias || '.TERM_EXPIRATN_DT <= '|| $SQLQuote || $RC_ThruDate   || $SQLQuote ||
+                      ') AND ' || $Alias || '.EXPIRATN_DT > '|| $Alias || '.TERM_EXPIRATN_DT ))'
+ end-if
+
+ let #SharesExpireRprc = 0
+
+begin-select
+SUM(Q.SHARES_VESTED)    &vest4
+SUM(Q.SHARES_EXERCISED) &exer4
+
+ let #SharesExpireRprc = &vest4 - &exer4
+
+FROM PS_ST_STOP001_TBL   Q,
+     PS_ST_OPTION_PLAN   R
+WHERE Q.DATETIME_STAMP      = $CurrentTime
+  AND Q.PROCESSINSTANCE     = #Instance
+  AND Q.STOCK_ID            = $StockID
+  AND Q.STOCK_PLAN          = $StockPlan
+  AND R.STOCK_ID            = Q.STOCK_ID
+  AND R.STOCK_PLAN_TYPE     = $PlanType
+  AND R.STOCK_PLAN          = Q.STOCK_PLAN
+  AND R.EFFDT               =(SELECT MAX(EFFDT)
+                              FROM PS_ST_OPTION_PLAN
+                              WHERE STOCK_ID        = R.STOCK_ID
+                                AND STOCK_PLAN_TYPE = R.STOCK_PLAN_TYPE
+                                AND STOCK_PLAN      = R.STOCK_PLAN
+                                AND (EFFDT         <= Q.EXPIRATN_DT
+                                 OR EFFDT          <= Q.TERM_EXPIRATN_DT))
+  and (Q.ST_CANCEL_REASON   = 'RPRC'
+   or Q.ST_CANCEL_REASON    = 'RESC')
+  AND R.EXPIRED_SHARE_MTHD  = 'P'
+  AND (Q.ST_CANCEL_DT      >= Q.EXPIRATN_DT
+   OR Q.ST_CANCEL_DT       >= Q.TERM_EXPIRATN_DT)
+  [$WhereExpireDt]
+end-select
+
+end-procedure Get-Expired-Reprice
+
+!******************************************************************************
+! Section: Get-Expired-Plan
+! Descr:   Calculates shares expired where cancel reason <> reprice. Changes 
+!          date criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-Expired-Plan
+
+ let $Alias = 'S'
+
+ if $Select = 'Prior'
+    let $WhereExpireDt = ' AND ((' || $Alias || '.EXPIRATN_DT <= ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                         ' AND (' || $Alias || '.EXPIRATN_DT < ' || $Alias || '.TERM_EXPIRATN_DT ' || 'OR ' ||
+                         $Alias || '.TERM_EXPIRATN_DT IS NULL ))' ||
+                      ' OR (' || $Alias || '.TERM_EXPIRATN_DT <= ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                      ' AND ' || $Alias || '.EXPIRATN_DT > '|| $Alias || '.TERM_EXPIRATN_DT ))'
+ else
+    let $WhereExpireDt = ' AND (((' || $Alias || '.EXPIRATN_DT > ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                      ' AND ' || $Alias || '.EXPIRATN_DT <= '     || $SQLQuote || $RC_ThruDate   || $SQLQuote ||
+                      ') AND (' || $Alias || '.EXPIRATN_DT < ' || $Alias || '.TERM_EXPIRATN_DT ' || 'OR ' ||
+                         $Alias || '.TERM_EXPIRATN_DT IS NULL ))' ||
+                    'OR ((' || $Alias || '.TERM_EXPIRATN_DT > ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                      ' AND ' || $Alias || '.TERM_EXPIRATN_DT <= '|| $SQLQuote || $RC_ThruDate   || $SQLQuote ||
+                      ') AND ' || $Alias || '.EXPIRATN_DT > '|| $Alias || '.TERM_EXPIRATN_DT ))'
+ end-if
+
+ let #ShrExprPlan = 0
+ let #ExprPlanAmt = 0
+
+begin-select
+S.SHARES_VESTED
+S.SHARES_EXERCISED
+S.GRANT_PRICE
+
+ let #ShrExprPlan = #ShrExprPlan + (&s.shares_vested - &s.shares_exercised)
+ let #ExprPlanAmt = #ExprPlanAmt + ((&s.shares_vested - &s.shares_exercised) * &s.grant_price)
+
+FROM PS_ST_STOP001_TBL   S
+WHERE S.DATETIME_STAMP     = $CurrentTime
+  AND S.PROCESSINSTANCE    = #Instance
+  AND S.STOCK_ID           = $StockID
+  AND S.STOCK_PLAN         = $StockPlan
+  AND (S.ST_CANCEL_REASON  = 'TER'
+   or S.ST_CANCEL_REASON   = ' ' )
+  AND (S.ST_CANCEL_DT      > S.VEST_DT
+   OR S.ST_CANCEL_DT      IS NULL)
+  AND S.EXPIRATN_DT       >= S.VEST_DT
+  AND (S.TERM_EXPIRATN_DT >= S.VEST_DT
+   OR S.TERM_EXPIRATN_DT  IS NULL)
+  [$WhereExpireDt]
+end-select
+
+ let #ExprPlanAmt = round(#ExprPlanAmt,2)
+
+end-procedure Get-Expired-Plan
+
+!******************************************************************************
+! Section: Get-Expired-Plan-Reprice
+! Descr:   Calculates shares expired where cancel reason = reprice. Changes 
+!          date criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-Expired-Plan-Reprice
+
+ let $Alias = 'T'
+
+ if $Select = 'Prior'
+    let $WhereExpireDt = ' AND ((' || $Alias || '.EXPIRATN_DT <= ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                         ' AND (' || $Alias || '.EXPIRATN_DT < ' || $Alias || '.TERM_EXPIRATN_DT ' || 'OR ' ||
+                         $Alias || '.TERM_EXPIRATN_DT IS NULL ))' ||
+                      ' OR (' || $Alias || '.TERM_EXPIRATN_DT <= ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                      ' AND ' || $Alias || '.EXPIRATN_DT > '|| $Alias || '.TERM_EXPIRATN_DT ))'
+ else
+    let $WhereExpireDt = ' AND (((' || $Alias || '.EXPIRATN_DT > ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                      ' AND ' || $Alias || '.EXPIRATN_DT <= '     || $SQLQuote || $RC_ThruDate   || $SQLQuote ||
+                      ') AND (' || $Alias || '.EXPIRATN_DT < ' || $Alias || '.TERM_EXPIRATN_DT ' || 'OR ' ||
+                         $Alias || '.TERM_EXPIRATN_DT IS NULL ))'  ||
+                    'OR ((' || $Alias || '.TERM_EXPIRATN_DT > ' || $SQLQuote || $RC_FromDate   || $SQLQuote ||
+                      ' AND ' || $Alias || '.TERM_EXPIRATN_DT <= '|| $SQLQuote || $RC_ThruDate   || $SQLQuote ||
+                      ') AND ' || $Alias || '.EXPIRATN_DT > '|| $Alias || '.TERM_EXPIRATN_DT ))'
+ end-if
+
+ let #ShrExprPlanRprc = 0
+ let #ExprPlanRprcAmt = 0
+
+begin-select
+T.SHARES_VESTED
+T.SHARES_EXERCISED
+T.GRANT_PRICE
+
+ let #ShrExprPlanRprc = #ShrExprPlanRprc + (&t.shares_vested - &t.shares_exercised)
+ let #ExprPlanRprcAmt = #ExprPlanRprcAmt + ((&t.shares_vested - &t.shares_exercised) * &t.grant_price)
+
+FROM PS_ST_STOP001_TBL   T
+WHERE T.DATETIME_STAMP     = $CurrentTime
+  AND T.PROCESSINSTANCE    = #Instance
+  AND T.STOCK_ID           = $StockID
+  AND T.STOCK_PLAN         = $StockPlan
+  and (T.ST_CANCEL_REASON  = 'RPRC'
+   or T.ST_CANCEL_REASON   = 'RESC')
+  AND (T.ST_CANCEL_DT     >= T.EXPIRATN_DT
+   OR T.ST_CANCEL_DT      >= T.TERM_EXPIRATN_DT)
+  [$WhereExpireDt]
+end-select
+
+ let #ExprPlanRprcAmt = round(#ExprPlanRprcAmt,2)
+
+end-procedure Get-Expired-Plan-Reprice
+
+!******************************************************************************
+! Section: Get-Repurchased
+! Descr:   Sums active shares repurchased where method = return to plan. Changes 
+!          date criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-Repurchased
+
+ let $Alias = 'V'
+
+ if $Select = 'Prior'
+    let $WhereRepurchDt = ' AND ' || $Alias || '.REPURCHASE_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereRepurchDt = ' AND ('|| $Alias || '.REPURCHASE_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                         ' AND '  || $Alias || '.REPURCHASE_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #SharesRepurch = 0
+
+begin-select
+SUM(V.SHARES_REPURCHASED) &repurch
+
+ let #SharesRepurch = &repurch
+
+FROM PS_ST_GRANT     U,
+  PS_ST_GRNT_REPURCH V,
+  PS_ST_OPTION_PLAN  W
+WHERE U.EMPLID              = V.EMPLID
+  AND U.STOCK_ID            = V.STOCK_ID
+  AND U.GRANT_NBR           = V.GRANT_NBR
+  AND U.STOCK_ID            = $StockID
+  AND U.STOCK_PLAN          = $StockPlan
+  AND W.STOCK_ID            = U.STOCK_ID
+  AND W.STOCK_PLAN_TYPE     = $PlanType
+  AND W.STOCK_PLAN          = U.STOCK_PLAN
+  AND W.EFFDT               =(SELECT MAX(EFFDT)
+                              FROM PS_ST_OPTION_PLAN
+                              WHERE STOCK_ID        = W.STOCK_ID
+                                AND STOCK_PLAN_TYPE = W.STOCK_PLAN_TYPE
+                                AND STOCK_PLAN      = W.STOCK_PLAN
+                                AND EFFDT          <= V.REPURCHASE_DT)
+  AND W.REPURCH_SHARE_MTHD = 'P'
+  AND V.REPURCHASE_STATUS   = 'A'
+  [$WhereRepurchDt]
+end-select
+
+end-procedure Get-Repurchased
+
+!******************************************************************************
+! Section: Get-Exer-Swap
+! Descr:   Sums exercised shares swapped where method = return to plan. Changes 
+!          date criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-Exer-Swap
+
+ let $Alias = 'X'
+
+ if $Select = 'Prior'
+    let $WhereExerDt = ' AND ' || $Alias || '.EXERCISE_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereExerDt = ' AND (' || $Alias || '.EXERCISE_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                       ' AND '  || $Alias || '.EXERCISE_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #SharesExerSwap = 0
+
+begin-select
+SUM(X.SHARES_SWAPPED)  &ExerSwap
+SUM(X.SHARES_TRADED)   &ExerTrade
+
+ let #SharesExerSwap = (&ExerSwap + &ExerTrade)
+
+FROM PS_ST_GRANT_EXER  X,
+     PS_ST_OPTION_PLAN Y
+WHERE X.STOCK_ID         = $StockID
+  AND X.STOCK_PLAN       = $StockPlan
+  AND X.EXERCISE_STATUS  = 'A'
+  [$WhereExerDt]
+  AND Y.STOCK_ID         = X.STOCK_ID
+  AND Y.STOCK_PLAN_TYPE  = $PlanType
+  AND Y.STOCK_PLAN       = X.STOCK_PLAN
+  AND Y.EFFDT            =(SELECT MAX(EFFDT)
+                           FROM PS_ST_OPTION_PLAN
+                           WHERE STOCK_ID        = Y.STOCK_ID
+                             AND STOCK_PLAN_TYPE = Y.STOCK_PLAN_TYPE
+                             AND STOCK_PLAN      = Y.STOCK_PLAN
+                             AND EFFDT          <= X.EXERCISE_DT)
+  AND Y.SWAP_SHARES_MTHD = 'P'
+end-select
+
+end-procedure Get-Exer-Swap
+
+!******************************************************************************
+! Section: Get-Rel-Swap
+! Descr:   Sums released shares swapped where method = return to plan. Changes 
+!          date criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-Rel-Swap
+
+ let $Alias = 'BB'
+
+ if $Select = 'Prior'
+    let $WhereRelDt  = ' AND ' || $Alias || '.RELEASE_DT < ' || $SQLQuote || $RC_FromDate || $SQLQuote
+ else
+    let $WhereRelDt  = ' AND ('|| $Alias || '.RELEASE_DT <= '|| $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                       ' AND ' || $Alias || '.RELEASE_DT >= '|| $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #SharesRelSwap = 0
+
+begin-select
+
+SUM(BB.SHARES_TRADED)   &RelSwap
+
+ let #SharesRelSwap = &RelSwap
+
+FROM PS_ST_GRANT_EXER   AA,
+     PS_ST_EXER_RELEASE BB,
+     PS_ST_OPTION_PLAN  CC
+WHERE AA.EMPLID          = BB.EMPLID
+  AND AA.STOCK_ID        = BB.STOCK_ID
+  AND AA.GRANT_NBR       = BB.GRANT_NBR
+  AND AA.EXERCISE_NBR    = BB.EXERCISE_NBR
+  AND AA.STOCK_ID        = $StockID
+  AND AA.STOCK_PLAN      = $StockPlan
+  AND BB.RELEASE_STATUS  = 'A'
+  [$WhereRelDt]
+  AND CC.STOCK_ID        = AA.STOCK_ID
+  AND CC.STOCK_PLAN_TYPE = $PlanType
+  AND CC.STOCK_PLAN      = AA.STOCK_PLAN
+  AND CC.EFFDT           =(SELECT MAX(EFFDT)
+                           FROM PS_ST_OPTION_PLAN
+                           WHERE STOCK_ID        = CC.STOCK_ID
+                             AND STOCK_PLAN_TYPE = CC.STOCK_PLAN_TYPE
+                             AND STOCK_PLAN      = CC.STOCK_PLAN
+                             AND EFFDT          <= BB.RELEASE_DT)
+  AND CC.SWAP_SHARES_MTHD = 'P'
+end-select
+
+end-procedure Get-Rel-Swap
+
+!******************************************************************************
+! Section: Get-SAR
+! Descr:   Sums SAR shares exercised where method = return to plan. Changes 
+!          date criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-SAR
+
+ let $Alias = 'DD'
+
+ if $Select = 'Prior'
+    let $WhereExerDt = ' AND ' || $Alias || '.EXERCISE_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereExerDt = ' AND (' || $Alias || '.EXERCISE_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                       ' AND '  || $Alias || '.EXERCISE_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #SharesExerSar = 0
+
+begin-select
+SUM(DD.SHARES_EXERCISED) &sar
+
+ let #SharesExerSar = &sar
+
+FROM PS_ST_GRANT_EXER  DD,
+     PS_ST_OPTION_PLAN EE
+WHERE DD.STOCK_ID        = $StockID
+  AND DD.STOCK_PLAN      = $StockPlan
+  AND DD.EXERCISE_STATUS = 'A'
+  AND DD.EXERCISE_METHOD  = 'SAR'
+  [$WhereExerDt]
+  AND EE.STOCK_ID        = DD.STOCK_ID
+  AND EE.STOCK_PLAN_TYPE = $PlanType
+  AND EE.STOCK_PLAN      = DD.STOCK_PLAN
+  AND EE.EFFDT           =(SELECT MAX(EFFDT)
+                           FROM PS_ST_OPTION_PLAN
+                           WHERE STOCK_ID        = EE.STOCK_ID
+                             AND STOCK_PLAN_TYPE = EE.STOCK_PLAN_TYPE
+                             AND STOCK_PLAN      = EE.STOCK_PLAN
+                             AND EFFDT          <= DD.EXERCISE_DT)
+  AND EE.SAR_EXERCISE_MTHD = 'P'
+end-select
+
+end-procedure Get-SAR
+
+!******************************************************************************
+! Section: Get-Exercise-Vested
+! Descr:   Calculate vested shares exercised. Changes 
+!          date criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-Exercise-Vested
+
+ let $Alias = 'FF'
+
+ if $Select = 'Prior'
+    let $WhereExerDt = ' AND ' || $Alias || '.EXERCISE_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereExerDt = ' AND (' || $Alias || '.EXERCISE_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                       ' AND '  || $Alias || '.EXERCISE_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #SharesExerVest = 0
+ let #ExerVestAmt    = 0
+
+begin-select
+FF.SHARES_EXERCISED
+GG.GRANT_PRICE
+
+ let #SharesExerVest = #SharesExerVest + &ff.shares_exercised
+ let #ExerVestAmt    = #ExerVestAmt + (&ff.shares_exercised * &gg.grant_price)
+
+FROM PS_ST_GRANT_EXER  FF,
+     PS_ST_GRANT       GG
+WHERE GG.EMPLID             = FF.EMPLID
+  AND GG.STOCK_ID           = FF.STOCK_ID
+  AND GG.GRANT_NBR          = FF.GRANT_NBR
+  AND FF.STOCK_ID           = $StockID
+  AND FF.STOCK_PLAN         = $StockPlan
+  AND FF.EXERCISE_STATUS    = 'A'
+  AND FF.RESTRICTD_EXERCISE = 'N'
+  [$WhereExerDt]
+end-select
+
+ let #ExerVestAmt = round(#ExerVestAmt,2)
+
+end-procedure Get-Exercise-Vested
+
+!******************************************************************************
+! Section: Get-Exercise-Unvested
+! Descr:   Calculate unvested shares exercised. Changes 
+!          date criteria in select for prior and current selections.
+!******************************************************************************
+begin-procedure Get-Exercise-Unvested
+
+ let $Alias = 'HH'
+
+ if $Select = 'Prior'
+    let $WhereExerDt = ' AND ' || $Alias || '.EXERCISE_DT < ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+ else
+    let $WhereExerDt = ' AND (' || $Alias || '.EXERCISE_DT <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote ||
+                       ' AND '  || $Alias || '.EXERCISE_DT >= ' || $SQLQuote || $RC_FromDate || $SQLQuote || ')'
+ end-if
+
+ let #SharesExerUnvest = 0
+ let #ExerUnvestAmt    = 0
+
+begin-select
+HH.SHARES_EXERCISED
+II.GRANT_PRICE
+
+ let #SharesExerUnvest = #SharesExerUnvest + &hh.shares_exercised
+ let #ExerUnvestAmt    = #ExerUnvestAmt   + (&hh.shares_exercised * &ii.grant_price)
+
+FROM PS_ST_GRANT_EXER  HH,
+     PS_ST_GRANT       II
+WHERE II.EMPLID             = HH.EMPLID
+  AND II.STOCK_ID           = HH.STOCK_ID
+  AND II.GRANT_NBR          = HH.GRANT_NBR
+  AND HH.STOCK_ID           = $StockID
+  AND HH.STOCK_PLAN         = $StockPlan
+  AND HH.EXERCISE_STATUS    = 'A'
+  AND HH.RESTRICTD_EXERCISE = 'Y'
+  [$WhereExerDt]
+end-select
+
+ let #ExerUnvestAmt = round(#ExerUnvestAmt,2)
+
+end-procedure Get-Exercise-Unvested
+
+!******************************************************************************
+! Section: Get-Grant-Range
+! Descr:   Retrieves maximum and minimum grant price  for the plan.
+!******************************************************************************
+begin-procedure Get-Grant-Range
+
+begin-select
+MIN(GRANT_PRICE) &MinPrice
+MAX(GRANT_PRICE) &MaxPrice
+
+ do Format-Amt(&MinPrice,$MinPrice,'888,888,888,888.888888',$Cur,$Curout)
+ do Format-Amt(&MaxPrice,$MaxPrice,'888,888,888,888.888888',$Cur,$Curout)
+
+FROM PS_ST_GRANT
+WHERE STOCK_ID     = $StockID
+  AND STOCK_PLAN   = $StockPlan
+  AND GRANT_STATUS = 'A'
+  AND GRANT_DT    <= $RC_ThruDate
+end-select
+
+end-procedure Get-Grant-Range
+
+!******************************************************************************
+! Section: Print-Plan
+! Descr:   Prints the report.
+!******************************************************************************
+begin-procedure Print-Plan
+
+let $AvailGrantLbl    = upper($AvailGrantLbl)
+let $BeginAvailLbl    = upper($BeginAvailLbl)
+let $TotAvailGrantLbl = upper($TotAvailGrantLbl)
+let $ShareOutstandLbl = upper($ShareOutstandLbl)
+let $AuthUnLbl        = upper($AuthUnLbl)
+let $TotOutstandLbl   = upper($TotOutstandLbl)
+let $TotAuthUnLbl     = upper($TotAuthUnLbl)
+let $PriorOutstandLbl = upper($PriorOutstandLbl)
+let $SharesLbl        = lpad($SharesLbl,23,' ')
+
+print $AvailGrantLbl                            (+2, 01, 80)  bold
+print $CurPeriodLbl                             (+2, 59, 14)
+print $PlanToDtLbl                              ( 0,127, 12)
+print '-'                                       (+1, 50,122) fill
+print $SharesLbl                                (+1, 50, 23)
+print $SharesLbl                                ( 0,116, 23)
+print '-'                                       (+1, 50,122) fill
+
+print $BeginAvailLbl                            (+2,1,40)
+
+do Format-Amt(#PriorBeginAvail,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+do Format-Amt(#ThruBeginAvail,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+print $ShareAllocLbl                            (+1,1,40)
+
+do Format-Amt(#CurAlloc,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+do Format-Amt(#ThruAlloc,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+print $ShareGrantLbl                            (+1,1,40)
+
+let #CurGrantNeg = (#CurGrant * -1)
+do Format-Amt(#CurGrantNeg,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+let #ThruGrantNeg = (#ThruGrant * -1)
+do Format-Amt(#ThruGrantNeg,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+print $ShareCnclLbl                             (+1,1,40)
+
+do Format-Amt(#CurCancel,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+do Format-Amt(#ThruCancel,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+print $ShareExprLbl                             (+1,1,40)
+
+do Format-Amt(#CurExpire,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+do Format-Amt(#ThruExpire,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+print $ShareRepurchLbl                          (+1,1,40)
+
+do Format-Amt(#CurRepurch,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+do Format-Amt(#ThruRepurch,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+!---------------------------------------------------------
+! If plan has expired as of the thru date, print Plan
+! Shares Expired.
+!---------------------------------------------------------
+if $ExpireDtCmp <= $ThruCmp
+   print $PlanExprLbl                           (+1,1,40)
+
+   do Format-Amt(#CurPlanSharesExpire,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+   print $out                                   (,50,24)
+   print '*'                                    (,,1)
+
+   do Format-Amt(#ThruPlanSharesExpire,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+   print $out                                   (,116,24)
+   print '*'                                    (,,1)
+
+   print '-'                                    (+1,50,122) fill
+else
+   print '-'                                    (+1,50,122) fill
+end-if
+
+print $TotAvailGrantLbl                         (+1,1,40)  bold
+
+do Format-Amt(#CurTotalAvail,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+do Format-Amt(#ThruTotalAvail,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+!---------------------------------------------------------
+! If plan has expired as of the thru date, print a note
+! with the date of expiration.
+!---------------------------------------------------------
+if $ExpireDtCmp <= $ThruCmp
+   print '*'                                    (+2,1,1) 
+   print $ExprOnLbl                             (,,15)   
+   print $PlanExpireDt                          (,+1,10) 
+end-if
+
+print $ShareOutstandLbl                         (+3, 01, 80) bold
+print $CurPeriodLbl                             (+2, 73, 14)
+print $PlanToDtLbl                              ( 0,137, 12)
+print '-'                                       (+1, 50,122) fill
+Print $SharesLbl                                (+1, 50, 23)
+print $DollarsLbl                               ( 0, 98,  7)
+print $SharesLbl                                ( 0,116, 23)
+print $DollarsLbl                               ( 0,164,  7)
+print '-'                                       (+1, 50,122) fill
+
+print $PriorOutstandLbl                         (+2,1,40)
+
+do Format-Amt(#PriorOutstanding,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+do Format-Amt(#PriorOutstandAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,80,26)
+
+do Format-Amt(#ThruOutstanding,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+do Format-Amt(#ThruOutstandAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,146,26)
+
+print $ShareGrantLbl                            (+1,1,40)
+
+do Format-Amt(#CurGrant,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+do Format-Amt(#CurGrantAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,80,26)
+
+do Format-Amt(#ThruGrant,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+do Format-Amt(#ThruGrantAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,146,26)
+
+let $ShareExerVestLbl = $ShareExerLbl||'-'||$VestedLbl
+print $ShareExerVestLbl                         (+1,1,23)
+
+let #CurExerVest = (#CurExerVest * -1)
+do Format-Amt(#CurExerVest,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+let #CurExerVestAmt = (#CurExerVestAmt * -1)
+do Format-Amt(#CurExerVestAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,80,26)
+
+let #ThruExerVest = (#ThruExerVest * -1)
+do Format-Amt(#ThruExerVest,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+let #ThruExerVestAmt = (#ThruExerVestAmt * -1)
+do Format-Amt(#ThruExerVestAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,146,26)
+
+let $ShareExerUnVstLbl = $ShareExerLbl||'-'||$UnvestedLbl
+print $ShareExerUnVstLbl                        (+1,1,25)
+
+let #CurExerUnvest = (#CurExerUnvest * -1)
+do Format-Amt(#CurExerUnvest,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+let #CurExerUnvestAmt = (#CurExerUnvestAmt * -1)
+do Format-Amt(#CurExerUnvestAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,80,26)
+
+let #ThruExerUnvest = (#ThruExerUnvest * -1)
+do Format-Amt(#ThruExerUnvest,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+let #ThruExerUnvestAmt = (#ThruExerUnvestAmt * -1)
+do Format-Amt(#ThruExerUnvestAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,146,26)
+
+print $ShareCnclLbl                             (+1,1,40)
+
+let #CurCnclPlan = (#CurCnclPlan * -1)
+do Format-Amt(#CurCnclPlan,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+let #CurCnclPlanAmt = (#CurCnclPlanAmt * -1)
+do Format-Amt(#CurCnclPlanAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,80,26)
+
+let #ThruCnclPlan = (#ThruCnclPlan * -1)
+do Format-Amt(#ThruCnclPlan,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+let #ThruCnclPlanAmt = (#ThruCnclPlanAmt * -1)
+do Format-Amt(#ThruCnclPlanAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,146,26)
+
+print $ShareExprLbl                             (+1,1,40)
+
+let #CurExprPlan = (#CurExprPlan * -1)
+do Format-Amt(#CurExprPlan,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+let #CurExprPlanAmt = (#CurExprPlanAmt * -1)
+do Format-Amt(#CurExprPlanAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,80,26)
+
+let #ThruExprPlan = (#ThruExprPlan * -1)
+do Format-Amt(#ThruExprPlan,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+let #ThruExprPlanAmt = (#ThruExprPlanAmt * -1)
+do Format-Amt(#ThruExprPlanAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,146,26)
+
+print '-'                                       (+1,50,122) fill
+
+print $TotOutstandLbl                           (+1,1,40)  bold
+
+do Format-Amt(#CurTotOutstand,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+do Format-Amt(#CurTotOutstandAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,80,26)
+
+do Format-Amt(#ThruTotOutstand,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,116,24)
+
+do Format-Amt(#ThruTotOutstandAmt,$out,'9,999,999,999,999,999.99pr',$Cur,$Curout)
+print $out                                      (,146,26)
+print '**'                                      (,,2)
+
+print '**'                                      (+2,1,2)
+print $Range1Lbl                                (,,16)
+print $MinPrice                                 (,+1)
+print $Range2Lbl                                (,+1,2)
+print $MaxPrice                                 (,+1)
+print $Range3Lbl                                (,+1,26)
+print $AveragePrice                             (,+1)
+
+print $AuthUnLbl                                (+3,1,80)  bold
+print $SharesLbl                                (+2,50,23)
+print '-'                                       (+1,50,122) fill
+
+print $TotAvailGrantLbl                         (+1,1,40)
+
+do Format-Amt(#CurTotalAvail,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+print $TotOutstandLbl                           (+1,1,40)
+
+do Format-Amt(#CurTotOutstand,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+print '-'                                       (+1,50,122) fill
+
+print $TotAuthUnLbl                             (+1,1,40)  bold
+
+do Format-Amt(#TotAuthUnissue,$out,'999,999,999,999.999999pr',$Cur,$Curout)
+print $out                                      (,50,24)
+
+end-procedure Print-Plan
+
+!******************************************************************************
+! Section: Delete-Temp
+! Descr:   Delete all the info that we inserted into the temp table.
+!
+!******************************************************************************
+begin-procedure Delete-Temp
+
+ let $Procedure = 'Delete-Temp'
+ let $SQL-Statement = 'Procedure: ' || $Procedure
+
+begin-sql                           on-error = SQL-Error
+DELETE from PS_ST_STOP001_TBL
+WHERE DATETIME_STAMP  = $CurrentTime
+  AND PROCESSINSTANCE = #Instance
+end-sql
+
+end-procedure Delete-Temp
+
+!******************************************************************************
+! SQC Includes
+!******************************************************************************
+#include 'curdttim.sqc'                !Procedures: Get-Current-DateTime
+#include 'eoj.sqc'                     !End of Report Format
+#include 'number.sqc'                  !Procedures: Init-Number
+#include 'datetime.sqc'                !Procedures: Init-Datetime
+#include 'prcsapi.sqc'                 !Process Scheduler API
+#include 'prcsdef.sqc'                 !Update Process Open_Trans variable declaration
+#include 'reset.sqc'                   !Reset printer procedure
+#include 'strunctl.sqc'                !Stock Admin's Run Control Record
+#include 'askftd.sqc'                  !Prompts for date range
+#include 'getrplng.sqc'                !Gets the report language
+#include 'sqlerr.sqc'                  !SQL error processing
+#include 'sqrtrans.sqc'
+#include 'datemath.sqc'
+

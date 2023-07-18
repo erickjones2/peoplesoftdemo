@@ -1,0 +1,2799 @@
+!**********************************************
+!  GPDEAL99:  Pay Element Summary Report      *
+!**********************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/18:03:35:16                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!                                                                      *
+!***********************************************************************
+!
+! THIS SQR CREATES A TABLE WITH THE SAME KEYs AS GP_PYE_SEG_STAT AND
+! A 'FLAG' FIELD FOR EACH WRITABLE ARRAY THAT WE'RE INTERESTED IN.
+! CALENDARS ARE CHOSEN UPON THE PERIOD CHOSEN IN THE RUNCONTROL.
+! THE 'FLAG' FIELD IS DEFAULTED WITH
+! U - NOT EXISTING (set of keys not existing in the WA)
+! P - PRINTABLE    (set of keys for a printable row)
+! D - DUPLICATED   (set of keys for a row that duplicates values of a P row)
+!
+#define gpdeversionstamp '===FUNCTIONAL UPDATE STAMP: 20060926-1501 wdu06-900b0==='
+!
+!***********************************************************************
+! wdu04b5
+! GPDE_AL_CPAY_ENDDT may not be compared, because it changes every period.
+! 
+! Non printed Yeartodates to be skipped for compares:
+! (e.g. taxcard yeartodates)
+!
+! V2: global version without runcontrol information
+!***********************************************************************
+! wdu jw2005    emplid fixes, formal cleanup
+! wdu05-89mp1 - added fieldlist for inserts into GPDE_RP_AL9x
+! wdu05-891b1: codeline merge 2005-05-12 - unch891
+! wdu06-890b7 implemented postprocessing for non-printed lines for flip-flop-issue
+! wdu06-890b7 dates with NULL will not compare, removed from post-process
+! wdu06-900b0 removed old comments
+!
+#include 'setenv.sqc'    !Set environment
+
+Begin-setup
+  !Printer and page-size initialization
+
+  #define PAPER_SIZE   A4
+  #Include 'setupdb.sqc'
+  #define PRINTER_TYPE HPLASERJET
+
+  declare-report CUD_DEFAULT
+    layout=CUD_default
+    printer-type=HPLASERJET
+  end-declare
+
+  Declare-Printer HP-definition
+      Type=HPLASERJET
+      Font=3
+      Point-Size=8
+      Pitch=17
+      Symbol-Set=0U     ! ASCII symbol set
+  End-Declare
+
+  Declare-Layout CUD_default
+    paper-size= (A4)
+    orientation=Landscape
+    line-height=3 mm              ! 72/printer_point-size
+    char-width=4.34                ! points, to handle max cols
+    bottom-margin=.1 cm
+    Top-Margin= .1 cm
+    Left-Margin=.1
+  End-Declare
+End-setup
+
+!***********************************************************************
+!**begin-report**********************
+!*************************************
+begin-program
+  do Init-Report
+  do Process-Main
+  do Reset
+  do Stdapi-Term
+end-program
+!***********************************************************************
+!**Init-Report***********************
+!*************************************
+begin-procedure Init-Report
+! show 'begin-procedure Init-Report'
+  show {gpdeversionstamp}
+
+  move 'GPDEAL99' to $ReportID
+! do Get_Field_Information ('GPDEAL99',     'REPORT_TITLE',       $REPORTTITLE,   #DW)
+  display ' '
+  display $ReportID
+  display ' '
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+     Move 1 to $Year4
+  do Stdapi-Init
+
+  if $prcs_oprid=''
+     display ''
+     display 'REPORT CAN NOT BE EXECUTED OUTSIDE OF PEOPLESOFT, PLEASE USE PROCESS SCHEDULER.'
+     display ''
+    goto last1
+  end-if
+
+  do Security-Param
+
+  if $prcs_process_instance = ''
+    do Ask-As-Of-Date
+  else
+    do Select-Parameters
+  end-if
+
+  do Init_Printer
+  do Init_Report_Translation ($ReportID, $language_cd)
+  do Append_Report_Translation ('GPDEAL99')
+last1:
+end-procedure   Init-Report
+
+
+
+
+
+
+!*************************************
+!**begin-heading**********************
+!*************************************
+begin-heading 7
+!  show 'begin-heading'
+  do Append_Report_Translation ('STDHDGTR')
+  if $Program_Read = 'Y'
+    do Get_Field_Information ('STDHDGTR', 'STDHDG_CO_NM',   $stdhdg_co_nm,   #dummy_width)
+    do Get_Field_Information ('STDHDGTR', 'STDHDG_REP_ID',  $stdhdg_rep_id,  #dummy_width)
+    do Get_Field_Information ('STDHDGTR', 'STDHDG_PAGE_NO', $stdhdg_page_no, #dummy_width)
+    do Get_Field_Information ('STDHDGTR', 'STDHDG_RUN_DT',  $stdhdg_run_dt,  #dummy_width)
+    do Get_Field_Information ('STDHDGTR', 'STDHDG_RUN_TM',  $stdhdg_run_tm,  #dummy_width)
+    do Get_Field_Information ('STDHDGTR', 'STDHDG_END_REP', $stdhdg_end_rep, #dummy_width)
+  end-if
+
+  print '            '    (6,1)
+  print $stdhdg_co_nm     ()          center
+  print $stdhdg_rep_id    (7,2)
+  print $ReportID         (0,+4)
+  !* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+  !*  T-MBOWDEN-5: not to uppercase due to languages other than English  *
+  !* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+  print $ReportTitle      ()          center
+  let #ColR = 160            ! set right column
+  let #RptCol = #ColR - 2
+  print $stdhdg_page_no   (0,#RptCol)
+  print #page-count       (0,+4)      edit 88888888
+  print $stdhdg_run_dt    (8,#RptCol)
+  print $ReportDate       (0,+4)
+  print $stdhdg_run_tm    (9,#RptCol)
+  print $ReportTime       (0,+4)
+end-heading
+
+
+
+
+
+
+
+!*************************************
+!**Process Main**********************
+!*************************************
+begin-procedure Process-Main
+!  show 'begin-procedure Process-Main'
+
+!=== Read Run Control Table ===
+!--- do  Get-RCTL-Values
+! wdu04b5: do not ask runcontrol, we use fixed params , use DTU-dates here
+!let $RepStartDate = '2000-01-01'
+!let $RepEndDate = '2500-01-01'
+   do dtu-format-date(2000, 1, 1,$dtu_dateout)
+   do Convert-From-DTU-Date($dtu_dateout , $RepStartDate)
+   do dtu-format-date(2500, 1, 1,$dtu_dateout)
+   do Convert-From-DTU-Date($dtu_dateout , $RepEndDate)
+
+!===== Clear Table A ======
+let $ClearRecord = 'PS_GPDE_RP_AL91'
+do  Clear-Rec
+!===== Clear Table B ======
+let $ClearRecord = 'PS_GPDE_RP_AL92'
+do  Clear-Rec
+!===== Clear Table C ====== 
+let $ClearRecord = 'PS_GPDE_RP_AL93'
+do  Clear-Rec
+!===== Fill  Table A ======
+let $string = ' '
+do  Fill-A
+if $string  = ' '
+   show 'No data in PS_GPDE_RP_AL91 table'
+else
+!===== Fill  Table B ======
+   do  Fill-B
+!===== ReFill  Table C ========= RP_0001 Writable Array
+!===== Upd   Table B ======
+  let $Field  = 'GPDE_RP_CHAR01_01'
+  let $Record = 'PS_GPDE_RP_0001'
+  do  Fill-C-RP_0001
+  do  Upd-B
+!===== ReFill  Table C ========= RP_0002 Writable Array
+!===== Upd   Table B ======
+  let $Field = 'GPDE_RP_CHAR01_02'
+  let $Record = 'PS_GPDE_RP_0002'
+  do  Fill-C-RP_0002
+  do  Upd-B
+!===== ReFill  Table =========== RP_0003 Writable Array
+!===== Upd   Table B ======
+  let $Field = 'GPDE_RP_CHAR01_03'
+  let $Record = 'PS_GPDE_RP_0003'
+  do  Fill-C-RP_0003
+  do  Upd-B
+!===== ReFill  Table C ========= RP_AZ01 Writable Array
+!===== Upd   Table B ======
+  let $Field = 'GPDE_RP_CHAR01_04'
+  let $Record = 'PS_GPDE_RP_AZ01'
+  do  Fill-C-RP_AZ01
+  do  Upd-B
+!===== ReFill  Table C ========= RP_FL01 Writable Array
+!===== Upd   Table B ======
+  let $Field = 'GPDE_RP_CHAR01_05'
+  let $Record = 'PS_GPDE_RP_FL01'
+  do  Fill-C-RP_FL01
+  do  Upd-B
+!===== ReFill  Table C ========= RP_SI01 Writable Array
+!===== Upd   Table B ======
+  let $Field = 'GPDE_RP_CHAR01_06'
+  let $Record = 'PS_GPDE_RP_SI01'
+  do  Fill-C-RP_SI01
+  do  Upd-B
+  
+  ! wdu06-890b7 postprocessing
+  let #CorrectionCount = 0
+  do RescanChanges
+  show '#CorrectionCount=' #CorrectionCount
+  if #CorrectionCount > 0 
+    do ApplyRescanChanges
+  end-if
+end-if
+
+end-procedure
+
+
+
+
+
+!************************************
+!**Get-RCTL-Values*******************
+!*************************************
+begin-procedure Get-RCTL-Values---do-not-use
+! show 'begin-procedure Get-RCTL-Values'
+
+  let $language_cd = $PRCS_LANGUAGE_CD
+  display $prcs_oprid
+  display $prcs_run_cntl_id
+
+begin-SELECT
+
+R.GPDE_RC_FROM_DT
+  let $in              = rtrim(&R.GPDE_RC_FROM_DT,' ')
+  do Format-DateTime($in, $out, {DEFMDY}, '', '')
+  let $R.FROMDATE      = $out
+R.GPDE_RC_TO_DT
+  let $in              = rtrim(&R.GPDE_RC_TO_DT,' ')
+  do Format-DateTime($in, $out, {DEFMDY}, '', '')
+  let $R.THRUDATE      = $out
+R.PAY_ENTITY
+  let $PayEntity       = rtrim(&R.PAY_ENTITY,' ')
+from PS_GPDE_RC_PAYROLL R
+where R.OPRID = $prcs_oprid
+and   R.RUN_CNTL_ID = $prcs_run_cntl_id
+end-SELECT
+
+end-procedure   Get-RCTL-Values
+
+
+
+
+
+
+
+!*********************************
+!**Clear-Rec**********************
+!*********************************
+begin-procedure Clear-Rec
+begin-SQL 
+DELETE  FROM [$ClearRecord]
+End-Sql
+end-procedure   Clear-C
+
+
+
+
+
+
+!**********************************
+!**Clear-Var***********************
+!*********************************
+begin-procedure Clear-Var
+  let $Emplid       = ' '
+  let #EmplRcd      = 0
+  let $GpPaygroup   = ' '
+  let $CalID        = ' '
+  let $OrigCalRunId = ' '
+  let #RsltSegNum   = 0
+  let #RsltVerNum   = 0
+end-procedure Clear-Var
+
+
+
+
+
+
+
+!***********************************************************************
+!**Fill-A*************************
+!*********************************
+begin-procedure Fill-A
+!  show 'begin-procedure Fill-A'
+
+begin-SQL 
+INSERT INTO PS_GPDE_RP_AL91
+(CAL_RUN_ID
+,CAL_SEQ_NUM
+,GP_PAYGROUP
+,CAL_ID
+,PERIOD_END_DT)
+SELECT 
+!-+-04b5v2-  $prcs_process_instance, $prcs_oprid, $prcs_run_cntl_id,
+CALDTL.CAL_RUN_ID, CALDTL.CAL_SEQ_NUM,CALDTL.GP_PAYGROUP,CALDTL.CAL_ID,
+CALDTL.PRD_END_DT
+FROM PS_GP_CAL_RUN_DTL CALDTL
+WHERE CALDTL.CALC_TYPE = 'P'
+! fix clh
+! AND CALDTL.PRD_BGN_DT >= $RepStartDate
+! AND CALDTL.PRD_END_DT <= $RepEndDate
+End-Sql
+
+begin-select
+TEST.CAL_RUN_ID   &TESTITEM
+   let $string = rtrim(&TESTITEM,' ')
+FROM PS_GPDE_RP_AL91 TEST
+End-Select
+end-procedure Fill-A
+
+
+
+
+
+
+!***********************************************************************
+!**Fill-B*************************
+!*********************************
+begin-procedure Fill-B
+!  show 'begin-procedure Fill-B'
+
+begin-SQL 
+INSERT INTO PS_GPDE_RP_AL92
+( EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,RSLT_VER_NUM
+,GPDE_RP_CHAR01_01
+,GPDE_RP_CHAR01_02
+,GPDE_RP_CHAR01_03
+,GPDE_RP_CHAR01_04
+,GPDE_RP_CHAR01_05
+,GPDE_RP_CHAR01_06
+ )
+SELECT 
+!-+-04b5v2-  $prcs_process_instance, $prcs_oprid, $prcs_run_cntl_id,
+SEG1.EMPLID, SEG1.CAL_RUN_ID, SEG1.EMPL_RCD, SEG1.GP_PAYGROUP, SEG1.CAL_ID,
+SEG1.ORIG_CAL_RUN_ID, SEG1.RSLT_SEG_NUM, SEG1.RSLT_VER_NUM
+,'U'             !RP_0001
+,'U'             !RP_0002
+,'U'             !RP_0003
+,'U'             !RP_AZ01
+,'U'             !RP_FL01
+,'U'             !RP_SI01
+FROM  PS_GP_PYE_SEG_STAT SEG1
+WHERE CAL_RUN_ID IN (
+    SELECT A1.CAL_RUN_ID
+    FROM PS_GPDE_RP_AL91 A1
+    )
+AND  CAL_ID  IN (
+    SELECT A2.CAL_ID
+    FROM PS_GPDE_RP_AL91 A2
+    where   SEG1.RSLT_REV_NUM    = 1        
+    )
+AND   SEG1.CALC_ACTION     = 'C'
+    ! --+ AND SEG1.EMPLID='TestEmplid'
+    
+End-Sql
+
+end-procedure Fill-B
+
+
+
+
+
+
+
+!*********************************
+!**Fill-C*************************
+!*********************************
+begin-procedure Fill-C
+!  show 'begin-procedure Fill-C'
+
+
+begin-SQL 
+UPDATE PS_GPDE_RP_AL92
+SET   [$Field]             = 'P'
+WHERE EMPLID               = $Emplid
+! --+ AND   EMPLID='TestEmplid'
+AND   EMPL_RCD             = #EmplRcd
+AND   GP_PAYGROUP          = $GpPaygroup
+AND   CAL_ID               = $CalID
+AND   ORIG_CAL_RUN_ID      = $OrigCalRunId
+AND   RSLT_SEG_NUM         = #RsltSegNum
+AND   RSLT_VER_NUM         = #RsltVerNum
+End-Sql
+
+end-procedure Fill-C
+
+
+
+
+
+
+
+!*********************************
+!**Upd-B**************************
+!*********************************
+begin-procedure Upd-B
+!  show 'begin-procedure Upd-B'
+!  show $Field
+!  show $Record
+
+begin-SQL 
+UPDATE PS_GPDE_RP_AL92
+SET   [$Field]             = 'D'
+WHERE [$Field]             = 'U'
+AND   EXISTS (
+SELECT 'X'
+FROM [$Record] C3
+WHERE C3.EMPLID            = PS_GPDE_RP_AL92.EMPLID
+! --+ AND C3.EMPLID='TestEmplid'
+AND   C3.EMPL_RCD          = PS_GPDE_RP_AL92.EMPL_RCD
+AND   C3.GP_PAYGROUP       = PS_GPDE_RP_AL92.GP_PAYGROUP
+AND   C3.CAL_RUN_ID        = PS_GPDE_RP_AL92.CAL_RUN_ID
+AND   C3.CAL_ID            = PS_GPDE_RP_AL92.CAL_ID
+AND   C3.ORIG_CAL_RUN_ID   = PS_GPDE_RP_AL92.ORIG_CAL_RUN_ID
+AND   C3.RSLT_SEG_NUM      = PS_GPDE_RP_AL92.RSLT_SEG_NUM
+AND   [$Field]             = 'U')
+End-Sql
+
+!===== Clear Table C ======
+! wdu06-900b0: this really deletes AL92 if vars are not right
+! no:do  Clear-Rec
+
+end-procedure Upd-B
+
+
+
+
+
+
+!*********************************
+!**Fill-C-RP_0001*****************
+!*********************************
+begin-procedure Fill-C-RP_0001
+!  show 'begin-procedure Fill-C-RP_0001'
+
+BEGIN-select
+MIN(SEG2.RSLT_VER_NUM)  &SEG2.RSLT_VER_NUM   !'MIN rslt ver num'
+RP_0001.EMPLID
+RP_0001.EMPL_RCD
+RP_0001.GP_PAYGROUP
+RP_0001.CAL_ID
+RP_0001.ORIG_CAL_RUN_ID
+RP_0001.RSLT_SEG_NUM
+RP_0001.SEG_END_DT
+RP_0001.SEG_BGN_DT
+RP_0001.PRD_END_DT
+RP_0001.PRD_BGN_DT
+RP_0001.PAY_ENTITY
+RP_0001.COMPANY
+RP_0001.LOCATION
+RP_0001.DEPTID
+RP_0001.ACTION
+RP_0001.REASON
+RP_0001.SAL_ADMIN_PLAN
+RP_0001.GRADE
+RP_0001.STEP
+RP_0001.STD_HOURS
+RP_0001.EMPL_STATUS
+RP_0001.EMPL_CTG
+RP_0001.EMPL_CTG_L1
+RP_0001.PERFORM_GROUP_GER
+RP_0001.JOB_ENTRY_DT
+RP_0001.HIRE_DT
+RP_0001.TERMINATION_DT
+RP_0001.BIRTHDATE
+RP_0001.MAR_STATUS
+RP_0001.SEX
+! no: RP_0001.GPDE_AL_CPAY_ENDDT
+RP_0001.GPDE_TX_PAY_EFFDT
+RP_0001.GPDE_TX_SPCL_EXMPT
+RP_0001.GPDE_TX_INC_TX_CLS
+RP_0001.GPDE_TX_SCHEDULE
+RP_0001.GPDE_TX_NUM_CHILD
+RP_0001.GPDE_TX_EXEMPT_ANN
+RP_0001.GPDE_TX_EXEMPT_MON
+RP_0001.GPDE_TX_ADDGRS_ANN
+RP_0001.GPDE_TX_ADDGRS_MON
+RP_0001.GPDE_TX_RELIGION
+RP_0001.GPDE_TX_SPOUSE_REL
+RP_0001.GPDE_TX_CHRCHSTATE
+RP_0001.GPDE_TX_CHAMBSTATE
+RP_0001.GPDE_TX_ACCM_TRANS
+RP_0001.GPDE_TX_NOPRV_EMPL
+RP_0001.GPDE_TX_RECALC_OVD
+RP_0001.GPDE_TX_METHOD_OVD
+RP_0001.GPDE_TX_CHRCH_OVRD
+RP_0001.GPDE_KU_BEN_GRP
+RP_0001.GPDE_KU_BEN_STP
+RP_0001.GPDE_TX_UNIT
+RP_0001.GPDE_TX_CHAMBER_BR
+RP_0001.GPDE_TX_CHAMBER_SA
+RP_0001.CURRENCY_CD
+RP_0001.CUR_RT_TYPE
+RP_0001.GPDE_ASOF_DT_EX_RT
+RP_0001.FTE
+RP_0001.GPDE_TX_HOME_CD
+RP_0001.GPDE_TX_AGS_ID
+RP_0001.GPDE_AL_FINANCE_CD
+RP_0001.NATIONALITY_CD
+RP_0001.NATIONALITY
+RP_0001.SETID_DEPT
+RP_0001.SETID_LOCATION
+RP_0001.WC_COUNCIL_ID
+
+  do  Clear-Var
+  let $Emplid       = rtrim(&RP_0001.EMPLID,' ')
+  let #EmplRcd      = &RP_0001.EMPL_RCD
+  let $GpPaygroup   = rtrim(&RP_0001.GP_PAYGROUP,' ')
+  let $CalID        = rtrim(&RP_0001.CAL_ID,' ')
+  let $OrigCalRunId = rtrim(&RP_0001.ORIG_CAL_RUN_ID,' ')
+  let #RsltSegNum   = &RP_0001.RSLT_SEG_NUM
+  let #RsltVerNum   = (&SEG2.RSLT_VER_NUM)
+  do Fill-C
+
+from PS_GPDE_RP_0001 RP_0001, PS_GP_PYE_SEG_STAT SEG2
+where   SEG2.EMPLID          = RP_0001.EMPLID
+! --+ AND SEG2.EMPLID='TestEmplid'
+AND     SEG2.CAL_RUN_ID      = RP_0001.CAL_RUN_ID
+AND     SEG2.EMPL_RCD        = RP_0001.EMPL_RCD
+AND     SEG2.GP_PAYGROUP     = RP_0001.GP_PAYGROUP
+AND     SEG2.CAL_ID          = RP_0001.CAL_ID
+AND     SEG2.ORIG_CAL_RUN_ID = RP_0001.ORIG_CAL_RUN_ID
+AND     SEG2.RSLT_SEG_NUM    = RP_0001.RSLT_SEG_NUM
+AND     SEG2.RSLT_REV_NUM    = 1
+AND     SEG2.CALC_ACTION     = 'C'
+
+group by
+  RP_0001.EMPLID
+, RP_0001.EMPL_RCD
+, RP_0001.GP_PAYGROUP
+, RP_0001.CAL_ID
+, RP_0001.ORIG_CAL_RUN_ID
+, RP_0001.RSLT_SEG_NUM
+, RP_0001.SEG_END_DT
+, RP_0001.SEG_BGN_DT
+, RP_0001.PRD_END_DT
+, RP_0001.PRD_BGN_DT
+, RP_0001.PAY_ENTITY
+, RP_0001.COMPANY
+, RP_0001.LOCATION
+, RP_0001.DEPTID
+, RP_0001.ACTION
+, RP_0001.REASON
+, RP_0001.SAL_ADMIN_PLAN
+, RP_0001.GRADE
+, RP_0001.STEP
+, RP_0001.STD_HOURS
+, RP_0001.EMPL_STATUS
+, RP_0001.EMPL_CTG
+, RP_0001.EMPL_CTG_L1
+, RP_0001.PERFORM_GROUP_GER
+, RP_0001.JOB_ENTRY_DT
+, RP_0001.HIRE_DT
+, RP_0001.TERMINATION_DT
+, RP_0001.BIRTHDATE
+, RP_0001.MAR_STATUS
+, RP_0001.SEX
+! no: , RP_0001.GPDE_AL_CPAY_ENDDT
+, RP_0001.GPDE_TX_PAY_EFFDT
+, RP_0001.GPDE_TX_SPCL_EXMPT
+, RP_0001.GPDE_TX_INC_TX_CLS
+, RP_0001.GPDE_TX_SCHEDULE
+, RP_0001.GPDE_TX_NUM_CHILD
+, RP_0001.GPDE_TX_EXEMPT_ANN
+, RP_0001.GPDE_TX_EXEMPT_MON
+, RP_0001.GPDE_TX_ADDGRS_ANN
+, RP_0001.GPDE_TX_ADDGRS_MON
+, RP_0001.GPDE_TX_RELIGION
+, RP_0001.GPDE_TX_SPOUSE_REL
+, RP_0001.GPDE_TX_CHRCHSTATE
+, RP_0001.GPDE_TX_CHAMBSTATE
+, RP_0001.GPDE_TX_ACCM_TRANS
+, RP_0001.GPDE_TX_NOPRV_EMPL
+, RP_0001.GPDE_TX_RECALC_OVD
+, RP_0001.GPDE_TX_METHOD_OVD
+, RP_0001.GPDE_TX_CHRCH_OVRD
+, RP_0001.GPDE_KU_BEN_GRP
+, RP_0001.GPDE_KU_BEN_STP
+, RP_0001.GPDE_TX_UNIT
+, RP_0001.GPDE_TX_CHAMBER_BR
+, RP_0001.GPDE_TX_CHAMBER_SA
+, RP_0001.CURRENCY_CD
+, RP_0001.CUR_RT_TYPE
+, RP_0001.GPDE_ASOF_DT_EX_RT
+, RP_0001.FTE
+, RP_0001.GPDE_TX_HOME_CD
+, RP_0001.GPDE_TX_AGS_ID
+, RP_0001.GPDE_AL_FINANCE_CD
+, RP_0001.NATIONALITY_CD
+, RP_0001.NATIONALITY
+, RP_0001.SETID_DEPT
+, RP_0001.SETID_LOCATION
+, RP_0001.WC_COUNCIL_ID
+
+ORDER BY RP_0001.SEG_END_DT
+
+END-SELECT
+
+end-procedure Fill-C-RP_0001
+
+
+
+
+
+
+!*********************************
+!**Fill-C-RP_0002*****************
+!*********************************
+begin-procedure Fill-C-RP_0002
+!  show 'begin-procedure Fill-C-RP_0002'
+
+BEGIN-select
+MIN(SEG3.RSLT_VER_NUM)   &SEG3.RSLT_VER_NUM  !'MIN rslt ver num'
+RP_0002.EMPLID
+RP_0002.EMPL_RCD
+RP_0002.GP_PAYGROUP
+RP_0002.CAL_ID
+RP_0002.ORIG_CAL_RUN_ID
+RP_0002.RSLT_SEG_NUM
+RP_0002.SEG_END_DT 
+RP_0002.PAY_ENTITY
+RP_0002.PRD_END_DT
+! no: RP_0002.GPDE_AL_CPAY_ENDDT
+RP_0002.GPDE_RP_WRKDHRS
+RP_0002.GPDE_RP_OVRTMHRS
+RP_0002.GPDE_RP_TOTGRSS
+RP_0002.GPDE_RP_TAX_AMT
+RP_0002.GPDE_RP_SLDRTY_AMT
+RP_0002.GPDE_RP_CHTXEE_AMT
+RP_0002.GPDE_RP_CHTXSP_AMT
+RP_0002.GPDE_RP_CHTXLE_AMT
+RP_0002.GPDE_RP_CHTXLC_AMT
+RP_0002.GPDE_RP_CHMBBR_AMT
+RP_0002.GPDE_RP_CHMBSA_AMT
+RP_0002.GPDE_RP_TXDAYS
+RP_0002.GPDE_RP_TXGRS_TOT
+RP_0002.GPDE_RP_TXGRS_ANLZ
+RP_0002.GPDE_RP_TXGRS_BON
+RP_0002.GPDE_RP_TXGRS_PEN
+RP_0002.GPDE_RP_TXGRS_MYBN
+RP_0002.GPDE_RP_TXGRS_MYPN
+RP_0002.GPDE_RP_TAX
+RP_0002.GPDE_RP_CHRCH_TAX
+RP_0002.GPDE_RP_SLDRTY_TAX
+RP_0002.GPDE_RP_TAX_MY
+RP_0002.GPDE_RP_CRCH_TX_MY
+RP_0002.GPDE_RP_SLDY_TX_MY
+RP_0002.GPDE_RP_PENTXF
+RP_0002.GPDE_RP_NOI
+RP_0002.GPDE_RP_STATDD_SUM
+RP_0002.GPDE_RP_DED_SUM
+RP_0002.GPDE_RP_LMP_DIRINS
+RP_0002.GPDE_RP_LMP_TRVLEX
+RP_0002.GPDE_RP_LMP_GRSS
+RP_0002.GPDE_RP_LMP_TXEE
+RP_0002.GPDE_RP_LMP_CHTXEE
+RP_0002.GPDE_RP_LMP_SLTXEE
+RP_0002.GPDE_RP_LMP_TXER
+RP_0002.GPDE_RP_LMP_CHTXER
+RP_0002.GPDE_RP_LMP_SLTXER
+RP_0002.GPDE_TX_MJ_LUMP
+RP_0002.GPDE_RP_A2_9190
+RP_0002.GPDE_RP_A2_9290
+RP_0002.GPDE_RP_A2_9390
+
+  do  Clear-Var
+  let $Emplid       = rtrim(&RP_0002.EMPLID,' ')
+  let #EmplRcd      = &RP_0002.EMPL_RCD
+  let $GpPaygroup   = rtrim(&RP_0002.GP_PAYGROUP,' ')
+  let $CalID        = rtrim(&RP_0002.CAL_ID,' ')
+  let $OrigCalRunId = rtrim(&RP_0002.ORIG_CAL_RUN_ID,' ')
+  let #RsltSegNum   = &RP_0002.RSLT_SEG_NUM
+  let #RsltVerNum   = &SEG3.RSLT_VER_NUM
+  do Fill-C
+
+from PS_GPDE_RP_0002 RP_0002, PS_GP_PYE_SEG_STAT SEG3
+where   SEG3.EMPLID          =RP_0002.EMPLID
+! --+ AND SEG3.EMPLID='TestEmplid'
+AND     SEG3.CAL_RUN_ID      =RP_0002.CAL_RUN_ID
+AND     SEG3.EMPL_RCD        =RP_0002.EMPL_RCD
+AND     SEG3.GP_PAYGROUP     =RP_0002.GP_PAYGROUP
+AND     SEG3.CAL_ID          =RP_0002.CAL_ID
+AND     SEG3.ORIG_CAL_RUN_ID =RP_0002.ORIG_CAL_RUN_ID
+AND     SEG3.RSLT_SEG_NUM    =RP_0002.RSLT_SEG_NUM
+AND     SEG3.RSLT_REV_NUM    = 1
+AND     SEG3.CALC_ACTION     = 'C'
+
+group by
+ RP_0002.EMPLID
+,RP_0002.EMPL_RCD
+,RP_0002.GP_PAYGROUP
+,RP_0002.CAL_ID
+,RP_0002.ORIG_CAL_RUN_ID
+,RP_0002.RSLT_SEG_NUM
+,RP_0002.SEG_END_DT
+,RP_0002.PAY_ENTITY
+,RP_0002.PRD_END_DT
+! no: ,RP_0002.GPDE_AL_CPAY_ENDDT
+,RP_0002.GPDE_RP_VACBAL
+,RP_0002.GPDE_RP_VACENT
+,RP_0002.GPDE_RP_VACTAKE
+,RP_0002.GPDE_RP_VACPYR
+,RP_0002.GPDE_RP_WRKDHRS
+,RP_0002.GPDE_RP_OVRTMHRS
+,RP_0002.GPDE_RP_TOTGRSS
+,RP_0002.GPDE_RP_TAX_AMT
+,RP_0002.GPDE_RP_SLDRTY_AMT
+,RP_0002.GPDE_RP_CHTXEE_AMT
+,RP_0002.GPDE_RP_CHTXSP_AMT
+,RP_0002.GPDE_RP_CHTXLE_AMT
+,RP_0002.GPDE_RP_CHTXLC_AMT
+,RP_0002.GPDE_RP_CHMBBR_AMT
+,RP_0002.GPDE_RP_CHMBSA_AMT
+,RP_0002.GPDE_RP_TXDAYS
+,RP_0002.GPDE_RP_TXGRS_TOT
+,RP_0002.GPDE_RP_TXGRS_ANLZ
+,RP_0002.GPDE_RP_TXGRS_BON
+,RP_0002.GPDE_RP_TXGRS_PEN
+,RP_0002.GPDE_RP_TXGRS_MYBN
+,RP_0002.GPDE_RP_TXGRS_MYPN
+,RP_0002.GPDE_RP_TAX
+,RP_0002.GPDE_RP_CHRCH_TAX
+,RP_0002.GPDE_RP_SLDRTY_TAX
+,RP_0002.GPDE_RP_TAX_MY
+,RP_0002.GPDE_RP_CRCH_TX_MY
+,RP_0002.GPDE_RP_SLDY_TX_MY
+,RP_0002.GPDE_RP_PENTXF
+,RP_0002.GPDE_RP_NOI
+,RP_0002.GPDE_RP_STATDD_SUM
+,RP_0002.GPDE_RP_DED_SUM
+,RP_0002.GPDE_RP_LMP_DIRINS
+,RP_0002.GPDE_RP_LMP_TRVLEX
+,RP_0002.GPDE_RP_LMP_GRSS
+,RP_0002.GPDE_RP_LMP_TXEE
+,RP_0002.GPDE_RP_LMP_CHTXEE
+,RP_0002.GPDE_RP_LMP_SLTXEE
+,RP_0002.GPDE_RP_LMP_TXER
+,RP_0002.GPDE_RP_LMP_CHTXER
+,RP_0002.GPDE_RP_LMP_SLTXER
+,RP_0002.GPDE_TX_MJ_LUMP
+,RP_0002.GPDE_RP_A2_9190
+,RP_0002.GPDE_RP_A2_9290
+,RP_0002.GPDE_RP_A2_9390
+
+ORDER BY RP_0002.SEG_END_DT
+
+END-SELECT
+
+end-procedure Fill-C-RP_0002
+
+
+
+
+
+!*********************************
+!**Fill-C-RP_0003*****************
+!*********************************
+begin-procedure Fill-C-RP_0003
+!  show 'begin-procedure Fill-C-RP_0003'
+
+BEGIN-select
+MIN(SEG4.RSLT_VER_NUM)   &SEG4.RSLT_VER_NUM  !'MIN rslt ver num'
+RP_0003.EMPLID
+RP_0003.EMPL_RCD
+RP_0003.GP_PAYGROUP
+RP_0003.CAL_ID
+RP_0003.ORIG_CAL_RUN_ID
+RP_0003.RSLT_SEG_NUM
+RP_0003.SEG_END_DT
+RP_0003.SLICE_END_DT
+RP_0003.PAY_ENTITY
+RP_0003.PRD_END_DT
+! no: RP_0003.GPDE_AL_CPAY_ENDDT
+RP_0003.GPDE_RP_SIGRSS_AMT
+RP_0003.GPDE_RP_SIGRS_ANLZ
+RP_0003.GPDE_RP_HICNTB_AMT
+RP_0003.GPDE_RP_PICNTB_AMT
+RP_0003.GPDE_RP_UICNTB_AMT
+RP_0003.GPDE_RP_CICNTB_AMT
+RP_0003.GPDE_RP_HIVOL_AMT
+RP_0003.GPDE_RP_CIVOL_AMT
+RP_0003.GPDE_RP_RIGRSS_AMT
+RP_0003.GPDE_RP_U1CNTB_AMT
+RP_0003.GPDE_RP_U2CNTB_AMT
+RP_0003.GPDE_RP_RIGRSM_AMT
+RP_0003.GPDE_RP_U1CTBM_AMT
+RP_0003.GPDE_RP_U2CTBM_AMT
+RP_0003.GPDE_RP_SIGRSM_AMT
+RP_0003.GPDE_RP_HICTBM_AMT
+RP_0003.GPDE_RP_PICTBM_AMT
+RP_0003.GPDE_RP_UICTBM_AMT
+RP_0003.GPDE_RP_CICTBM_AMT
+RP_0003.GPDE_RP_OAPGRS_AMT
+RP_0003.GPDE_RP_AZGRS_ANLZ
+RP_0003.GPDE_RP_AZGRS_BON
+RP_0003.GPDE_RP_OAPPEN_AMT
+RP_0003.GPDE_RP_OAPPEN_ANL
+RP_0003.GPDE_RP_OAPPEN_BON
+RP_0003.GPDE_RP_OAPGRS_MC
+RP_0003.GPDE_RP_OAPPEN_MC
+RP_0003.GPDE_AZ_RP_S03_31
+RP_0003.GPDE_AZ_RP_S03_41
+RP_0003.GPDE_RP_SIDAYS
+RP_0003.GPDE_RP_AVDAYS
+RP_0003.GPDE_RP_KVDAYS
+RP_0003.GPDE_RP_PVDAYS
+RP_0003.GPDE_RP_AVDAYS_BON
+RP_0003.GPDE_RP_KVDAYS_BON
+RP_0003.GPDE_RP_PVDAYS_BON
+RP_0003.GPDE_RP_RVDAYS_BON
+RP_0003.GPDE_RP_AVDAYS_MC
+RP_0003.GPDE_RP_KVDAYS_MC
+RP_0003.GPDE_RP_PVDAYS_MC
+RP_0003.GPDE_RP_RVDAYS_MC
+RP_0003.GPDE_RP_AVGRS_ANLZ
+RP_0003.GPDE_RP_AVGRS_BON
+RP_0003.GPDE_RP_AVGRS_MC
+RP_0003.GPDE_RP_KVGRS_ANLZ
+RP_0003.GPDE_RP_KVGRS_BON
+RP_0003.GPDE_RP_KVGRS_MC
+RP_0003.GPDE_RP_PVGRS_ANLZ
+RP_0003.GPDE_RP_PVGRS_BON
+RP_0003.GPDE_RP_PVGRS_MC
+RP_0003.GPDE_RP_RVGRS_ANLZ
+RP_0003.GPDE_RP_RVGRS_BON
+RP_0003.GPDE_RP_RVGRS_MC
+RP_0003.GPDE_RP_AVLFD_AG
+RP_0003.GPDE_RP_AVLFD_AN
+RP_0003.GPDE_RP_KVLFD_AG
+RP_0003.GPDE_RP_KVLFD_AN
+RP_0003.GPDE_RP_PVLFD_AG
+RP_0003.GPDE_RP_PVLFD_AN
+RP_0003.GPDE_RP_RVLFD_AG
+RP_0003.GPDE_RP_RVLFD_AN
+RP_0003.GPDE_RP_AVBON_AG
+RP_0003.GPDE_RP_AVBON_AN
+RP_0003.GPDE_RP_KVBON_AG
+RP_0003.GPDE_RP_KVBON_AN
+RP_0003.GPDE_RP_PVBON_AG
+RP_0003.GPDE_RP_PVBON_AN
+RP_0003.GPDE_RP_RVBON_AG
+RP_0003.GPDE_RP_RVBON_AN
+RP_0003.GPDE_RP_AVAG_MC
+RP_0003.GPDE_RP_AVAN_MC
+RP_0003.GPDE_RP_KVAG_MC
+RP_0003.GPDE_RP_KVAN_MC
+RP_0003.GPDE_RP_PVAG_MC
+RP_0003.GPDE_RP_PVAN_MC
+RP_0003.GPDE_RP_RVAG_MC
+RP_0003.GPDE_RP_RVAN_MC
+RP_0003.GPDE_RP_SIGRUNLM_A
+RP_0003.GPDE_RP_SIGRUNLM_B
+RP_0003.GPDE_RP_CIVLER_AMT
+RP_0003.GPDE_RP_HIVLER_AMT
+RP_0003.GPDE_RP_AV_BBE_EGA
+RP_0003.GPDE_RP_AV_BBE_LGA
+RP_0003.GPDE_RP_KV_BBE_EGA
+RP_0003.GPDE_RP_KV_BBE_LGA
+
+  do  Clear-Var
+  let $Emplid       = rtrim(&RP_0003.EMPLID,' ')
+  let #EmplRcd      = &RP_0003.EMPL_RCD
+  let $GpPaygroup   = rtrim(&RP_0003.GP_PAYGROUP,' ')
+  let $CalID        = rtrim(&RP_0003.CAL_ID,' ')
+  let $OrigCalRunId = rtrim(&RP_0003.ORIG_CAL_RUN_ID,' ')
+  let #RsltSegNum   = &RP_0003.RSLT_SEG_NUM
+  let #RsltVerNum   = &SEG4.RSLT_VER_NUM
+  do Fill-C
+
+from PS_GPDE_RP_0003 RP_0003, PS_GP_PYE_SEG_STAT SEG4
+where   SEG4.EMPLID          =RP_0003.EMPLID
+! --+ AND SEG4.EMPLID='TestEmplid'
+AND     SEG4.CAL_RUN_ID      =RP_0003.CAL_RUN_ID
+AND     SEG4.EMPL_RCD        =RP_0003.EMPL_RCD
+AND     SEG4.GP_PAYGROUP     =RP_0003.GP_PAYGROUP
+AND     SEG4.CAL_ID          =RP_0003.CAL_ID
+AND     SEG4.ORIG_CAL_RUN_ID =RP_0003.ORIG_CAL_RUN_ID
+AND     SEG4.RSLT_SEG_NUM    =RP_0003.RSLT_SEG_NUM
+AND     SEG4.RSLT_REV_NUM    = 1
+AND     SEG4.CALC_ACTION     = 'C'
+
+group by
+ RP_0003.EMPLID
+,RP_0003.EMPL_RCD
+,RP_0003.GP_PAYGROUP
+,RP_0003.CAL_ID
+,RP_0003.ORIG_CAL_RUN_ID
+,RP_0003.RSLT_SEG_NUM
+,RP_0003.SEG_END_DT
+,RP_0003.SLICE_END_DT
+,RP_0003.PAY_ENTITY
+,RP_0003.PRD_END_DT
+! no: ,RP_0003.GPDE_AL_CPAY_ENDDT
+,RP_0003.GPDE_RP_SIGRSS_AMT
+,RP_0003.GPDE_RP_SIGRS_ANLZ
+,RP_0003.GPDE_RP_HICNTB_AMT
+,RP_0003.GPDE_RP_PICNTB_AMT
+,RP_0003.GPDE_RP_UICNTB_AMT
+,RP_0003.GPDE_RP_CICNTB_AMT
+,RP_0003.GPDE_RP_HIVOL_AMT
+,RP_0003.GPDE_RP_CIVOL_AMT
+,RP_0003.GPDE_RP_RIGRSS_AMT
+,RP_0003.GPDE_RP_U1CNTB_AMT
+,RP_0003.GPDE_RP_U2CNTB_AMT
+,RP_0003.GPDE_RP_RIGRSM_AMT
+,RP_0003.GPDE_RP_U1CTBM_AMT
+,RP_0003.GPDE_RP_U2CTBM_AMT
+,RP_0003.GPDE_RP_SIGRSM_AMT
+,RP_0003.GPDE_RP_HICTBM_AMT
+,RP_0003.GPDE_RP_PICTBM_AMT
+,RP_0003.GPDE_RP_UICTBM_AMT
+,RP_0003.GPDE_RP_CICTBM_AMT
+,RP_0003.GPDE_RP_OAPGRS_AMT
+,RP_0003.GPDE_RP_AZGRS_ANLZ
+,RP_0003.GPDE_RP_AZGRS_BON
+,RP_0003.GPDE_RP_OAPPEN_AMT
+,RP_0003.GPDE_RP_OAPPEN_ANL
+,RP_0003.GPDE_RP_OAPPEN_BON
+,RP_0003.GPDE_RP_OAPGRS_MC
+,RP_0003.GPDE_RP_OAPPEN_MC
+,RP_0003.GPDE_AZ_RP_S03_31
+,RP_0003.GPDE_AZ_RP_S03_41
+,RP_0003.GPDE_RP_SIDAYS
+,RP_0003.GPDE_RP_AVDAYS
+,RP_0003.GPDE_RP_KVDAYS
+,RP_0003.GPDE_RP_PVDAYS
+,RP_0003.GPDE_RP_AVDAYS_BON
+,RP_0003.GPDE_RP_KVDAYS_BON
+,RP_0003.GPDE_RP_PVDAYS_BON
+,RP_0003.GPDE_RP_RVDAYS_BON
+,RP_0003.GPDE_RP_AVDAYS_MC
+,RP_0003.GPDE_RP_KVDAYS_MC
+,RP_0003.GPDE_RP_PVDAYS_MC
+,RP_0003.GPDE_RP_RVDAYS_MC
+,RP_0003.GPDE_RP_AVGRS_ANLZ
+,RP_0003.GPDE_RP_AVGRS_BON
+,RP_0003.GPDE_RP_AVGRS_MC
+,RP_0003.GPDE_RP_KVGRS_ANLZ
+,RP_0003.GPDE_RP_KVGRS_BON
+,RP_0003.GPDE_RP_KVGRS_MC
+,RP_0003.GPDE_RP_PVGRS_ANLZ
+,RP_0003.GPDE_RP_PVGRS_BON
+,RP_0003.GPDE_RP_PVGRS_MC
+,RP_0003.GPDE_RP_RVGRS_ANLZ
+,RP_0003.GPDE_RP_RVGRS_BON
+,RP_0003.GPDE_RP_RVGRS_MC
+,RP_0003.GPDE_RP_AVLFD_AG
+,RP_0003.GPDE_RP_AVLFD_AN
+,RP_0003.GPDE_RP_KVLFD_AG
+,RP_0003.GPDE_RP_KVLFD_AN
+,RP_0003.GPDE_RP_PVLFD_AG
+,RP_0003.GPDE_RP_PVLFD_AN
+,RP_0003.GPDE_RP_RVLFD_AG
+,RP_0003.GPDE_RP_RVLFD_AN
+,RP_0003.GPDE_RP_AVBON_AG
+,RP_0003.GPDE_RP_AVBON_AN
+,RP_0003.GPDE_RP_KVBON_AG
+,RP_0003.GPDE_RP_KVBON_AN
+,RP_0003.GPDE_RP_PVBON_AG
+,RP_0003.GPDE_RP_PVBON_AN
+,RP_0003.GPDE_RP_RVBON_AG
+,RP_0003.GPDE_RP_RVBON_AN
+,RP_0003.GPDE_RP_AVAG_MC
+,RP_0003.GPDE_RP_AVAN_MC
+,RP_0003.GPDE_RP_KVAG_MC
+,RP_0003.GPDE_RP_KVAN_MC
+,RP_0003.GPDE_RP_PVAG_MC
+,RP_0003.GPDE_RP_PVAN_MC
+,RP_0003.GPDE_RP_RVAG_MC
+,RP_0003.GPDE_RP_RVAN_MC
+,RP_0003.GPDE_RP_SIGRUNLM_A
+,RP_0003.GPDE_RP_SIGRUNLM_B
+,RP_0003.GPDE_RP_CIVLER_AMT
+,RP_0003.GPDE_RP_HIVLER_AMT
+,RP_0003.GPDE_RP_AV_BBE_EGA
+,RP_0003.GPDE_RP_AV_BBE_LGA
+,RP_0003.GPDE_RP_KV_BBE_EGA
+,RP_0003.GPDE_RP_KV_BBE_LGA
+
+ORDER BY RP_0003.SEG_END_DT
+
+END-SELECT
+
+end-procedure Fill-C-RP_0003
+
+
+
+
+
+
+!*********************************
+!**Fill-C-RP_AZ01*****************
+!*********************************
+begin-procedure Fill-C-RP_AZ01
+!  show 'begin-procedure Fill-C-RP_AZ01'
+
+BEGIN-select
+MIN(SEG5.RSLT_VER_NUM)    &SEG5.RSLT_VER_NUM !'MIN rslt ver num'
+RP_AZ01.EMPLID
+RP_AZ01.EMPL_RCD
+RP_AZ01.GP_PAYGROUP
+RP_AZ01.CAL_ID
+RP_AZ01.ORIG_CAL_RUN_ID
+RP_AZ01.RSLT_SEG_NUM
+RP_AZ01.SEG_END_DT
+RP_AZ01.SLICE_END_DT
+RP_AZ01.PAY_ENTITY
+RP_AZ01.PRD_END_DT
+! no: RP_AZ01.GPDE_AL_CPAY_ENDDT
+RP_AZ01.GPDE_AZ_RP_001_11
+RP_AZ01.GPDE_AZ_RP_001_12
+RP_AZ01.GPDE_AZ_RP_001_53
+RP_AZ01.GPDE_AZ_RP_001_63
+RP_AZ01.GPDE_AZ_RP_002_11
+RP_AZ01.GPDE_AZ_RP_002_12
+RP_AZ01.GPDE_AZ_RP_002_14
+RP_AZ01.GPDE_AZ_RP_002_17
+RP_AZ01.GPDE_AZ_RP_002_19
+RP_AZ01.GPDE_AZ_RP_002_21
+RP_AZ01.GPDE_AZ_RP_002_22
+RP_AZ01.GPDE_AZ_RP_002_28
+RP_AZ01.GPDE_AZ_RP_002_68
+RP_AZ01.GPDE_AZ_RP_003_11
+RP_AZ01.GPDE_AZ_RP_003_12
+RP_AZ01.GPDE_AZ_RP_003_15
+RP_AZ01.GPDE_AZ_RP_003_21
+RP_AZ01.GPDE_AZ_RP_003_22
+RP_AZ01.GPDE_AZ_RP_003_31
+RP_AZ01.GPDE_AZ_RP_003_32
+RP_AZ01.GPDE_AZ_RP_003_36
+RP_AZ01.GPDE_AZ_RP_003_41
+RP_AZ01.GPDE_AZ_RP_003_42
+RP_AZ01.GPDE_AZ_RP_003_46
+RP_AZ01.GPDE_AZ_RP_004_0B
+RP_AZ01.GPDE_AZ_RP_004_0C
+RP_AZ01.GPDE_AZ_RP_004_11
+RP_AZ01.GPDE_AZ_RP_004_1A
+RP_AZ01.GPDE_AZ_RP_011_11
+RP_AZ01.GPDE_AZ_RP_011_12
+RP_AZ01.GPDE_AZ_RP_011_53
+RP_AZ01.GPDE_AZ_RP_011_63
+RP_AZ01.GPDE_AZ_RP_012_11
+RP_AZ01.GPDE_AZ_RP_012_12
+RP_AZ01.GPDE_AZ_RP_012_14
+RP_AZ01.GPDE_AZ_RP_012_17
+RP_AZ01.GPDE_AZ_RP_012_19
+RP_AZ01.GPDE_AZ_RP_012_21
+RP_AZ01.GPDE_AZ_RP_012_22
+RP_AZ01.GPDE_AZ_RP_012_28
+RP_AZ01.GPDE_AZ_RP_012_68
+RP_AZ01.GPDE_AZ_RP_013_31
+RP_AZ01.GPDE_AZ_RP_013_32
+RP_AZ01.GPDE_AZ_RP_013_36
+RP_AZ01.GPDE_AZ_RP_013_41
+RP_AZ01.GPDE_AZ_RP_013_42
+RP_AZ01.GPDE_AZ_RP_013_46
+RP_AZ01.GPDE_AZ_RP_021_11
+RP_AZ01.GPDE_AZ_RP_021_12
+RP_AZ01.GPDE_AZ_RP_021_53
+RP_AZ01.GPDE_AZ_RP_021_63
+RP_AZ01.GPDE_AZ_RP_022_11
+RP_AZ01.GPDE_AZ_RP_022_12
+RP_AZ01.GPDE_AZ_RP_022_14
+RP_AZ01.GPDE_AZ_RP_022_17
+RP_AZ01.GPDE_AZ_RP_022_19
+RP_AZ01.GPDE_AZ_RP_022_21
+RP_AZ01.GPDE_AZ_RP_022_22
+RP_AZ01.GPDE_AZ_RP_022_28
+RP_AZ01.GPDE_AZ_RP_022_68
+RP_AZ01.GPDE_AZ_RP_023_31
+RP_AZ01.GPDE_AZ_RP_023_32
+RP_AZ01.GPDE_AZ_RP_023_36
+RP_AZ01.GPDE_AZ_RP_023_41
+RP_AZ01.GPDE_AZ_RP_023_42
+RP_AZ01.GPDE_AZ_RP_023_46
+RP_AZ01.GPDE_AZ_RP_BBG_MON
+RP_AZ01.GPDE_AZ_RP_ELG_BON
+RP_AZ01.GPDE_AZ_RP_ELG_FIL
+RP_AZ01.GPDE_AZ_RP_ELG_MAR
+RP_AZ01.GPDE_AZ_ELG_LINE10
+RP_AZ01.GPDE_AZ_RP_H01_53
+RP_AZ01.GPDE_AZ_RP_H01_63
+RP_AZ01.GPDE_AZ_RP_H02_68
+RP_AZ01.GPDE_AZ_RP_H03_31
+RP_AZ01.GPDE_AZ_RP_S01_63
+RP_AZ01.GPDE_AZ_RP_S02_68
+RP_AZ01.GPDE_AZ_RP_S03_31
+RP_AZ01.GPDE_AZ_RP_S03_41
+RP_AZ01.BEGIN_DT
+RP_AZ01.GPDE_AZ_IMODEL1
+RP_AZ01.GPDE_AZ_IMODEL2
+RP_AZ01.GPDE_AZ_RP_003_CUR
+RP_AZ01.GPDE_AZ_RP_003_FRM
+RP_AZ01.GPDE_AZ_RP_003_GOA
+RP_AZ01.GPDE_AZ_RP_003_LIM
+RP_AZ01.GPDE_AZ_RP_003_REA
+RP_AZ01.GPDE_AZ_RP_003_TDA
+RP_AZ01.GPDE_AZ_RP_013_CUR
+RP_AZ01.GPDE_AZ_RP_013_FRM
+RP_AZ01.GPDE_AZ_RP_013_GOA
+RP_AZ01.GPDE_AZ_RP_013_LIM
+RP_AZ01.GPDE_AZ_RP_013_REA
+RP_AZ01.GPDE_AZ_RP_013_TDA
+RP_AZ01.GPDE_AZ_RP_023_CUR
+RP_AZ01.GPDE_AZ_RP_023_FRM
+RP_AZ01.GPDE_AZ_RP_023_GOA
+RP_AZ01.GPDE_AZ_RP_023_LIM
+RP_AZ01.GPDE_AZ_RP_023_REA
+RP_AZ01.GPDE_AZ_RP_023_TDA
+RP_AZ01.GPDE_AZ_RP_M003_13
+RP_AZ01.GPDE_AZ_RP_M003_15
+RP_AZ01.GPDE_AZ_RP_M003_23
+RP_AZ01.GPDE_AZ_RP_M003_31
+RP_AZ01.GPDE_AZ_RP_M003_32
+RP_AZ01.GPDE_AZ_RP_M003_CR
+RP_AZ01.GPDE_AZ_RP_M013_31
+RP_AZ01.GPDE_AZ_RP_M013_32
+RP_AZ01.GPDE_AZ_RP_M023_31
+RP_AZ01.GPDE_AZ_RP_M023_32
+RP_AZ01.GPDE_AZ_RP_H11_53
+RP_AZ01.GPDE_AZ_RP_H11_63
+RP_AZ01.GPDE_AZ_RP_H12_68
+RP_AZ01.GPDE_AZ_RP_H13_31
+RP_AZ01.GPDE_AZ_RP_H21_53
+RP_AZ01.GPDE_AZ_RP_H21_63
+RP_AZ01.GPDE_AZ_RP_H22_68
+RP_AZ01.GPDE_AZ_RP_H23_31
+RP_AZ01.GPDE_AZ_RP_S11_63
+RP_AZ01.GPDE_AZ_RP_S12_68
+RP_AZ01.GPDE_AZ_RP_S13_31
+RP_AZ01.GPDE_AZ_RP_S13_41
+RP_AZ01.GPDE_AZ_RP_S21_63
+RP_AZ01.GPDE_AZ_RP_S22_68
+RP_AZ01.GPDE_AZ_RP_S23_31
+RP_AZ01.GPDE_AZ_RP_S23_41
+RP_AZ01.GPDE_AZ_RP_T03_31
+RP_AZ01.GPDE_AZ_RP_T03_41
+RP_AZ01.GPDE_AZ_RP_T13_31
+RP_AZ01.GPDE_AZ_RP_T13_41
+RP_AZ01.GPDE_AZ_RP_T23_31
+RP_AZ01.GPDE_AZ_RP_T23_41
+
+  do  Clear-Var
+  let $Emplid       = rtrim(&RP_AZ01.EMPLID,' ')
+  let #EmplRcd      = &RP_AZ01.EMPL_RCD
+  let $GpPaygroup   = rtrim(&RP_AZ01.GP_PAYGROUP,' ')
+  let $CalID        = rtrim(&RP_AZ01.CAL_ID,' ')
+  let $OrigCalRunId = rtrim(&RP_AZ01.ORIG_CAL_RUN_ID,' ')
+  let #RsltSegNum   = &RP_AZ01.RSLT_SEG_NUM
+  let #RsltVerNum   = &SEG2.RSLT_VER_NUM
+  do Fill-C
+
+from PS_GPDE_RP_AZ01 RP_AZ01, PS_GP_PYE_SEG_STAT SEG5
+where   SEG5.EMPLID          =RP_AZ01.EMPLID
+! --+ AND SEG5.EMPLID='TestEmplid'
+AND     SEG5.CAL_RUN_ID      =RP_AZ01.CAL_RUN_ID
+AND     SEG5.EMPL_RCD        =RP_AZ01.EMPL_RCD
+AND     SEG5.GP_PAYGROUP     =RP_AZ01.GP_PAYGROUP
+AND     SEG5.CAL_ID          =RP_AZ01.CAL_ID
+AND     SEG5.ORIG_CAL_RUN_ID =RP_AZ01.ORIG_CAL_RUN_ID
+AND     SEG5.RSLT_SEG_NUM    =RP_AZ01.RSLT_SEG_NUM
+AND     SEG5.RSLT_REV_NUM    = 1
+AND     SEG5.CALC_ACTION     = 'C'
+
+group by
+ RP_AZ01.EMPLID
+,RP_AZ01.EMPL_RCD
+,RP_AZ01.GP_PAYGROUP
+,RP_AZ01.CAL_ID
+,RP_AZ01.ORIG_CAL_RUN_ID
+,RP_AZ01.RSLT_SEG_NUM
+,RP_AZ01.SEG_END_DT
+,RP_AZ01.SLICE_END_DT
+,RP_AZ01.PAY_ENTITY
+,RP_AZ01.PRD_END_DT
+! no: ,RP_AZ01.GPDE_AL_CPAY_ENDDT
+,RP_AZ01.GPDE_AZ_RP_001_11
+,RP_AZ01.GPDE_AZ_RP_001_12
+,RP_AZ01.GPDE_AZ_RP_001_53
+,RP_AZ01.GPDE_AZ_RP_001_63
+,RP_AZ01.GPDE_AZ_RP_002_11
+,RP_AZ01.GPDE_AZ_RP_002_12
+,RP_AZ01.GPDE_AZ_RP_002_14
+,RP_AZ01.GPDE_AZ_RP_002_17
+,RP_AZ01.GPDE_AZ_RP_002_19
+,RP_AZ01.GPDE_AZ_RP_002_21
+,RP_AZ01.GPDE_AZ_RP_002_22
+,RP_AZ01.GPDE_AZ_RP_002_28
+,RP_AZ01.GPDE_AZ_RP_002_68
+,RP_AZ01.GPDE_AZ_RP_003_11
+,RP_AZ01.GPDE_AZ_RP_003_12
+,RP_AZ01.GPDE_AZ_RP_003_15
+,RP_AZ01.GPDE_AZ_RP_003_21
+,RP_AZ01.GPDE_AZ_RP_003_22
+,RP_AZ01.GPDE_AZ_RP_003_31
+,RP_AZ01.GPDE_AZ_RP_003_32
+,RP_AZ01.GPDE_AZ_RP_003_36
+,RP_AZ01.GPDE_AZ_RP_003_41
+,RP_AZ01.GPDE_AZ_RP_003_42
+,RP_AZ01.GPDE_AZ_RP_003_46
+,RP_AZ01.GPDE_AZ_RP_004_0B
+,RP_AZ01.GPDE_AZ_RP_004_0C
+,RP_AZ01.GPDE_AZ_RP_004_11
+,RP_AZ01.GPDE_AZ_RP_004_1A
+,RP_AZ01.GPDE_AZ_RP_011_11
+,RP_AZ01.GPDE_AZ_RP_011_12
+,RP_AZ01.GPDE_AZ_RP_011_53
+,RP_AZ01.GPDE_AZ_RP_011_63
+,RP_AZ01.GPDE_AZ_RP_012_11
+,RP_AZ01.GPDE_AZ_RP_012_12
+,RP_AZ01.GPDE_AZ_RP_012_14
+,RP_AZ01.GPDE_AZ_RP_012_17
+,RP_AZ01.GPDE_AZ_RP_012_19
+,RP_AZ01.GPDE_AZ_RP_012_21
+,RP_AZ01.GPDE_AZ_RP_012_22
+,RP_AZ01.GPDE_AZ_RP_012_28
+,RP_AZ01.GPDE_AZ_RP_012_68
+,RP_AZ01.GPDE_AZ_RP_013_31
+,RP_AZ01.GPDE_AZ_RP_013_32
+,RP_AZ01.GPDE_AZ_RP_013_36
+,RP_AZ01.GPDE_AZ_RP_013_41
+,RP_AZ01.GPDE_AZ_RP_013_42
+,RP_AZ01.GPDE_AZ_RP_013_46
+,RP_AZ01.GPDE_AZ_RP_021_11
+,RP_AZ01.GPDE_AZ_RP_021_12
+,RP_AZ01.GPDE_AZ_RP_021_53
+,RP_AZ01.GPDE_AZ_RP_021_63
+,RP_AZ01.GPDE_AZ_RP_022_11
+,RP_AZ01.GPDE_AZ_RP_022_12
+,RP_AZ01.GPDE_AZ_RP_022_14
+,RP_AZ01.GPDE_AZ_RP_022_17
+,RP_AZ01.GPDE_AZ_RP_022_19
+,RP_AZ01.GPDE_AZ_RP_022_21
+,RP_AZ01.GPDE_AZ_RP_022_22
+,RP_AZ01.GPDE_AZ_RP_022_28
+,RP_AZ01.GPDE_AZ_RP_022_68
+,RP_AZ01.GPDE_AZ_RP_023_31
+,RP_AZ01.GPDE_AZ_RP_023_32
+,RP_AZ01.GPDE_AZ_RP_023_36
+,RP_AZ01.GPDE_AZ_RP_023_41
+,RP_AZ01.GPDE_AZ_RP_023_42
+,RP_AZ01.GPDE_AZ_RP_023_46
+,RP_AZ01.GPDE_AZ_RP_BBG_MON
+,RP_AZ01.GPDE_AZ_RP_ELG_BON
+,RP_AZ01.GPDE_AZ_RP_ELG_FIL
+,RP_AZ01.GPDE_AZ_RP_ELG_MAR
+,RP_AZ01.GPDE_AZ_ELG_LINE10
+,RP_AZ01.GPDE_AZ_RP_H01_53
+,RP_AZ01.GPDE_AZ_RP_H01_63
+,RP_AZ01.GPDE_AZ_RP_H02_68
+,RP_AZ01.GPDE_AZ_RP_H03_31
+,RP_AZ01.GPDE_AZ_RP_S01_63
+,RP_AZ01.GPDE_AZ_RP_S02_68
+,RP_AZ01.GPDE_AZ_RP_S03_31
+,RP_AZ01.GPDE_AZ_RP_S03_41
+,RP_AZ01.BEGIN_DT
+,RP_AZ01.GPDE_AZ_IMODEL1
+,RP_AZ01.GPDE_AZ_IMODEL2
+,RP_AZ01.GPDE_AZ_RP_003_CUR
+,RP_AZ01.GPDE_AZ_RP_003_FRM
+,RP_AZ01.GPDE_AZ_RP_003_GOA
+,RP_AZ01.GPDE_AZ_RP_003_LIM
+,RP_AZ01.GPDE_AZ_RP_003_REA
+,RP_AZ01.GPDE_AZ_RP_003_TDA
+,RP_AZ01.GPDE_AZ_RP_013_CUR
+,RP_AZ01.GPDE_AZ_RP_013_FRM
+,RP_AZ01.GPDE_AZ_RP_013_GOA
+,RP_AZ01.GPDE_AZ_RP_013_LIM
+,RP_AZ01.GPDE_AZ_RP_013_REA
+,RP_AZ01.GPDE_AZ_RP_013_TDA
+,RP_AZ01.GPDE_AZ_RP_023_CUR
+,RP_AZ01.GPDE_AZ_RP_023_FRM
+,RP_AZ01.GPDE_AZ_RP_023_GOA
+,RP_AZ01.GPDE_AZ_RP_023_LIM
+,RP_AZ01.GPDE_AZ_RP_023_REA
+,RP_AZ01.GPDE_AZ_RP_023_TDA
+,RP_AZ01.GPDE_AZ_RP_M003_13
+,RP_AZ01.GPDE_AZ_RP_M003_15
+,RP_AZ01.GPDE_AZ_RP_M003_23
+,RP_AZ01.GPDE_AZ_RP_M003_31
+,RP_AZ01.GPDE_AZ_RP_M003_32
+,RP_AZ01.GPDE_AZ_RP_M003_CR
+,RP_AZ01.GPDE_AZ_RP_M013_31
+,RP_AZ01.GPDE_AZ_RP_M013_32
+,RP_AZ01.GPDE_AZ_RP_M023_31
+,RP_AZ01.GPDE_AZ_RP_M023_32
+,RP_AZ01.GPDE_AZ_RP_H11_53
+,RP_AZ01.GPDE_AZ_RP_H11_63
+,RP_AZ01.GPDE_AZ_RP_H12_68
+,RP_AZ01.GPDE_AZ_RP_H13_31
+,RP_AZ01.GPDE_AZ_RP_H21_53
+,RP_AZ01.GPDE_AZ_RP_H21_63
+,RP_AZ01.GPDE_AZ_RP_H22_68
+,RP_AZ01.GPDE_AZ_RP_H23_31
+,RP_AZ01.GPDE_AZ_RP_S11_63
+,RP_AZ01.GPDE_AZ_RP_S12_68
+,RP_AZ01.GPDE_AZ_RP_S13_31
+,RP_AZ01.GPDE_AZ_RP_S13_41
+,RP_AZ01.GPDE_AZ_RP_S21_63
+,RP_AZ01.GPDE_AZ_RP_S22_68
+,RP_AZ01.GPDE_AZ_RP_S23_31
+,RP_AZ01.GPDE_AZ_RP_S23_41
+,RP_AZ01.GPDE_AZ_RP_T03_31
+,RP_AZ01.GPDE_AZ_RP_T03_41
+,RP_AZ01.GPDE_AZ_RP_T13_31
+,RP_AZ01.GPDE_AZ_RP_T13_41
+,RP_AZ01.GPDE_AZ_RP_T23_31
+,RP_AZ01.GPDE_AZ_RP_T23_41
+
+ORDER BY RP_AZ01.SEG_END_DT
+
+END-SELECT
+
+end-procedure Fill-C-RP_AZ01
+
+
+
+
+
+
+!*********************************
+!**Fill-C-RP_FL01*****************
+!*********************************
+begin-procedure Fill-C-RP_FL01
+!  show 'begin-procedure Fill-C-RP_FL01'
+
+BEGIN-select
+MIN(SEG6.RSLT_VER_NUM)    &SEG6.RSLT_VER_NUM !'MIN rslt ver num'
+RP_FL01.EMPLID
+RP_FL01.EMPL_RCD
+RP_FL01.GP_PAYGROUP
+RP_FL01.CAL_ID
+RP_FL01.ORIG_CAL_RUN_ID
+RP_FL01.RSLT_SEG_NUM
+RP_FL01.SEG_END_DT
+RP_FL01.SLICE_END_DT
+RP_FL01.PAY_ENTITY
+RP_FL01.PRD_END_DT
+! no: RP_FL01.GPDE_AL_CPAY_ENDDT
+RP_FL01.GPDE_DV_SV_CODE
+RP_FL01.GPDE_FL_CGRP_KV_E
+RP_FL01.GPDE_FL_CGRP_RV_E
+RP_FL01.GPDE_FL_CGRP_AV_E
+RP_FL01.GPDE_FL_CGRP_PV_E
+RP_FL01.GPDE_FL_CGRP_KV_W
+RP_FL01.GPDE_FL_CGRP_RV_W
+RP_FL01.GPDE_FL_CGRP_AV_W
+RP_FL01.GPDE_FL_CGRP_PV_W
+RP_FL01.GPDE_FL_BTNR_EAST
+RP_FL01.GPDE_FL_BTNR_WEST
+RP_FL01.GPDE_FL_RP_1S1AG
+RP_FL01.GPDE_FL_RP_1S1AN
+RP_FL01.GPDE_FL_RP_1S1B
+RP_FL01.GPDE_FL_RP_1S2AG
+RP_FL01.GPDE_FL_RP_1S2AN
+RP_FL01.GPDE_FL_RP_1S2B
+RP_FL01.GPDE_FL_RP_1S3AG
+RP_FL01.GPDE_FL_RP_1S3AN
+RP_FL01.GPDE_FL_RP_1S3B
+RP_FL01.GPDE_FL_RP_1S4AG
+RP_FL01.GPDE_FL_RP_1S4AN
+RP_FL01.GPDE_FL_RP_1S4B
+RP_FL01.GPDE_FL_RP_2S1AG
+RP_FL01.GPDE_FL_RP_2S1AN
+RP_FL01.GPDE_FL_RP_2S1B
+RP_FL01.GPDE_FL_RP_2S2AG
+RP_FL01.GPDE_FL_RP_2S2AN
+RP_FL01.GPDE_FL_RP_2S2B
+RP_FL01.GPDE_FL_RP_2S3AG
+RP_FL01.GPDE_FL_RP_2S3AN
+RP_FL01.GPDE_FL_RP_2S3B
+RP_FL01.GPDE_FL_RP_2S4AG
+RP_FL01.GPDE_FL_RP_2S4AN
+RP_FL01.GPDE_FL_RP_2S4B
+RP_FL01.GPDE_FL_L001S1_MON
+RP_FL01.GPDE_FL_L001S2_MON
+RP_FL01.GPDE_FL_L001S3_MON
+RP_FL01.GPDE_FL_L001S4_MON
+RP_FL01.GPDE_FL_RP_L001S1
+RP_FL01.GPDE_FL_RP_L001S2
+RP_FL01.GPDE_FL_RP_L001S3
+RP_FL01.GPDE_FL_RP_L001S4
+RP_FL01.GPDE_FL_L002S1_MON
+RP_FL01.GPDE_FL_L002S2_MON
+RP_FL01.GPDE_FL_L002S3_MON
+RP_FL01.GPDE_FL_L002S4_MON
+RP_FL01.GPDE_FL_RP_L002S1
+RP_FL01.GPDE_FL_RP_L002S2
+RP_FL01.GPDE_FL_RP_L002S3
+RP_FL01.GPDE_FL_RP_L002S4
+RP_FL01.GPDE_FL_W001E0_MON
+RP_FL01.GPDE_FL_RP_W001E0
+RP_FL01.GPDE_FL_W002E0_MON
+RP_FL01.GPDE_FL_RP_W002E0
+RP_FL01.GPDE_FL_W011E0_MON
+RP_FL01.GPDE_FL_RP_W011E0
+RP_FL01.GPDE_FL_W012E0_MON
+RP_FL01.GPDE_FL_RP_W012E0
+RP_FL01.GPDE_FL_W020E0_MON
+RP_FL01.GPDE_FL_RP_W020E0
+RP_FL01.GPDE_FL_W001E0_TMP
+RP_FL01.GPDE_FL_W002E0_TMP
+
+  do  Clear-Var
+  let $Emplid       = rtrim(&RP_FL01.EMPLID,' ')
+  let #EmplRcd      = &RP_FL01.EMPL_RCD
+  let $GpPaygroup   = rtrim(&RP_FL01.GP_PAYGROUP,' ')
+  let $CalID        = rtrim(&RP_FL01.CAL_ID,' ')
+  let $OrigCalRunId = rtrim(&RP_FL01.ORIG_CAL_RUN_ID,' ')
+  let #RsltSegNum   = &RP_FL01.RSLT_SEG_NUM
+  let #RsltVerNum   = &SEG2.RSLT_VER_NUM
+  do Fill-C
+
+from PS_GPDE_RP_FL01 RP_FL01, PS_GP_PYE_SEG_STAT SEG6
+where   SEG6.EMPLID          =RP_FL01.EMPLID
+! --+ AND SEG6.EMPLID='TestEmplid'
+AND     SEG6.CAL_RUN_ID      =RP_FL01.CAL_RUN_ID
+AND     SEG6.EMPL_RCD        =RP_FL01.EMPL_RCD
+AND     SEG6.GP_PAYGROUP     =RP_FL01.GP_PAYGROUP
+AND     SEG6.CAL_ID          =RP_FL01.CAL_ID
+AND     SEG6.ORIG_CAL_RUN_ID =RP_FL01.ORIG_CAL_RUN_ID
+AND     SEG6.RSLT_SEG_NUM    =RP_FL01.RSLT_SEG_NUM
+AND     SEG6.RSLT_REV_NUM    = 1
+AND     SEG6.CALC_ACTION     = 'C'
+
+group by
+ RP_FL01.EMPLID
+,RP_FL01.EMPL_RCD
+,RP_FL01.GP_PAYGROUP
+,RP_FL01.CAL_ID
+,RP_FL01.ORIG_CAL_RUN_ID
+,RP_FL01.RSLT_SEG_NUM
+,RP_FL01.SEG_END_DT
+,RP_FL01.SLICE_END_DT
+,RP_FL01.PAY_ENTITY
+,RP_FL01.PRD_END_DT
+! no: ,RP_FL01.GPDE_AL_CPAY_ENDDT
+,RP_FL01.GPDE_DV_SV_CODE
+,RP_FL01.GPDE_FL_CGRP_KV_E
+,RP_FL01.GPDE_FL_CGRP_RV_E
+,RP_FL01.GPDE_FL_CGRP_AV_E
+,RP_FL01.GPDE_FL_CGRP_PV_E
+,RP_FL01.GPDE_FL_CGRP_KV_W
+,RP_FL01.GPDE_FL_CGRP_RV_W
+,RP_FL01.GPDE_FL_CGRP_AV_W
+,RP_FL01.GPDE_FL_CGRP_PV_W
+,RP_FL01.GPDE_FL_BTNR_EAST
+,RP_FL01.GPDE_FL_BTNR_WEST
+,RP_FL01.GPDE_FL_RP_1S1AG
+,RP_FL01.GPDE_FL_RP_1S1AN
+,RP_FL01.GPDE_FL_RP_1S1B
+,RP_FL01.GPDE_FL_RP_1S2AG
+,RP_FL01.GPDE_FL_RP_1S2AN
+,RP_FL01.GPDE_FL_RP_1S2B
+,RP_FL01.GPDE_FL_RP_1S3AG
+,RP_FL01.GPDE_FL_RP_1S3AN
+,RP_FL01.GPDE_FL_RP_1S3B
+,RP_FL01.GPDE_FL_RP_1S4AG
+,RP_FL01.GPDE_FL_RP_1S4AN
+,RP_FL01.GPDE_FL_RP_1S4B
+,RP_FL01.GPDE_FL_RP_2S1AG
+,RP_FL01.GPDE_FL_RP_2S1AN
+,RP_FL01.GPDE_FL_RP_2S1B
+,RP_FL01.GPDE_FL_RP_2S2AG
+,RP_FL01.GPDE_FL_RP_2S2AN
+,RP_FL01.GPDE_FL_RP_2S2B
+,RP_FL01.GPDE_FL_RP_2S3AG
+,RP_FL01.GPDE_FL_RP_2S3AN
+,RP_FL01.GPDE_FL_RP_2S3B
+,RP_FL01.GPDE_FL_RP_2S4AG
+,RP_FL01.GPDE_FL_RP_2S4AN
+,RP_FL01.GPDE_FL_RP_2S4B
+,RP_FL01.GPDE_FL_L001S1_MON
+,RP_FL01.GPDE_FL_L001S2_MON
+,RP_FL01.GPDE_FL_L001S3_MON
+,RP_FL01.GPDE_FL_L001S4_MON
+,RP_FL01.GPDE_FL_RP_L001S1
+,RP_FL01.GPDE_FL_RP_L001S2
+,RP_FL01.GPDE_FL_RP_L001S3
+,RP_FL01.GPDE_FL_RP_L001S4
+,RP_FL01.GPDE_FL_L002S1_MON
+,RP_FL01.GPDE_FL_L002S2_MON
+,RP_FL01.GPDE_FL_L002S3_MON
+,RP_FL01.GPDE_FL_L002S4_MON
+,RP_FL01.GPDE_FL_RP_L002S1
+,RP_FL01.GPDE_FL_RP_L002S2
+,RP_FL01.GPDE_FL_RP_L002S3
+,RP_FL01.GPDE_FL_RP_L002S4
+,RP_FL01.GPDE_FL_W001E0_MON
+,RP_FL01.GPDE_FL_RP_W001E0
+,RP_FL01.GPDE_FL_W002E0_MON
+,RP_FL01.GPDE_FL_RP_W002E0
+,RP_FL01.GPDE_FL_W011E0_MON
+,RP_FL01.GPDE_FL_RP_W011E0
+,RP_FL01.GPDE_FL_W012E0_MON
+,RP_FL01.GPDE_FL_RP_W012E0
+,RP_FL01.GPDE_FL_W020E0_MON
+,RP_FL01.GPDE_FL_RP_W020E0
+,RP_FL01.GPDE_FL_W001E0_TMP
+,RP_FL01.GPDE_FL_W002E0_TMP
+
+ORDER BY RP_FL01.SEG_END_DT
+
+END-SELECT
+
+end-procedure Fill-C-RP_FL01
+
+
+
+
+
+
+!*********************************
+!**Fill-C-RP_SI01*****************
+!*********************************
+begin-procedure Fill-C-RP_SI01
+!  show 'begin-procedure Fill-C-RP_SI01'
+
+BEGIN-select
+MIN(SEG7.RSLT_VER_NUM)    &SEG7.RSLT_VER_NUM !'MIN rslt ver num'
+RP_SI01.EMPLID
+RP_SI01.EMPL_RCD
+RP_SI01.GP_PAYGROUP
+RP_SI01.CAL_ID
+RP_SI01.ORIG_CAL_RUN_ID
+RP_SI01.RSLT_SEG_NUM
+RP_SI01.SEG_END_DT
+RP_SI01.SLICE_END_DT
+RP_SI01.SLICE_BGN_DT
+RP_SI01.SEG_BGN_DT
+RP_SI01.PRD_END_DT
+RP_SI01.PRD_BGN_DT
+RP_SI01.BA_CD
+RP_SI01.GPDE_SI_L_INC_ERN
+RP_SI01.GPDE_SI_MINER
+RP_SI01.GPDE_SI_PROV_MAND
+RP_SI01.GPDE_DV_SV_CODE
+RP_SI01.GPDE_DV_EMPL_CAT
+RP_SI01.GPDE_SI_POS_IN_JOB
+RP_SI01.GPDE_SI_EDUCATION
+RP_SI01.GPDE_SI_PENS_APPLI
+RP_SI01.GPDE_SI_EMPL_MULT
+RP_SI01.GPDE_SI_EMPL_INSIG
+RP_SI01.GPDE_SI_PROV_KV
+RP_SI01.GPDE_SI_PROV_PV
+RP_SI01.GPDE_SI_PROV_RV
+RP_SI01.GPDE_SI_PROV_AV
+RP_SI01.GPDE_SI_PROV_UM
+RP_SI01.GPDE_RI_PCT1
+RP_SI01.GPDE_RI_PCT2
+RP_SI01.GPDE_SI_STATUS_KV
+RP_SI01.GPDE_SI_STATUS_RV
+RP_SI01.GPDE_SI_STATUS_AV
+RP_SI01.GPDE_SI_STATUS_PV
+RP_SI01.GPDE_SIC_REGION
+RP_SI01.GPDE_SIH_REGION
+RP_SI01.GPDE_SIP_REGION
+RP_SI01.GPDE_SIU_REGION
+RP_SI01.GPDE_SI_CMPINS_1
+RP_SI01.GPDE_SI_CMPINS_2
+RP_SI01.GPDE_DV_SV_CODE_M
+RP_SI01.GPDE_SI_PROV_AV_M
+RP_SI01.GPDE_SI_PROV_KV_M
+RP_SI01.GPDE_SI_PROV_PV_M
+RP_SI01.GPDE_SI_PROV_RV_M
+RP_SI01.GPDE_SI_PROV_UM_M
+RP_SI01.GPDE_RI_PCT1_MC
+RP_SI01.GPDE_RI_PCT2_MC
+RP_SI01.GPDE_RP_MAR_MON
+RP_SI01.GPDE_SI_CARD_PRES
+RP_SI01.GPDE_SI_EMPL_TYPE
+RP_SI01.GPDE_DV_RVNR
+RP_SI01.GPDE_RP_MARCH_CLS
+RP_SI01.GPDE_SI_UPROV_ID
+RP_SI01.GPDE_SI_IS_KVDR
+RP_SI01.GPDE_SI_REG_MAND
+RP_SI01.GPDE_RP_RV_GZ_FLG
+RP_SI01.GPDE_SI_BAEGV
+
+  do  Clear-Var
+  let $Emplid       = rtrim(&RP_SI01.EMPLID,' ')
+  let #EmplRcd      = &RP_SI01.EMPL_RCD
+  let $GpPaygroup   = rtrim(&RP_SI01.GP_PAYGROUP,' ')
+  let $CalID        = rtrim(&RP_SI01.CAL_ID,' ')
+  let $OrigCalRunId = rtrim(&RP_SI01.ORIG_CAL_RUN_ID,' ')
+  let #RsltSegNum   = &RP_SI01.RSLT_SEG_NUM
+  let #RsltVerNum   = &SEG7.RSLT_VER_NUM
+  do Fill-C
+
+from PS_GPDE_RP_SI01 RP_SI01, PS_GP_PYE_SEG_STAT SEG7
+where   SEG7.EMPLID          =RP_SI01.EMPLID
+! --+ AND SEG7.EMPLID='TestEmplid'
+AND     SEG7.CAL_RUN_ID      =RP_SI01.CAL_RUN_ID
+AND     SEG7.EMPL_RCD        =RP_SI01.EMPL_RCD
+AND     SEG7.GP_PAYGROUP     =RP_SI01.GP_PAYGROUP
+AND     SEG7.CAL_ID          =RP_SI01.CAL_ID
+AND     SEG7.ORIG_CAL_RUN_ID =RP_SI01.ORIG_CAL_RUN_ID
+AND     SEG7.RSLT_SEG_NUM    =RP_SI01.RSLT_SEG_NUM
+AND     SEG7.RSLT_REV_NUM    = 1
+AND     SEG7.CALC_ACTION     = 'C'
+
+group by
+ RP_SI01.EMPLID
+,RP_SI01.EMPL_RCD
+,RP_SI01.GP_PAYGROUP
+,RP_SI01.CAL_ID
+,RP_SI01.ORIG_CAL_RUN_ID
+,RP_SI01.RSLT_SEG_NUM
+,RP_SI01.SEG_END_DT
+,RP_SI01.SLICE_END_DT
+,RP_SI01.SLICE_BGN_DT
+,RP_SI01.SEG_BGN_DT
+,RP_SI01.PRD_END_DT
+,RP_SI01.PRD_BGN_DT
+,RP_SI01.BA_CD
+,RP_SI01.GPDE_SI_L_INC_ERN
+,RP_SI01.GPDE_SI_MINER
+,RP_SI01.GPDE_SI_PROV_MAND
+,RP_SI01.GPDE_DV_SV_CODE
+,RP_SI01.GPDE_DV_EMPL_CAT
+,RP_SI01.GPDE_SI_POS_IN_JOB
+,RP_SI01.GPDE_SI_EDUCATION
+,RP_SI01.GPDE_SI_PENS_APPLI
+,RP_SI01.GPDE_SI_EMPL_MULT
+,RP_SI01.GPDE_SI_EMPL_INSIG
+,RP_SI01.GPDE_SI_PROV_KV
+,RP_SI01.GPDE_SI_PROV_PV
+,RP_SI01.GPDE_SI_PROV_RV
+,RP_SI01.GPDE_SI_PROV_AV
+,RP_SI01.GPDE_SI_PROV_UM
+,RP_SI01.GPDE_RI_PCT1
+,RP_SI01.GPDE_RI_PCT2
+,RP_SI01.GPDE_SI_STATUS_KV
+,RP_SI01.GPDE_SI_STATUS_RV
+,RP_SI01.GPDE_SI_STATUS_AV
+,RP_SI01.GPDE_SI_STATUS_PV
+,RP_SI01.GPDE_SIC_REGION
+,RP_SI01.GPDE_SIH_REGION
+,RP_SI01.GPDE_SIP_REGION
+,RP_SI01.GPDE_SIU_REGION
+,RP_SI01.GPDE_SI_CMPINS_1
+,RP_SI01.GPDE_SI_CMPINS_2
+,RP_SI01.GPDE_DV_SV_CODE_M
+,RP_SI01.GPDE_SI_PROV_AV_M
+,RP_SI01.GPDE_SI_PROV_KV_M
+,RP_SI01.GPDE_SI_PROV_PV_M
+,RP_SI01.GPDE_SI_PROV_RV_M
+,RP_SI01.GPDE_SI_PROV_UM_M
+,RP_SI01.GPDE_RI_PCT1_MC
+,RP_SI01.GPDE_RI_PCT2_MC
+,RP_SI01.GPDE_RP_MAR_MON
+,RP_SI01.GPDE_SI_CARD_PRES
+,RP_SI01.GPDE_SI_EMPL_TYPE
+,RP_SI01.GPDE_DV_RVNR
+,RP_SI01.GPDE_RP_MARCH_CLS
+,RP_SI01.GPDE_SI_UPROV_ID
+,RP_SI01.GPDE_SI_IS_KVDR
+,RP_SI01.GPDE_SI_REG_MAND
+,RP_SI01.GPDE_RP_RV_GZ_FLG
+,RP_SI01.GPDE_SI_BAEGV
+ORDER BY RP_SI01.SEG_END_DT
+END-SELECT
+
+end-procedure Fill-C-RP_SI01
+
+
+
+
+
+
+!*********************************
+!**Get-Values*********************
+!*********************************
+begin-procedure Get-Values
+!  show 'begin-procedure Get-Values'
+end-procedure
+
+
+
+! *********************************************************************************
+! wdu06-890b7x Hotfix for flip-flops starting here
+! *********************************************************************************
+
+begin-procedure RescanChanges
+! matching is good, but all records must match
+
+begin-select 
+! keys over AL92
+X1.EMPLID
+X1.CAL_RUN_ID
+X1.EMPL_RCD
+X1.GP_PAYGROUP
+X1.CAL_ID
+X1.ORIG_CAL_RUN_ID
+X1.RSLT_SEG_NUM
+X1.RSLT_VER_NUM
+X1.GPDE_RP_CHAR01_01 
+X1.GPDE_RP_CHAR01_02 
+X1.GPDE_RP_CHAR01_03 
+X1.GPDE_RP_CHAR01_04 
+X1.GPDE_RP_CHAR01_05 
+X1.GPDE_RP_CHAR01_06 
+    ! prepare keys for compare
+    let $Emplid = &X1.EMPLID
+    let $Cal_Run_ID = &X1.CAL_RUN_ID
+    let #EmplRcd = &X1.EMPL_RCD
+    let $GpPaygroup = &X1.GP_PAYGROUP
+    let $CalID = &X1.CAL_ID
+    let $OrigCalRunId = &X1.ORIG_CAL_RUN_ID
+    let #RsltSegNum = &X1.RSLT_SEG_NUM
+    let #RsltVerNum = &X1.RSLT_VER_NUM
+    let #PrevRsltVerNum = #RsltVerNum - 1
+    !
+    ! do compares of current and previous rows
+    !
+    ! show 'scanning ...' $Emplid '/' $CalID '/' $CAL_RUN_ID '/' &X1.RSLT_VER_NUM
+    let $done = 'N'
+    let $match = 'N'
+
+    if $done = 'N'
+        do CheckFlip_RP_0001    
+        if $match = 'N'
+            ! we need to mark, then we are done
+            do MarkThisRow
+            let $done='Y'
+        else
+        ! matching is good, but all records must match
+        ! let $done = 'N'
+        end-if
+    end-if
+
+    if $done = 'N'
+        do CheckFlip_RP_0002    
+        if $match = 'N'
+            ! we need to mark, then we are done
+            do MarkThisRow
+            let $done='Y'
+        else
+        ! matching is good, but all records must match
+        ! let $done = 'N'
+        end-if
+    end-if
+    
+    if $done = 'N'
+        do CheckFlip_RP_0003    
+        if $match = 'N'
+            ! we need to mark, then we are done
+            do MarkThisRow
+            let $done='Y'
+        else
+        ! matching is good, but all records must match
+        ! let $done = 'N'
+        end-if
+    end-if
+    
+    if $done = 'N'
+        do CheckFlip_RP_SI01    
+        if $match = 'N'
+            ! we need to mark, then we are done
+            do MarkThisRow
+            let $done='Y'
+        else
+        ! matching is good, but all records must match
+        ! let $done = 'N'
+        end-if
+    end-if
+    if $done = 'Y'
+    !    show 'rows with differences ' $Emplid ' ' $CalID ' ' $Cal_Run_ID
+    end-if
+    if $done = 'N' AND &X1.GPDE_RP_CHAR01_04 <> 'U'
+        do CheckFlip_RP_AZ01    
+        if $match = 'N'
+            ! we need to mark, then we are done
+            do MarkThisRow
+            let $done='Y'
+        else
+        ! matching is good, but all records must match
+        ! let $done = 'N'
+        end-if
+    end-if
+    
+    if $done = 'N' AND &X1.GPDE_RP_CHAR01_05 <> 'U'
+        do CheckFlip_RP_FL01    
+        if $match = 'N'
+            ! we need to mark, then we are done
+            do MarkThisRow
+            let $done='Y'
+        else
+        ! matching is good, but all records must match
+        ! let $done = 'N'
+        end-if
+    end-if
+    
+FROM PS_GPDE_RP_AL92 X1
+where 0=0
+!  only if all flags <> 'P'  ==> U/D
+
+AND (X1.GPDE_RP_CHAR01_01 <> 'P' 
+    AND X1.GPDE_RP_CHAR01_02 <> 'P' 
+    AND X1.GPDE_RP_CHAR01_03 <> 'P' 
+    AND X1.GPDE_RP_CHAR01_04 <> 'P' 
+    AND X1.GPDE_RP_CHAR01_05 <> 'P' 
+    AND X1.GPDE_RP_CHAR01_06 <> 'P' 
+    )
+! -- AND X1.EMPLID LIKE 'GD_DEUEV%'  ! *+*    
+ORDER by X1.EMPLID,
+X1.EMPL_RCD,
+X1.GP_PAYGROUP,
+X1.CAL_ID,
+X1.ORIG_CAL_RUN_ID,
+X1.RSLT_SEG_NUM,
+X1.RSLT_VER_NUM
+end-select
+end-procedure
+
+
+
+
+
+begin-procedure MarkThisRow
+!
+! for now save a row for each row that needs to be flagged for print
+!
+let #CorrectionCount = #CorrectionCount + 1
+!
+begin-SQL
+INSERT INTO PS_GPDE_RP_AL93
+( EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,RSLT_VER_NUM
+)
+VALUES
+(
+&X1.EMPLID,
+&X1.CAL_RUN_ID,
+&X1.EMPL_RCD,
+&X1.GP_PAYGROUP,
+&X1.CAL_ID,
+&X1.ORIG_CAL_RUN_ID,
+&X1.RSLT_SEG_NUM,
+&X1.RSLT_VER_NUM
+)
+end-sql
+end-procedure
+
+
+
+
+
+begin-procedure CheckFlip_RP_0001
+! check if the two rows are the same for the specified params (see RescanChanges)
+! returns boolean $match = 'Y' if rows matched
+!
+! normally this should make a match because the row was eliminated because it has the
+! same content as the previous one
+
+! expect no match by default, this covers non-existing rows
+let $match = 'N'    
+
+begin-select
+XA0001.EMPLID
+    ! if we are here, then we had a match
+    let $match = 'Y'
+    ! show 'matching rows RP_0001: ' &XA0001.EMPLID
+FROM PS_GPDE_RP_0001 XA0001, PS_GPDE_RP_0001 XB0001
+,PS_GPDE_RP_AL92 YA0001,PS_GPDE_RP_AL92 YB0001
+WHERE 0=0
+!
+! join tables to their seg-drivers because we do not have RSLT_VER_NUM in the data
+!
+AND YA0001.EMPLID = XA0001.EMPLID
+AND YA0001.CAL_RUN_ID = XA0001.CAL_RUN_ID
+AND YA0001.EMPL_RCD = XA0001.EMPL_RCD
+AND YA0001.GP_PAYGROUP = XA0001.GP_PAYGROUP
+AND YA0001.CAL_ID = XA0001.CAL_ID
+AND YA0001.ORIG_CAL_RUN_ID = XA0001.ORIG_CAL_RUN_ID
+AND YA0001.RSLT_SEG_NUM = XA0001.RSLT_SEG_NUM
+!
+AND YB0001.EMPLID = XB0001.EMPLID
+AND YB0001.CAL_RUN_ID = XB0001.CAL_RUN_ID
+AND YB0001.EMPL_RCD = XB0001.EMPL_RCD
+AND YB0001.GP_PAYGROUP = XB0001.GP_PAYGROUP
+AND YB0001.CAL_ID = XB0001.CAL_ID
+AND YB0001.ORIG_CAL_RUN_ID = XB0001.ORIG_CAL_RUN_ID
+AND YB0001.RSLT_SEG_NUM = XB0001.RSLT_SEG_NUM
+!
+! functional keys
+AND XA0001.EMPLID = $Emplid
+! no: AND XA0001.CAL_RUN_ID = $Cal_Run_ID
+AND XA0001.EMPL_RCD = #EmplRcd
+AND XA0001.GP_PAYGROUP = $GpPaygroup
+AND XA0001.CAL_ID = $CalID
+AND XA0001.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XA0001.RSLT_SEG_NUM = #RsltSegNum
+AND YA0001.RSLT_VER_NUM = #RsltVerNum
+!
+AND XB0001.EMPLID = $Emplid
+! no: AND XB0001.CAL_RUN_ID = $Cal_Run_ID
+AND XB0001.EMPL_RCD = #EmplRcd
+AND XB0001.GP_PAYGROUP = $GpPaygroup
+AND XB0001.CAL_ID = $CalID
+AND XB0001.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XB0001.RSLT_SEG_NUM = #RsltSegNum
+AND YB0001.RSLT_VER_NUM = #PrevRsltVerNum       ! B is older version
+!
+! data fields
+
+AND XA0001.SEG_END_DT = XB0001.SEG_END_DT
+AND XA0001.SEG_BGN_DT = XB0001.SEG_BGN_DT
+AND XA0001.PRD_END_DT = XB0001.PRD_END_DT
+AND XA0001.PRD_BGN_DT = XB0001.PRD_BGN_DT
+AND XA0001.PAY_ENTITY = XB0001.PAY_ENTITY
+AND XA0001.COMPANY = XB0001.COMPANY
+AND XA0001.LOCATION = XB0001.LOCATION
+AND XA0001.DEPTID = XB0001.DEPTID
+AND XA0001.ACTION = XB0001.ACTION
+AND XA0001.REASON = XB0001.REASON
+
+AND XA0001.SAL_ADMIN_PLAN = XB0001.SAL_ADMIN_PLAN
+AND XA0001.GRADE = XB0001.GRADE
+AND XA0001.STEP = XB0001.STEP
+AND XA0001.STD_HOURS = XB0001.STD_HOURS
+AND XA0001.EMPL_STATUS = XB0001.EMPL_STATUS
+AND XA0001.EMPL_CTG = XB0001.EMPL_CTG
+AND XA0001.EMPL_CTG_L1 = XB0001.EMPL_CTG_L1
+AND XA0001.PERFORM_GROUP_GER = XB0001.PERFORM_GROUP_GER
+! no: AND XA0001.JOB_ENTRY_DT = XB0001.JOB_ENTRY_DT
+AND XA0001.HIRE_DT = XB0001.HIRE_DT
+! no: AND XA0001.TERMINATION_DT = XB0001.TERMINATION_DT
+! no: AND XA0001.BIRTHDATE = XB0001.BIRTHDATE
+AND XA0001.MAR_STATUS = XB0001.MAR_STATUS
+AND XA0001.SEX = XB0001.SEX
+
+AND XA0001.GPDE_TX_PAY_EFFDT = XB0001.GPDE_TX_PAY_EFFDT
+AND XA0001.GPDE_TX_SPCL_EXMPT = XB0001.GPDE_TX_SPCL_EXMPT
+AND XA0001.GPDE_TX_INC_TX_CLS = XB0001.GPDE_TX_INC_TX_CLS
+AND XA0001.GPDE_TX_SCHEDULE = XB0001.GPDE_TX_SCHEDULE
+AND XA0001.GPDE_TX_NUM_CHILD = XB0001.GPDE_TX_NUM_CHILD
+AND XA0001.GPDE_TX_EXEMPT_ANN = XB0001.GPDE_TX_EXEMPT_ANN
+AND XA0001.GPDE_TX_EXEMPT_MON = XB0001.GPDE_TX_EXEMPT_MON
+AND XA0001.GPDE_TX_ADDGRS_ANN = XB0001.GPDE_TX_ADDGRS_ANN
+AND XA0001.GPDE_TX_ADDGRS_MON = XB0001.GPDE_TX_ADDGRS_MON
+AND XA0001.GPDE_TX_RELIGION = XB0001.GPDE_TX_RELIGION
+AND XA0001.GPDE_TX_SPOUSE_REL = XB0001.GPDE_TX_SPOUSE_REL
+AND XA0001.GPDE_TX_CHRCHSTATE = XB0001.GPDE_TX_CHRCHSTATE
+AND XA0001.GPDE_TX_CHAMBSTATE = XB0001.GPDE_TX_CHAMBSTATE
+
+AND XA0001.GPDE_TX_ACCM_TRANS = XB0001.GPDE_TX_ACCM_TRANS
+AND XA0001.GPDE_TX_NOPRV_EMPL = XB0001.GPDE_TX_NOPRV_EMPL
+AND XA0001.GPDE_TX_RECALC_OVD = XB0001.GPDE_TX_RECALC_OVD
+AND XA0001.GPDE_TX_METHOD_OVD = XB0001.GPDE_TX_METHOD_OVD
+AND XA0001.GPDE_TX_CHRCH_OVRD = XB0001.GPDE_TX_CHRCH_OVRD
+AND XA0001.GPDE_KU_BEN_GRP = XB0001.GPDE_KU_BEN_GRP
+AND XA0001.GPDE_KU_BEN_STP = XB0001.GPDE_KU_BEN_STP
+AND XA0001.GPDE_TX_UNIT = XB0001.GPDE_TX_UNIT
+AND XA0001.GPDE_TX_CHAMBER_BR = XB0001.GPDE_TX_CHAMBER_BR
+AND XA0001.GPDE_TX_CHAMBER_SA = XB0001.GPDE_TX_CHAMBER_SA
+AND XA0001.CURRENCY_CD = XB0001.CURRENCY_CD
+AND XA0001.CUR_RT_TYPE = XB0001.CUR_RT_TYPE
+! no: AND XA0001.GPDE_ASOF_DT_EX_RT = XB0001.GPDE_ASOF_DT_EX_RT
+AND XA0001.FTE = XB0001.FTE
+AND XA0001.GPDE_TX_HOME_CD = XB0001.GPDE_TX_HOME_CD
+AND XA0001.GPDE_TX_AGS_ID = XB0001.GPDE_TX_AGS_ID
+AND XA0001.GPDE_AL_FINANCE_CD = XB0001.GPDE_AL_FINANCE_CD
+AND XA0001.NATIONALITY_CD = XB0001.NATIONALITY_CD
+AND XA0001.NATIONALITY = XB0001.NATIONALITY
+AND XA0001.SETID_DEPT = XB0001.SETID_DEPT
+AND XA0001.SETID_LOCATION = XB0001.SETID_LOCATION
+AND XA0001.WC_COUNCIL_ID = XB0001.WC_COUNCIL_ID
+end-select
+end-procedure
+
+
+
+
+
+begin-procedure CheckFlip_RP_0002
+! check if the two rows are the same for the specified params (see RescanChanges)
+! returns boolean $match = 'Y' if rows matched
+!
+! normally this should make a match because the row was eliminated because it has the
+! same content as the previous one
+
+! expect no match by default, this covers non-existing rows
+let $match = 'N'    
+
+begin-select
+XA0002.EMPLID
+    ! if we are here, then we had a match
+    let $match = 'Y'
+    ! show 'matching rows RP_0002: ' &XA0002.EMPLID
+FROM PS_GPDE_RP_0002 XA0002, PS_GPDE_RP_0002 XB0002
+,PS_GPDE_RP_AL92 YA0002,PS_GPDE_RP_AL92 YB0002
+WHERE 0=0
+!
+! join tables to their seg-drivers because we do not have RSLT_VER_NUM in the data
+!
+AND YA0002.EMPLID = XA0002.EMPLID
+AND YA0002.CAL_RUN_ID = XA0002.CAL_RUN_ID
+AND YA0002.EMPL_RCD = XA0002.EMPL_RCD
+AND YA0002.GP_PAYGROUP = XA0002.GP_PAYGROUP
+AND YA0002.CAL_ID = XA0002.CAL_ID
+AND YA0002.ORIG_CAL_RUN_ID = XA0002.ORIG_CAL_RUN_ID
+AND YA0002.RSLT_SEG_NUM = XA0002.RSLT_SEG_NUM
+!
+AND YB0002.EMPLID = XB0002.EMPLID
+AND YB0002.CAL_RUN_ID = XB0002.CAL_RUN_ID
+AND YB0002.EMPL_RCD = XB0002.EMPL_RCD
+AND YB0002.GP_PAYGROUP = XB0002.GP_PAYGROUP
+AND YB0002.CAL_ID = XB0002.CAL_ID
+AND YB0002.ORIG_CAL_RUN_ID = XB0002.ORIG_CAL_RUN_ID
+AND YB0002.RSLT_SEG_NUM = XB0002.RSLT_SEG_NUM
+!
+! functional keys
+AND XA0002.EMPLID = $Emplid
+! no: AND XA0002.CAL_RUN_ID = $Cal_Run_ID
+AND XA0002.EMPL_RCD = #EmplRcd
+AND XA0002.GP_PAYGROUP = $GpPaygroup
+AND XA0002.CAL_ID = $CalID
+AND XA0002.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XA0002.RSLT_SEG_NUM = #RsltSegNum
+AND YA0002.RSLT_VER_NUM = #RsltVerNum
+!
+AND XB0002.EMPLID = $Emplid
+! no: AND XB0002.CAL_RUN_ID = $Cal_Run_ID
+AND XB0002.EMPL_RCD = #EmplRcd
+AND XB0002.GP_PAYGROUP = $GpPaygroup
+AND XB0002.CAL_ID = $CalID
+AND XB0002.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XB0002.RSLT_SEG_NUM = #RsltSegNum
+AND YB0002.RSLT_VER_NUM = #PrevRsltVerNum       ! B is older version
+!
+! data fields
+
+AND XA0002.SEG_END_DT = XB0002.SEG_END_DT 
+AND XA0002.PAY_ENTITY = XB0002.PAY_ENTITY
+AND XA0002.PRD_END_DT = XB0002.PRD_END_DT
+AND XA0002.GPDE_RP_WRKDHRS = XB0002.GPDE_RP_WRKDHRS
+AND XA0002.GPDE_RP_OVRTMHRS = XB0002.GPDE_RP_OVRTMHRS
+AND XA0002.GPDE_RP_TOTGRSS = XB0002.GPDE_RP_TOTGRSS
+AND XA0002.GPDE_RP_TAX_AMT = XB0002.GPDE_RP_TAX_AMT
+AND XA0002.GPDE_RP_SLDRTY_AMT = XB0002.GPDE_RP_SLDRTY_AMT
+AND XA0002.GPDE_RP_CHTXEE_AMT = XB0002.GPDE_RP_CHTXEE_AMT
+AND XA0002.GPDE_RP_CHTXSP_AMT = XB0002.GPDE_RP_CHTXSP_AMT
+AND XA0002.GPDE_RP_CHTXLE_AMT = XB0002.GPDE_RP_CHTXLE_AMT
+AND XA0002.GPDE_RP_CHTXLC_AMT = XB0002.GPDE_RP_CHTXLC_AMT
+AND XA0002.GPDE_RP_CHMBBR_AMT = XB0002.GPDE_RP_CHMBBR_AMT
+AND XA0002.GPDE_RP_CHMBSA_AMT = XB0002.GPDE_RP_CHMBSA_AMT
+AND XA0002.GPDE_RP_TXDAYS = XB0002.GPDE_RP_TXDAYS
+AND XA0002.GPDE_RP_TXGRS_TOT = XB0002.GPDE_RP_TXGRS_TOT
+AND XA0002.GPDE_RP_TXGRS_ANLZ = XB0002.GPDE_RP_TXGRS_ANLZ
+AND XA0002.GPDE_RP_TXGRS_BON = XB0002.GPDE_RP_TXGRS_BON
+AND XA0002.GPDE_RP_TXGRS_PEN = XB0002.GPDE_RP_TXGRS_PEN
+AND XA0002.GPDE_RP_TXGRS_MYBN = XB0002.GPDE_RP_TXGRS_MYBN
+AND XA0002.GPDE_RP_TXGRS_MYPN = XB0002.GPDE_RP_TXGRS_MYPN
+AND XA0002.GPDE_RP_TAX = XB0002.GPDE_RP_TAX
+AND XA0002.GPDE_RP_CHRCH_TAX = XB0002.GPDE_RP_CHRCH_TAX
+AND XA0002.GPDE_RP_SLDRTY_TAX = XB0002.GPDE_RP_SLDRTY_TAX
+AND XA0002.GPDE_RP_TAX_MY = XB0002.GPDE_RP_TAX_MY
+AND XA0002.GPDE_RP_CRCH_TX_MY = XB0002.GPDE_RP_CRCH_TX_MY
+AND XA0002.GPDE_RP_SLDY_TX_MY = XB0002.GPDE_RP_SLDY_TX_MY
+AND XA0002.GPDE_RP_PENTXF = XB0002.GPDE_RP_PENTXF
+AND XA0002.GPDE_RP_NOI = XB0002.GPDE_RP_NOI
+AND XA0002.GPDE_RP_STATDD_SUM = XB0002.GPDE_RP_STATDD_SUM
+AND XA0002.GPDE_RP_DED_SUM = XB0002.GPDE_RP_DED_SUM
+AND XA0002.GPDE_RP_LMP_DIRINS = XB0002.GPDE_RP_LMP_DIRINS
+AND XA0002.GPDE_RP_LMP_TRVLEX = XB0002.GPDE_RP_LMP_TRVLEX
+AND XA0002.GPDE_RP_LMP_GRSS = XB0002.GPDE_RP_LMP_GRSS
+AND XA0002.GPDE_RP_LMP_TXEE = XB0002.GPDE_RP_LMP_TXEE
+AND XA0002.GPDE_RP_LMP_CHTXEE = XB0002.GPDE_RP_LMP_CHTXEE
+AND XA0002.GPDE_RP_LMP_SLTXEE = XB0002.GPDE_RP_LMP_SLTXEE
+AND XA0002.GPDE_RP_LMP_TXER = XB0002.GPDE_RP_LMP_TXER
+AND XA0002.GPDE_RP_LMP_CHTXER = XB0002.GPDE_RP_LMP_CHTXER
+AND XA0002.GPDE_RP_LMP_SLTXER = XB0002.GPDE_RP_LMP_SLTXER
+AND XA0002.GPDE_TX_MJ_LUMP = XB0002.GPDE_TX_MJ_LUMP
+AND XA0002.GPDE_RP_A2_9190 = XB0002.GPDE_RP_A2_9190
+AND XA0002.GPDE_RP_A2_9290 = XB0002.GPDE_RP_A2_9290
+AND XA0002.GPDE_RP_A2_9390 = XB0002.GPDE_RP_A2_9390
+end-select
+end-procedure
+
+
+
+
+
+
+begin-procedure CheckFlip_RP_0003
+! check if the two rows are the same for the specified params (see RescanChanges)
+! returns boolean $match = 'Y' if rows matched
+!
+! normally this should make a match because the row was eliminated because it has the
+! same content as the previous one
+
+! expect no match by default, this covers non-existing rows
+let $match = 'N'    
+
+begin-select
+XA0003.EMPLID
+    ! if we are here, then we had a match
+    let $match = 'Y'
+    ! show 'matching rows RP_0003: ' &XA0003.EMPLID
+FROM PS_GPDE_RP_0003 XA0003, PS_GPDE_RP_0003 XB0003
+,PS_GPDE_RP_AL92 YA0003,PS_GPDE_RP_AL92 YB0003
+WHERE 0=0
+!
+! join tables to their seg-drivers because we do not have RSLT_VER_NUM in the data
+!
+AND YA0003.EMPLID = XA0003.EMPLID
+AND YA0003.CAL_RUN_ID = XA0003.CAL_RUN_ID
+AND YA0003.EMPL_RCD = XA0003.EMPL_RCD
+AND YA0003.GP_PAYGROUP = XA0003.GP_PAYGROUP
+AND YA0003.CAL_ID = XA0003.CAL_ID
+AND YA0003.ORIG_CAL_RUN_ID = XA0003.ORIG_CAL_RUN_ID
+AND YA0003.RSLT_SEG_NUM = XA0003.RSLT_SEG_NUM
+!
+AND YB0003.EMPLID = XB0003.EMPLID
+AND YB0003.CAL_RUN_ID = XB0003.CAL_RUN_ID
+AND YB0003.EMPL_RCD = XB0003.EMPL_RCD
+AND YB0003.GP_PAYGROUP = XB0003.GP_PAYGROUP
+AND YB0003.CAL_ID = XB0003.CAL_ID
+AND YB0003.ORIG_CAL_RUN_ID = XB0003.ORIG_CAL_RUN_ID
+AND YB0003.RSLT_SEG_NUM = XB0003.RSLT_SEG_NUM
+!
+! functional keys
+AND XA0003.EMPLID = $Emplid
+! no: AND XA0003.CAL_RUN_ID = $Cal_Run_ID
+AND XA0003.EMPL_RCD = #EmplRcd
+AND XA0003.GP_PAYGROUP = $GpPaygroup
+AND XA0003.CAL_ID = $CalID
+AND XA0003.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XA0003.RSLT_SEG_NUM = #RsltSegNum
+AND YA0003.RSLT_VER_NUM = #RsltVerNum
+!
+AND XB0003.EMPLID = $Emplid
+! no: AND XB0003.CAL_RUN_ID = $Cal_Run_ID
+AND XB0003.EMPL_RCD = #EmplRcd
+AND XB0003.GP_PAYGROUP = $GpPaygroup
+AND XB0003.CAL_ID = $CalID
+AND XB0003.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XB0003.RSLT_SEG_NUM = #RsltSegNum
+AND YB0003.RSLT_VER_NUM = #PrevRsltVerNum       ! B is older version
+!
+! data fields
+AND XA0003.SEG_END_DT = XB0003.SEG_END_DT
+AND XA0003.SLICE_END_DT = XB0003.SLICE_END_DT
+AND XA0003.PAY_ENTITY = XB0003.PAY_ENTITY
+AND XA0003.PRD_END_DT = XB0003.PRD_END_DT
+AND XA0003.GPDE_RP_SIGRSS_AMT = XB0003.GPDE_RP_SIGRSS_AMT
+AND XA0003.GPDE_RP_SIGRS_ANLZ = XB0003.GPDE_RP_SIGRS_ANLZ
+AND XA0003.GPDE_RP_HICNTB_AMT = XB0003.GPDE_RP_HICNTB_AMT
+AND XA0003.GPDE_RP_PICNTB_AMT = XB0003.GPDE_RP_PICNTB_AMT
+AND XA0003.GPDE_RP_UICNTB_AMT = XB0003.GPDE_RP_UICNTB_AMT
+AND XA0003.GPDE_RP_CICNTB_AMT = XB0003.GPDE_RP_CICNTB_AMT
+AND XA0003.GPDE_RP_HIVOL_AMT = XB0003.GPDE_RP_HIVOL_AMT
+AND XA0003.GPDE_RP_CIVOL_AMT = XB0003.GPDE_RP_CIVOL_AMT
+AND XA0003.GPDE_RP_RIGRSS_AMT = XB0003.GPDE_RP_RIGRSS_AMT
+AND XA0003.GPDE_RP_U1CNTB_AMT = XB0003.GPDE_RP_U1CNTB_AMT
+AND XA0003.GPDE_RP_U2CNTB_AMT = XB0003.GPDE_RP_U2CNTB_AMT
+AND XA0003.GPDE_RP_RIGRSM_AMT = XB0003.GPDE_RP_RIGRSM_AMT
+AND XA0003.GPDE_RP_U1CTBM_AMT = XB0003.GPDE_RP_U1CTBM_AMT
+AND XA0003.GPDE_RP_U2CTBM_AMT = XB0003.GPDE_RP_U2CTBM_AMT
+AND XA0003.GPDE_RP_SIGRSM_AMT = XB0003.GPDE_RP_SIGRSM_AMT
+AND XA0003.GPDE_RP_HICTBM_AMT = XB0003.GPDE_RP_HICTBM_AMT
+AND XA0003.GPDE_RP_PICTBM_AMT = XB0003.GPDE_RP_PICTBM_AMT
+AND XA0003.GPDE_RP_UICTBM_AMT = XB0003.GPDE_RP_UICTBM_AMT
+AND XA0003.GPDE_RP_CICTBM_AMT = XB0003.GPDE_RP_CICTBM_AMT
+AND XA0003.GPDE_RP_OAPGRS_AMT = XB0003.GPDE_RP_OAPGRS_AMT
+AND XA0003.GPDE_RP_AZGRS_ANLZ = XB0003.GPDE_RP_AZGRS_ANLZ
+AND XA0003.GPDE_RP_AZGRS_BON = XB0003.GPDE_RP_AZGRS_BON
+AND XA0003.GPDE_RP_OAPPEN_AMT = XB0003.GPDE_RP_OAPPEN_AMT
+AND XA0003.GPDE_RP_OAPPEN_ANL = XB0003.GPDE_RP_OAPPEN_ANL
+AND XA0003.GPDE_RP_OAPPEN_BON = XB0003.GPDE_RP_OAPPEN_BON
+AND XA0003.GPDE_RP_OAPGRS_MC = XB0003.GPDE_RP_OAPGRS_MC
+AND XA0003.GPDE_RP_OAPPEN_MC = XB0003.GPDE_RP_OAPPEN_MC
+AND XA0003.GPDE_AZ_RP_S03_31 = XB0003.GPDE_AZ_RP_S03_31
+AND XA0003.GPDE_AZ_RP_S03_41 = XB0003.GPDE_AZ_RP_S03_41
+AND XA0003.GPDE_RP_SIDAYS = XB0003.GPDE_RP_SIDAYS
+AND XA0003.GPDE_RP_AVDAYS = XB0003.GPDE_RP_AVDAYS
+AND XA0003.GPDE_RP_KVDAYS = XB0003.GPDE_RP_KVDAYS
+AND XA0003.GPDE_RP_PVDAYS = XB0003.GPDE_RP_PVDAYS
+AND XA0003.GPDE_RP_AVDAYS_BON = XB0003.GPDE_RP_AVDAYS_BON
+AND XA0003.GPDE_RP_KVDAYS_BON = XB0003.GPDE_RP_KVDAYS_BON
+AND XA0003.GPDE_RP_PVDAYS_BON = XB0003.GPDE_RP_PVDAYS_BON
+AND XA0003.GPDE_RP_RVDAYS_BON = XB0003.GPDE_RP_RVDAYS_BON
+AND XA0003.GPDE_RP_AVDAYS_MC = XB0003.GPDE_RP_AVDAYS_MC
+AND XA0003.GPDE_RP_KVDAYS_MC = XB0003.GPDE_RP_KVDAYS_MC
+AND XA0003.GPDE_RP_PVDAYS_MC = XB0003.GPDE_RP_PVDAYS_MC
+AND XA0003.GPDE_RP_RVDAYS_MC = XB0003.GPDE_RP_RVDAYS_MC
+AND XA0003.GPDE_RP_AVGRS_ANLZ = XB0003.GPDE_RP_AVGRS_ANLZ
+AND XA0003.GPDE_RP_AVGRS_BON = XB0003.GPDE_RP_AVGRS_BON
+AND XA0003.GPDE_RP_AVGRS_MC = XB0003.GPDE_RP_AVGRS_MC
+AND XA0003.GPDE_RP_KVGRS_ANLZ = XB0003.GPDE_RP_KVGRS_ANLZ
+AND XA0003.GPDE_RP_KVGRS_BON = XB0003.GPDE_RP_KVGRS_BON
+AND XA0003.GPDE_RP_KVGRS_MC = XB0003.GPDE_RP_KVGRS_MC
+AND XA0003.GPDE_RP_PVGRS_ANLZ = XB0003.GPDE_RP_PVGRS_ANLZ
+AND XA0003.GPDE_RP_PVGRS_BON = XB0003.GPDE_RP_PVGRS_BON
+AND XA0003.GPDE_RP_PVGRS_MC = XB0003.GPDE_RP_PVGRS_MC
+AND XA0003.GPDE_RP_RVGRS_ANLZ = XB0003.GPDE_RP_RVGRS_ANLZ
+AND XA0003.GPDE_RP_RVGRS_BON = XB0003.GPDE_RP_RVGRS_BON
+AND XA0003.GPDE_RP_RVGRS_MC = XB0003.GPDE_RP_RVGRS_MC
+AND XA0003.GPDE_RP_AVLFD_AG = XB0003.GPDE_RP_AVLFD_AG
+AND XA0003.GPDE_RP_AVLFD_AN = XB0003.GPDE_RP_AVLFD_AN
+AND XA0003.GPDE_RP_KVLFD_AG = XB0003.GPDE_RP_KVLFD_AG
+AND XA0003.GPDE_RP_KVLFD_AN = XB0003.GPDE_RP_KVLFD_AN
+AND XA0003.GPDE_RP_PVLFD_AG = XB0003.GPDE_RP_PVLFD_AG
+AND XA0003.GPDE_RP_PVLFD_AN = XB0003.GPDE_RP_PVLFD_AN
+AND XA0003.GPDE_RP_RVLFD_AG = XB0003.GPDE_RP_RVLFD_AG
+AND XA0003.GPDE_RP_RVLFD_AN = XB0003.GPDE_RP_RVLFD_AN
+AND XA0003.GPDE_RP_AVBON_AG = XB0003.GPDE_RP_AVBON_AG
+AND XA0003.GPDE_RP_AVBON_AN = XB0003.GPDE_RP_AVBON_AN
+AND XA0003.GPDE_RP_KVBON_AG = XB0003.GPDE_RP_KVBON_AG
+AND XA0003.GPDE_RP_KVBON_AN = XB0003.GPDE_RP_KVBON_AN
+AND XA0003.GPDE_RP_PVBON_AG = XB0003.GPDE_RP_PVBON_AG
+AND XA0003.GPDE_RP_PVBON_AN = XB0003.GPDE_RP_PVBON_AN
+AND XA0003.GPDE_RP_RVBON_AG = XB0003.GPDE_RP_RVBON_AG
+AND XA0003.GPDE_RP_RVBON_AN = XB0003.GPDE_RP_RVBON_AN
+AND XA0003.GPDE_RP_AVAG_MC = XB0003.GPDE_RP_AVAG_MC
+AND XA0003.GPDE_RP_AVAN_MC = XB0003.GPDE_RP_AVAN_MC
+AND XA0003.GPDE_RP_KVAG_MC = XB0003.GPDE_RP_KVAG_MC
+AND XA0003.GPDE_RP_KVAN_MC = XB0003.GPDE_RP_KVAN_MC
+AND XA0003.GPDE_RP_PVAG_MC = XB0003.GPDE_RP_PVAG_MC
+AND XA0003.GPDE_RP_PVAN_MC = XB0003.GPDE_RP_PVAN_MC
+AND XA0003.GPDE_RP_RVAG_MC = XB0003.GPDE_RP_RVAG_MC
+AND XA0003.GPDE_RP_RVAN_MC = XB0003.GPDE_RP_RVAN_MC
+AND XA0003.GPDE_RP_SIGRUNLM_A = XB0003.GPDE_RP_SIGRUNLM_A
+AND XA0003.GPDE_RP_SIGRUNLM_B = XB0003.GPDE_RP_SIGRUNLM_B
+AND XA0003.GPDE_RP_CIVLER_AMT = XB0003.GPDE_RP_CIVLER_AMT
+AND XA0003.GPDE_RP_HIVLER_AMT = XB0003.GPDE_RP_HIVLER_AMT
+AND XA0003.GPDE_RP_AV_BBE_EGA = XB0003.GPDE_RP_AV_BBE_EGA
+AND XA0003.GPDE_RP_AV_BBE_LGA = XB0003.GPDE_RP_AV_BBE_LGA
+AND XA0003.GPDE_RP_KV_BBE_EGA = XB0003.GPDE_RP_KV_BBE_EGA
+AND XA0003.GPDE_RP_KV_BBE_LGA = XB0003.GPDE_RP_KV_BBE_LGA
+end-select
+end-procedure
+
+
+
+
+
+
+
+begin-procedure CheckFlip_RP_SI01
+! check if the two rows are the same for the specified params (see RescanChanges)
+! returns boolean $match = 'Y' if rows matched
+!
+! normally this should make a match because the row was eliminated because it has the
+! same content as the previous one
+
+! expect no match by default, this covers non-existing rows
+let $match = 'N'    
+
+begin-select
+XASI01.EMPLID
+    ! if we are here, then we had a match
+    let $match = 'Y'
+    ! show 'matching rows SI01: ' &XASI01.EMPLID
+FROM PS_GPDE_RP_SI01 XASI01, PS_GPDE_RP_SI01 XBSI01
+,PS_GPDE_RP_AL92 YASI01,PS_GPDE_RP_AL92 YBSI01
+WHERE 0=0
+!
+! join tables to their seg-drivers because we do not have RSLT_VER_NUM in the data
+!
+AND YASI01.EMPLID = XASI01.EMPLID
+AND YASI01.CAL_RUN_ID = XASI01.CAL_RUN_ID
+AND YASI01.EMPL_RCD = XASI01.EMPL_RCD
+AND YASI01.GP_PAYGROUP = XASI01.GP_PAYGROUP
+AND YASI01.CAL_ID = XASI01.CAL_ID
+AND YASI01.ORIG_CAL_RUN_ID = XASI01.ORIG_CAL_RUN_ID
+AND YASI01.RSLT_SEG_NUM = XASI01.RSLT_SEG_NUM
+!
+AND YBSI01.EMPLID = XBSI01.EMPLID
+AND YBSI01.CAL_RUN_ID = XBSI01.CAL_RUN_ID
+AND YBSI01.EMPL_RCD = XBSI01.EMPL_RCD
+AND YBSI01.GP_PAYGROUP = XBSI01.GP_PAYGROUP
+AND YBSI01.CAL_ID = XBSI01.CAL_ID
+AND YBSI01.ORIG_CAL_RUN_ID = XBSI01.ORIG_CAL_RUN_ID
+AND YBSI01.RSLT_SEG_NUM = XBSI01.RSLT_SEG_NUM
+!
+! functional keys
+AND XASI01.EMPLID = $Emplid
+! no: AND XASI01.CAL_RUN_ID = $Cal_Run_ID
+AND XASI01.EMPL_RCD = #EmplRcd
+AND XASI01.GP_PAYGROUP = $GpPaygroup
+AND XASI01.CAL_ID = $CalID
+AND XASI01.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XASI01.RSLT_SEG_NUM = #RsltSegNum
+AND YASI01.RSLT_VER_NUM = #RsltVerNum
+!
+AND XBSI01.EMPLID = $Emplid
+! no: AND XBSI01.CAL_RUN_ID = $Cal_Run_ID
+AND XBSI01.EMPL_RCD = #EmplRcd
+AND XBSI01.GP_PAYGROUP = $GpPaygroup
+AND XBSI01.CAL_ID = $CalID
+AND XBSI01.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XBSI01.RSLT_SEG_NUM = #RsltSegNum
+AND YBSI01.RSLT_VER_NUM = #PrevRsltVerNum       ! B is older version
+!
+! data fields
+!
+AND XASI01.SEG_END_DT = XBSI01.SEG_END_DT
+AND XASI01.SLICE_END_DT = XBSI01.SLICE_END_DT
+AND XASI01.SLICE_BGN_DT = XBSI01.SLICE_BGN_DT
+AND XASI01.SEG_BGN_DT = XBSI01.SEG_BGN_DT
+AND XASI01.PRD_END_DT = XBSI01.PRD_END_DT
+AND XASI01.PRD_BGN_DT = XBSI01.PRD_BGN_DT
+AND XASI01.BA_CD = XBSI01.BA_CD
+AND XASI01.GPDE_SI_L_INC_ERN = XBSI01.GPDE_SI_L_INC_ERN
+AND XASI01.GPDE_SI_MINER = XBSI01.GPDE_SI_MINER
+AND XASI01.GPDE_SI_PROV_MAND = XBSI01.GPDE_SI_PROV_MAND
+AND XASI01.GPDE_DV_SV_CODE = XBSI01.GPDE_DV_SV_CODE
+AND XASI01.GPDE_DV_EMPL_CAT = XBSI01.GPDE_DV_EMPL_CAT
+AND XASI01.GPDE_SI_POS_IN_JOB = XBSI01.GPDE_SI_POS_IN_JOB
+AND XASI01.GPDE_SI_EDUCATION = XBSI01.GPDE_SI_EDUCATION
+AND XASI01.GPDE_SI_PENS_APPLI = XBSI01.GPDE_SI_PENS_APPLI
+AND XASI01.GPDE_SI_EMPL_MULT = XBSI01.GPDE_SI_EMPL_MULT
+AND XASI01.GPDE_SI_EMPL_INSIG = XBSI01.GPDE_SI_EMPL_INSIG
+AND XASI01.GPDE_SI_PROV_KV = XBSI01.GPDE_SI_PROV_KV
+AND XASI01.GPDE_SI_PROV_PV = XBSI01.GPDE_SI_PROV_PV
+AND XASI01.GPDE_SI_PROV_RV = XBSI01.GPDE_SI_PROV_RV
+AND XASI01.GPDE_SI_PROV_AV = XBSI01.GPDE_SI_PROV_AV
+AND XASI01.GPDE_SI_PROV_UM = XBSI01.GPDE_SI_PROV_UM
+AND XASI01.GPDE_RI_PCT1 = XBSI01.GPDE_RI_PCT1
+AND XASI01.GPDE_RI_PCT2 = XBSI01.GPDE_RI_PCT2
+AND XASI01.GPDE_SI_STATUS_KV = XBSI01.GPDE_SI_STATUS_KV
+AND XASI01.GPDE_SI_STATUS_RV = XBSI01.GPDE_SI_STATUS_RV
+AND XASI01.GPDE_SI_STATUS_AV = XBSI01.GPDE_SI_STATUS_AV
+AND XASI01.GPDE_SI_STATUS_PV = XBSI01.GPDE_SI_STATUS_PV
+AND XASI01.GPDE_SIC_REGION = XBSI01.GPDE_SIC_REGION
+AND XASI01.GPDE_SIH_REGION = XBSI01.GPDE_SIH_REGION
+AND XASI01.GPDE_SIP_REGION = XBSI01.GPDE_SIP_REGION
+AND XASI01.GPDE_SIU_REGION = XBSI01.GPDE_SIU_REGION
+AND XASI01.GPDE_SI_CMPINS_1 = XBSI01.GPDE_SI_CMPINS_1
+AND XASI01.GPDE_SI_CMPINS_2 = XBSI01.GPDE_SI_CMPINS_2
+AND XASI01.GPDE_DV_SV_CODE_M = XBSI01.GPDE_DV_SV_CODE_M
+AND XASI01.GPDE_SI_PROV_AV_M = XBSI01.GPDE_SI_PROV_AV_M
+AND XASI01.GPDE_SI_PROV_KV_M = XBSI01.GPDE_SI_PROV_KV_M
+AND XASI01.GPDE_SI_PROV_PV_M = XBSI01.GPDE_SI_PROV_PV_M
+AND XASI01.GPDE_SI_PROV_RV_M = XBSI01.GPDE_SI_PROV_RV_M
+AND XASI01.GPDE_SI_PROV_UM_M = XBSI01.GPDE_SI_PROV_UM_M
+AND XASI01.GPDE_RI_PCT1_MC = XBSI01.GPDE_RI_PCT1_MC
+AND XASI01.GPDE_RI_PCT2_MC = XBSI01.GPDE_RI_PCT2_MC
+AND XASI01.GPDE_RP_MAR_MON = XBSI01.GPDE_RP_MAR_MON
+! no: AND XASI01.GPDE_SI_CARD_PRES = XBSI01.GPDE_SI_CARD_PRES
+AND XASI01.GPDE_SI_EMPL_TYPE = XBSI01.GPDE_SI_EMPL_TYPE
+AND XASI01.GPDE_DV_RVNR = XBSI01.GPDE_DV_RVNR
+AND XASI01.GPDE_RP_MARCH_CLS = XBSI01.GPDE_RP_MARCH_CLS
+AND XASI01.GPDE_SI_UPROV_ID = XBSI01.GPDE_SI_UPROV_ID
+AND XASI01.GPDE_SI_IS_KVDR = XBSI01.GPDE_SI_IS_KVDR
+AND XASI01.GPDE_SI_REG_MAND = XBSI01.GPDE_SI_REG_MAND
+AND XASI01.GPDE_RP_RV_GZ_FLG = XBSI01.GPDE_RP_RV_GZ_FLG
+AND XASI01.GPDE_SI_BAEGV = XBSI01.GPDE_SI_BAEGV
+end-select
+end-procedure
+
+
+
+
+
+
+begin-procedure CheckFlip_RP_AZ01
+! check if the two rows are the same for the specified params (see RescanChanges)
+! returns boolean $match = 'Y' if rows matched
+!
+! normally this should make a match because the row was eliminated because it has the
+! same content as the previous one
+
+! expect no match by default, this covers non-existing rows
+let $match = 'N'    
+
+begin-select
+XAAZ01.EMPLID
+    ! if we are here, then we had a match
+    let $match = 'Y'
+    ! show 'matching rows RP_AZ01: ' &XAAZ01.EMPLID
+FROM PS_GPDE_RP_AZ01 XAAZ01, PS_GPDE_RP_AZ01 XBAZ01
+,PS_GPDE_RP_AL92 YAAZ01,PS_GPDE_RP_AL92 YBAZ01
+WHERE 0=0
+!
+! join tables to their seg-drivers because we do not have RSLT_VER_NUM in the data
+!
+AND YAAZ01.EMPLID = XAAZ01.EMPLID
+AND YAAZ01.CAL_RUN_ID = XAAZ01.CAL_RUN_ID
+AND YAAZ01.EMPL_RCD = XAAZ01.EMPL_RCD
+AND YAAZ01.GP_PAYGROUP = XAAZ01.GP_PAYGROUP
+AND YAAZ01.CAL_ID = XAAZ01.CAL_ID
+AND YAAZ01.ORIG_CAL_RUN_ID = XAAZ01.ORIG_CAL_RUN_ID
+AND YAAZ01.RSLT_SEG_NUM = XAAZ01.RSLT_SEG_NUM
+!
+AND YBAZ01.EMPLID = XBAZ01.EMPLID
+AND YBAZ01.CAL_RUN_ID = XBAZ01.CAL_RUN_ID
+AND YBAZ01.EMPL_RCD = XBAZ01.EMPL_RCD
+AND YBAZ01.GP_PAYGROUP = XBAZ01.GP_PAYGROUP
+AND YBAZ01.CAL_ID = XBAZ01.CAL_ID
+AND YBAZ01.ORIG_CAL_RUN_ID = XBAZ01.ORIG_CAL_RUN_ID
+AND YBAZ01.RSLT_SEG_NUM = XBAZ01.RSLT_SEG_NUM
+!
+! functional keys
+AND XAAZ01.EMPLID = $Emplid
+! no: AND XAAZ01.CAL_RUN_ID = $Cal_Run_ID
+AND XAAZ01.EMPL_RCD = #EmplRcd
+AND XAAZ01.GP_PAYGROUP = $GpPaygroup
+AND XAAZ01.CAL_ID = $CalID
+AND XAAZ01.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XAAZ01.RSLT_SEG_NUM = #RsltSegNum
+AND YAAZ01.RSLT_VER_NUM = #RsltVerNum
+!
+AND XBAZ01.EMPLID = $Emplid
+! no: AND XBAZ01.CAL_RUN_ID = $Cal_Run_ID
+AND XBAZ01.EMPL_RCD = #EmplRcd
+AND XBAZ01.GP_PAYGROUP = $GpPaygroup
+AND XBAZ01.CAL_ID = $CalID
+AND XBAZ01.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XBAZ01.RSLT_SEG_NUM = #RsltSegNum
+AND YBAZ01.RSLT_VER_NUM = #PrevRsltVerNum       ! B is older version
+!
+! data fields
+AND XAAZ01.SEG_END_DT = XBAZ01.SEG_END_DT
+AND XAAZ01.SLICE_END_DT = XBAZ01.SLICE_END_DT
+AND XAAZ01.PAY_ENTITY = XBAZ01.PAY_ENTITY
+AND XAAZ01.PRD_END_DT = XBAZ01.PRD_END_DT
+AND XAAZ01.GPDE_AZ_RP_001_11 = XBAZ01.GPDE_AZ_RP_001_11
+AND XAAZ01.GPDE_AZ_RP_001_12 = XBAZ01.GPDE_AZ_RP_001_12
+AND XAAZ01.GPDE_AZ_RP_001_53 = XBAZ01.GPDE_AZ_RP_001_53
+AND XAAZ01.GPDE_AZ_RP_001_63 = XBAZ01.GPDE_AZ_RP_001_63
+AND XAAZ01.GPDE_AZ_RP_002_11 = XBAZ01.GPDE_AZ_RP_002_11
+AND XAAZ01.GPDE_AZ_RP_002_12 = XBAZ01.GPDE_AZ_RP_002_12
+AND XAAZ01.GPDE_AZ_RP_002_14 = XBAZ01.GPDE_AZ_RP_002_14
+AND XAAZ01.GPDE_AZ_RP_002_17 = XBAZ01.GPDE_AZ_RP_002_17
+AND XAAZ01.GPDE_AZ_RP_002_19 = XBAZ01.GPDE_AZ_RP_002_19
+AND XAAZ01.GPDE_AZ_RP_002_21 = XBAZ01.GPDE_AZ_RP_002_21
+AND XAAZ01.GPDE_AZ_RP_002_22 = XBAZ01.GPDE_AZ_RP_002_22
+AND XAAZ01.GPDE_AZ_RP_002_28 = XBAZ01.GPDE_AZ_RP_002_28
+AND XAAZ01.GPDE_AZ_RP_002_68 = XBAZ01.GPDE_AZ_RP_002_68
+AND XAAZ01.GPDE_AZ_RP_003_11 = XBAZ01.GPDE_AZ_RP_003_11
+AND XAAZ01.GPDE_AZ_RP_003_12 = XBAZ01.GPDE_AZ_RP_003_12
+AND XAAZ01.GPDE_AZ_RP_003_15 = XBAZ01.GPDE_AZ_RP_003_15
+AND XAAZ01.GPDE_AZ_RP_003_21 = XBAZ01.GPDE_AZ_RP_003_21
+AND XAAZ01.GPDE_AZ_RP_003_22 = XBAZ01.GPDE_AZ_RP_003_22
+AND XAAZ01.GPDE_AZ_RP_003_31 = XBAZ01.GPDE_AZ_RP_003_31
+AND XAAZ01.GPDE_AZ_RP_003_32 = XBAZ01.GPDE_AZ_RP_003_32
+AND XAAZ01.GPDE_AZ_RP_003_36 = XBAZ01.GPDE_AZ_RP_003_36
+AND XAAZ01.GPDE_AZ_RP_003_41 = XBAZ01.GPDE_AZ_RP_003_41
+AND XAAZ01.GPDE_AZ_RP_003_42 = XBAZ01.GPDE_AZ_RP_003_42
+AND XAAZ01.GPDE_AZ_RP_003_46 = XBAZ01.GPDE_AZ_RP_003_46
+AND XAAZ01.GPDE_AZ_RP_004_0B = XBAZ01.GPDE_AZ_RP_004_0B
+AND XAAZ01.GPDE_AZ_RP_004_0C = XBAZ01.GPDE_AZ_RP_004_0C
+AND XAAZ01.GPDE_AZ_RP_004_11 = XBAZ01.GPDE_AZ_RP_004_11
+AND XAAZ01.GPDE_AZ_RP_004_1A = XBAZ01.GPDE_AZ_RP_004_1A
+AND XAAZ01.GPDE_AZ_RP_011_11 = XBAZ01.GPDE_AZ_RP_011_11
+AND XAAZ01.GPDE_AZ_RP_011_12 = XBAZ01.GPDE_AZ_RP_011_12
+AND XAAZ01.GPDE_AZ_RP_011_53 = XBAZ01.GPDE_AZ_RP_011_53
+AND XAAZ01.GPDE_AZ_RP_011_63 = XBAZ01.GPDE_AZ_RP_011_63
+AND XAAZ01.GPDE_AZ_RP_012_11 = XBAZ01.GPDE_AZ_RP_012_11
+AND XAAZ01.GPDE_AZ_RP_012_12 = XBAZ01.GPDE_AZ_RP_012_12
+AND XAAZ01.GPDE_AZ_RP_012_14 = XBAZ01.GPDE_AZ_RP_012_14
+AND XAAZ01.GPDE_AZ_RP_012_17 = XBAZ01.GPDE_AZ_RP_012_17
+AND XAAZ01.GPDE_AZ_RP_012_19 = XBAZ01.GPDE_AZ_RP_012_19
+AND XAAZ01.GPDE_AZ_RP_012_21 = XBAZ01.GPDE_AZ_RP_012_21
+AND XAAZ01.GPDE_AZ_RP_012_22 = XBAZ01.GPDE_AZ_RP_012_22
+AND XAAZ01.GPDE_AZ_RP_012_28 = XBAZ01.GPDE_AZ_RP_012_28
+AND XAAZ01.GPDE_AZ_RP_012_68 = XBAZ01.GPDE_AZ_RP_012_68
+AND XAAZ01.GPDE_AZ_RP_013_31 = XBAZ01.GPDE_AZ_RP_013_31
+AND XAAZ01.GPDE_AZ_RP_013_32 = XBAZ01.GPDE_AZ_RP_013_32
+AND XAAZ01.GPDE_AZ_RP_013_36 = XBAZ01.GPDE_AZ_RP_013_36
+AND XAAZ01.GPDE_AZ_RP_013_41 = XBAZ01.GPDE_AZ_RP_013_41
+AND XAAZ01.GPDE_AZ_RP_013_42 = XBAZ01.GPDE_AZ_RP_013_42
+AND XAAZ01.GPDE_AZ_RP_013_46 = XBAZ01.GPDE_AZ_RP_013_46
+AND XAAZ01.GPDE_AZ_RP_021_11 = XBAZ01.GPDE_AZ_RP_021_11
+AND XAAZ01.GPDE_AZ_RP_021_12 = XBAZ01.GPDE_AZ_RP_021_12
+AND XAAZ01.GPDE_AZ_RP_021_53 = XBAZ01.GPDE_AZ_RP_021_53
+AND XAAZ01.GPDE_AZ_RP_021_63 = XBAZ01.GPDE_AZ_RP_021_63
+AND XAAZ01.GPDE_AZ_RP_022_11 = XBAZ01.GPDE_AZ_RP_022_11
+AND XAAZ01.GPDE_AZ_RP_022_12 = XBAZ01.GPDE_AZ_RP_022_12
+AND XAAZ01.GPDE_AZ_RP_022_14 = XBAZ01.GPDE_AZ_RP_022_14
+AND XAAZ01.GPDE_AZ_RP_022_17 = XBAZ01.GPDE_AZ_RP_022_17
+AND XAAZ01.GPDE_AZ_RP_022_19 = XBAZ01.GPDE_AZ_RP_022_19
+AND XAAZ01.GPDE_AZ_RP_022_21 = XBAZ01.GPDE_AZ_RP_022_21
+AND XAAZ01.GPDE_AZ_RP_022_22 = XBAZ01.GPDE_AZ_RP_022_22
+AND XAAZ01.GPDE_AZ_RP_022_28 = XBAZ01.GPDE_AZ_RP_022_28
+AND XAAZ01.GPDE_AZ_RP_022_68 = XBAZ01.GPDE_AZ_RP_022_68
+AND XAAZ01.GPDE_AZ_RP_023_31 = XBAZ01.GPDE_AZ_RP_023_31
+AND XAAZ01.GPDE_AZ_RP_023_32 = XBAZ01.GPDE_AZ_RP_023_32
+AND XAAZ01.GPDE_AZ_RP_023_36 = XBAZ01.GPDE_AZ_RP_023_36
+AND XAAZ01.GPDE_AZ_RP_023_41 = XBAZ01.GPDE_AZ_RP_023_41
+AND XAAZ01.GPDE_AZ_RP_023_42 = XBAZ01.GPDE_AZ_RP_023_42
+AND XAAZ01.GPDE_AZ_RP_023_46 = XBAZ01.GPDE_AZ_RP_023_46
+AND XAAZ01.GPDE_AZ_RP_BBG_MON = XBAZ01.GPDE_AZ_RP_BBG_MON
+AND XAAZ01.GPDE_AZ_RP_ELG_BON = XBAZ01.GPDE_AZ_RP_ELG_BON
+AND XAAZ01.GPDE_AZ_RP_ELG_FIL = XBAZ01.GPDE_AZ_RP_ELG_FIL
+AND XAAZ01.GPDE_AZ_RP_ELG_MAR = XBAZ01.GPDE_AZ_RP_ELG_MAR
+AND XAAZ01.GPDE_AZ_ELG_LINE10 = XBAZ01.GPDE_AZ_ELG_LINE10
+AND XAAZ01.GPDE_AZ_RP_H01_53 = XBAZ01.GPDE_AZ_RP_H01_53
+AND XAAZ01.GPDE_AZ_RP_H01_63 = XBAZ01.GPDE_AZ_RP_H01_63
+AND XAAZ01.GPDE_AZ_RP_H02_68 = XBAZ01.GPDE_AZ_RP_H02_68
+AND XAAZ01.GPDE_AZ_RP_H03_31 = XBAZ01.GPDE_AZ_RP_H03_31
+AND XAAZ01.GPDE_AZ_RP_S01_63 = XBAZ01.GPDE_AZ_RP_S01_63
+AND XAAZ01.GPDE_AZ_RP_S02_68 = XBAZ01.GPDE_AZ_RP_S02_68
+AND XAAZ01.GPDE_AZ_RP_S03_31 = XBAZ01.GPDE_AZ_RP_S03_31
+AND XAAZ01.GPDE_AZ_RP_S03_41 = XBAZ01.GPDE_AZ_RP_S03_41
+! no: AND XAAZ01.BEGIN_DT = XBAZ01.BEGIN_DT
+AND XAAZ01.GPDE_AZ_IMODEL1 = XBAZ01.GPDE_AZ_IMODEL1
+AND XAAZ01.GPDE_AZ_IMODEL2 = XBAZ01.GPDE_AZ_IMODEL2
+AND XAAZ01.GPDE_AZ_RP_003_CUR = XBAZ01.GPDE_AZ_RP_003_CUR
+AND XAAZ01.GPDE_AZ_RP_003_FRM = XBAZ01.GPDE_AZ_RP_003_FRM
+AND XAAZ01.GPDE_AZ_RP_003_GOA = XBAZ01.GPDE_AZ_RP_003_GOA
+AND XAAZ01.GPDE_AZ_RP_003_LIM = XBAZ01.GPDE_AZ_RP_003_LIM
+AND XAAZ01.GPDE_AZ_RP_003_REA = XBAZ01.GPDE_AZ_RP_003_REA
+AND XAAZ01.GPDE_AZ_RP_003_TDA = XBAZ01.GPDE_AZ_RP_003_TDA
+AND XAAZ01.GPDE_AZ_RP_013_CUR = XBAZ01.GPDE_AZ_RP_013_CUR
+AND XAAZ01.GPDE_AZ_RP_013_FRM = XBAZ01.GPDE_AZ_RP_013_FRM
+AND XAAZ01.GPDE_AZ_RP_013_GOA = XBAZ01.GPDE_AZ_RP_013_GOA
+AND XAAZ01.GPDE_AZ_RP_013_LIM = XBAZ01.GPDE_AZ_RP_013_LIM
+AND XAAZ01.GPDE_AZ_RP_013_REA = XBAZ01.GPDE_AZ_RP_013_REA
+AND XAAZ01.GPDE_AZ_RP_013_TDA = XBAZ01.GPDE_AZ_RP_013_TDA
+AND XAAZ01.GPDE_AZ_RP_023_CUR = XBAZ01.GPDE_AZ_RP_023_CUR
+AND XAAZ01.GPDE_AZ_RP_023_FRM = XBAZ01.GPDE_AZ_RP_023_FRM
+AND XAAZ01.GPDE_AZ_RP_023_GOA = XBAZ01.GPDE_AZ_RP_023_GOA
+AND XAAZ01.GPDE_AZ_RP_023_LIM = XBAZ01.GPDE_AZ_RP_023_LIM
+AND XAAZ01.GPDE_AZ_RP_023_REA = XBAZ01.GPDE_AZ_RP_023_REA
+AND XAAZ01.GPDE_AZ_RP_023_TDA = XBAZ01.GPDE_AZ_RP_023_TDA
+AND XAAZ01.GPDE_AZ_RP_M003_13 = XBAZ01.GPDE_AZ_RP_M003_13
+AND XAAZ01.GPDE_AZ_RP_M003_15 = XBAZ01.GPDE_AZ_RP_M003_15
+AND XAAZ01.GPDE_AZ_RP_M003_23 = XBAZ01.GPDE_AZ_RP_M003_23
+AND XAAZ01.GPDE_AZ_RP_M003_31 = XBAZ01.GPDE_AZ_RP_M003_31
+AND XAAZ01.GPDE_AZ_RP_M003_32 = XBAZ01.GPDE_AZ_RP_M003_32
+AND XAAZ01.GPDE_AZ_RP_M003_CR = XBAZ01.GPDE_AZ_RP_M003_CR
+AND XAAZ01.GPDE_AZ_RP_M013_31 = XBAZ01.GPDE_AZ_RP_M013_31
+AND XAAZ01.GPDE_AZ_RP_M013_32 = XBAZ01.GPDE_AZ_RP_M013_32
+AND XAAZ01.GPDE_AZ_RP_M023_31 = XBAZ01.GPDE_AZ_RP_M023_31
+AND XAAZ01.GPDE_AZ_RP_M023_32 = XBAZ01.GPDE_AZ_RP_M023_32
+AND XAAZ01.GPDE_AZ_RP_H11_53 = XBAZ01.GPDE_AZ_RP_H11_53
+AND XAAZ01.GPDE_AZ_RP_H11_63 = XBAZ01.GPDE_AZ_RP_H11_63
+AND XAAZ01.GPDE_AZ_RP_H12_68 = XBAZ01.GPDE_AZ_RP_H12_68
+AND XAAZ01.GPDE_AZ_RP_H13_31 = XBAZ01.GPDE_AZ_RP_H13_31
+AND XAAZ01.GPDE_AZ_RP_H21_53 = XBAZ01.GPDE_AZ_RP_H21_53
+AND XAAZ01.GPDE_AZ_RP_H21_63 = XBAZ01.GPDE_AZ_RP_H21_63
+AND XAAZ01.GPDE_AZ_RP_H22_68 = XBAZ01.GPDE_AZ_RP_H22_68
+AND XAAZ01.GPDE_AZ_RP_H23_31 = XBAZ01.GPDE_AZ_RP_H23_31
+AND XAAZ01.GPDE_AZ_RP_S11_63 = XBAZ01.GPDE_AZ_RP_S11_63
+AND XAAZ01.GPDE_AZ_RP_S12_68 = XBAZ01.GPDE_AZ_RP_S12_68
+AND XAAZ01.GPDE_AZ_RP_S13_31 = XBAZ01.GPDE_AZ_RP_S13_31
+AND XAAZ01.GPDE_AZ_RP_S13_41 = XBAZ01.GPDE_AZ_RP_S13_41
+AND XAAZ01.GPDE_AZ_RP_S21_63 = XBAZ01.GPDE_AZ_RP_S21_63
+AND XAAZ01.GPDE_AZ_RP_S22_68 = XBAZ01.GPDE_AZ_RP_S22_68
+AND XAAZ01.GPDE_AZ_RP_S23_31 = XBAZ01.GPDE_AZ_RP_S23_31
+AND XAAZ01.GPDE_AZ_RP_S23_41 = XBAZ01.GPDE_AZ_RP_S23_41
+AND XAAZ01.GPDE_AZ_RP_T03_31 = XBAZ01.GPDE_AZ_RP_T03_31
+AND XAAZ01.GPDE_AZ_RP_T03_41 = XBAZ01.GPDE_AZ_RP_T03_41
+AND XAAZ01.GPDE_AZ_RP_T13_31 = XBAZ01.GPDE_AZ_RP_T13_31
+AND XAAZ01.GPDE_AZ_RP_T13_41 = XBAZ01.GPDE_AZ_RP_T13_41
+AND XAAZ01.GPDE_AZ_RP_T23_31 = XBAZ01.GPDE_AZ_RP_T23_31
+AND XAAZ01.GPDE_AZ_RP_T23_41 = XBAZ01.GPDE_AZ_RP_T23_41
+end-select
+end-procedure
+
+
+
+
+
+begin-procedure CheckFlip_RP_FL01
+! check if the two rows are the same for the specified params (see RescanChanges)
+! returns boolean $match = 'Y' if rows matched
+!
+! normally this should make a match because the row was eliminated because it has the
+! same content as the previous one
+
+! expect no match by default, this covers non-existing rows
+let $match = 'N'    
+
+begin-select
+XAFL01.EMPLID
+    ! if we are here, then we had a match
+    let $match = 'Y'
+    ! show 'matching rows RP_FL01: ' &XAFL01.EMPLID
+FROM PS_GPDE_RP_FL01 XAFL01, PS_GPDE_RP_FL01 XBFL01
+,PS_GPDE_RP_AL92 YAFL01,PS_GPDE_RP_AL92 YBFL01
+WHERE 0=0
+!
+! join tables to their seg-drivers because we do not have RSLT_VER_NUM in the data
+!
+AND YAFL01.EMPLID = XAFL01.EMPLID
+AND YAFL01.CAL_RUN_ID = XAFL01.CAL_RUN_ID
+AND YAFL01.EMPL_RCD = XAFL01.EMPL_RCD
+AND YAFL01.GP_PAYGROUP = XAFL01.GP_PAYGROUP
+AND YAFL01.CAL_ID = XAFL01.CAL_ID
+AND YAFL01.ORIG_CAL_RUN_ID = XAFL01.ORIG_CAL_RUN_ID
+AND YAFL01.RSLT_SEG_NUM = XAFL01.RSLT_SEG_NUM
+!
+AND YBFL01.EMPLID = XBFL01.EMPLID
+AND YBFL01.CAL_RUN_ID = XBFL01.CAL_RUN_ID
+AND YBFL01.EMPL_RCD = XBFL01.EMPL_RCD
+AND YBFL01.GP_PAYGROUP = XBFL01.GP_PAYGROUP
+AND YBFL01.CAL_ID = XBFL01.CAL_ID
+AND YBFL01.ORIG_CAL_RUN_ID = XBFL01.ORIG_CAL_RUN_ID
+AND YBFL01.RSLT_SEG_NUM = XBFL01.RSLT_SEG_NUM
+!
+! functional keys
+AND XAFL01.EMPLID = $Emplid
+! no: AND XAFL01.CAL_RUN_ID = $Cal_Run_ID
+AND XAFL01.EMPL_RCD = #EmplRcd
+AND XAFL01.GP_PAYGROUP = $GpPaygroup
+AND XAFL01.CAL_ID = $CalID
+AND XAFL01.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XAFL01.RSLT_SEG_NUM = #RsltSegNum
+AND YAFL01.RSLT_VER_NUM = #RsltVerNum
+!
+AND XBFL01.EMPLID = $Emplid
+! no: AND XBFL01.CAL_RUN_ID = $Cal_Run_ID
+AND XBFL01.EMPL_RCD = #EmplRcd
+AND XBFL01.GP_PAYGROUP = $GpPaygroup
+AND XBFL01.CAL_ID = $CalID
+AND XBFL01.ORIG_CAL_RUN_ID = $OrigCalRunId
+AND XBFL01.RSLT_SEG_NUM = #RsltSegNum
+AND YBFL01.RSLT_VER_NUM = #PrevRsltVerNum       ! B is older version
+!
+! data fields
+AND XAFL01.SEG_END_DT=XBFL01.SEG_END_DT
+AND XAFL01.SLICE_END_DT=XBFL01.SLICE_END_DT
+AND XAFL01.PAY_ENTITY=XBFL01.PAY_ENTITY
+AND XAFL01.PRD_END_DT=XBFL01.PRD_END_DT
+AND XAFL01.GPDE_DV_SV_CODE=XBFL01.GPDE_DV_SV_CODE
+AND XAFL01.GPDE_FL_CGRP_KV_E=XBFL01.GPDE_FL_CGRP_KV_E
+AND XAFL01.GPDE_FL_CGRP_RV_E=XBFL01.GPDE_FL_CGRP_RV_E
+AND XAFL01.GPDE_FL_CGRP_AV_E=XBFL01.GPDE_FL_CGRP_AV_E
+AND XAFL01.GPDE_FL_CGRP_PV_E=XBFL01.GPDE_FL_CGRP_PV_E
+AND XAFL01.GPDE_FL_CGRP_KV_W=XBFL01.GPDE_FL_CGRP_KV_W
+AND XAFL01.GPDE_FL_CGRP_RV_W=XBFL01.GPDE_FL_CGRP_RV_W
+AND XAFL01.GPDE_FL_CGRP_AV_W=XBFL01.GPDE_FL_CGRP_AV_W
+AND XAFL01.GPDE_FL_CGRP_PV_W=XBFL01.GPDE_FL_CGRP_PV_W
+AND XAFL01.GPDE_FL_BTNR_EAST=XBFL01.GPDE_FL_BTNR_EAST
+AND XAFL01.GPDE_FL_BTNR_WEST=XBFL01.GPDE_FL_BTNR_WEST
+AND XAFL01.GPDE_FL_RP_1S1AG=XBFL01.GPDE_FL_RP_1S1AG
+AND XAFL01.GPDE_FL_RP_1S1AN=XBFL01.GPDE_FL_RP_1S1AN
+AND XAFL01.GPDE_FL_RP_1S1B=XBFL01.GPDE_FL_RP_1S1B
+AND XAFL01.GPDE_FL_RP_1S2AG=XBFL01.GPDE_FL_RP_1S2AG
+AND XAFL01.GPDE_FL_RP_1S2AN=XBFL01.GPDE_FL_RP_1S2AN
+AND XAFL01.GPDE_FL_RP_1S2B=XBFL01.GPDE_FL_RP_1S2B
+AND XAFL01.GPDE_FL_RP_1S3AG=XBFL01.GPDE_FL_RP_1S3AG
+AND XAFL01.GPDE_FL_RP_1S3AN=XBFL01.GPDE_FL_RP_1S3AN
+AND XAFL01.GPDE_FL_RP_1S3B=XBFL01.GPDE_FL_RP_1S3B
+AND XAFL01.GPDE_FL_RP_1S4AG=XBFL01.GPDE_FL_RP_1S4AG
+AND XAFL01.GPDE_FL_RP_1S4AN=XBFL01.GPDE_FL_RP_1S4AN
+AND XAFL01.GPDE_FL_RP_1S4B=XBFL01.GPDE_FL_RP_1S4B
+AND XAFL01.GPDE_FL_RP_2S1AG=XBFL01.GPDE_FL_RP_2S1AG
+AND XAFL01.GPDE_FL_RP_2S1AN=XBFL01.GPDE_FL_RP_2S1AN
+AND XAFL01.GPDE_FL_RP_2S1B=XBFL01.GPDE_FL_RP_2S1B
+AND XAFL01.GPDE_FL_RP_2S2AG=XBFL01.GPDE_FL_RP_2S2AG
+AND XAFL01.GPDE_FL_RP_2S2AN=XBFL01.GPDE_FL_RP_2S2AN
+AND XAFL01.GPDE_FL_RP_2S2B=XBFL01.GPDE_FL_RP_2S2B
+AND XAFL01.GPDE_FL_RP_2S3AG=XBFL01.GPDE_FL_RP_2S3AG
+AND XAFL01.GPDE_FL_RP_2S3AN=XBFL01.GPDE_FL_RP_2S3AN
+AND XAFL01.GPDE_FL_RP_2S3B=XBFL01.GPDE_FL_RP_2S3B
+AND XAFL01.GPDE_FL_RP_2S4AG=XBFL01.GPDE_FL_RP_2S4AG
+AND XAFL01.GPDE_FL_RP_2S4AN=XBFL01.GPDE_FL_RP_2S4AN
+AND XAFL01.GPDE_FL_RP_2S4B=XBFL01.GPDE_FL_RP_2S4B
+AND XAFL01.GPDE_FL_L001S1_MON=XBFL01.GPDE_FL_L001S1_MON
+AND XAFL01.GPDE_FL_L001S2_MON=XBFL01.GPDE_FL_L001S2_MON
+AND XAFL01.GPDE_FL_L001S3_MON=XBFL01.GPDE_FL_L001S3_MON
+AND XAFL01.GPDE_FL_L001S4_MON=XBFL01.GPDE_FL_L001S4_MON
+AND XAFL01.GPDE_FL_RP_L001S1=XBFL01.GPDE_FL_RP_L001S1
+AND XAFL01.GPDE_FL_RP_L001S2=XBFL01.GPDE_FL_RP_L001S2
+AND XAFL01.GPDE_FL_RP_L001S3=XBFL01.GPDE_FL_RP_L001S3
+AND XAFL01.GPDE_FL_RP_L001S4=XBFL01.GPDE_FL_RP_L001S4
+AND XAFL01.GPDE_FL_L002S1_MON=XBFL01.GPDE_FL_L002S1_MON
+AND XAFL01.GPDE_FL_L002S2_MON=XBFL01.GPDE_FL_L002S2_MON
+AND XAFL01.GPDE_FL_L002S3_MON=XBFL01.GPDE_FL_L002S3_MON
+AND XAFL01.GPDE_FL_L002S4_MON=XBFL01.GPDE_FL_L002S4_MON
+AND XAFL01.GPDE_FL_RP_L002S1=XBFL01.GPDE_FL_RP_L002S1
+AND XAFL01.GPDE_FL_RP_L002S2=XBFL01.GPDE_FL_RP_L002S2
+AND XAFL01.GPDE_FL_RP_L002S3=XBFL01.GPDE_FL_RP_L002S3
+AND XAFL01.GPDE_FL_RP_L002S4=XBFL01.GPDE_FL_RP_L002S4
+AND XAFL01.GPDE_FL_W001E0_MON=XBFL01.GPDE_FL_W001E0_MON
+AND XAFL01.GPDE_FL_RP_W001E0=XBFL01.GPDE_FL_RP_W001E0
+AND XAFL01.GPDE_FL_W002E0_MON=XBFL01.GPDE_FL_W002E0_MON
+AND XAFL01.GPDE_FL_RP_W002E0=XBFL01.GPDE_FL_RP_W002E0
+AND XAFL01.GPDE_FL_W011E0_MON=XBFL01.GPDE_FL_W011E0_MON
+AND XAFL01.GPDE_FL_RP_W011E0=XBFL01.GPDE_FL_RP_W011E0
+AND XAFL01.GPDE_FL_W012E0_MON=XBFL01.GPDE_FL_W012E0_MON
+AND XAFL01.GPDE_FL_RP_W012E0=XBFL01.GPDE_FL_RP_W012E0
+AND XAFL01.GPDE_FL_W020E0_MON=XBFL01.GPDE_FL_W020E0_MON
+AND XAFL01.GPDE_FL_RP_W020E0=XBFL01.GPDE_FL_RP_W020E0
+AND XAFL01.GPDE_FL_W001E0_TMP=XBFL01.GPDE_FL_W001E0_TMP
+AND XAFL01.GPDE_FL_W002E0_TMP=XBFL01.GPDE_FL_W002E0_TMP
+end-select
+end-procedure
+
+
+
+begin-procedure ApplyRescanChanges
+! use field 5 (FL) for marking
+
+begin-SQL 
+UPDATE PS_GPDE_RP_AL92
+SET   GPDE_RP_CHAR01_01    = 'P',GPDE_RP_CHAR01_05    = 'X'
+WHERE EXISTS (
+  SELECT 'X' FROM PS_GPDE_RP_AL93 AL93
+  WHERE AL93.EMPLID = PS_GPDE_RP_AL92.EMPLID
+        AND AL93.CAL_RUN_ID = PS_GPDE_RP_AL92.CAL_RUN_ID
+        AND AL93.EMPL_RCD = PS_GPDE_RP_AL92.EMPL_RCD
+        AND AL93.GP_PAYGROUP = PS_GPDE_RP_AL92.GP_PAYGROUP
+        AND AL93.CAL_ID = PS_GPDE_RP_AL92.CAL_ID
+        AND AL93.ORIG_CAL_RUN_ID = PS_GPDE_RP_AL92.ORIG_CAL_RUN_ID
+        AND AL93.RSLT_SEG_NUM = PS_GPDE_RP_AL92.RSLT_SEG_NUM
+        AND AL93.RSLT_VER_NUM = PS_GPDE_RP_AL92.RSLT_VER_NUM
+)
+End-Sql
+
+end-procedure
+
+
+!*********************************
+!**include************************
+!*********************************
+#include 'hrrnctl1.sqc'  !Get run control parameter values
+#include 'hrgetval.sqc'  !Get values mask routines
+#include 'askaod.sqc'    !Ask As Of Date input
+#include 'asksrvyr.sqc'  !Years Of Service input
+#include 'hrsecty.sqc'   !Get SQR Security parameters
+#Include 'readxlat.sqc'  !Read-Translate-Table procedure
+#Include 'getdptnm.sqc'  !Get-Department-Name procedure
+#Include 'getjobtl.sqc'  !Get-Job-Title procedure
+#Include 'datemath.sqc'  !Routines for date arithmetic
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Routines to Update Run Status
+#include 'sqrtrans.sqc'  !sqr strings table procedures
+#Include 'useprntr.sqc'

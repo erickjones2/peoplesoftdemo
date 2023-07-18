@@ -1,0 +1,802 @@
+!****************************************
+!  PER024A:  Job Group Analysis Summary *
+!****************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2014, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!          $Date:  2014/08/12:00:36:12                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  103                                                 !
+!                                                                      *
+!***********************************************************************
+!
+!***********************************************************************
+! Modified for Education & Government                                  *
+! HP99999       Release 8 Technical Merge                              *
+!***********************************************************************
+#include 'setenv.sqc'   !Set environment
+#include 'hrhl02.sqc'   !Landscape Confidential Header
+
+
+begin-program
+   #debug show 'PER024A: Begin-Program'
+   do Use-Narrow-Layout
+   do Init-DateTime
+   do Init-Number
+   do Get-Current-DateTime
+   do Init-Report
+
+   !********************************************************************
+   !  Set miscellaneous report parameters
+   !********************************************************************
+   let $confidential = 'YES'
+   let $quote = ''''
+
+   evaluate $date-indicator
+
+   !********************************************************************
+   !  Format EFFDT selection criteria based on ASOFDATE
+   !********************************************************************
+   when = '1'
+      let $effdt-criteria = ' <= ' || $quote || $asofdate || $quote
+      break
+
+   when-other
+      display 'PER024A/Error: Invalid Run Control Date Indicator'
+      stop quiet
+
+   end-evaluate
+
+   evaluate $reportchoice
+
+   !********************************************************************
+   !  Generate report for the whole company
+   !********************************************************************
+   when = '1'
+      do Get-Company-Info
+      let $where-clause = ' AND B.COMPANY = ' || $quote || $company || $quote
+      do Process-Main
+      do Print-Consolidated-Totals
+      break
+
+   !********************************************************************
+   !  Generate report for a single establishment
+   !********************************************************************
+   when = '2'
+      do Get-Establishment-Info
+      let $where-clause = ' AND B.ESTABID = ' || $quote || $estab || $quote
+      do Process-Main
+      break
+
+   !********************************************************************
+   !  Generate report for a Headquarters Establishment and any other
+   !  establishments under its control
+   !********************************************************************
+   when = '3'
+      do Process-Multi-Estab
+      do Print-Consolidated-Totals
+      break
+
+   !********************************************************************
+   !  Generate report for all Establishments
+   !********************************************************************
+   when = '4'
+      do Process-Multi-Estab
+      break
+
+   when-other
+      display 'PER024A/Error: Invalid Run Control Report Choice'
+      stop quiet
+
+   end-evaluate
+
+   !********************************************************************
+   !  Print End-of-Report message on the very last page
+   !********************************************************************
+   ALTER-PRINTER
+      font=4
+      point-size=18
+
+   print '*** End of Report ***' (+4,1) Bold Center
+
+   do Stdapi-Term
+end-program
+
+
+begin-procedure Process-Multi-Estab
+   #debug show 'Process-Multi-Estab'
+   let #i = 0
+   do Get-Number-Of-Establishments
+   while #i < #count
+      let $estab = establishmentids.theestab(#i)
+      do Get-Establishment-Info
+      let $where-clause = ' AND B.ESTABID = ' || $quote || $estab || $quote
+      do Process-Main
+      add 1 to #i
+      if #i < #count
+         !*************************************************************
+         !  Print each establishment on a separate page
+         !*************************************************************
+         new-page
+      end-if
+   end-while
+end-procedure Process-Multi-Estab
+
+
+begin-procedure Init-Report
+   #debug show 'PER024A: Init-Report'
+   let $reportid    = 'PER024A'
+   let $reporttitle = 'Job Group Analysis Summary'
+   show 'PER024A: Start Program ' $reportid ' (' $reporttitle ')'
+
+   do Init-Array
+
+   do Stdapi-Init
+
+   if $prcs_process_instance = ''
+      display 'PER024A/Error: The Job Group Analysis Program must be run using Process Scheduler'
+      stop quiet
+   else
+      do Select-Parameters
+   end-if
+end-procedure Init-Report
+
+
+begin-procedure Get-Values
+   #debug show 'PER024A: Get-Values'
+   do Get-Date-Indicator
+   do Get-As-Of-Date
+   do Get-From-Thru-Date
+   do Get-Run-Scope
+   do Get-Company
+   do Get-Establishment
+   do Get-CTL_ESTABID
+end-procedure Get-Values
+
+
+begin-procedure Init-Array
+   #debug show 'PER024A: Init-Array'
+
+   create-array name=tbl-column size=2 - !0=Unused
+
+      field=column:number:19            !0=Unused
+
+      put  36 into tbl-column(1) column(1)  !Total Employees
+      put  43 into tbl-column(1) column(2)  !Minority Totals
+      put  50 into tbl-column(1) column(3)  !Hisp Male
+      put  57 into tbl-column(1) column(4)  !Hisp Female
+      put  64 into tbl-column(1) column(5)  !White Male
+      put  71 into tbl-column(1) column(6)  !Black Male
+      put  78 into tbl-column(1) column(7)  !Asian Male
+      put  85 into tbl-column(1) column(8)  !pacific
+      put  92 into tbl-column(1) column(9)  !AmInd Male
+      put 99 into tbl-column(1) column(10)  !2+Race Male
+      put 106 into tbl-column(1) column(11)  !Male Totals
+      put 113 into tbl-column(1) column(12) !White Female
+      put 120 into tbl-column(1) column(13) !Black Female
+      put 127 into tbl-column(1) column(14) !Asian Female
+      put 134 into tbl-column(1) column(15) !pacific
+      put 141 into tbl-column(1) column(16) !AmInd Female
+      put 148 into tbl-column(1) column(17)  !2+Race Male
+      put 155 into tbl-column(1) column(18)  !Female Totals
+
+
+   
+   !****************** End Resolution - 582203 *****************************
+   create-array name=tbl-totals size=3 - !0=Consolidated Totals,1=Estab Totals,2=JobGroup Totals
+   
+   !****************** Begin Resolution - 582203 *****************************
+      !field=total:number:15              !0=Unused
+       field=total:number:19              !0=Unused
+   !****************** End Resolution - 582203 *****************************   
+end-procedure Init-Array
+
+begin-procedure Print-Column-Headings
+   #debug show 'PER024A: Print-Column-Headings'
+
+   ALTER-PRINTER
+      font=4
+      point-size=12
+
+   let $estab-header = rtrim($name,' ') || $continue-header
+   print $estab-header    (+1,1) Bold
+
+   ALTER-PRINTER
+      font=3
+      point-size=6.8
+
+   print '                                       Total'     (+2,1) Bold
+   print ' Total  MALE   FEMALE'  ()     Bold
+   print '/---------------------M A L E -------------------/  /-------------------F E M A L E-----------------/'  () Bold
+   print '                                        EEs'    (+1,1) Bold
+   print '  Min.   Hisp.   Hisp. White  Black  Asian  Pacific  AmInd  2+Race  Total  White  Black  Asian  Pacific  AmInd  2+Race  Total'() Bold
+
+
+   ALTER-PRINTER
+      font=4
+      point-size=7.2
+
+   print 'Job Group Description'              (0,1) Bold
+
+   ALTER-PRINTER
+      font=3
+      point-size=7.2
+
+   graphic (+1,1,166) horz-line 7
+end-procedure Print-Column-Headings
+
+
+begin-procedure Process-Main
+   #debug show 'PER024A: Process-Main' ' $effdt-criteria = ' $effdt-criteria ' $where-clause = ' $where-clause
+   let $initial-estab-break    = 'Y'
+   let $initial-jobgroup-break = 'Y'
+   let $subsequent-estab-break = 'N'
+   let #reccnt = 0
+
+   ALTER-PRINTER
+      font=4
+      point-size=7.2
+
+begin-select
+B.ESTABID         ()  On-Break Level=1 Before=Before-Estab-Break     After=After-Estab-Break     Print=Never
+F.EEO_JOB_GROUP   ()  On-Break Level=2 Before=Before-JobGroup-Break  After=After-JobGroup-Break  Print=Never
+PDE.SEX
+!ETH.ETHNIC_GROUP
+F.DESCR
+!COUNT(*)
+B.EMPLID
+
+  move &PDE.SEX             to $sex
+  !move &ETH.Ethnic_Group      to $ethnicgroup
+  !****************** Begin Resolution - 582203 *****************************
+  !do Analyze-Sex-EthnicGroup  !returns a value of 1-10 in #eeocol
+   !do Analyze-Sex-EthGrp       !returns a value of 1-12 in #eeocol 
+  !****************** End Resolution - 582203 *****************************
+  do Process-Ethnic-Groups
+       If $Found = 'Y'
+       do Analyze-Sex-EthGrp
+
+  end-if
+
+  
+
+FROM  PS_PERSON A,
+      PS_JOB B,
+      PS_JOBCODE_TBL C,
+      !PS_DIVERS_ETHNIC DVR,
+      !PS_ETHNIC_GRP_TBL ETH,
+      PS_REG_REGION_TBL E,
+      PS_EEO_JOB_GRP_TBL F,
+      PS_PERS_DATA_EFFDT PDE
+
+WHERE  B.PER_ORG = 'EMP'
+
+   AND PDE.SEX <> 'U'           !Undefined
+
+   AND B.ESTABID <> ' '       !No EstabID
+   AND B.EMPLID = A.EMPLID
+   AND B.EMPLID = PDE.EMPLID
+   AND B.EMPL_STATUS IN ('A','L','S','P','W')
+   AND B.EEO_CLASS    <> 'E'  !Exclude from counts
+   AND B.EFFDT   = (SELECT MAX(B1.EFFDT) FROM PS_JOB B1
+                    WHERE B1.EMPLID   = B.EMPLID
+                      AND B1.EMPL_RCD = B.EMPL_RCD
+                      AND B1.EFFDT [$effdt-criteria])
+   AND B.EFFSEQ  = (SELECT MAX(B2.EFFSEQ) FROM PS_JOB B2
+                    WHERE B2.EMPLID   = B.EMPLID
+                      AND B2.EMPL_RCD = B.EMPL_RCD
+                      AND B2.EFFDT    = B.EFFDT)
+
+   AND C.SETID   = B.SETID_JOBCODE
+   AND C.JOBCODE = B.JOBCODE
+   AND C.EFF_STATUS = 'A'
+   AND C.EFFDT   = (SELECT MAX(C1.EFFDT) FROM PS_JOBCODE_TBL C1
+                    WHERE C1.JOBCODE  = C.JOBCODE
+                      AND C1.SETID    = C.SETID
+                      !*************BEGIN RESOLUTION - 609634***************
+                      !AND C1.EFFDT   <= B.EFFDT)
+                      AND C1.EFFDT [$effdt-criteria])
+                      !*************END RESOLUTION - 609634***************
+   AND C.EEO1CODE     <> 'N'  !Not counted for EEO reporting
+   AND PDE.EFFDT = (SELECT MAX(PDE1.EFFDT) FROM PS_PERS_DATA_EFFDT PDE1
+                    WHERE PDE1.EMPLID = PDE.EMPLID
+                      AND PDE1.EFFDT <= B.EFFDT)
+   !AND DVR.EMPLID   = A.EMPLID
+   !AND DVR.PRIMARY_INDICATOR = 'Y' 
+   !AND DVR.SETID = ETH.SETID 
+   !AND DVR.ETHNIC_GRP_CD = ETH.ETHNIC_GRP_CD 
+   !AND ETH.EFFDT = (SELECT MAX(E2.EFFDT) FROM PS_ETHNIC_GRP_TBL E2 
+   !                WHERE E2.SETID = ETH.SETID 
+   !                AND E2.ETHNIC_GRP_CD = ETH.ETHNIC_GRP_CD 
+   !                AND E2.EFFDT [$effdt-criteria])
+   !AND ETH.ETHNIC_GROUP <> '6'  !Not Specified
+
+
+   AND E.REG_REGION = B.REG_REGION
+   AND E.COUNTRY = 'USA'
+
+   AND F.EEO_JOB_GROUP = C.EEO_JOB_GROUP
+
+   [$where-clause]
+
+!GROUP BY B.ESTABID,
+!         F.EEO_JOB_GROUP,
+!         PDE.SEX,
+!         ETH.ETHNIC_GROUP,
+!         F.DESCR
+
+ORDER BY B.ESTABID,
+         F.EEO_JOB_GROUP,
+         PDE.SEX,
+         !ETH.ETHNIC_GROUP,
+         F.DESCR,
+         B.EMPLID
+
+end-select
+
+end-procedure Process-Main
+
+!----------------------------------------------------------------------
+!---------Process-Ethnic-Groups----------------------------------------
+!----------------------------------------------------------------------
+! Check to see what Ethnic Groups are indicated
+!----------------------------------------------------------------------
+Begin-Procedure Process-Ethnic-Groups
+#IFDEF DEBUGPER016
+  DISPLAY 'FLOW: Process-Ethnic-Groups'
+#ENDIF
+
+LET #Hispanic = 0
+LET #RaceCount = 0
+LET $EthnicGroup = ''
+LET #EEcount = 0
+LET $Found = 'N'
+
+! Check to see if the employee has Hispanic indicated
+BEGIN-SELECT
+COUNT(ETH1.ETHNIC_GROUP) &Hispanic
+
+   LET #Hispanic = &Hispanic
+ 
+
+FROM  PS_PERS_DATA_MAX P1,
+      PS_DIVERS_ETHNIC  DVR1,
+      PS_ETHNIC_GRP_TBL ETH1
+
+WHERE P1.EMPLID          = &B.Emplid
+  AND P1.EMPLID          = DVR1.EMPLID
+  AND DVR1.SETID         = ETH1.SETID
+  AND DVR1.ETHNIC_GRP_CD = ETH1.ETHNIC_GRP_CD
+  AND ETH1.EFFDT         = (SELECT MAX(ETH2.EFFDT) FROM PS_ETHNIC_GRP_TBL ETH2
+                            WHERE ETH2.SETID = ETH1.SETID
+                            AND ETH2.ETHNIC_GRP_CD = ETH1.ETHNIC_GRP_CD
+                            AND ETH2.EFFDT <= $AsOfDate)
+  AND ETH1.ETHNIC_GROUP  = '3' !Hispanic
+
+END-SELECT
+
+IF #Hispanic >0
+   LET $Found = 'Y'
+   ADD 1 to #EECount
+   LET $EthnicGroup = '3'
+ELSE
+   DO Check-For-Two-Ethnic-Groups ! Check to see if the employee has two or more non-Hispanic races
+   IF #RaceCount >= 2
+      LET $Found = 'Y'
+      ADD 1 to #EECount
+      LET $EthnicGroup = '8'
+   ELSE
+      DO Find-Single-Ethnic-Group ! Check to see what single-race category has been indicated
+      IF $EthnicGroup <> '' and $EthnicGroup <> '6'
+      ADD 1 to #EECount
+         LET $Found = 'Y' 
+      END-IF
+   END-IF
+END-IF
+
+
+End-Procedure Process-Ethnic-Groups
+
+!----------------------------------------------------------------------
+!---------Check-For-Two-Ethnic-Groups----------------------------------
+!----------------------------------------------------------------------
+! Check to see if the employee has two or more non-Hispanic races
+!----------------------------------------------------------------------
+Begin-Procedure Check-For-Two-Ethnic-Groups
+#IFDEF DEBUGPER016
+  DISPLAY 'FLOW: Check-For-Two-Ethnic-Groups'
+#ENDIF
+
+BEGIN-SELECT
+COUNT(ETH11.ETHNIC_GROUP) &RaceCount
+
+   LET #RaceCount = &RaceCount
+
+FROM  PS_PERS_DATA_MAX P11,
+      PS_DIVERS_ETHNIC  DVR11,
+      PS_ETHNIC_GRP_TBL ETH11
+
+WHERE P11.EMPLID          = &B.Emplid
+  AND P11.EMPLID          = DVR11.EMPLID
+  AND DVR11.SETID         = ETH11.SETID
+  AND DVR11.ETHNIC_GRP_CD = ETH11.ETHNIC_GRP_CD
+  AND ETH11.EFFDT         = (SELECT MAX(ETH22.EFFDT) FROM PS_ETHNIC_GRP_TBL ETH22
+                            WHERE ETH22.SETID = ETH11.SETID
+                            AND ETH22.ETHNIC_GRP_CD = ETH11.ETHNIC_GRP_CD
+                            AND ETH22.EFFDT <= $AsOfDate)
+                            
+END-SELECT
+
+End-Procedure Check-For-Two-Ethnic-Groups
+
+!----------------------------------------------------------------------
+!---------Find-Single-Ethnic-Group-------------------------------------
+!----------------------------------------------------------------------
+! Check to see what single-race category has been indicated
+!----------------------------------------------------------------------
+Begin-Procedure Find-Single-Ethnic-Group
+#IFDEF DEBUGPER016
+  DISPLAY 'FLOW: Find-Single-Ethnic-Group'
+#ENDIF
+
+BEGIN-SELECT
+ETH111.ETHNIC_GROUP
+
+   MOVE &ETH111.Ethnic_Group TO $EthnicGroup
+
+
+FROM  PS_ETHNIC_GRP_TBL ETH111,
+      PS_PERS_DATA_MAX P111,
+      PS_DIVERS_ETHNIC  DVR111
+
+WHERE P111.EMPLID          = &B.Emplid
+  AND P111.EMPLID          = DVR111.EMPLID
+  AND DVR111.SETID         = ETH111.SETID
+  AND DVR111.ETHNIC_GRP_CD = ETH111.ETHNIC_GRP_CD
+  AND ETH111.EFFDT         = (SELECT MAX(ETH222.EFFDT) FROM PS_ETHNIC_GRP_TBL ETH222
+                            WHERE ETH222.SETID = ETH111.SETID
+                            AND ETH222.ETHNIC_GRP_CD = ETH111.ETHNIC_GRP_CD
+                            AND ETH222.EFFDT <= $AsOfDate)
+END-SELECT
+
+End-Procedure Find-Single-Ethnic-Group
+
+
+
+!****************** Begin Resolution - 582203 *****************************
+begin-procedure Analyze-Sex-EthGrp
+ 
+  move 0 to #eeocol
+        
+        if #Hispanic>0
+        IF $Sex = 'M' 
+                MOVE 3 TO #eeocol
+             ELSE
+                MOVE 4 TO #eeocol
+        END-IF
+        
+        else
+        if #RaceCount >= 2
+           if $Sex = 'M'
+           move 10 to #eeocol   !multiple race count
+           else 
+           move 17 to #eeocol 
+        end-if
+        else
+       
+        evaluate $Sex
+        when = 'U'    !Unknown
+          break
+        when = 'M'
+        when = 'F'
+         evaluate $EthnicGroup
+          !****************Begin Resolution - 571940****************
+            !when = '1' !Caucasian
+           when = '1' !White
+           !****************End Resolution   - 571940****************
+             Move 5 to #eeocol
+                break
+           when = '2'  !Black
+             Move 6 to #eeocol
+               break
+           when = '4'  !Asian
+              Move 7 to #eeocol
+             break
+           when = '7'  !Pacific Islander
+              Move 8 to #eeocol
+              break
+           when = '5'  !American Indian/Alaskan Native
+             Move 9 to #eeocol
+             break
+            !when = 'xx'
+            !  move 10 to #eeocol   !multiple race count
+           when = '6'      !Not Applicable
+           when-other
+              break
+           end-evaluate
+           break
+       end-evaluate
+ 
+      if $Sex = 'F'
+      if $EthnicGroup <> '6'
+      let #eeocol = #eeocol+7
+       end-if
+      end-if
+      end-if
+      end-if
+       if $EthnicGroup > '1'                                !Minority Totals
+             array-add #EECount    to tbl-totals(2) total(2)
+             array-add #EECount    to tbl-totals(1) total(2)
+             array-add #EECount to tbl-totals(0) total(2)
+        end-if
+        if &PDE.SEX = 'F'                                   !Female Totals
+           array-add #EECount    to tbl-totals(2) total(18)
+           array-add #EECount    to tbl-totals(1) total(18)
+           array-add #EECount    to tbl-totals(0) total(18)
+           
+        else                                                 !Male Totals
+           array-add #EECount    to tbl-totals(2) total(11)
+           array-add #EECount    to tbl-totals(1) total(11)
+           array-add #EECount    to tbl-totals(0) total(11)
+
+      end-if
+      
+      !Total Employees/Individual Employee
+        array-add #EECount #EECount    to tbl-totals(2) total(1) total(#eeocol)
+        array-add #EECount #EECount    to tbl-totals(1) total(1) total(#eeocol)
+  array-add #EECount #EECount    to tbl-totals(0) total(1) total(#eeocol)
+          
+
+
+end-procedure Analyze-Sex-EthGrp
+!****************** End Resolution - 582203 *****************************
+
+begin-procedure Before-Estab-Break
+   #debug show 'PER024A: Before-Estab-Break'
+
+   if $initial-estab-break = 'Y'
+      let $initial-estab-break = 'N'
+   else
+      new-page
+   end-if
+
+   let $estab = &B.ESTABID
+   do Get-Establishment-Info
+   do Print-Column-Headings
+
+   let $save-estab-name = $name
+end-procedure Before-Estab-Break
+
+
+begin-procedure Before-JobGroup-Break
+   #debug show 'PER024A: Before-JobGroup-Break'
+
+   let $save-eeo-job-group    = &F.EEO_JOB_GROUP
+   let $save-job-group-descr  = &F.DESCR
+end-procedure Before-JobGroup-Break
+
+
+begin-procedure Print-Consolidated-Totals
+   #debug show 'PER024A: Print-Consolidated-Totals'
+
+   new-page
+
+   !********************************************************************
+   !  Retrieve the proper name and address data
+   !********************************************************************
+   if $reportchoice = '1'
+      do Get-Company-Info
+      let $consolidated-subheader = '  (Company Totals)'
+   else
+      if $reportchoice = '3'
+         let $estab = establishmentids.theestab(0)
+         do Get-Establishment-Info
+         let $consolidated-subheader = '  (Headquarters and Controlled Establishment Totals)'
+      else
+         display 'PER024A/Error: Invalid consolidated total $reportchoice = ' $reportchoice
+         stop quiet
+      end-if
+   end-if
+
+   ALTER-PRINTER
+      font=4
+      point-size=12
+
+   let $consolidated-header = rtrim($name,' ') || $consolidated-subheader
+   print $consolidated-header               (+1,1) Bold Box Shade
+
+   ALTER-PRINTER
+      font=3
+      point-size=6.8
+
+   print '                                      Total'     (+2,1) Bold
+   print ' Total   MALE   FEMALE'  ()     Bold
+   print '/---------------------M A L E -------------------/  /-------------------F E M A L E-----------------/'  () Bold
+   print '                                       EEs'    (+1,1) Bold
+   print '   Min.   Hisp.   Hisp. White  Black  Asian  Pacific  AmInd  2+Race  Total  White  Black  Asian  Pacific  AmInd  2+Race  Total'() Bold
+
+   
+   ALTER-PRINTER
+      font=4
+      point-size=6.8
+   print 'Totals:'        (+2,30)  Bold
+   
+   ALTER-PRINTER
+      font=3
+      point-size=7.2
+
+   let #break-level = 0
+   do Print-Totals
+   let #reccnt=0
+end-procedure Print-Consolidated-Totals
+
+
+begin-procedure After-Estab-Break
+   #debug show 'PER024A: After-Estab-Break'
+
+   graphic (0,1,166) horz-line 7
+
+   new-page
+
+
+   ALTER-PRINTER
+      font=4
+      point-size=12
+
+   let $estab-header = rtrim($save-estab-name,' ') || '  (Establishment Totals)'
+   print $estab-header                 (+1,1) Bold Box Shade
+
+   ALTER-PRINTER
+      font=3
+      point-size=6.8
+
+   print '                                      Total'     (+2,1) Bold
+   print ' Total   MALE   FEMALE'  ()     Bold
+   print '/---------------------M A L E -------------------/  /-------------------F E M A L E-----------------/'  () Bold
+   print '                                       EEs'    (+1,1) Bold
+   print '   Min.   Hisp.   Hisp. White  Black  Asian  Pacific  AmInd  2+Race  Total  White  Black  Asian  Pacific  AmInd  2+Race  Total'() Bold
+
+   
+   ALTER-PRINTER
+      font=4
+      point-size=6.8
+
+   print 'Totals:'                     (+2,30) Bold
+
+   ALTER-PRINTER
+      font=3
+      point-size=7.2
+
+   let #break-level = 1
+   do Print-Totals
+   let #reccnt = 0
+end-procedure After-Estab-Break
+
+
+begin-procedure After-JobGroup-Break
+   #debug show 'PER024A: After-JobGroup-Break'
+
+   !********************************************************************
+   !  Check for page break
+   !********************************************************************
+   if #reccnt > 13
+      do Process-Page-Break
+   end-if
+
+   add 1 to #reccnt
+
+   let #remainder = mod(#reccnt,2)
+   if #remainder = 0
+      graphic   (+1,1,166) box 1 0 15
+   else
+      print ' ' (+1,1)
+   end-if
+
+   ALTER-PRINTER
+      font=4
+      point-size=6.8
+
+   let $jobgroup-header = rtrim($save-job-group-descr,' ')
+   print $jobgroup-header              (0,1)  Bold
+
+   print 'Totals:'                     (0,32) Bold
+
+   ALTER-PRINTER
+      font=3
+      point-size=7.2
+
+   let #break-level = 2
+   do Print-Totals
+end-procedure After-JobGroup-Break
+
+
+begin-procedure Process-Page-Break
+   #debug show 'PER024A: Process-Page-Break'
+   graphic (0,1,166) horz-line 7
+   new-page
+   let $continue-header = ' - Continued'
+   do Print-Column-Headings
+   let $continue-header = ' '
+   let #reccnt = 0
+end-procedure Process-Page-Break
+
+
+begin-procedure Print-Totals
+   #debug show 'PER024A: Print-Totals'
+
+   move 1 to #index
+
+    while #index <= 18
+
+      get #total from tbl-totals(#break-level) total(#index)
+      get #column from tbl-column(1) column(#index)
+      do Format-Number(#total, $out, '99999')
+      print $out (0,#column)
+      add 1 to #index
+   end-while
+
+   if #remainder = 0
+         and #break-level = 2
+      graphic   (+1,1,166) box 1 0 15
+   else
+      print ' ' (+1,1)
+   end-if
+
+   ALTER-PRINTER
+      font=4
+      point-size=6.8
+  print '%ofTot:'                   (+0,29) Bold
+   get #total-employees from tbl-totals(#break-level) total(1)
+
+   ALTER-PRINTER
+      font=3
+      point-size=7.2
+
+   move 1 to #index
+
+    while #index <= 18
+ 
+      get #total from tbl-totals(#break-level) total(#index)
+      multiply 100 times #total
+      divide #total-employees into #total on-error=zero
+      get #column from tbl-column(1) column(#index)
+      do Format-Number(#total, $out, '999.99')
+      print $out (0,#column)
+      put 0 into tbl-totals(#break-level) total(#index)
+      add 1 to #index
+   end-while
+end-procedure Print-Totals
+
+!-----------------------------------------------------------------------
+
+#include 'rgrnctl1.sqc'  !Get run control parameter values
+#include 'rggetval.sqc'  !Get values mask routines
+#include 'regutils.sqc'  !Get Company/Establishment data
+
+#include 'eeogroup.sqc'  !Analyze-Sex-EthnicGroup procedure
+#include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#include 'datetime.sqc'  !Routines for date and time formatting
+#include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Routines to Update Run Status

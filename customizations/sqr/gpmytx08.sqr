@@ -1,0 +1,1644 @@
+!***********************************************************************
+! gpmytx08.sqr: Employee Tax Refund Form - Malaysian CP159A/PCB2(II).  *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2018, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                                                                                *
+!                                                                                                                                *
+!       $Release:  HR92                                                *
+!           $Bug:  27498236                                            *
+!                                                                                                                                *
+!************************************************************************
+!1556427001:The procedure Get-Data-employee has been modified           *
+!             such that PCB2(II) is printing report for those employees *
+!             whom contribute to tax.                                   *
+!             The report is not generated for an employee even          *
+!             when the employee has been terminated in the previous year*
+!************************************************************************
+!************************************************************************
+!1537939002: The SQR has been modified to print Multiple Tax Receipt    *
+!            numbers for same month,print employee details and          *
+!              processing date on the report.                           *
+!                                                                       *
+!1556427001: The procedure Get-Data-employee has been modified          *
+!            such that PCB2(II) is printing report for those employees  *
+!            whom contribute to tax.The report is not generated for an  *
+!            employee even when the employee has been terminated in the *
+!            previous year.                                             *
+!************************************************************************
+
+
+
+#include 'setenv.sqc'          !Set environment
+#Include 'setup02.sqc'
+
+begin-setup
+   page-size 77 80
+    declare printer
+      type          = HPLASERJET
+      orientation   = portrait
+      top-margin    = 0.30
+      left-margin   = 0.30
+      !point-size    = 9
+      !line-size     = 11
+      !font           = 10
+end-setup
+begin-report
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Report
+  do Main
+  do Report-Parm-Clean
+  do Stdapi-Term
+end-report
+!***********************************************************************
+! Procedure: Init-Report                                               *
+!            Initialization of report variables and parameters select  *
+!***********************************************************************
+begin-procedure Init-Report
+  move 'GPMYTX08' to $ReportID
+  move 'GPMYTX05' to $ReportStrings
+  do Stdapi-Init
+  do Select-Parameters
+  do Get-Language-Codes ! get the current language in which user wants to print the report
+  do Init_Report_Translation($ReportStrings, $curr_language_cd)
+  do Append_Report_Translation($ReportStrings)
+  do Get_Month_Info
+  do Init_Report_Translation($ReportID, $curr_language_cd)
+  do Append_Report_Translation($ReportID)
+  do Get_Translat_Info
+  do Initialise-Variables
+
+  do Array-Initialisation
+  do Get-TxYr-End
+end-procedure
+
+
+begin-procedure Initialise-Variables
+   let #col_left     = 5
+   let #col_center   = 41
+end-procedure
+
+!***********************************************************************
+! Procedure: Select-Parameters                                         *
+!            Retrieves Run Control data for report parameters needed   *
+!            for Malaysian Inland Revenue Reporting.                   *
+!***********************************************************************
+begin-procedure Select-Parameters
+
+begin-SELECT
+MYS.GPMY_ORG_LINK_OPTN
+MYS.ORG_LINK_UNIT
+MYS.BUSINESS_UNIT
+MYS.GPMY_CONTRIB_YEAR
+MYS.GPMY_FROM_DT
+MYS.GPMY_TO_DT
+
+FROM PS_GPMY_RPT_RC MYS
+WHERE MYS.OPRID = $Prcs_OprID
+AND MYS.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-SELECT
+
+
+  let $ORG_LINK_OPTN         =  rtrim(&MYS.GPMY_ORG_LINK_OPTN, ' ')
+  let $ORG_LINK_UNIT         =  &MYS.ORG_LINK_UNIT
+  let $BUSINESS_UNIT         =  &MYS.BUSINESS_UNIT
+  do Build-Where
+
+  move &MYS.GPMY_CONTRIB_YEAR   to #Tax_Year
+  move &MYS.GPMY_FROM_DT  to $from_dt
+  move &MYS.GPMY_TO_DT  to $to_dt
+  move &MYS.ORG_LINK_UNIT to $company1
+
+end-procedure
+!***********************************************************************
+! Procedure: Array-Initialisation                                      *
+!            Creation & Initialization of array to store the totals    *
+!            required.                                                 *
+!***********************************************************************
+begin-procedure Array-Initialisation
+
+  create-array  name=Totals size=12
+   field=Month_Name:char
+   field=Total_Taxes:number
+   field=CP38:number
+   field=Receipt_Dt:char:2
+   field=Receipt_Nbr:char:2
+
+  put $Jan_Lbl into Totals(0)
+  put $Feb_Lbl into Totals(1)
+  put $Mar_Lbl    into Totals(2)
+  put $Apr_Lbl into Totals(3)
+  put $May_Lbl into Totals(4)
+  put $Jun_Lbl into Totals(5)
+  put $Jul_Lbl into Totals(6)
+  put $Aug_Lbl into Totals(7)
+  put $Sept_Lbl into Totals(8)
+  put $Oct_Lbl into Totals(9)
+  put $Nov_Lbl into Totals(10)
+  put $Dec_Lbl into Totals(11)
+
+end-procedure
+!***********************************************************************
+! Procedure: Get-TxYr-End                                              *
+!            Get the tax year end                                      *
+!                                                                      *
+!***********************************************************************
+begin-procedure Get-TxYr-End
+
+
+  do Format-Number(#Tax_Year,$Tax_Year,'9999')
+
+  let $Tax_Yr_End   = '31/12/'|| $Tax_Year
+  do Format-DateTime($Tax_Yr_End,$Tax_Yr_End,{DEFDMY},'','native')
+
+  let $Tax_Yr_Start = '01/01/'|| $Tax_Year
+  do Format-DateTime($Tax_Yr_Start,$Tax_Yr_Start,{DEFDMY},'','native')
+
+end-procedure
+!***********************************************************************
+! Procedure: Main                                                      *
+!            The main driving procedure                                *
+!                                                                      *
+!***********************************************************************
+begin-Procedure Main
+let $FileOpen = 'N'
+    do Get-Data-employee
+
+!if $FileOpen = 'Y'
+    !do Close-File
+!end-if
+end-procedure
+
+!************************************************************************************
+begin-procedure Get-Data-employee
+let $New_Ic_Nbr = ' '
+let $Old_IC_Nbr = ' '
+let $PrevEmpl = ''
+do Get-Empls
+
+let  #total=0
+Let #CL = 25
+
+Begin-select DISTINCT
+J.EMPLID
+B.NAME
+J.EMPL_STATUS
+A.GPMY_EMPL_TAX_NBR
+J.EFFDT &Effdt
+A.GPMY_TAX_NBR
+
+   do Format-DateTime(&Effdt, $out, {DEFYMD}, '', '')
+   do dtu-parse-date($out,#TempYear,  #Month, #dtu_da)
+
+   move &J.EMPLID to $Emplid
+   move &B.NAME to $Name
+
+   move &A.GPMY_EMPL_TAX_NBR to $Empl_Tax_Nbr
+   let $fEmplTaxNbr = $Empl_Tax_Nbr
+   Move &A.GPMY_TAX_NBR to $Emloyer_tax_nbr
+
+   DO GET-PHONE
+   DO GET-ADDRESS
+   do Get-Nid-No
+
+ DO Initialize-Array-Vars
+  Evaluate &J.EMPL_STATUS
+  When = 'A'
+  when = 'P'
+  when = 'L'
+  when = 'T'
+  when = 'S'
+
+    do Get-Tax-Number
+
+    if #Count_Empl >0
+        new-page
+    end-if
+    do Get-PersIncharge
+    do Print-Section
+
+    !/*...........check*/
+    !do Write-To-File
+   !/*Initialize Array Variables*/
+   do Initialize-Array-Vars
+
+  When-other
+    If #TempYear = #Tax_Year
+     do Get-Tax-Number
+     if #Count_Empl >0
+        new-page
+     end-if
+     do Get-PersIncharge
+     do Print-Section
+     !/*...........check*/
+     !do Write-To-File
+     !/*Initialize Array Variables*/
+     do Initialize-Array-Vars
+   End-If
+  end-Evaluate
+
+FROM PS_JOB J,
+     PS_NAMES B,
+     PS_GPMY_TAX_PYE A,
+     PS_GPMY_TAX_ORG_VW TAX
+
+
+WHERE J.EMPLID = B.EMPLID
+AND B.NAME_TYPE = 'PRI'
+AND B.EFFDT = (SELECT MAX(B1.EFFDT) 
+                  FROM PS_NAMES B1 
+                  WHERE B1.EMPLID = B.EMPLID 
+                  AND B1.NAME_TYPE = B.NAME_TYPE
+                  AND B1.EFFDT <= $to_dt)
+AND J.EMPLID = A.EMPLID
+AND (J.LAST_DATE_WORKED BETWEEN $from_dt AND  $to_dt
+OR (J.LAST_DATE_WORKED IS NULL))
+
+[$SlctEmpls]
+!AND A.GPMY_TAX_NBR = $E_File_Nbr
+AND J.EFFDT =
+                (select max(J1.EFFDT)
+               from PS_JOB J1
+               Where J1.EMPLID = J.EMPLID
+               AND J1.COMPANY = J.COMPANY
+               AND J1.EFFDT <= $to_dt)
+AND J.EFFSEQ =
+               (SELECT MAX(J2.EFFSEQ)
+                    FROM PS_JOB J2
+                    WHERE J2.EMPLID = J.EMPLID
+                    AND J2.EMPL_RCD = J.EMPL_RCD
+                    AND J2.EFFDT = J.EFFDT)
+
+  ! This code is to ensure that for that company , derive the tax no and map it to the payee tax table. Please note that a company can have only one tax reference no
+AND A.GPMY_TAX_NBR = TAX.GPMY_TAX_NBR
+
+AND A.EFFDT = (SELECT MAX(A1.EFFDT)
+                 FROM PS_GPMY_TAX_PYE A1
+                 WHERE A1.EMPLID = A.EMPLID
+                 AND A1.EMPL_RCD = A.EMPL_RCD
+                 AND A1.GPMY_TAX_NBR = A.GPMY_TAX_NBR
+                 AND A1.EFFDT <= $Tax_Yr_End)
+
+
+AND TAX.GPMY_ORG_LINK_OPTN = $ORG_LINK_OPTN
+
+AND TAX.EFFDT =  (select max(ORGS.EFFDT) from PS_GPMY_TAX_ORG_VW ORGS
+                        where ORGS.GPMY_ORG_LINK_OPTN = $ORG_LINK_OPTN
+                        )
+
+ [$Org]
+
+ ! This code is to ensure that for that company , derive the tax no and map it to the payee tax table. Please note that a company can have only one tax reference no
+!AND J.EMPL_STATUS = 'A'
+[$WHERE]
+!AND A.EFFDT = (SELECT MAX(A1.EFFDT)
+!                 FROM PS_GPMY_TAX_PYE A1
+ !                WHERE A1.EMPLID = A.EMPLID
+ !                AND A1.EMPL_RCD = A.EMPL_RCD
+ !                AND A1.EFFDT <= $Tax_Yr_End)
+order by J.EMPLID
+End-select
+END-PROCEDURE Get-Data-employee
+
+BEGIN-PROCEDURE GET-PHONE
+BEGIN-SELECT
+PH.PHONE
+
+  MOVE &PH.PHONE TO $PHONE
+
+FROM PS_PERSONAL_PHONE PH
+WHERE PH.EMPLID = $Emplid
+END-SELECT
+END-PROCEDURE !GET-PHONE
+
+BEGIN-PROCEDURE GET-ADDRESS
+BEGIN-SELECT
+AD.ADDRESS1
+AD.ADDRESS2
+AD.ADDRESS3
+AD.ADDRESS4
+AD.CITY
+AD.STATE
+AD.POSTAL
+AD.GEO_CODE
+AD.COUNTRY
+
+   MOVE &AD.ADDRESS1 TO $ADDRESS1
+
+   MOVE &AD.ADDRESS2 TO $ADDRESS2
+   MOVE &AD.ADDRESS3 TO $ADDRESS3
+   MOVE &AD.ADDRESS4 TO $ADDRESS4
+   MOVE &AD.CITY     TO $CITY
+   MOVE &AD.STATE    TO $STATE
+   MOVE &AD.POSTAL   TO $POSTAL
+   MOVE &AD.GEO_CODE TO $CODE
+   MOVE &AD.COUNTRY  TO $COUNTRY
+   LET $ADDRESS1 = RTRIM ($ADDRESS1,' ')
+   LET $ADDRESS2 = RTRIM ($ADDRESS2,' ')
+   LET $ADDRESS3 = RTRIM ($ADDRESS3,' ')
+   LET $ADDRESS4 = RTRIM ($ADDRESS4,' ')
+   LET $CITY =     RTRIM ($CITY,' ')
+   LET $STATE = RTRIM ($STATE,' ')
+   LET $CODE = RTRIM ($CODE,' ')
+   LET $COUNTRY =  RTRIM ($COUNTRY,' ')
+
+
+FROM PS_ADDRESSES AD
+WHERE AD.EMPLID = $Emplid
+!AND AD.EFFDT = (SELECT MAX(AD1.EFFDT) FROM PS_ADDRESSES AD1
+!WHERE AD.EMPLID = AD1.EMPLID
+!AND AD1.EFFDT = AD.EFFDT)
+!AND AD.ADDRESS_TYPE = 'HOME'
+
+END-SELECT
+
+END-PROCEDURE !GET-ADDRESS
+
+!END-PROCEDURE Get-Data-employee
+
+!************************************
+!Procedure: Initialize-Array-Vars
+!************************************
+begin-procedure Initialize-Array-Vars
+
+let #k=0
+
+while #k<12
+    let Totals.Total_Taxes(#k) = 0
+    let Totals.CP38(#k) = 0
+    let #r=0
+
+    while #r < 2
+
+
+
+    let Totals.Receipt_Dt(#k,#r) = ''
+    let Totals.Receipt_Nbr(#k,#r) = ''
+    let #r=#r+1
+  end-while
+
+
+    let #k= #k+1
+
+end-while
+
+end-procedure
+!************************************
+!Procedure: Get-Tax-Number
+!************************************
+begin-procedure Get-Tax-Number
+let $Prev_EFileNbr = ''
+ let #L = 0
+Begin-select
+TAX.GPMY_TAX_NBR
+TAX1.GPMY_STAT_REG
+TAX.EFFDT &TxEffdt
+
+  move &TAX.GPMY_TAX_NBR to $E_File_Nbr
+  move &TAX1.GPMY_STAT_REG to $Reg_Region
+  let $E_File_Nbr = rtrim($E_File_Nbr,' ')
+  if $Prev_EFileNbr <> $E_File_Nbr
+        do Format-DateTime(&TxEffdt, $Date, {DEFYMD}, '', '')
+
+        let $month = substrt($Date,6,2,'Shift-JIS')
+        let $MonthCd_Clause = 'AND MONTHCD >=0'
+        let #L = $month
+        let #L = #L - 1
+            let #t=1
+
+        while #t<=12
+        let $t = #t
+        let $t=rtrim($t,'0')
+        let $t=rtrim($t,'.')
+        if( #t<10)
+          let $t = '0'||$t
+        end-if
+        do Get-TxReceipt-Details
+        let #t=#t+1
+        end-while
+        do Select-Tax-Bal
+        do Select_Py_Tax
+        do Write-To-File
+        let $Prev_EFileNbr = $E_File_Nbr
+
+   end-if
+
+FROM PS_GPMY_TAX_PYE TAX, PS_GPMY_TAX_TBL TAX1
+WHERE TAX.EMPLID = $Emplid
+AND TAX.GPMY_TAX_NBR = TAX1.GPMY_TAX_NBR
+AND TAX.GPMY_EMPL_TAX_NBR = $Empl_Tax_Nbr
+AND TAX.GPMY_TAX_NBR = $Emloyer_tax_nbr
+AND TAX.EFFDT <= (SELECT MAX(TAX1.EFFDT)
+                 FROM PS_GPMY_TAX_PYE TAX1
+                 WHERE TAX1.EMPLID = TAX.EMPLID
+                 AND TAX1.EMPL_RCD = TAX.EMPL_RCD
+                 AND TAX1. GPMY_TAX_NBR = $Emloyer_tax_nbr
+                 AND TAX1.EFFDT <= $Tax_Yr_End)
+AND TAX1.GPMY_TAX_NBR IN(SELECT
+                         DISTINCT(B.GPMY_TAX_NBR )
+                         FROM PS_GPMY_TAX_ORG B,PS_GPMY_TAX_ORG_DT C
+                         WHERE B.EFFDT=C.EFFDT
+                         AND C.GPMY_ORG_LINK_OPTN = $ORG_LINK_OPTN)
+AND TAX1.EFFDT=(SELECT MAX(L1.EFFDT)
+                FROM PS_GPMY_TAX_TBL L1
+                WHERE TAX1.GPMY_TAX_NBR =L1.GPMY_TAX_NBR)
+
+End-select
+
+
+
+end-procedure
+!*********************************
+!Procedure : Build-Where
+!*********************************
+begin-procedure Build-Where
+
+! Organsiation unit is mandatory for all the options
+
+let $Org ='AND TAX.ORG_LINK_UNIT = '''||$ORG_LINK_UNIT||''''
+
+! Organsiation unit is mandatory for all the options
+if ($ORG_LINK_OPTN='CO')
+     if isnull(RTRIM($ORG_LINK_UNIT,' '))
+       let $WHERE = 'AND 1 = 1'
+     else
+       let $WHERE = 'AND J.COMPANY  =' || '''' || RTRIM($ORG_LINK_UNIT,' ') || ''''
+     end-if
+
+ end-if
+
+ if ($ORG_LINK_OPTN='PG')
+      if isnull(RTRIM($ORG_LINK_UNIT,' '))
+        let $WHERE = 'AND 1 = 1'
+      else
+        let $WHERE = 'AND J.GP_PAYGROUP  =' || '''' || RTRIM($ORG_LINK_UNIT,' ') || ''''
+      end-if
+
+  end-if
+
+if ($ORG_LINK_OPTN='ET')
+      if isnull(RTRIM($ORG_LINK_UNIT,' '))
+        let $WHERE = 'AND 1 = 1'
+      else
+        let $WHERE = 'AND J.ESTABID  =' || '''' || RTRIM($ORG_LINK_UNIT,' ') || ''''
+      end-if
+
+  end-if
+
+
+if ($ORG_LINK_OPTN='LO')
+     if isnull(RTRIM($BUSINESS_UNIT,' '))
+       let $WHERE = 'AND 1 = 1'
+     else
+       if isnull(RTRIM($ORG_LINK_UNIT,' '))
+            let $WHERE = 'AND J.BUSINESS_UNIT=' || '''' || RTRIM($BUSINESS_UNIT,' ') || ''''
+       else
+            let $WHERE = 'AND J.BUSINESS_UNIT=' || '''' || RTRIM($BUSINESS_UNIT,' ') || ''''||'AND J.LOCATION='|| '''' || RTRIM($ORG_LINK_UNIT,' ') || ''''
+
+       end-if
+     end-if
+
+ end-if
+
+ if ($ORG_LINK_OPTN='DE')
+      if isnull(RTRIM($BUSINESS_UNIT,' '))
+        let $WHERE = 'AND 1 = 1'
+      else
+        if isnull(RTRIM($ORG_LINK_UNIT,' '))
+             let $WHERE = 'AND J.BUSINESS_UNIT=' || '''' || RTRIM($BUSINESS_UNIT,' ') || ''''
+        else
+             let $WHERE = 'AND J.BUSINESS_UNIT=' || '''' || RTRIM($BUSINESS_UNIT,' ') || ''''||'AND J.DEPTID='|| '''' || RTRIM($ORG_LINK_UNIT,' ') || ''''
+
+        end-if
+      end-if
+
+ end-if
+
+end-procedure
+
+
+!***********************************************************************
+!  Procedure: Write-To-File                                            *
+!             Select the employees to send in the output file using    *
+!             criteria provided.                                       *
+!***********************************************************************
+
+begin-procedure Write-To-File
+!do Initialize-Array-Vars
+let #Total_Tax =0
+let #Tax = 0
+let $FileOpen = 'N'
+let $FileName = '{FILEPREFIX}'||''||$Reg_Region||'.lis'
+ let $FileOut = $FileName
+ let $FileName = $Reg_Region||'.lis'
+ let #FileExists = exists($FileName)
+ if $FileOpen = 'N'
+     let #count = #count+1
+       open $FileOut as #count for-append record=750:Vary Status=#OpenStat
+ end-if
+ If #OpenStat <> 0
+      Show 'Error in Openning File : ' $FileName
+ !Else
+      !Show 'File ' $FileName ' Opened Successfully'
+ End-If
+
+  let $Filler = ' '
+  let $RecType = '0'
+  let $Data = ''
+     while #L <= #K
+        get $Month #Tax #CP38 $RcptDt $RcptNbr from Totals(#L) Month_Name Total_Taxes CP38 Receipt_Dt Receipt_Nbr
+        do Format-Number(#Tax,$Tax,'999999999999.99')
+        do Format-Number(#CP38,$CP38,'999999999999.99')
+        !do Format-Number(#RcptNbr,$RcptNbr,'999999999999')
+        if #Tax <>0
+          let $Data = $Data || $Month || $Tax || $CP38 || $RcptDt || $RcptNbr
+        else
+          let $Data = $Data || $Month || $Tax || $CP38
+        end-if
+        let #L = #L + 1
+        let #Total_Tax = #Total_Tax + #Tax
+
+    end-while
+      let #Line = #Line + 1
+
+    do Format-Number(#Total_Tax,$Total_Tax,'999999999999.99')
+
+
+
+    write #count from $Tax_Year:10          -
+                 $Name:20              -
+                 $Identity_Nbr:20      -
+                 $Empl_Tax_Nbr:20      -
+                 $Emplid:10            -
+                 $Data:530             -
+                 $Total_Tax:20         -
+                 $Filler:22
+
+
+  close #count
+
+end-procedure
+
+
+!***********************************************************************
+!  Procedure: Get-Empls                                                *
+!             Selects Employees from the child run control record for  *
+!             processing.                                              *
+!***********************************************************************
+begin-procedure Get-Empls
+let $SlctEmpls = ' AND J.EMPLID IN ('
+let $SlctEmpls1 = ''
+let $Multiple = 'N'
+begin-SELECT
+EMPLID
+
+  if rtrim(&Emplid,' ') <> ''
+    let $Empls_Exist = 'Y'
+    let $Emplid = rtrim(&Emplid,' ')
+    if $Multiple = 'N'
+      let $SlctEmpls1 = ''''||$Emplid||''''
+    else
+      let $SlctEmpls1 = $SlctEmpls1||','||''''||$Emplid||''''
+    end-if
+
+
+  end-if
+
+  let $Multiple = 'Y'
+
+FROM PS_GPMY_EMPL_RC
+WHERE OPRID       =  $Prcs_OprID
+AND   RUN_CNTL_ID =  $Prcs_Run_Cntl_ID
+end-SELECT
+
+concat $SlctEmpls1 with $SlctEmpls
+concat ')' with $SlctEmpls
+
+  if $Empls_Exist <> 'Y'
+     let $SlctEmpls = ' AND J.EMPLID LIKE '''
+     let $SlctEmpls = $SlctEmpls||'%'
+     let $SlctEmpls = $SlctEmpls||''''
+
+  end-if
+
+end-procedure
+
+
+!***********************************************************************
+!  Procedure: Get-Nid-No                                          *
+!             Select the form E value to determine whether the employee*
+!             has been previously reported or not.                     *
+!***********************************************************************
+
+begin-procedure Get-Nid-No
+let $National_Id_Type = ''
+let $PrevNID = ''
+let $New_Ic_Nbr =''
+let $Old_IC_Nbr =''
+begin-SELECT
+PER.EMPLID
+PER.NATIONAL_ID  &ICNbr
+PER.NATIONAL_ID_TYPE &National_Id_Type
+
+     move &National_Id_Type to $National_Id_Type
+     let $National_Id_Type = rtrim($National_Id_Type,' ')
+     let $National_Id_Type = ltrim($National_Id_Type,' ')
+     if $National_Id_Type = 'NEWIC'
+        let $New_Ic_Nbr = &ICNbr
+        let $PrevNID = $National_Id_Type
+     end-if
+     if $National_Id_Type= 'OLDIC'
+        let $Old_IC_Nbr = &ICNbr
+     end-if
+
+FROM PS_PERS_NID PER
+WHERE PER.EMPLID= $Emplid
+
+end-SELECT
+
+  if rtrim($New_Ic_Nbr,' ') = ''
+      let $Identity_Nbr = $Old_IC_Nbr
+  else
+      let $Identity_Nbr = $New_Ic_Nbr
+  end-if
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure: Get-TxReceipt-Details                                     *
+!            Gets the Receipt Nbr and Total Amount Remitted            *
+!            from Tax Receipt Table                                    *
+!***********************************************************************
+begin-procedure Get-TxReceipt-Details
+
+let #q=0
+
+
+begin-SELECT
+MONTHCD &Mnth_Cd
+GPMY_RECEIPT_NBR &Rcpt_Nbr
+RECEIPT_DT &Rcpt_Dt
+
+  do Format-DateTime(&Rcpt_Dt, $RcptDt, {DEFDMY}, '', '')
+
+  move &Mnth_Cd to #MonthCD
+  let #Element = #MonthCD - 1
+  !let Totals.Receipt_Nbr(#Element) = &Rcpt_Nbr
+  !let Totals.Receipt_Dt(#Element) = $RcptDt
+
+
+  if #q < 2
+  let Totals.Receipt_Nbr(#Element,#q) = &Rcpt_Nbr
+  let Totals.Receipt_Dt(#Element,#q) = $RcptDt
+  let #q=#q+1
+  end-if
+
+FROM PS_GPMY_CP159_RCT
+WHERE
+COMPANY = $company1
+AND  GPMY_CONTRIB_YEAR = #Tax_Year
+AND GPMY_TAX_NBR = $E_File_Nbr
+AND MONTHCD = $t
+!AND MONTHCD >= #MonthCode
+[$MonthCd_Clause]
+ORDER BY RECEIPT_DT
+end-SELECT
+end-procedure !Get-TxReceipt-Details
+
+!***********************************************************************
+! Procedure: Select-Tax-Bal                                          *
+!            Select the Gross MTD from the Earnings Balance record     *
+!            where the ERNCD's IRAS Earning Type is not 'N'.           *
+!***********************************************************************
+begin-procedure Select_Py_Tax
+LET #Grs_py_ytd = 0
+LET #Grs_py_ytd2 = 0
+LET #Grs_py_ytd3 = 0
+LET #Grs_py_ytd4 = 0
+LET #Grs_py_ytd5 = 0
+begin-SELECT
+MP3.GPMY_FLD_NAME &MP3.GPMY_FLD_NAME1
+MP3.CALC_RSLT_VAL &Grs_py_ytd
+
+!let Totals.Total_Taxes(#Element) =Total_Taxes(#Element)+ &Grs_MTD  !**@@@ modified as below
+
+    if &MP3.GPMY_FLD_NAME1 = 'TX_PY_YTD'
+     move &Grs_py_ytd to #Grs_py_ytd
+     move &MP3.GPMY_FLD_NAME1 to #fld_name
+    end-if
+
+    if &MP3.GPMY_FLD_NAME1 = 'TX_PY_YTD2'
+     move &Grs_py_ytd to #Grs_py_ytd2
+     move &MP3.GPMY_FLD_NAME1 to #fld_name2
+    end-if
+
+    if &MP3.GPMY_FLD_NAME1 = 'TX_PY_YTD3'
+     move &Grs_py_ytd to #Grs_py_ytd3
+     move &MP3.GPMY_FLD_NAME1 to #fld_name3
+    end-if
+
+    if &MP3.GPMY_FLD_NAME1 = 'TX_PY_YTD4'
+     move &Grs_py_ytd to #Grs_py_ytd4
+     move &MP3.GPMY_FLD_NAME1 to #fld_name4
+    end-if
+
+    if &MP3.GPMY_FLD_NAME1 = 'TX_PY_YTD5'
+     move &Grs_py_ytd to #Grs_py_ytd5
+     move &MP3.GPMY_FLD_NAME1 to #fld_name5
+    end-if
+
+!get $Month #Tax from Totals(#Element) Month_Name Total_Taxes
+
+
+
+
+FROM PS_GPMY_PY_TMP MP, PS_GPMY_PY_TMP3 MP3
+WHERE MP3.PROCESS_INSTANCE = (#prcs_process_instance - 1)
+AND MP3.PROCESS_INSTANCE = MP.PROCESS_INSTANCE
+AND MP3.EMPLID = MP.EMPLID
+AND MP3.EMPL_RCD = MP.EMPL_RCD
+AND MP3.CAL_RUN_ID =  MP.CAL_RUN_ID
+AND MP3.EMPL_RCD = MP.EMPL_RCD
+AND MP.EMPL_RCD = (SELECT MAX(EMPL_RCD)
+                   FROM PS_GPMY_PY_TMP
+                   WHERE EMPLID           = MP.EMPLID
+                   AND   CAL_RUN_ID       = MP.CAL_RUN_ID
+                   AND   GP_PAYGROUP      = MP.GP_PAYGROUP
+                   AND   CAL_ID           = MP.CAL_ID
+                   AND   ORIG_CAL_RUN_ID  = MP.ORIG_CAL_RUN_ID)
+
+
+!AND MP.PRC_ORD_TS=(SELECT MAX(PRC_ORD_TS)
+!                    FROM PS_GPMY_PY_TMP
+!                    WHERE PROCESS_INSTANCE=MP.PROCESS_INSTANCE
+!                    AND EMPLID=MP.EMPLID )
+AND MP3.GP_PAYGROUP = MP.GP_PAYGROUP
+AND MP3.CAL_ID = MP.CAL_ID
+AND MP3.ORIG_CAL_RUN_ID =  MP.ORIG_CAL_RUN_ID
+AND MP3.RSLT_SEG_NUM =MP.RSLT_SEG_NUM
+AND MP3.RSLT_VER_NUM =MP.RSLT_VER_NUM
+AND MP3.RSLT_REV_NUM =MP.RSLT_REV_NUM
+AND MP.GP_GENRPT_BREAK2 = $E_File_Nbr
+AND MP.EMPLID = $Emplid
+AND MP3.GPMY_FLD_NAME IN ('TX_PY_YTD','TX_PY_YTD2','TX_PY_YTD3','TX_PY_YTD4','TX_PY_YTD5')
+AND MP.PRC_ORD_TS=(SELECT MAX(TMP1.PRC_ORD_TS)
+                        FROM PS_GPMY_PY_TMP TMP1
+                        WHERE TMP1.PROCESS_INSTANCE=MP.PROCESS_INSTANCE
+                        AND TMP1.EMPLID=MP.EMPLID
+                        AND TMP1.EMPL_RCD = MP.EMPL_RCD
+                        AND TMP1.GP_GENRPT_BREAK2 = $E_File_Nbr
+                         )
+AND MP.RSLT_SEG_NUM = (SELECT MAX(MP6.RSLT_SEG_NUM)
+                        FROM PS_GPMY_PY_TMP MP6
+                        WHERE MP6.PROCESS_INSTANCE = MP.PROCESS_INSTANCE
+                        AND MP6.EMPLID = MP.EMPLID
+                        AND MP6.CAL_RUN_ID = MP.CAL_RUN_ID
+                        AND MP6.EMPL_RCD = MP.EMPL_RCD
+                        AND MP6.CAL_ID = MP.CAL_ID
+                        AND MP6.GP_GENRPT_BREAK2 = $E_File_Nbr
+                      )
+
+AND MP.SLICE_END_DT = (Select Max(TMP3.SLICE_END_DT) FROM PS_GPMY_PY_TMP TMP3
+                        where
+                        TMP3. PROCESS_INSTANCE = MP.PROCESS_INSTANCE
+                        AND TMP3.EMPLID = MP.EMPLID
+                        AND TMP3.EMPL_RCD = MP.EMPL_RCD
+                        AND TMP3.GP_PAYGROUP = MP.GP_PAYGROUP
+                        AND TMP3.CAL_RUN_ID = MP.CAL_RUN_ID
+                        AND TMP3.CAL_ID = MP.CAL_ID
+                        AND TMP3.GP_GENRPT_BREAK2 =$E_File_Nbr
+                        )
+
+AND MP3.USER_KEY1 = $E_File_Nbr
+GROUP BY MP3.GPMY_FLD_NAME,MP3.CALC_RSLT_VAL
+
+end-SELECT
+end-procedure
+
+
+
+begin-procedure Select-Tax-Bal
+
+ let $Bgn_Dt = ' '
+ let #Month_Cd = 0
+ let #dtu_yr = 0
+ let #dtu_da = 0
+ let #K = 0
+
+begin-SELECT
+MP.PRD_BGN_DT &Prd_Bgn_Dt
+MP3.GPMY_FLD_NAME &MP3.GPMY_FLD_NAME
+MP3.CALC_RSLT_VAL &Grs_MTD
+
+   move &MP3.GPMY_FLD_NAME to $Report_Fld_name
+
+   let $Bgn_Dt = &Prd_Bgn_Dt
+   do Format-DateTime(&Prd_Bgn_Dt, $out, {DEFYMD}, '', '')
+   do dtu-parse-date($out,#dtu_yr,  #Month_Cd, #dtu_da)
+   let #Element = #Month_Cd - 1
+   if rtrim($Report_Fld_name,' ') = 'TX_MTD'
+
+
+          !let Totals.Total_Taxes(#Element) =Total_Taxes(#Element)+ &Grs_MTD  !**@@@ modified as below
+         let Totals.Total_Taxes(#Element) = &Grs_MTD
+
+          !get $Month #Tax from Totals(#Element) Month_Name Total_Taxes
+          let #K = #Element
+   end-if
+   if rtrim($Report_Fld_name,' ') = 'EMPL_ADDTAX'
+          let Totals.CP38(#Element) = Totals.CP38(#Element) + &Grs_MTD
+          !get $Month #Tax from Totals(#Element) Month_Name Total_Taxes
+          let #K = #Element
+   end-if
+
+
+FROM PS_GPMY_PY_TMP MP, PS_GPMY_PY_TMP3 MP3
+WHERE MP3.PROCESS_INSTANCE = (#prcs_process_instance - 1)
+AND MP3.PROCESS_INSTANCE = MP.PROCESS_INSTANCE
+AND MP3.EMPLID = MP.EMPLID
+AND MP3.EMPL_RCD = MP.EMPL_RCD
+AND MP3.CAL_RUN_ID =  MP.CAL_RUN_ID
+AND MP3.EMPL_RCD = MP.EMPL_RCD
+AND MP.EMPL_RCD = (SELECT MAX(EMPL_RCD)
+                   FROM PS_GPMY_PY_TMP
+                   WHERE EMPLID           = MP.EMPLID
+                   AND   CAL_RUN_ID       = MP.CAL_RUN_ID
+                   AND   GP_PAYGROUP      = MP.GP_PAYGROUP
+                   AND   CAL_ID           = MP.CAL_ID
+                   AND   ORIG_CAL_RUN_ID  = MP.ORIG_CAL_RUN_ID)
+!AND MP.PRC_ORD_TS=(SELECT MAX(PRC_ORD_TS)
+!                    FROM PS_GPMY_PY_TMP
+!                    WHERE PROCESS_INSTANCE=MP.PROCESS_INSTANCE
+!                    AND EMPLID=MP.EMPLID )
+AND MP.PRC_ORD_TS=(SELECT MAX(PRC_ORD_TS)
+                    FROM PS_GPMY_PY_TMP
+                    WHERE PROCESS_INSTANCE=MP.PROCESS_INSTANCE
+                    AND EMPLID=MP.EMPLID
+                    AND EMPL_RCD = MP.EMPL_RCD
+                    AND GP_GENRPT_BREAK2 = $E_File_Nbr
+                    AND PRD_BGN_DT = MP.PRD_BGN_DT)
+AND MP3.GP_PAYGROUP = MP.GP_PAYGROUP
+AND MP3.CAL_ID = MP.CAL_ID
+AND MP3.ORIG_CAL_RUN_ID =  MP.ORIG_CAL_RUN_ID
+AND MP3.RSLT_SEG_NUM = MP.RSLT_SEG_NUM
+AND MP3.RSLT_VER_NUM = MP.RSLT_VER_NUM
+AND MP3.RSLT_REV_NUM = MP.RSLT_REV_NUM
+AND MP.GP_GENRPT_BREAK2 = $E_File_Nbr
+AND MP.EMPLID = $Emplid
+AND MP3.USER_KEY1 = $E_File_Nbr
+
+AND MP3.SLICE_BGN_DT = (Select Max(SLICE_BGN_DT) FROM PS_GPMY_PY_TMP3 TMP3
+                        where
+                        TMP3. PROCESS_INSTANCE = MP3.PROCESS_INSTANCE
+                        AND TMP3.EMPLID = MP3.EMPLID
+                        AND TMP3.EMPL_RCD = MP3.EMPL_RCD
+                        AND TMP3.GP_PAYGROUP = MP3.GP_PAYGROUP
+                        AND TMP3.CAL_RUN_ID = MP3.CAL_RUN_ID
+                        AND TMP3.CAL_ID = MP3.CAL_ID
+                        AND TMP3.USER_KEY1 = MP3.USER_KEY1
+                        )
+GROUP BY MP.PRD_BGN_DT,MP3.GPMY_FLD_NAME,MP3.CALC_RSLT_VAL
+
+end-SELECT
+
+
+end-procedure
+
+
+!************************************************************************************
+
+
+begin-procedure Print-Section
+  let #Col = 5
+  let #rowNbr = 29
+
+   let $Sys_Date = Datenow()
+  let #Total_Tax1 =0
+  let #Total_Tax2 =0
+add 1 to #Count_Empl
+Let #currentline = 2
+graphic () font 4 8
+
+ Add 1 to #currentline
+    print $PCB (#currentline,140)
+    !Add 2 to #currentline
+     print $SlipTxt_Lbl (#currentline,5) bold
+    Add 1 to #currentline
+    print $DATE2_LBL (#currentline,140)
+    print $Sys_Date (#currentline,145) edit 'DD/MM/YYYY'
+    Add 1 to #currentline
+    print $FROM_LBL (#currentline,#col_left)
+    Add 1 to #currentline
+    print $ADDR_LINE1 (#currentline,#col_left)
+    Add 1 to #currentline
+    print $ADDR_LINE2  (#currentline,#col_left)
+    Add 1 to #currentline
+    print $ADDR_LINE3 (#currentline,#col_left)
+    !Add 1 to #currentline
+     graphic (#currentline, 12, 20)  horz-line 5
+    !Add 1 to #currentline
+    !graphic (#currentline, #col_left, 25)  horz-line 5
+    !Add 1 to #currentline
+    !graphic (#currentline, #col_left, 25)  horz-line 5
+Add 2 to #currentline
+    print $TUAN_LBL (#currentline,#col_left)
+
+    print $Tax_Year  (#currentline,120)
+    Add 1 to #currentline
+    print $CUT_TAX_YEAR_LBL  (#currentline,#col_left)
+     graphic (#currentline, 36, 25)  horz-line 5
+    print $NAME (#currentline,120)
+    Add 1 to #currentline
+    print $NAME_WORKER_LBL (#currentline,#col_left)
+     graphic (#currentline, 36, 25)  horz-line 5
+    print $Identity_Nbr (#currentline,120)
+      Add 1 to #currentline
+    print $IDENTIFICATIO_NO_LBL (#currentline,#col_left)
+     graphic (#currentline, 36, 25)  horz-line 5
+    print $Empl_Tax_Nbr (#currentline,120) 
+    Add 1 to #currentline
+    print $TAX_INC_LBL (#currentline,#col_left)
+    graphic (#currentline, 36, 25)  horz-line 5
+    print $Emplid (#currentline,120)
+     Add 1 to #currentline
+    print $NO_WORKER_LBL (#currentline,#col_left)
+     graphic (#currentline, 36, 25)  horz-line 5
+    print $E_File_Nbr (#currentline,120) 
+        Add 1 to #currentline
+    print $NO_E_LBL (#currentline,#col_left)
+     graphic (#currentline, 36, 25)  horz-line 5
+     Add 2 to #currentline
+    print $TEXT2_LBL (#currentline,#col_left)
+     Add 2 to #currentline
+         !Let  $Text3_Lbl = '2. Potongan-potongan yang telah dibuat bagi pekerja dalam tahun semasa ..............adalah seperti berikut :'
+    !let #tax_year_tmp1 = #tax_year
+    !do Format-Number(#tax_year_tmp1,$tax_year_tmp1,'9999')
+    !print $tax_year_tmp1 (#currentline, 42)
+    !Print  $Text3_Lbl (#currentline,#col_left)
+
+    Let  $Text31_Lbl = '2. '|| $Text3_Lbl 
+    Print  $Text31_Lbl (#currentline,#col_left)
+
+    !add 1 to #currentline
+
+    let #col_1 = 7
+    let #col_4 = 23
+    !let #col_6 = 43
+    let #col_5 = 38
+    let #col_6 = 41
+    let #col_7 = 58
+    let #col_8 = 62
+
+    Add 2 to #currentline
+    Let #BoxStartingPoint = #currentline
+    print $MONTH_LINE_LBL (#currentline,#col_1) BOLD
+    print $TxAmt_Lbl   (#currentline,#col_4) BOLD
+    !PRINT $RCPT_NO_LINE_LBL  (#currentline,#col_6) BOLD
+    !print $RCPT_DT_LINE_LBL (#currentline,#col_8) BOLD
+
+    PRINT $RCPT_NO_LINE_LBL  (#currentline,#col_5) BOLD
+    print $RCPT_DT_LINE_LBL (#currentline,#col_7) BOLD
+         Let  #currentline = #currentline + 1
+    print $RCPT_NO_LINE_LBL2  (#currentline,#col_6) BOLD
+
+
+     Let #rowNbr = 47
+    Let #rowNbr_grap= 46
+         let #J = 0
+           let #Line = 21
+    Add 1 to #rowNbr
+    graphic () font 4 8
+     let #counter=0
+     graphic                     (#line,5,71) horz-line 10
+    graphic                     (#line, 5, 18) vert-line
+    graphic                     (#line, 15, 18) vert-line
+    graphic                     (#line, 35, 18) vert-line
+    graphic                     (#line, 55, 16) vert-line
+    graphic                     (#line, 76, 16) vert-line
+    add 2 to #line
+    graphic                     (#line, 25, 15) vert-line
+    graphic                     (#line, 45, 14) vert-line
+    graphic                     (#line, 65, 14) vert-line
+    graphic     (#line,5,71) horz-line 10
+
+    add 1 to #line
+    print 'PCB' (#line,18)
+    print 'CP 38' (#line,27)
+    print 'PCB' (#line,38)
+    print 'CP 38' (#line,47)
+    print 'PCB' (#line,58)
+    print 'CP 38' (#line,67)
+
+add 1 to #line
+    graphic     (#line,5,71) horz-line 10
+                                                                                     
+                                                                                     add 1 to #line
+                                                                                     !graphic     (#line,5,71) horz-line 10
+let #n = 0 ! Index for Month value
+    let #p =0
+    let #flags = 2
+
+while (#counter<12 )
+    let #taxtotal = 0
+    let #taxtotalCP38 = 0
+!add 1 to #line
+    get $Month #Tax #CP38  from Totals(#counter) Month_Name Total_Taxes CP38
+                                                                                     !add 1 to #line
+    print $Month    (#Line,6,9)
+                                                                                     graphic     (#line,5,71) horz-line 5
+    Let #taxtotal = #Tax
+Let #taxtotalCP38 =  #CP38
+    let #counter1 = #counter
+    print #taxtotal      (#Line,16,24) edit 9,999,999,999.99
+    print #taxtotalCP38      (#Line,26,34) edit 9,999,999,999.99
+
+    while (#counter1 = #counter and #p < 2)
+
+    get $Month #Tax #CP38 $RcptDt $Nbr from Totals(#counter) Month_Name Total_Taxes CP38 Receipt_Dt(#p) Receipt_Nbr(#p)
+if (#Tax <>0 and rtrim(ltrim($Nbr,' '),' ')<>'')
+    print $Nbr      (#Line,36,)
+    print $RcptDt    (#Line,56,10)
+
+   ! print $RcptDt    (#Line,56,10)
+
+
+end-if
+
+IF (#CP38 <> 0 and rtrim(ltrim($Nbr,' '),' ')<>'')
+    print $Nbr      (#Line,46,) !edit 99,999,999
+    print $RcptDt     (#Line,66,10)
+END-IF
+
+
+     let $Nbr = ''
+     let $RcptDt = ''
+
+    if #p = 0
+    let #line = #line + 1
+    end-if
+    let #p = #p + 1
+
+    end-while
+    let #p = 0
+    let #counter = #counter  + 1
+
+  
+    !graphic       (#Line,5,71) horz-line 10
+
+
+    let #Total_Tax1=#Total_Tax1+#Tax
+    let #Total_Tax2 = #Total_Tax2 + #CP38
+
+
+    end-while
+ !add 1 to #line
+   print 'Jumlah' (#line,6) BOLD
+
+
+   print #Total_Tax1 (#line, 16,24) edit 9,999,999,999.99 ! The total will not go beyond this
+   print #Total_Tax2 (#line,26,34) edit 9,999,999,999.99 !The total will not go beyond this
+
+   graphic (#line,5,30) box 2 10
+   Let #line = #line - 1
+   graphic (#line, 15, 2) vert-line
+   graphic (#line, 25, 2) vert-line
+   graphic (#line, 35, 2) vert-line
+   let #HorLineStartPos = #Line - 1
+
+    Let #line = #line + 4
+
+    !Print '3. Potongan-potongan yang telah dibuat bagi pekerja untuk tahun kebelakangan adalah seperti berikut :' (#line,#col_left)
+
+    Print '3. Potongan-potongan yang telah dibuat bagi pendapatan pekerja untuk tahun terdahulu dalam tahun semasa adalah seperti berikut:' (#line,#col_left)
+
+                                                                                                      
+    let #line = #line + 2
+    graphic (#line,5,60) box 4
+
+   print $SEC3TEXT1  (#line,5)
+   print $SEC3TEXT2 (#line,18)
+   print $SEC3TEXT3 (#line,27)
+   print $SEC3TEXT4 (#line,36)
+   print $SEC3TEXT5 (#line,47)
+   print $SEC3TEXT6 (#line,57)
+   let #line = #line  + 1
+   print $SEC3TEXT7 (#line,46)
+   print $SEC3TEXT8 (#line,59)
+   let #line = #line  + 1
+   print $RCPT_NO_LINE_LBL2 (#line,46)
+   print $SEC3TEXT9 (#line,58)
+   let #line = #line  - 3
+
+   graphic                     (#line, 5, 4) vert-line
+   graphic                     (#line, 15, 4) vert-line
+   graphic                     (#line, 25, 4) vert-line
+   graphic                     (#line, 35, 4) vert-line
+   graphic                     (#line, 45, 4) vert-line
+   graphic                     (#line, 55, 4) vert-line
+   graphic                     (#line, 65, 4) vert-line
+
+   let #line = #line  +  4
+   graphic                  (#line,5,60) horz-line 10
+
+   let #tax_year_tmp = #tax_year - 1
+   do Format-Number(#tax_year_tmp,$tax_year_tmp,'9999')
+
+   let #tax_year_tmp2 = #tax_year - 2
+   do Format-Number(#tax_year_tmp2,$tax_year_tmp2,'9999')
+
+   let #tax_year_tmp3 = #tax_year - 3
+   do Format-Number(#tax_year_tmp3,$tax_year_tmp3,'9999')
+
+   let #tax_year_tmp4 = #tax_year - 4
+   do Format-Number(#tax_year_tmp4,$tax_year_tmp4,'9999')
+
+   let #tax_year_tmp5 = #tax_year - 5
+   do Format-Number(#tax_year_tmp5,$tax_year_tmp5,'9999')
+
+
+   
+  !--------------------------------------------------------------------
+
+   if #Grs_py_ytd <> 0
+
+      graphic                     (#line, 5, 2) vert-line
+      graphic                     (#line, 15, 2) vert-line
+      graphic                     (#line, 25, 2) vert-line
+      graphic                     (#line, 35, 2) vert-line
+      graphic                     (#line, 45, 2) vert-line
+      graphic                     (#line, 55, 2) vert-line
+      graphic                     (#line, 65, 2) vert-line
+ 
+      let #line = #line + 2
+      graphic                  (#line,5,60) horz-line 10
+
+      let #line = #line - 1
+
+      Print  $PREV_TEXT (#line,6) wrap 15 2
+      print  $Dec_Lbl (#line, 18)
+      print  $tax_year_tmp (#line,27)
+      print #Grs_py_ytd  (#line,37)
+
+      let #line = #line + 1
+      end-if
+
+    if #Grs_py_ytd2 <> 0 
+
+      graphic                     (#line, 5, 2) vert-line
+      graphic                     (#line, 15, 2) vert-line
+      graphic                     (#line, 25, 2) vert-line
+      graphic                     (#line, 35, 2) vert-line
+      graphic                     (#line, 45, 2) vert-line
+      graphic                     (#line, 55, 2) vert-line
+      graphic                     (#line, 65, 2) vert-line
+
+      let #line = #line + 2
+      graphic                  (#line,5,60) horz-line 10
+
+      let #line = #line - 1
+          
+      Print  $PREV_TEXT (#line,6) wrap 15 2
+      print  $Dec_Lbl (#line, 18)
+      print  $tax_year_tmp2 (#line,27)
+      print #Grs_py_ytd2  (#line,37)
+
+      let #line = #line + 1
+      end-if
+
+    if #Grs_py_ytd3 <> 0
+      
+      graphic                     (#line, 5, 2) vert-line
+      graphic                     (#line, 15, 2) vert-line
+      graphic                     (#line, 25, 2) vert-line
+      graphic                     (#line, 35, 2) vert-line
+      graphic                     (#line, 45, 2) vert-line
+      graphic                     (#line, 55, 2) vert-line
+      graphic                     (#line, 65, 2) vert-line
+
+      let #line = #line + 2
+      graphic                  (#line,5,60) horz-line 10
+
+      let #line = #line - 1
+
+      Print  $PREV_TEXT (#line,6) wrap 15 2
+      print  $Dec_Lbl (#line, 18)
+      print  $tax_year_tmp3 (#line,27)
+      print #Grs_py_ytd3  (#line,37)
+
+      let #line = #line + 1
+      end-if
+  
+    if #Grs_py_ytd4 <> 0   
+
+      graphic                     (#line, 5, 2) vert-line
+      graphic                     (#line, 15, 2) vert-line
+      graphic                     (#line, 25, 2) vert-line
+      graphic                     (#line, 35, 2) vert-line
+      graphic                     (#line, 45, 2) vert-line
+      graphic                     (#line, 55, 2) vert-line
+      graphic                     (#line, 65, 2) vert-line
+
+      let #line = #line + 2
+      graphic                  (#line,5,60) horz-line 10
+
+      let #line = #line - 1
+
+      Print  $PREV_TEXT (#line,6) wrap 15 2
+      print  $Dec_Lbl (#line, 18)
+      print  $tax_year_tmp4 (#line,27)
+      print #Grs_py_ytd4  (#line,37)
+
+      let #line = #line + 1
+      end-if
+
+    if #Grs_py_ytd5 <> 0
+
+      graphic                     (#line, 5, 2) vert-line
+      graphic                     (#line, 15, 2) vert-line
+      graphic                     (#line, 25, 2) vert-line
+      graphic                     (#line, 35, 2) vert-line
+      graphic                     (#line, 45, 2) vert-line
+      graphic                     (#line, 55, 2) vert-line
+      graphic                     (#line, 65, 2) vert-line
+
+      let #line = #line + 2
+      graphic                  (#line,5,60) horz-line 10
+
+      let #line = #line - 1
+  
+      Print  $PREV_TEXT (#line,6) wrap 15 2
+      print  $Dec_Lbl (#line, 18)
+      print  $tax_year_tmp5 (#line,27)
+      print #Grs_py_ytd5  (#line,37)
+
+      let #line = #line + 1
+      end-if
+    
+    !let #line = #line + 1
+    !graphic                  (#line,5,60) horz-line 10
+
+   
+   !------------------------------------------------------------------------- 
+    
+     !get $RcptDtjan $Nbrjan from Totals(0) Receipt_Dt Receipt_Nbr
+
+
+    ! if (#Grs_py_ytd <>0 and rtrim(ltrim($Nbrjan,' '),' ')<>'')
+
+
+    !   print $Nbrjan      (#Line,47,)
+
+    !   print $RcptDtjan    (#Line,57)
+
+     !end-if
+
+    let $Nbrjan = ''
+    let $RcptDtjan = ''
+    let #Grs_py_ytd = 0
+    
+    let #line = #line + 2
+
+    
+do print-footer
+
+
+
+
+
+end-procedure
+
+!***********************************************************************
+! Procedure: print-footer
+!***********************************************************************
+begin-procedure print-footer
+
+
+    graphic () font 4 8
+    add 1 to #Line
+    print $END_TEXT_LBL (#Line,#col_left)
+
+    !add 2 to #FLine
+    !PRINT $YOUR_LINE_LBL     (#FLine,#col_left)
+
+    !add 2 to #FLine
+    !print '.' (#FLine,#col_left, 50) fill
+    !print '.' (#FLine,55, 50) fill
+
+    add 2 to #Line
+    !print $END_LINE2_TXT2_LBL (#FLine,135)
+
+    print $END_NAME_LBL (#Line,#col_left)
+    print $Compresname (#Line,19)
+    add 1 to #Line
+    print $END_LINE2_LBL (#Line,#col_left)
+    print $JOBTITLE (#Line,19)
+    add 1 to #Line
+    print $END_LINE3_LBL (#Line,#col_left)
+    print &CompRegPhone (#Line,19)
+    add 1 to #Line
+    print $END_ADDR_LBL (#Line,#col_left)
+
+    do Employer-Address
+    print &EmplrName (#Line,19)
+    add 1 to #Line
+    let $Underline = '________________________________'
+    print $Underline (#Line,19)
+    print &EmplrAddr1 (#Line,19)
+    add 1 to #Line
+    Let  $EmplrAddr234 = &EmplrAddr2
+    
+    if (&EmplrAddr3 <> '')
+    Let  $EmplrAddr234 = &EmplrAddr2 ||','|| &EmplrAddr3
+        if ( &EmplrAddr4 <> '')
+        Let  $EmplrAddr234 = &EmplrAddr2 ||','|| &EmplrAddr3 ||','|| &EmplrAddr4
+        end-if
+    end-if
+
+    print $Underline (#Line,19)
+    print $EmplrAddr234 (#Line,19)
+    add 1 to #Line
+    Let  $EmplrCityPostal = &EmplrCity ||','|| &EmplrPostal
+    print $Underline (#Line,19)
+    print $EmplrCityPostal (#Line,19)
+
+    add 1 to #Line
+
+end-procedure
+
+!***********************************************************************
+! Procedure: Employer-Address                                          *
+!            Gets Employer Address                                                                                                                                                                                  *
+!***********************************************************************
+begin-procedure Employer-Address 
+
+begin-SELECT
+
+TT.GPMY_REGISTERED_NM   &EmplrName
+TT.ADDRESS1                                                                             &EmplrAddr1
+TT.ADDRESS2                                                                             &EmplrAddr2
+TT.ADDRESS3                                                                             &EmplrAddr3
+TT.ADDRESS4                                                                             &EmplrAddr4
+TT.CITY                                                                                                                                                                  &EmplrCity
+TT.STATE                                                                             &EmplrState
+TT.POSTAL                                                                             &EmplrPostal
+TT.COUNTRY                                                                              &EmplrCountry
+
+FROM PS_GPMY_TAX_TBL TT
+WHERE TT.GPMY_TAX_NBR = $E_File_Nbr
+AND TT.EFF_STATUS = 'A'
+AND TT.EFFDT = (SELECT MAX(TMT.EFFDT) 
+                                                                                                                                                                                     FROM PS_GPMY_TAX_TBL TMT 
+                                                                                                                                                                                     WHERE TMT.GPMY_TAX_NBR=TT.GPMY_TAX_NBR 
+                                                                                                                                                                                     AND TMT.EFFDT <= $Tax_Yr_End)
+
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure: Get-PersIncharge                                          *
+!            Gets the Details of the person responsible                *
+!***********************************************************************
+begin-procedure Get-PersIncharge
+
+begin-SELECT DISTINCT
+C.NAME
+C.JOBTITLE
+C.GPMY_RESPONSIBLEID
+C.GPMY_REGISTERED_NM
+D.DESCR
+C.PHONE        &CompRegPhone
+C.NAME         &Compresname
+C.JOBTITLE     &JOBTITLE
+
+      move &Compresname to $NameMn
+
+      let $Compresname = RTRIM(LTRIM($NameMn      , ' '), ' ')
+      let $JOBTITLE    = RTRIM(LTRIM(&JOBTITLE    , ' '), ' ')
+FROM PS_GPMY_TAX_TBL C, PS_JOB J, PS_DEPT_TBL D
+WHERE C.GPMY_TAX_NBR = $E_File_Nbr
+AND C.EFF_STATUS = 'A'
+AND C.EFFDT = (SELECT MAX(C1.EFFDT)
+               FROM PS_GPMY_TAX_TBL C1
+               WHERE C1.GPMY_TAX_NBR = C.GPMY_TAX_NBR
+               AND C1.EFFDT <= $Tax_Yr_End)
+AND J.EMPLID = C.GPMY_RESPONSIBLEID
+AND J.DEPTID = D.DEPTID
+AND J.SETID_DEPT = D.SETID
+
+end-SELECT
+   let $InCharge = rtrim(&C.NAME,' ')
+   let $Position = rtrim(&C.JOBTITLE,' ')
+   let $Dept = rtrim(&D.DESCR,' ')
+   let $Company = rtrim(&C.GPMY_REGISTERED_NM,' ')
+   let $Company = upper($Company)
+
+   end-procedure
+
+!***********************************************************************
+! Function:    Get_Translat_Info                                       *
+!                                                                      *
+! Description: Gets the strings printed in this report                 *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_Translat_Info
+
+   do Get_Field_Information ('GPMYTX08', 'TAX_YEAR',$TxYr_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'PYE_NM',  $PyeNM_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'IC_NBR',  $IcNbr_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'PYE_TAX_REF_NBR',  $PyeTxRefNbr_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'EMPLID',  $EmplId_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'MONTH1',  $Month1_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'TAX_AMT',  $TxAmt_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'RCPT_DT',  $RcptDt_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'RCPT_NBR',  $RcptNbr_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'TOTAL',  $Total_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'SLIP_TXT',  $SlipTxt_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR1',  $Addr1_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR2',  $Addr2_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR3',  $Addr3_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR4',  $Addr4_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR5',  $Addr5_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR6',  $Addr6_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR7',  $Addr7_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR8',  $Addr8_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR9',  $Addr9_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'TEXT1',  $Text1_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'TEXT2',  $Text2_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'TEXT3',  $Text3_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'TEXT4',  $Text4_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'TEXT5',  $Text5_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'RINGIT', $Ringit_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'RECEIPT',$Receipt_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'CP38',   $CP38_Lbl,     #DW)
+
+   do Get_Field_Information ('GPMYTX08', 'NAME1',   $NAME1_LBL,      #DW)
+   do Get_Field_Information ('GPMYTX08', 'HEADING2',$HEADING2_Lbl,   #DW)
+   do Get_Field_Information ('GPMYTX08', 'HEADING1',$HEADING1_Lbl, #DW)
+
+   do Get_Field_Information ('GPMYTX08', 'KP_1',   $KP_1_Lbl,      #DW)
+   do Get_Field_Information ('GPMYTX08', 'KP_2',   $KP_2_Lbl,      #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDRESS',$ADDRESS_LBL,       #DW)
+   do Get_Field_Information ('GPMYTX08', 'INCOME',$INCOME,         #DW)
+   do Get_Field_Information ('GPMYTX08', 'INCOME1',$INCOME1,       #DW)
+   do Get_Field_Information ('GPMYTX08', 'SIGN',$SIGN_LBL,             #DW)
+   do Get_Field_Information ('GPMYTX08', 'TELEPHONE',$TELEPHONE,   #DW)
+   do Get_Field_Information ('GPMYTX08', 'PCB',$PCB,               #DW)
+   do Get_Field_Information ('GPMYTX08', 'TO1',$TO1,               #DW)
+   do Get_Field_Information ('GPMYTX08', 'TOTAL_TAX',$TOTAL_TAX_LBL,#DW)
+   do Get_Field_Information ('GPMYTX08', 'CUT_PER_MONTH',$CUT_PER_MONTH_LBL, #DW)
+   do Get_Field_Information ('GPMYTX08', 'DATE1',$DATE1_LBL,       #DW)
+   do Get_Field_Information ('GPMYTX08', 'DATE2',$DATE2_LBL,       #DW)
+   do Get_Field_Information ('GPMYTX08', 'DATE3',$DATE3_LBL,       #DW)
+
+   do Get_Field_Information ('GPMYTX08', 'FROM',$FROM_LBL,         #DW)
+   do Get_Field_Information ('GPMYTX08', 'TUAN',$TUAN_LBL,         #DW)
+   do Get_Field_Information ('GPMYTX08', 'CUT_TAX_YEAR',$CUT_TAX_YEAR_LBL,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'NAME_WORKER',$NAME_WORKER_LBL,       #DW)
+   do Get_Field_Information ('GPMYTX08', 'IDENTIFICATIO_NO',$IDENTIFICATIO_NO_LBL,#DW)
+   do Get_Field_Information ('GPMYTX08', 'TAX_INC',$TAX_INC_LBL,       #DW)
+   do Get_Field_Information ('GPMYTX08', 'NO_WORKER',$NO_WORKER_LBL,   #DW)
+   do Get_Field_Information ('GPMYTX08', 'NO_E',$NO_E_LBL,             #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR_LINE1',$ADDR_LINE1,             #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR_LINE2',$ADDR_LINE2,             #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR_LINE3',$ADDR_LINE3,             #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR_LINE4',$ADDR_LINE4,             #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR_LINE5',$ADDR_LINE5,             #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR_LINE6',$ADDR_LINE6,             #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR_LINE7',$ADDR_LINE7,             #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR_LINE8',$ADDR_LINE8,             #DW)
+   do Get_Field_Information ('GPMYTX08', 'ADDR_LINE9',$ADDR_LINE9,             #DW)
+   do Get_Field_Information ('GPMYTX08', 'TEXT3_LINE',$TEXT3_LINE_LBL,         #DW)
+   do Get_Field_Information ('GPMYTX08', 'MONTH_LINE',$MONTH_LINE_LBL,         #DW)
+   do Get_Field_Information ('GPMYTX08', 'RCPT_NO_LINE',$RCPT_NO_LINE_LBL,         #DW)
+   do Get_Field_Information ('GPMYTX08', 'RCPT_NO_LINE2',$RCPT_NO_LINE_LBL2,         #DW)
+   do Get_Field_Information ('GPMYTX08', 'RCPT_DT_LINE',$RCPT_DT_LINE_LBL,         #DW)
+
+   do Get_Field_Information ('GPMYTX08', 'JAN',     $Jan_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'FEB',     $Feb_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'MAR',     $Mar_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'APR',     $Apr_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'MAY',     $May_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'JUN',     $Jun_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'JULY',     $Jul_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'AUG',     $Aug_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'SEPT',    $Sept_Lbl,    #DW)
+   do Get_Field_Information ('GPMYTX08', 'OCT',     $Oct_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'NOV',     $Nov_Lbl,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'DEC',     $Dec_Lbl,     #DW)
+
+   do Get_Field_Information ('GPMYTX08', 'TOTAL_LINE',     $TOTAL_LINE_LBL,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'END_TEXT_LINE',  $END_TEXT_LBL,     #DW)
+
+   do Get_Field_Information ('GPMYTX08', 'YOUR_LINE',     $YOUR_LINE_LBL,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'END_ADDR',     $END_ADDR_LBL,     #DW)
+
+   do Get_Field_Information ('GPMYTX08', 'END_NAME',     $END_NAME_LBL,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'END_LINE2',     $END_LINE2_LBL,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'END_LINE2_TXT2',$END_LINE2_TXT2_LBL,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'END_LINE3',     $END_LINE3_LBL,     #DW)
+
+   do Get_Field_Information ('GPMYTX08', 'SEC3TEXT1',     $SEC3TEXT1,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'SEC3TEXT2',     $SEC3TEXT2,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'SEC3TEXT3',     $SEC3TEXT3,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'SEC3TEXT4',     $SEC3TEXT4,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'SEC3TEXT5',     $SEC3TEXT5,     #DW)
+
+   do Get_Field_Information ('GPMYTX08', 'SEC3TEXT6',     $SEC3TEXT6,     #DW)
+   
+   do Get_Field_Information ('GPMYTX08', 'SEC3TEXT7',     $SEC3TEXT7,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'SEC3TEXT8',     $SEC3TEXT8,     #DW)
+   do Get_Field_Information ('GPMYTX08', 'SEC3TEXT9',     $SEC3TEXT9,     #DW)
+
+   do Get_Field_Information ('GPMYTX08', 'PREV_TEXT',     $PREV_TEXT,     #DW)
+
+
+
+
+end-procedure
+
+!***********************************************************************
+! Function:    Get_Month_Info                                       *
+!                                                                      *
+! Description: Gets the strings printed in this report                 *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_Month_Info
+
+
+end-procedure
+
+begin-Procedure Report-Parm-Clean
+
+begin-sql
+DELETE FROM PS_GPMY_PY_TMP
+WHERE PROCESS_INSTANCE = (#prcs_process_instance - 1)
+end-sql
+
+begin-sql
+DELETE FROM PS_GPMY_PY_TMP2
+WHERE PROCESS_INSTANCE = (#prcs_process_instance - 1)
+end-sql
+
+begin-sql
+DELETE FROM PS_GPMY_PY_TMP3
+WHERE PROCESS_INSTANCE = (#prcs_process_instance - 1)
+end-sql
+
+begin-sql
+DELETE FROM PS_GPMY_RPT_RC
+WHERE OPRID          = $Prcs_OprID
+AND   RUN_CNTL_ID    = $Prcs_Run_Cntl_ID
+end-sql
+
+begin-sql
+DELETE FROM PS_GPMY_PR_RC
+WHERE OPRID          = $Prcs_OprID
+AND   RUN_CNTL_ID    = $Prcs_Run_Cntl_ID
+end-sql
+
+begin-sql
+DELETE FROM PS_GPMY_EMPL_RC
+WHERE OPRID          = $Prcs_OprID
+AND   RUN_CNTL_ID    = $Prcs_Run_Cntl_ID
+end-sql
+
+end-Procedure
+
+
+#include 'stdapi.sqc'
+#include 'getmonnm.sqc'
+#include 'getcurnm.sqc'
+#include 'curdttim.sqc'
+#include 'datetime.sqc'
+#include 'number.sqc'
+#include 'address.sqc'
+#include 'datetime.sqc'
+#include 'datemath.sqc'
+#include 'sqrtrans.sqc'

@@ -1,0 +1,955 @@
+!**********************************************************************
+!  TAX960TP: Create TIPS Form 8027 Electronic file                     *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2014, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2014/02/09:21:15:54                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  103                                                 !
+!                                                                      *
+!***********************************************************************
+!
+!***********************************************************************
+
+#include 'setenv.sqc'  !Set environment
+#include 'setup31.sqc' !Printer and page-size initialization
+
+Begin-Program
+  display ''
+  display 'Create TIPS Form 8027 Electronic file'
+
+  Let $t1 = datenow()
+  Show 'Report Started at : ' $t1
+
+  Move 0 to $Zero_fill 099999999999999
+
+  do Init-Report
+  do Process-Main
+  do Stdapi-Term
+
+
+
+  Display ''
+  Let $t2 = datenow()
+  Show 'Report Ended at : ' $t2
+End-Program
+
+
+Begin-Procedure Init-Report
+  do Init-DateTime
+  do Init-Number
+  do Stdapi-Init
+  do Initialization
+
+  do Read-Runcontrol
+End-Procedure
+
+
+
+Begin-Procedure Initialization
+
+  do Get-Current-DateTime
+  do Format-DateTime($AsOfToday, $960Date, {DEFYMD},'','')
+  move $960Date to $AsOfYear xxxx   !extract the current year
+  move $AsOfYear  to #AsOfYear
+  move #AsOfYear  to #saveAsOfYear
+  subtract 1    from #AsOfYear
+  do Get-Tax-Reporting-Run-Controls
+  do Delete-Temp-Table
+
+  If $Prcs_Process_Instance = ''
+    Display 'Report cannot be run outside of PeopleSoft, please use process scheduler.'
+    Stop
+  End-if
+
+  If &TX.Balance_Year <> #AsOfYear
+    display ''
+    display 'Please note : Current Year is not one greater than Tax Reporting Year.'
+    display 'Current Year is    ' noline
+    display  #saveAsOfYear  9999
+    display 'Tax Reporting Year ' noline
+    display &TX.Balance_Year
+    display ''
+  End-if
+
+End-Procedure
+
+
+Begin-Procedure Read-Runcontrol
+
+let $TCC_Select = ' '
+
+Begin-Select
+TP.PY_RC_SEL_TCC
+
+  Let $Select_TCC = rtrim(&TP.PY_RC_SEL_TCC, ' ')
+
+  if $Select_TCC = 'S'
+   do Build-TCC-Where-Clause
+  end-if
+
+FROM PS_RC_TAX960TP TP
+WHERE TP.OPRID = $Prcs_OprID
+  AND TP.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+End-Select
+
+
+End-Procedure
+
+
+Begin-Procedure Build-TCC-Where-Clause
+
+  move 'AND A.PY_TIPS_TCC  in (''' to $TCC_Select
+
+Begin-Select
+TC.PY_TIPS_TCC
+
+  let  $SelectedTCC = rtrim(&TC.PY_TIPS_TCC, ' ')
+  let  $TCC_Select  = $TCC_Select   || $SelectedTCC || ''','''
+
+FROM PS_RC_TAX960TP_TCC TC
+WHERE TC.OPRID = $Prcs_OprID
+  AND TC.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+End-Select
+
+
+  let $TCC_Select = SUBSTR($TCC_Select,1,LENGTH($TCC_Select) - 2)
+  let $TCC_Select = $TCC_Select || ')'
+
+
+End-Procedure
+
+begin-procedure Delete-Temp-Table
+begin-SQL on-error=Ignore
+  DELETE FROM PS_R_TAX960TP
+end-SQL
+end-procedure
+
+begin-procedure Ignore
+! dummy procedure to avoid SQL error message on delete of empty table
+end-procedure
+
+
+Begin-Procedure Process-Main
+
+  move 'Y' to $First_file
+  move &TX.Balance_Year to $CalYear 9999
+  let $StartDate = $CalYear || '0101'
+  do Format-DateTime($StartDate, $StartDate, {DEFCMP}, '', 'native')
+  let $EndDate = $CalYear || '1231'
+  do Format-DateTime($EndDate, $EndDate, {DEFCMP}, '', 'native')
+  let  $AsOfDate = $CalYear || '1231'
+  do Format-DateTime($AsOfDate, $AsOfDate, {DEFCMP}, '', 'native')
+
+Begin-Select DISTINCT
+A.PY_TIPS_TCC () on-break print=never before=File-Create after=Show-FileName
+B.TIPS_ESTAB
+B.COMPANY
+B.BUSINESS_UNIT
+
+  Let $Tips_Estab = rtrim(&B.TIPS_ESTAB, ' ')
+  Let $Tips_Company = rtrim(&B.COMPANY,' ')
+  let $Tips_BU  = rtrim(&B.BUSINESS_UNIT,' ')
+
+  do Get-Estab-Data
+
+  move $TE_Company to $Company
+  do Get-Company-Data
+  move &CT.FEDERAL_EIN to #Federal_EIN
+  move #Federal_EIN to $Federal_EIN 999999999
+  let $CompanyState =  rtrim(&CT.STATE,' ')
+  let $CompanyZip   =  rtrim(&CT.POSTAL,' ' )
+
+  do Get-Empl-Amounts
+  do Get-Estab-Amounts
+  do Validate-Name-Address
+
+  let #Rec_seq_number = #Rec_seq_number + 1
+
+
+  do Write-File
+
+
+FROM PS_PY_TIPS_TCC_CO A, PS_TIPS_ESTAB_PD B
+WHERE A.COMPANY = B.COMPANY
+#ifdef MVS
+  \$TCC_Select\
+#else
+  [$TCC_Select]
+#end-if
+  AND B.POST_DT BETWEEN $StartDate AND $EndDate
+ORDER BY A.PY_TIPS_TCC, B.TIPS_ESTAB
+End-Select
+
+if $First_file = 'N'
+  close 10
+else
+  display 'No Data Selected'
+end-if
+
+End-Procedure
+
+Begin-Procedure File-Create
+
+  let $Temp_TCC = rtrim(&A.PY_TIPS_TCC, ' ')
+  do Build-Temp-Table
+
+  if $First_file = 'N'
+     close 10
+  end-if
+
+  let $FileID = 'TCC'
+  let $TCC_file = rtrim (&A.PY_TIPS_TCC, ' ')
+  let $FileID = $FileID || $TCC_file
+  let $FileID = '{IMPORTPREFIX}' || $FileID || '{IMPORTSUFFIX}'
+
+  open $FileID as 10 for-writing record=420:fixed
+
+  move 'N' to $First_file
+  let #Rec_seq_number =  0
+
+  DISPLAY ''
+  DISPLAY 'Transmitter Control Code (TCC): ' NOLINE
+  DISPLAY $TCC_file
+  DISPLAY ''
+
+End-Procedure
+
+Begin-Procedure Show-FileName
+
+     DISPLAY ''
+     DISPLAY $FileID NOLINE
+     DISPLAY ' contains the electronic File'
+     DISPLAY ''
+End-Procedure
+
+begin-procedure  Build-Temp-Table
+begin-SQL on-error=Ignore
+  INSERT INTO PS_R_TAX960TP (PY_TIPS_TCC)
+          VALUES ($Temp_TCC)
+end-SQL
+end-procedure
+
+Begin-Procedure Get-Estab-Data
+
+Begin-Select
+TE.COMPANY
+TE.BUSINESS_UNIT
+TE.TIPS_ESTAB
+TE.PY_TIPS_SERIAL_NBR
+TE.PY_TIPS_EST_NAME
+TE.PY_EST_STR_ADDRESS
+TE.CITY
+TE.STATE
+TE.ZIP
+TE.PY_TIPS_EST_TYPE
+TE.PY_TIPS_CHARGE_IND
+TE.MIN_TIPS_PCT
+TE.TIPS_ALLOC_METH
+
+   let $TE_Company = rtrim(&TE.COMPANY, ' ')
+   let $TE_Business_unit = rtrim(&TE.BUSINESS_UNIT,' ')
+   let $Tips_Estab = rtrim(&TE.TIPS_ESTAB, ' ')
+
+   move &TE.PY_TIPS_SERIAL_NBR to #Py_tips_serial_nbr
+   move #Py_tips_serial_nbr to $Py_tips_serial_nbr 99999
+
+   let $Py_tips_est_name = rtrim(&TE.PY_TIPS_EST_NAME, ' ')
+   let $Py_est_str_address = rtrim(&TE.PY_EST_STR_ADDRESS, ' ')
+
+   let $Estab_City  = rtrim(&TE.CITY,' ')
+   let $Estab_State  = rtrim(&TE.STATE, ' ')
+   let $Estab_zip = rtrim(&TE.ZIP, ' ')
+   let $Py_tips_est_type = rtrim(&TE.PY_TIPS_EST_TYPE,' ')
+   let $Py_tips_charge_ind  = rtrim(&TE.PY_TIPS_CHARGE_IND, ' ')
+
+   move &TE.MIN_TIPS_PCT to #Min_tips_pct
+   let  #Min_tips_pct_nodec =  #Min_tips_pct * 100 !Remove the decimal point
+   move #Min_tips_pct_nodec to $Min_tips_pct 0999
+
+   let $Tips_alloc_meth = rtrim(&TE.TIPS_ALLOC_METH, ' ')
+
+
+FROM PS_TIPS_ESTAB_TBL TE
+WHERE TE.TIPS_ESTAB = $Tips_Estab
+  AND TE.COMPANY = $Tips_Company
+  AND TE.BUSINESS_UNIT = $Tips_BU
+  AND TE.EFFDT = (SELECT MAX(TE1.EFFDT) FROM PS_TIPS_ESTAB_TBL TE1
+                  WHERE TE1.COMPANY = TE.COMPANY
+                   AND  TE1.BUSINESS_UNIT = TE.BUSINESS_UNIT
+                   AND  TE1.TIPS_ESTAB = TE.TIPS_ESTAB
+                   AND  TE1.EFFDT <=$AsOfDate)
+End-Select
+
+End-Procedure
+
+Begin-Procedure Validate-Name-Address
+
+   move $Py_tips_est_name to $Valid_name
+   move $Py_est_str_address to $Valid_street
+   move $CompanyName to $Valid_Company_name
+   move $Compnyadd1 to $Valid_Company_street
+
+   !Remove hyphens
+
+   while INSTR($Valid_name,'-',1) <> 0
+    let #Hyphen = INSTR($Valid_name,'-',1)
+    if #Hyphen > 0
+      let $Valid_name = SUBSTR($Valid_name,1,(#Hyphen - 1)) ||
+                      SUBSTR($Valid_name,(#Hyphen +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_street,'-',1) <> 0
+    let #Hyphen = INSTR($Valid_street,'-',1)
+    if #Hyphen > 0
+      let $Valid_street = SUBSTR($Valid_street,1,(#Hyphen - 1)) ||
+                      SUBSTR($Valid_street,(#Hyphen +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_name,'-',1) <> 0
+    let #Hyphen = INSTR($Valid_Company_name,'-',1)
+    if #Hyphen > 0
+      let $Valid_Company_name = SUBSTR($Valid_Company_name,1,(#Hyphen - 1)) ||
+                      SUBSTR($Valid_Company_name,(#Hyphen +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_street,'-',1) <> 0
+    let #Hyphen = INSTR($Valid_Company_street,'-',1)
+    if #Hyphen > 0
+      let $Valid_Company_street = SUBSTR($Valid_Company_street,1,(#Hyphen - 1)) ||
+                      SUBSTR($Valid_Company_street,(#Hyphen +1),40)
+    end-if
+  end-while
+
+  !Remove Periods
+
+  while INSTR($Valid_name,'.',1) <> 0
+    let #Period = INSTR($Valid_name,'.',1)
+    if #Period > 0
+      let $Valid_name = SUBSTR($Valid_name,1,(#Period - 1)) ||
+                      SUBSTR($Valid_name,(#Period +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_street,'.',1) <> 0
+    let #Period = INSTR($Valid_street,'.',1)
+    if #Period > 0
+      let $Valid_street = SUBSTR($Valid_street,1,(#Period - 1)) ||
+                      SUBSTR($Valid_street,(#Period +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_name,'.',1) <> 0
+    let #Period = INSTR($Valid_Company_name,'.',1)
+    if #Period > 0
+      let $Valid_Company_name = SUBSTR($Valid_Company_name,1,(#Period - 1)) ||
+                      SUBSTR($Valid_Company_name,(#Period +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_street,'.',1) <> 0
+    let #Period = INSTR($Valid_Company_street,'.',1)
+    if #Period > 0
+      let $Valid_Company_street = SUBSTR($Valid_Company_street,1,(#Period - 1)) ||
+                      SUBSTR($Valid_Company_street,(#Period +1),40)
+    end-if
+  end-while
+
+  !Remove Ampersands
+
+  while INSTR($Valid_name,'&',1) <> 0
+    let #Ampersand = INSTR($Valid_name,'&',1)
+    if #Ampersand > 0
+      let $Valid_name = SUBSTR($Valid_name,1,(#Ampersand - 1)) ||
+                      SUBSTR($Valid_name,(#Ampersand +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_street,'&',1) <> 0
+    let #Ampersand = INSTR($Valid_street,'&',1)
+    if #Ampersand > 0
+      let $Valid_street = SUBSTR($Valid_street,1,(#Ampersand - 1)) ||
+                      SUBSTR($Valid_street,(#Ampersand +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_name,'&',1) <> 0
+    let #Ampersand = INSTR($Valid_Company_name,'&',1)
+    if #Ampersand > 0
+      let $Valid_Company_name = SUBSTR($Valid_Company_name,1,(#Ampersand - 1)) ||
+                      SUBSTR($Valid_Company_name,(#Ampersand +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_street,'&',1) <> 0
+    let #Ampersand = INSTR($Valid_Company_street,'&',1)
+    if #Ampersand > 0
+      let $Valid_Company_street = SUBSTR($Valid_Company_street,1,(#Ampersand - 1)) ||
+                      SUBSTR($Valid_Company_street,(#Ampersand +1),40)
+    end-if
+  end-while
+
+  !Remove Slashes
+
+  while INSTR($Valid_name,'/',1) <> 0
+    let #Slash = INSTR($Valid_name,'/',1)
+    if #Slash > 0
+      let $Valid_name = SUBSTR($Valid_name,1,(#Slash - 1)) ||
+                      SUBSTR($Valid_name,(#Slash +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_street,'/',1) <> 0
+    let #Slash = INSTR($Valid_street,'/',1)
+    if #Slash > 0
+      let $Valid_street = SUBSTR($Valid_street,1,(#Slash - 1)) ||
+                      SUBSTR($Valid_street,(#Slash +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_name,'/',1) <> 0
+    let #Slash = INSTR($Valid_Company_name,'/',1)
+    if #Slash > 0
+      let $Valid_Company_name = SUBSTR($Valid_Company_name,1,(#Slash - 1)) ||
+                      SUBSTR($Valid_Company_name,(#Slash +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_street,'/',1) <> 0
+    let #Slash = INSTR($Valid_Company_street,'/',1)
+    if #Slash > 0
+      let $Valid_Company_street = SUBSTR($Valid_Company_street,1,(#Slash - 1)) ||
+                      SUBSTR($Valid_Company_street,(#Slash +1),40)
+    end-if
+  end-while
+
+  !Remove Backslashes
+
+  while INSTR($Valid_name,'\',1) <> 0
+    let #Backslash = INSTR($Valid_name,'\',1)
+    if #Backslash > 0
+      let $Valid_name = SUBSTR($Valid_name,1,(#Backslashh - 1)) ||
+                      SUBSTR($Valid_name,(#Backslash +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_street,'\',1) <> 0
+    let #Backslash = INSTR($Valid_street,'\',1)
+    if #Backslash > 0
+      let $Valid_street = SUBSTR($Valid_street,1,(#Backslashh - 1)) ||
+                      SUBSTR($Valid_street,(#Backslash +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_name,'\',1) <> 0
+    let #Backslash = INSTR($Valid_Company_name,'\',1)
+    if #Backslash > 0
+      let $Valid_Company_name = SUBSTR($Valid_Company_name,1,(#Backslash - 1)) ||
+                      SUBSTR($Valid_Company_name,(#Backslash +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_street,'\',1) <> 0
+    let #Backslash = INSTR($Valid_Company_street,'\',1)
+    if #Backslash > 0
+      let $Valid_Company_street = SUBSTR($Valid_Company_street,1,(#Backslash - 1)) ||
+                      SUBSTR($Valid_Company_street,(#Backslash +1),40)
+    end-if
+  end-while
+
+  !Remove commas
+
+  while INSTR($Valid_name,',',1) <> 0
+    let #Comma = INSTR($Valid_name,',',1)
+    if #Comma > 0
+      let $Valid_name = SUBSTR($Valid_name,1,(#Comma - 1)) ||
+                      SUBSTR($Valid_name,(#Comma +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_street,',',1) <> 0
+    let #Comma = INSTR($Valid_street,',',1)
+    if #Comma > 0
+      let $Valid_street = SUBSTR($Valid_street,1,(#Comma - 1)) ||
+                      SUBSTR($Valid_street,(#Comma +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_name,',',1) <> 0
+    let #Comma = INSTR($Valid_Company_name,',',1)
+    if #Comma > 0
+      let $Valid_Company_name = SUBSTR($Valid_Company_name,1,(#Comma - 1)) ||
+                      SUBSTR($Valid_Company_name,(#Comma +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_street,',',1) <> 0
+    let #Comma = INSTR($Valid_Company_street,',',1)
+    if #Comma > 0
+      let $Valid_Company_street = SUBSTR($Valid_Company_street,1,(#Comma - 1)) ||
+                      SUBSTR($Valid_Company_street,(#Comma +1),40)
+    end-if
+  end-while
+
+ !Remove the number sign
+
+  while INSTR($Valid_name,'#',1) <> 0
+    let #Number = INSTR($Valid_name,'#',1)
+    if #Number > 0
+      let $Valid_name = SUBSTR($Valid_name,1,(#Number - 1)) ||
+                      SUBSTR($Valid_name,(#Number +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_street,'#',1) <> 0
+    let #Number = INSTR($Valid_street,'#',1)
+    if #Number > 0
+      let $Valid_street = SUBSTR($Valid_street,1,(#Number - 1)) ||
+                      SUBSTR($Valid_street,(#Number +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_name,'#',1) <> 0
+    let #Number = INSTR($Valid_Company_name,'#',1)
+    if #Number > 0
+      let $Valid_Company_name = SUBSTR($Valid_Company_name,1,(#Number - 1)) ||
+                      SUBSTR($Valid_Company_name,(#Number +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_street,'#',1) <> 0
+    let #Number = INSTR($Valid_Company_street,'#',1)
+    if #Number > 0
+      let $Valid_Company_street = SUBSTR($Valid_Company_street,1,(#Number - 1)) ||
+                      SUBSTR($Valid_Company_street,(#Number +1),40)
+    end-if
+  end-while
+
+  !Remove Apostrophe
+
+  let $Apostrophe = ''''
+  while INSTR($Valid_name,$Apostrophe,1) <> 0
+    let #Apostrophe = INSTR($Valid_name,$Apostrophe,1)
+    if #Apostrophe > 0
+      let $Valid_name = SUBSTR($Valid_name,1,(#Apostrophe - 1)) ||
+                      SUBSTR($Valid_name,(#Apostrophe +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_street,$Apostrophe,1) <> 0
+    let #Apostrophe = INSTR($Valid_street,$Apostrophe,1)
+    if #Apostrophe > 0
+      let $Valid_street = SUBSTR($Valid_street,1,(#Apostrophe - 1)) ||
+                      SUBSTR($Valid_street,(#Apostrophe +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_name,$Apostrophe,1) <> 0
+    let #Apostrophe = INSTR($Valid_Company_name,$Apostrophe,1)
+    if #Apostrophe > 0
+      let $Valid_Company_name = SUBSTR($Valid_Company_name,1,(#Apostrophe - 1)) ||
+                      SUBSTR($Valid_Company_name,(#Apostrophe +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_street,$Apostrophe,1) <> 0
+    let #Apostrophe = INSTR($Valid_Company_street,$Apostrophe,1)
+    if #Apostrophe > 0
+      let $Valid_Company_street = SUBSTR($Valid_Company_street,1,(#Apostrophe - 1)) ||
+                      SUBSTR($Valid_Company_street,(#Apostrophe +1),40)
+    end-if
+  end-while
+
+
+  !Remove Brackets
+
+  while INSTR($Valid_name,'(',1) <> 0
+    let #FBracket = INSTR($Valid_name,'(',1)
+    if  #FBracket > 0
+      let $Valid_name = SUBSTR($Valid_name,1,( #FBracket - 1)) ||
+                      SUBSTR($Valid_name,( #FBracket +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_street,'(',1) <> 0
+    let #FBracket = INSTR($Valid_street,'(',1)
+    if #FBracket > 0
+      let $Valid_street = SUBSTR($Valid_street,1,(#FBracket - 1)) ||
+                      SUBSTR($Valid_street,(#FBracket +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_name,'(',1) <> 0
+    let #FBracket = INSTR($Valid_Company_name,'(',1)
+    if #FBracket > 0
+      let $Valid_Company_name = SUBSTR($Valid_Company_name,1,(#FBracket - 1)) ||
+                      SUBSTR($Valid_Company_name,(#FBracket +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_street,'(',1) <> 0
+    let #FBracket = INSTR($Valid_Company_street,'(',1)
+    if #FBracket > 0
+      let $Valid_Company_street = SUBSTR($Valid_Company_street,1,(#FBracket - 1)) ||
+                      SUBSTR($Valid_Company_street,(#FBracket +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_name,')',1) <> 0
+    let #EBracket = INSTR($Valid_name,')',1)
+    if  #EBracket > 0
+      let $Valid_name = SUBSTR($Valid_name,1,( #EBracket - 1)) ||
+                      SUBSTR($Valid_name,( #EBracket +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_street,')',1) <> 0
+    let #EBracket = INSTR($Valid_street,')',1)
+    if #EBracket > 0
+      let $Valid_street = SUBSTR($Valid_street,1,(#EBracket - 1)) ||
+                      SUBSTR($Valid_street,(#EBracket +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_name,')',1) <> 0
+    let #EBracket = INSTR($Valid_Company_name,')',1)
+    if #EBracket > 0
+      let $Valid_Company_name = SUBSTR($Valid_Company_name,1,(#EBracket - 1)) ||
+                      SUBSTR($Valid_Company_name,(#EBracket +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_street,')',1) <> 0
+    let #EBracket = INSTR($Valid_Company_street,')',1)
+    if #EBracket > 0
+      let $Valid_Company_street = SUBSTR($Valid_Company_street,1,(#EBracket - 1)) ||
+                      SUBSTR($Valid_Company_street,(#EBracket +1),40)
+    end-if
+  end-while
+
+ !Remove colons
+
+  while INSTR($Valid_name,':',1) <> 0
+    let #Colon = INSTR($Valid_name,':',1)
+    if #Colon > 0
+      let $Valid_name = SUBSTR($Valid_name,1,(#Colon - 1)) ||
+                      SUBSTR($Valid_name,(#Colon +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_street,':',1) <> 0
+    let #Colon = INSTR($Valid_street,':',1)
+    if #Colon > 0
+      let $Valid_street = SUBSTR($Valid_street,1,(#Colon - 1)) ||
+                      SUBSTR($Valid_street,(#Colon +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_name,':',1) <> 0
+    let #Colon = INSTR($Valid_Company_name,':',1)
+    if #Colon > 0
+      let $Valid_Company_name = SUBSTR($Valid_Company_name,1,(#Colon - 1)) ||
+                      SUBSTR($Valid_Company_name,(#Colon +1),40)
+    end-if
+  end-while
+
+  while INSTR($Valid_Company_street,':',1) <> 0
+    let #Colon = INSTR($Valid_Company_street,':',1)
+    if #Colon > 0
+      let $Valid_Company_street = SUBSTR($Valid_Company_street,1,(#Colon - 1)) ||
+                      SUBSTR($Valid_Company_street,(#Colon +1),40)
+    end-if
+  end-while
+
+  move $Valid_name   to $Py_tips_est_name
+  move $Valid_street to $Py_est_str_address
+  move $Valid_Company_name to $CompanyName
+  move $Valid_Company_street to $Compnyadd1
+
+End-Procedure
+
+Begin-Procedure Get-Estab-Amounts
+
+
+Begin-Select
+#ifdef DB2ALL
+DECIMAL(SUM(ES.GRS_RCPTS),12,2)         &ES.GRS_RCPTS
+DECIMAL(SUM(ES.GRS_TIPS),12,2)          &ES.GRS_TIPS
+DECIMAL(SUM(ES.GRS_IND_TIPS),12,2)      &ES.GRS_IND_TIPS
+DECIMAL(SUM(ES.TOT_ALLOCATION),12,2)    &ES.TOT_ALLOCATION
+DECIMAL(SUM(ES.EMPL_CNT),12,2)          &ES.EMPL_CNT
+#else
+SUM(ES.GRS_RCPTS)          &ES.GRS_RCPTS
+SUM(ES.GRS_TIPS)           &ES.GRS_TIPS
+SUM(ES.GRS_IND_TIPS)       &ES.GRS_IND_TIPS
+SUM(ES.TOT_ALLOCATION)     &ES.TOT_ALLOCATION
+SUM(ES.EMPL_CNT)           &ES.EMPL_CNT
+#end-if
+
+  move &ES.GRS_RCPTS            to #Tot_grs_rcpts
+  let #Tot_grs_rcpts_nodec = #Tot_grs_rcpts * 100         !to remove decimal point
+  move #Tot_grs_rcpts_nodec     to $Tot_grs_rcpts          099999999999
+  move &ES.GRS_TIPS             to #Tot_grs_tips
+  let #Tot_grs_tips_nodec  = #Tot_grs_tips * 100          !to remove decimal point
+  move #Tot_grs_tips_nodec      to $Tot_grs_tips           099999999999
+  move &ES.GRS_IND_TIPS         to #Tot_grs_ind_tips
+  let #Tot_grs_ind_tips_nodec = #Tot_grs_ind_tips * 100   !to remove decimal point
+  move #Tot_grs_ind_tips_nodec  to $Tot_grs_ind_tips       099999999999
+  move &ES.TOT_ALLOCATION       to #Tot_Allocation
+  let #Tot_Allocation_nodec = #Tot_Allocation * 100       !to remove decimal point
+  move #Tot_Allocation_nodec    to $Tot_Allocation         099999999999
+  move &ES.EMPL_CNT             to #Tot_Empl_cnt
+  move #Tot_Empl_cnt            to $Tot_Empl_cnt           0999
+
+
+FROM PS_TIPS_ESTAB_PD ES
+WHERE ES.COMPANY = $TE_Company
+AND ES.BUSINESS_UNIT = $TE_Business_unit
+AND ES.TIPS_ESTAB = $Tips_Estab
+AND ES.POST_DT BETWEEN $StartDate AND $EndDate
+end-Select
+
+End-Procedure
+
+Begin-Procedure Get-Empl-Amounts
+
+
+Begin-Select
+#ifdef DB2ALL
+DECIMAL(SUM(TI.PY_SRVCHG_TIPS),12,2)         &TI.PY_SRVCHG_TIPS
+DECIMAL(SUM(TI.PY_SRVCHG_RCPTS),12,2)        &TI.PY_SRVCHG_RCPTS
+DECIMAL(SUM(TI.CHG_TIPS),12,2)              &TI.CHG_TIPS
+DECIMAL(SUM(TI.CHG_RCPTS),12,2)              &TI.CHG_RCPTS
+#else
+SUM(TI.PY_SRVCHG_TIPS)          &TI.PY_SRVCHG_TIPS
+SUM(TI.PY_SRVCHG_RCPTS)         &TI.PY_SRVCHG_RCPTS
+SUM(TI.CHG_TIPS)                &TI.CHG_TIPS
+SUM(TI.CHG_RCPTS)               &TI.CHG_RCPTS
+#end-if
+
+ move &TI.CHG_TIPS         to #Tot_chg_tips
+ let #Tot_chg_tips_nodec = #Tot_chg_tips * 100      !to remove decimal point
+ move #Tot_chg_tips_nodec  to $Tot_chg_tip                  099999999999
+ move &TI.CHG_RCPTS  to #Tot_chg_rcpts
+ let #Tot_chg_rcpts_nodec  = #Tot_chg_rcpts  * 100  !to remove decimal point
+ move #Tot_chg_rcpts_nodec to $Tot_chg_rcpts                099999999999
+
+ move &TI.PY_SRVCHG_TIPS         to #Tot_srv_chg_tips
+ move &TI.PY_SRVCHG_RCPTS        to #Tot_srv_chg_rcpts
+
+FROM PS_TIPS_EMPL_INPUT TI
+WHERE TI.COMPANY = $TE_Company
+AND TI.BUSINESS_UNIT = $TE_Business_unit
+AND TI.TIPS_ESTAB = $Tips_Estab
+AND TI.INPUT_DT BETWEEN $StartDate AND $EndDate
+end-Select
+
+End-Procedure
+
+Begin-Procedure Write-File
+
+  let $Sp = ' '
+  move #Rec_seq_number to $Rec_seq_number 09999999
+  if #Tot_srv_chg_rcpts > 0
+   let #Srvc_chrg_less10 = (  #Tot_srv_chg_tips / #Tot_srv_chg_rcpts )  * 100
+  else
+   let #Srvc_chrg_less10 = 0
+  end-if
+
+  IF #Srvc_chrg_less10 < 10
+      let #Tot_srv_chg_rcpts = #Tot_srv_chg_rcpts * 100  !to remove decimal point
+      move #Tot_srv_chg_rcpts       to $Srvc_chrg_less10 099999999999
+  else
+      let #Srvc_chrg_less10_tips = 0
+      move  #Srvc_chrg_less10_tips  to $Srvc_chrg_less10  099999999999
+  end-if
+
+  let #Tot_grs_direct_tips =  #Tot_grs_tips - #Tot_grs_ind_tips
+  let #Tot_grs_direct_tips_nodec = #Tot_grs_direct_tips * 100 !to remove decimal point
+  move  #Tot_grs_direct_tips_nodec to  $Tot_grs_direct_tips     099999999999
+
+  let #Tip_prct_rate = #Tot_grs_rcpts * ( #Min_tips_pct / 100)
+  let #Tip_prct_rate_nodec = #Tip_prct_rate * 100        !to remove decimal point
+  move  #Tip_prct_rate_nodec to $Tip_prct_rate                 099999999999
+
+  if #Tot_Allocation = 0
+     move '0' to $Tips_alloc_method
+  else
+    evaluate $Tips_alloc_meth
+
+    when = 'H'
+       move '1' to $Tips_alloc_method
+       break
+
+    when = 'R'
+       move '2' to $Tips_alloc_method
+       break
+
+    when = 'F'
+       move '3' to $Tips_alloc_method
+
+    end-evaluate
+  end-if
+
+  IF $Py_tips_charge_ind  = 'Y'
+       move '1' to $Py_tips_charge
+  else
+       move '2' to $Py_tips_charge
+  End-if
+
+
+  DISPLAY 'Establishment ' noline
+  DISPLAY $Py_tips_serial_nbr noline
+  DISPLAY ' / Job Location ' noline
+  DISPLAY $Tips_Estab noline
+  DISPLAY ' / Company ' noline
+  DISPLAY $Company
+
+  let $Display_Error_line = 'N'
+
+  if #Tot_chg_rcpts <  #Tot_chg_tip
+     if $Display_Error_line = 'N'
+       display '**Errors Found **'
+       let $Display_Error_line = 'Y'
+     end-if
+     display '  Charged Receipts must exceed Charged Tips'
+  end-if
+
+  if #Tot_grs_tips <> #Tot_grs_ind_tips + #Tot_grs_direct_tips
+     if $Display_Error_line = 'N'
+       display '**Errors Found **'
+       let $Display_Error_line = 'Y'
+     end-if
+     display '  Total Tips Reported must equal the combined amount of the Indirect Tips and Direct Tips'
+  end-if
+
+  if #Tot_grs_rcpts < #Tot_chg_rcpts
+     if $Display_Error_line = 'N'
+       display '**Errors Found **'
+       let $Display_Error_line = 'Y'
+     end-if
+     display '  Gross Receipts must equal or exceed Charged Receipts'
+  end-if
+
+  if #Tot_grs_rcpts <= #Tot_chg_tip
+     if $Display_Error_line = 'N'
+       display '**Errors Found **'
+       let $Display_Error_line = 'Y'
+     end-if
+     display '  Gross Receipts must exceed Charged Tips'
+  end-if
+
+  if #Tot_grs_rcpts <= #Srvc_chrg_less10
+     if $Display_Error_line = 'N'
+       display '**Errors Found **'
+       let $Display_Error_line = 'Y'
+     end-if
+     display '  Gross Receipts must exceed Service Charge'
+  end-if
+
+  if #Tot_grs_rcpts <= #Tot_grs_ind_tips
+     if $Display_Error_line = 'N'
+       display '**Errors Found **'
+       let $Display_Error_line = 'Y'
+     end-if
+     display '  Gross Receipts must exceed Indirect Tips'
+  end-if
+
+  if #Tot_grs_rcpts <= #Tot_grs_direct_tips
+     if $Display_Error_line = 'N'
+       display '**Errors Found **'
+       let $Display_Error_line = 'Y'
+     end-if
+     display '  Gross Receipts must exceed Direct Tips'
+  end-if
+
+  if #Tot_grs_rcpts <= #Tot_grs_tips
+     if $Display_Error_line = 'N'
+       display '**Errors Found **'
+       let $Display_Error_line = 'Y'
+     end-if
+     display '  Gross Receipts must exceed Total Tips Reported'
+  end-if
+
+  if #Tot_grs_rcpts <= #Tot_Allocation
+     if $Display_Error_line = 'N'
+       display '**Errors Found **'
+       let $Display_Error_line = 'Y'
+     end-if
+     display '  Gross Receipts must exceed Allocated Tips'
+  end-if
+
+
+
+
+  write 10 from $Py_tips_est_type:1        ! 1         Establishment Type
+                $Py_tips_serial_nbr:5      ! 2 - 6     Establishment Serial Number
+                $Py_tips_est_name:40       ! 7 - 46    Establishment Name
+                $Py_est_str_address:40     ! 47 - 86   Establishment Street
+                $Estab_City:25             ! 87 - 111  Establishment City
+                $Estab_State:2             ! 112 - 113 Establishment State
+                $Estab_zip:9               ! 114 - 122 Establishment Zip Code
+                $Federal_EIN:9             ! 123 - 131 Employer Identification Number
+                $CompanyName:40            ! 132-171   Employer Name
+                $Compnyadd1:40             ! 172 - 211 Employer Street Address
+                $Compnycity:25             ! 212 - 236 Employer City
+                $CompanyState:2            ! 237 - 238 Employer State
+                $CompanyZip:9              ! 239 - 247 Employer Zip Code
+                $Tot_chg_tip:12            ! 248 - 259 Charged Tips
+                $Tot_chg_rcpts:12          ! 260 - 271 Charged Receipts
+                $Srvc_chrg_less10:12       ! 272 - 283 Service Charge less than 10 Percent
+                $Tot_grs_ind_tips:12       ! 284 - 295 Indirect Tips reported
+                $Tot_grs_direct_tips:12    ! 296 - 307 Direct Tips reported
+                $Tot_grs_tips:12           ! 308 - 319 Total Tips Reported
+                $Tot_grs_rcpts:12          ! 320 - 331 Gross Receipts
+                $Tip_prct_rate:12          ! 332 - 343 Tip Percentage Rate Times Gross Receipts
+                $Min_tips_pct:4            ! 344 - 347 Tip Percentage Rate
+                $Tot_Allocation:12         ! 348 - 359 Allocated Tips
+                $Tips_alloc_method:1       ! 360       Tips Allocation Method
+                $Tot_Empl_cnt:4            ! 361 - 364 Number of directly Tipped Employees
+                $TCC_file:5                ! 365 - 369 Transmitter Control Code
+                $Sp:1                      ! 370       Blank
+                'N':1                      ! 371       Final Return Indicator
+                $Py_tips_charge:1          ! 372       Charge Card Indicator
+                $Sp:1                      ! 373       Blank
+                $Sp:1                      ! 374       Blank
+                $CalYear:4                 ! 375 - 378 Tax Year
+                $Sp:1                      ! 379       Prior Year Indicator
+                $Sp:1                      ! 380       Test File Indicator
+                $Sp:30                     ! 381 - 410 Reserved
+                $Rec_seq_number:8          ! 411 - 418 Record Sequence Number
+                $Sp:2                      ! 419 - 420 Blank
+
+End-Procedure
+
+
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Update Process API

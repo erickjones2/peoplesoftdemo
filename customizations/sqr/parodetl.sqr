@@ -1,0 +1,634 @@
+!***********************************************************************
+!***********************************************************************
+!  parodetl.sqr
+!  Pension Rollover Report
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/17:14:59:25                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!                                                                      *
+!***********************************************************************
+
+
+   #include 'setenv.sqc'
+
+!-----------------------------------------------------------------------
+Begin-Setup
+!-----------------------------------------------------------------------
+
+  #include 'ptpsl177.sqc'
+
+End-Setup
+
+begin-report
+  DO Init-DateTime
+  DO Init-Number
+  DO Get-Current-DateTime
+  DO Init-Report
+  DO Process-Rollover-Main
+  DO StdApi-Term
+END-report
+
+
+!-----------------------------------------------------------------------
+! Section: Heading Procedures
+! Descr:   This sections contains all procedures for
+!          printing the optional heading
+!-----------------------------------------------------------------------
+Begin-Heading 09
+
+  #Include 'stdhdg01.sqc'
+  
+  let $Report_Rollover = '- Rollover Information'
+  print $Report_Rollover                                 (-2,023,022)
+ 
+  print $Run_ID_Label                                              (+1,001,006)
+  print ':'                                                     (  ,   ,001)
+  print $pa_run_id                                              (  , +3,010)
+  
+  if #bp_count > 1 
+       let $Benefit_Plan_Hdg = 'All Plans Selected'
+  else
+       let $Benefit_Plan_Hdg = $Benefit_Plan
+  end-if
+  
+  let #length = lengthp($Benefit_Plan_Hdg) + 15
+  
+  let $Benefit_Plan_Print = $Benefit_Plan_Label || ':  ' || $Benefit_Plan_Hdg
+  print $Benefit_Plan_Print                                      (-1,   ,#length) center
+  
+  let $Process_Instance = rtrim($Process_Instance, '0')
+  let $Process_Instance = rtrim($Process_Instance, '.')
+  let #length = lengthp($Process_Instance) + 19
+ 
+  let $Process_Instance_Label = $Process_Instance_Label || ':  ' || $Process_Instance
+  print $Process_Instance_Label                                    (+1,   ,#length) center
+  
+  print $Payment_Frequency_Label                                   (+1,001,017)
+  print ':'                                                     (  ,   ,001)
+  print $Pymt_Freq_Descr                                        (  , +3,020)
+  
+  print $Pay_Period_End_Dt_Label                                   (  ,   ,032) center
+  
+  print $Process_Selection_Label                                   (+1,001,020)
+  print ':'                                                     (  ,   ,001)
+  print $Confirm_Flg_Descr                                      (  , +3,023)
+  
+  print $Check_Date_Label                                          (  ,   ,023) center
+  
+  print '-'                                                     (+1,001,182) fill bold
+    
+  print $Benefit_Plan_Label                                        (+1,001,012) bold
+  print ':'                                                     (  ,   ,001) bold
+  print $Benefit_Plan_Prev                                      (  , +2,006) 
+    
+  print $Payments_Label                                            (+1,001,008) bold
+  print ':'                                                     (  ,   ,001) bold
+  print $tot_ro_pmt_cnt_prev                                       (  , +2,008)   
+    
+  print $Total_Payments_Label                                      (-1,078,014) bold
+  print ':'                                                     (  ,   ,001) bold
+  print $tot_ro_pmt_amt_prev                                       (  , +2,015) edit $999,999,999.99 
+ 
+  print $Contribution_Amount_Label                              (+1,064,028) bold
+  print ':'                                                     (  ,   ,001) bold
+  print $tot_ro_ctb_amt_prev                                       (  , +2,015) edit $999,999,999.99  
+   
+  print $Schedule_Amount_Label                                    (-1,136,024) bold
+  print ':'                                                     (  ,   ,001) bold
+  print $tot_ro_schd_amt_prev                                      (  , +2,015) edit $999,999,999.99   
+    
+  print $Manual_Amount_Label                                       (+1,138,022) bold
+  print ':'                                                     (  ,   ,001) bold
+  print $tot_ro_manl_amt_prev                                      (  , +2,015) edit $999,999,999.99 
+  
+  print '-'                                                     (+1,001,182) fill bold
+
+
+End-Heading
+
+
+!-----------------------------------------------------------------------
+! Procedure: Get-Heading-Details
+! Descr:     This procedure queries the PS_PA_RT_SUM_HDR record for the
+!            data associated with the payments in each benefit plan.
+!            The data is printed on each page below the standard SQR
+!            heading.
+!-----------------------------------------------------------------------
+begin-procedure Get-Heading-Details
+
+BEGIN-SELECT
+PA_RT_SUM_HDR.PYMT_FREQ
+PA_RT_SUM_HDR.CONFIRM_FLG
+PA_RT_SUM_HDR.PA_PMT_END_DT
+PA_RT_SUM_HDR.PA_CHECK_DATE
+PA_RT_SUM_HDR.PROCESS_INSTANCE  
+
+       let $Pymt_Freq     = &pa_rt_sum_hdr.pymt_freq
+       let $Confirm_Flg   = &pa_rt_sum_hdr.confirm_flg
+       let $PA_Pmt_End_Dt = rtrim(&pa_rt_sum_hdr.pa_pmt_end_dt, ' ')
+       let $PA_Check_Date = rtrim(&pa_rt_sum_hdr.pa_check_date, ' ')
+       let $process_instance = &pa_rt_sum_hdr.process_instance
+       let #process_instance = to_number($process_instance)
+       let #process_instance = round(#process_instance,0)
+
+FROM PS_PA_RT_SUM_HDR PA_RT_SUM_HDR
+WHERE PA_RT_SUM_HDR.PA_RUN_ID = $pa_run_id AND 
+PA_RT_SUM_HDR.PROCESS_INSTANCE = (SELECT MAX (B.PROCESS_INSTANCE)
+FROM PS_PA_RT_SUM_HDR B
+WHERE B.PA_RUN_ID = PA_RT_SUM_HDR.PA_RUN_ID)
+END-SELECT
+
+  move $Pymt_Freq to $FieldValue
+  move 'PYMT_FREQ' to $Fieldname
+  do Read-Translate-Table
+  let $Pymt_Freq_Descr    = rtrim($Xlatlongname,' ')
+
+  move $Confirm_Flg to $FieldValue
+  move 'CONFIRM_FLG' to $Fieldname
+  do Read-Translate-Table
+  let $Confirm_Flg_Descr    = rtrim($Xlatlongname,' ')
+  
+  do Format-DateTime ($PA_Pmt_End_Dt,$PA_Pmt_End_Dt, {DEFDATE}, '', '')
+  let $Pay_Period_End_Dt_Label = $Pay_Period_End_Dt_Label || ':  ' || $PA_Pmt_End_Dt
+  
+  do Format-DateTime ($PA_Check_Date,$PA_Check_Date, {DEFDATE}, '', '')
+  let $Check_SubLabel = $Check_Date_Label
+  let $Check_Date_Label  = $Check_Date_Label || ':  ' || $PA_Check_Date
+
+end-procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Print-New-Page
+! Descr:     This report prints the details of pension payments.  Each
+!            payment can contain one or many benefit plans.  If the 
+!            report has more than one benefit plan, this procedure will
+!            start a new page for each benefit plan.  
+!-----------------------------------------------------------------------
+begin-procedure Print-New-Page
+
+  if #page_count > 1 
+       new-page
+  end-if
+  
+  let $Benefit_Plan_Prev = $Benefit_Plan
+  let $tot_ro_pmt_cnt_prev  = $tot_ro_pmt_cnt
+  let $tot_ro_pmt_amt_prev  = $tot_ro_pmt_amt
+  let $tot_ro_ctb_amt_prev  = $tot_ro_ctb_amt
+  let $tot_ro_schd_amt_prev = $tot_ro_schd_amt
+  let $tot_ro_manl_amt_prev = $tot_ro_manl_amt
+
+end-procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Print-Rollover-Data-Heading
+! Descr:     This procedure prints the appropriate labels for the report
+!            when the 'Payment Details - Total' radio button is 
+!            selected.
+!-----------------------------------------------------------------------
+begin-procedure Print-Rollover-Data-Heading
+
+  print $Emplid_Label                                              (+1,001,006)
+  print $Empl_Rcd_Label                                            (  ,014,009)
+  print $Account_Name_Label                                     (  ,024,050)
+  print $Account_Num_Label                                      (  ,075,017)
+  print $Taxpayer_ID_Label                                      (  ,093,014)
+  print $Distrib_Code_Label                                     (  ,108,017)
+  print $Rollover_Amount_Label                                  (  ,126,015)
+  print $Nontaxable_Amount_Label                                (  ,142,018)
+  print $Rollover_Source_Label                                  (  ,161,17)
+
+  print '-'                                                     (+1,001,182) fill bold
+
+end-procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Print-Schedule-Rollover-Data
+! Description:  This procedure prints Rollover data 
+!-----------------------------------------------------------------------
+begin-procedure Print-Schedule-Rollover-Data
+
+  
+print $Emplid                                                    (+1,001,011)
+
+print $Empl_Rcd                                                  (  ,014,003)
+
+print $Account_Name                                              (  ,024,050)
+print $Account_Num                                               (  ,075,017)
+print $Taxpayer_ID                                               (  ,093,014)
+print $Distrib_Code                                              (  ,108,017)
+print $PA_Pmt_Amt                                                (  ,126,015) edit $999,999,999.99
+print $PA_Pmt_Amt_NoTax                                          (  ,142,015) edit $999,999,999.99
+print $Schedule_Text                                             (  ,161,016) 
+
+print $Institution_Addr_Label                                    (+1,003,024)
+print ':'                                                        (  ,027,001)
+print $Institution_Name                                          (  ,030,040)
+print $Address1                                                  (  ,071,055)
+print $Address2                                                  (  ,127,055)
+print $Address3                                                  (+1,030,055)
+print $City                                                      (  ,087,030)
+print $State                                                     (  ,118,002)
+print $Postal                                                    (  ,121,010)
+print $Country_Descr                                             (  ,132,030)
+
+end-procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Print-Contribution-Rollover-Data
+! Description:  This procedure prints Rollover data 
+!-----------------------------------------------------------------------
+begin-procedure Print-Contribution-Rollover-Data
+
+  
+print $Emplid                                                    (+1,001,011)
+
+print $Empl_Rcd                                                  (  ,014,003)
+
+print $Account_Name                                              (  ,024,050)
+print $Account_Num                                               (  ,075,017)
+print $Taxpayer_ID                                               (  ,093,014)
+print $Distrib_Code                                              (  ,108,017)
+print $PA_Adj_Amt                                                (  ,126,015) edit $999,999,999.99
+print $PA_Adj_Amt_NoTax                                          (  ,142,015) edit $999,999,999.99
+print $Contribution_Acct_Text                                    (  ,161,020) 
+
+print $Institution_Addr_Label                                    (+1,003,024)
+print ':'                                                        (  ,027,001)
+print $Institution_Name                                          (  ,030,040)
+print $Address1                                                  (  ,071,055)
+print $Address2                                                  (  ,127,055)
+print $Address3                                                  (+1,030,055)
+print $City                                                      (  ,087,030)
+print $State                                                     (  ,118,002)
+print $Postal                                                    (  ,121,010)
+print $Country_Descr                                             (  ,132,030)
+
+end-procedure
+
+!-----------------------------------------------------------------------
+begin-procedure Init-Report
+!-----------------------------------------------------------------------
+DO StdApi-Init
+
+let $ReportId = 'PARODETL'
+
+do Get-Report-Language    ! Procedure that decides the report language
+                          ! and then calls 'Report-Translation' procedure
+                          ! that reads the language dep. text.
+
+do Get-Parameter-Values
+do Get-Heading-Details
+  
+end-procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Report-Translation
+! Descr:     This procedure is used to read language-dependent text from
+!            the database.
+!-----------------------------------------------------------------------
+Begin-Procedure Report-Translation
+
+  do Init_Report_Translation('PENSION', $Language_Cd)
+  do Append_Report_Translation ($ReportId)
+
+  do Get_Field_Information ('PARODETL',  'BENEFIT_PLAN',        $Benefit_Plan_Label,       #DW)
+  do Get_Field_Information ('PARODETL',  'PAYMENTS',            $Payments_Label,           #DW)
+  do Get_Field_Information ('PARODETL',  'RUN_ID',              $Run_ID_Label,             #DW)
+  do Get_Field_Information ('PARODETL',  'PROCESS_INSTANCE',    $Process_Instance_Label,   #DW)
+  do Get_Field_Information ('PARODETL',  'PAYMENT_FREQUENCY',   $Payment_Frequency_Label,  #DW)
+  do Get_Field_Information ('PARODETL',  'PAY_PERIOD_END_DT',   $Pay_Period_End_Dt_Label,  #DW)
+  do Get_Field_Information ('PARODETL',  'PROCESS_SELECTION',   $Process_Selection_Label,  #DW)
+  do Get_Field_Information ('PARODETL',  'CHECK_DATE',          $Check_Date_Label,         #DW)
+  
+  do Get_Field_Information ('PARODETL',  'TOTAL_PAYMENTS',      $Total_Payments_Label,     #DW)
+  do Get_Field_Information ('PARODETL',  'SCHEDULE_AMOUNT',    $Schedule_Amount_Label,   #DW)
+  do Get_Field_Information ('PARODETL',  'MANUAL_AMOUNT',       $Manual_Amount_Label,      #DW)
+  do Get_Field_Information ('PARODETL',  'CTB_RLOVR_AMOUNT', $Contribution_Amount_Label, #DW)
+
+  do Get_Field_Information ('PARODETL',  'EMPLID',              $Emplid_Label,             #DW)
+  do Get_Field_Information ('PARODETL',  'EMPL_RCD',            $Empl_Rcd_Label,           #DW)
+  do Get_Field_Information ('PARODETL',  'ACCOUNT_NAME',        $Account_Name_Label,    #DW)
+  do Get_Field_Information ('PARODETL',  'ACCOUNT_NUM',         $Account_Num_Label,     #DW)
+  do Get_Field_Information ('PARODETL',  'TAXPAYER_ID',         $Taxpayer_ID_Label,     #DW)
+  do Get_Field_Information ('PARODETL',  'DISTRIB_CODE',        $Distrib_Code_Label,    #DW)
+  do Get_Field_Information ('PARODETL',  'ROLLOVER_AMOUNT',     $Rollover_Amount_Label, #DW)
+  do Get_Field_Information ('PARODETL',  'NONTAXABLE_AMOUNT',   $Nontaxable_Amount_Label, #DW)
+  do Get_Field_Information ('PARODETL',  'ROLLOVER_SOURCE',     $Rollover_Source_Label, #DW)
+  do Get_Field_Information ('PARODETL',  'SCHEDULE',            $Schedule_Text, #DW)
+  do Get_Field_Information ('PARODETL',  'CONTRIBUTION_ACCT',   $Contribution_Acct_Text, #DW)
+
+  do Get_Field_Information ('PARODETL',  'INSTITUTION_ADDR',    $Institution_Addr_Label, #DW)
+
+End-Procedure Report-Translation
+
+!-----------------------------------------------------------------------
+! Procedure: Get-Parameter-Values
+! Descr:     This procedure queries the PS_PA_RVWPMNT record for the 
+!            parameters specified by the user in the run control page.
+!-----------------------------------------------------------------------
+begin-procedure Get-Parameter-Values
+
+BEGIN-SELECT
+PA_RUN_CNTL.PA_RUN_ID
+
+     let $pa_run_id = &PA_RUN_CNTL.pa_run_id
+
+FROM PS_PA_RUN_CNTL PA_RUN_CNTL
+WHERE PA_RUN_CNTL.OPRID = $prcs_oprid
+AND PA_RUN_CNTL.RUN_CNTL_ID = $prcs_run_cntl_id
+END-SELECT
+
+end-procedure
+
+!-----------------------------------------------------------------------
+begin-procedure Process-Rollover-Main
+!-----------------------------------------------------------------------
+
+do Select-Benefit-Plan
+
+end-procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Select-Benefit-Plan
+! Descr:     This procedure queries the PS_PA_RT_DETL_VW record for the 
+!            data to be printed below the standard header on each page.
+!-----------------------------------------------------------------------
+begin-procedure Select-Benefit-Plan
+
+let #bp_count   = 0
+let #page_count = 0
+
+BEGIN-SELECT
+
+PA_RT_DETL_VW.BENEFIT_PLAN
+PA_RT_DETL_VW.PA_TOT_RO_PMT_CNT
+PA_RT_DETL_VW.PA_TOT_RO_PMT_AMT
+PA_RT_DETL_VW.PA_TOT_RO_SCHD_AMT
+PA_RT_DETL_VW.PA_TOT_RO_MANL_AMT
+PA_RT_DETL_VW.PA_TOT_RO_CTB_AMT
+
+     let #bp_count = #bp_count + 1
+     let $Benefit_Plan = &pa_rt_detl_vw.benefit_plan
+     
+     let $tot_ro_pmt_cnt  = &pa_rt_detl_vw.pa_tot_ro_pmt_cnt
+     let $tot_ro_pmt_cnt  = rtrim($tot_ro_pmt_cnt,'0')
+     let $tot_ro_pmt_cnt  = rtrim($tot_ro_pmt_cnt, '.')
+     
+     let $tot_ro_pmt_amt  = &pa_rt_detl_vw.pa_tot_ro_pmt_amt
+     let $tot_ro_schd_amt = &pa_rt_detl_vw.pa_tot_ro_schd_amt
+     let $tot_ro_manl_amt = &pa_rt_detl_vw.pa_tot_ro_manl_amt
+     let $tot_ro_ctb_amt  = &pa_rt_detl_vw.pa_tot_ro_ctb_amt
+     
+     let #page_count = #page_count + 1
+     do Select-Payment-Data
+
+FROM PS_PA_RT_DETL_VW PA_RT_DETL_VW
+WHERE PA_RT_DETL_VW.PA_RUN_ID = $pa_run_id
+AND PA_RT_DETL_VW.PROCESS_INSTANCE = #process_instance
+ORDER BY PA_RT_DETL_VW.BENEFIT_PLAN ASC
+END-SELECT
+
+end-procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Select-Payment-Data
+! Descr:     This procedure queries the PS_PA_RT_PAY_DETL record for the 
+!            data to be printed for each employee on the report.
+!-----------------------------------------------------------------------
+begin-procedure Select-Payment-Data
+
+let #ee_count = 0
+
+do Print-New-Page
+
+do Print-Rollover-Data-Heading
+
+BEGIN-SELECT
+PA_RT_PAY_DETL.EMPLID
+PA_RT_PAY_DETL.EMPL_RCD
+PA_RT_PAY_DETL.PA_PMT_NBR
+
+     let $Emplid = &pa_rt_pay_detl.emplid
+     
+     let $Empl_Rcd = &pa_rt_pay_detl.empl_rcd
+     let $Empl_Rcd = rtrim($Empl_Rcd, '0')
+     let $Empl_Rcd = rtrim($Empl_Rcd, '.')
+
+     let #Empl_Rcd_Num = &pa_rt_pay_detl.empl_rcd
+
+     let $PA_Pmt_Nbr = &pa_rt_pay_detl.pa_pmt_nbr
+     let $PA_Pmt_Nbr = rtrim($PA_Pmt_Nbr, '0')
+     let $PA_Pmt_Nbr = rtrim($PA_Pmt_Nbr, '.')
+     let #rollover_count = 0
+
+     do Select-Schedule-Rollover
+     do Select-Contribution-Rollover
+
+     If #rollover_count > 0
+        let #ee_count = #ee_count + 1
+     end-if
+
+FROM PS_PA_RT_PAY_DETL PA_RT_PAY_DETL
+WHERE PA_RT_PAY_DETL.PA_RUN_ID = $pa_run_id
+AND PA_RT_PAY_DETL.BENEFIT_PLAN = $Benefit_Plan
+ORDER BY PA_RT_PAY_DETL.EMPLID ASC,
+PA_RT_PAY_DETL.EMPL_RCD ASC
+END-SELECT
+
+end-procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Select-Schedule-Rollover
+! Descr:     This procedure queries the PS_PA_SCH_RO_DETL record for the 
+!            data to be printed for each employee on the report.
+!-----------------------------------------------------------------------
+begin-procedure Select-Schedule-Rollover
+
+
+BEGIN-SELECT
+PA_SCH_RO_DETL.EMPLID
+PA_SCH_RO_DETL.EMPL_RCD
+PA_SCH_RO_DETL.PA_PMT_NBR
+PA_SCH_RO_DETL.ACCOUNT_NAME
+PA_SCH_RO_DETL.ACCOUNT_NUM
+PA_SCH_RO_DETL.TAXPAYER_ID
+PA_SCH_RO_DETL.DISTRIB_CODE
+PA_SCH_RO_DETL.INSTITUTION_NAME
+PA_SCH_RO_DETL.ADDRESS1
+PA_SCH_RO_DETL.ADDRESS2
+PA_SCH_RO_DETL.ADDRESS3
+PA_SCH_RO_DETL.CITY
+PA_SCH_RO_DETL.STATE
+PA_SCH_RO_DETL.POSTAL
+PA_SCH_RO_DETL.COUNTRY
+PA_SCH_RO_DETL.PA_PMT_AMT
+PA_SCH_RO_DETL.PA_PMT_AMT_NOTAX
+
+     let #rollover_count = #rollover_count + 1
+
+     let $PA_Pmt_Nbr = &PA_SCH_RO_DETL.pa_pmt_nbr
+     let $PA_Pmt_Nbr = rtrim($PA_Pmt_Nbr, '0')
+     let $PA_Pmt_Nbr = rtrim($PA_Pmt_Nbr, '.')
+
+     let $Account_Name = &PA_SCH_RO_DETL.ACCOUNT_NAME
+     let $Account_Num = &PA_SCH_RO_DETL.ACCOUNT_NUM
+     let $Taxpayer_ID = &PA_SCH_RO_DETL.TAXPAYER_ID
+     let $Distrib_Code = &PA_SCH_RO_DETL.DISTRIB_CODE
+     let $Institution_Name = &PA_SCH_RO_DETL.INSTITUTION_NAME
+     let $Address1 = &PA_SCH_RO_DETL.ADDRESS1
+     let $Address2 = &PA_SCH_RO_DETL.ADDRESS2
+     let $Address3 = &PA_SCH_RO_DETL.ADDRESS3
+     let $City =  &PA_SCH_RO_DETL.CITY
+     let $State = &PA_SCH_RO_DETL.STATE
+     let $Postal = &PA_SCH_RO_DETL.POSTAL
+     let $Country = &PA_SCH_RO_DETL.COUNTRY
+
+     if $Country = ' '
+          let $Country_Descr = ' '
+     else
+          do Get-Country-Descr
+     end-if
+     
+     let $PA_Pmt_Amt = &PA_SCH_RO_DETL.PA_PMT_AMT
+     
+     let $PA_Pmt_Amt_NoTax = &PA_SCH_RO_DETL.PA_PMT_AMT_NOTAX
+     
+    
+     do Print-Schedule-Rollover-Data
+          
+FROM PS_PA_SCH_RO_DETL PA_SCH_RO_DETL
+WHERE PA_SCH_RO_DETL.EMPLID = $Emplid
+AND PA_SCH_RO_DETL.EMPL_RCD = #Empl_Rcd_Num
+AND PA_SCH_RO_DETL.PA_RUN_ID = $pa_run_id
+AND PA_SCH_RO_DETL.BENEFIT_PLAN = $Benefit_Plan
+ORDER BY PA_SCH_RO_DETL.EMPLID ASC,
+PA_SCH_RO_DETL.EMPL_RCD ASC
+END-SELECT
+
+end-procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Select-Contribution-Rollover
+! Descr:     This procedure queries the PS_PA_CONTR_RLOVR record for the 
+!            data to be printed for each employee on the report.
+!-----------------------------------------------------------------------
+begin-procedure Select-Contribution-Rollover
+
+BEGIN-SELECT
+PA_CONTR_RLOVR.EMPLID
+PA_CONTR_RLOVR.EMPL_RCD
+PA_CONTR_RLOVR.PA_PMT_NBR
+PA_CONTR_RLOVR.ACCOUNT_NAME
+PA_CONTR_RLOVR.ACCOUNT_NUM
+PA_CONTR_RLOVR.TAXPAYER_ID
+PA_CONTR_RLOVR.DISTRIB_CODE
+PA_CONTR_RLOVR.INSTITUTION_NAME
+PA_CONTR_RLOVR.ADDRESS1
+PA_CONTR_RLOVR.ADDRESS2
+PA_CONTR_RLOVR.ADDRESS3
+PA_CONTR_RLOVR.CITY
+PA_CONTR_RLOVR.STATE
+PA_CONTR_RLOVR.POSTAL
+PA_CONTR_RLOVR.COUNTRY
+PA_CONTR_RLOVR.PA_ADJ_AMT
+PA_CONTR_RLOVR.PA_ADJ_AMT_NOTAX
+
+     let #rollover_count = #rollover_count + 1
+
+     let $PA_Pmt_Nbr = &PA_CONTR_RLOVR.pa_pmt_nbr
+     let $PA_Pmt_Nbr = rtrim($PA_Pmt_Nbr, '0')
+     let $PA_Pmt_Nbr = rtrim($PA_Pmt_Nbr, '.')
+
+     let $Account_Name = &PA_CONTR_RLOVR.ACCOUNT_NAME
+     let $Account_Num = &PA_CONTR_RLOVR.ACCOUNT_NUM
+     let $Taxpayer_ID = &PA_CONTR_RLOVR.TAXPAYER_ID
+     let $Distrib_Code = &PA_CONTR_RLOVR.DISTRIB_CODE
+     let $Institution_Name = &PA_CONTR_RLOVR.INSTITUTION_NAME
+     let $Address1 = &PA_CONTR_RLOVR.ADDRESS1
+     let $Address2 = &PA_CONTR_RLOVR.ADDRESS2
+     let $Address3 = &PA_CONTR_RLOVR.ADDRESS3
+     let $City =  &PA_CONTR_RLOVR.CITY
+     let $State = &PA_CONTR_RLOVR.STATE
+     let $Postal = &PA_CONTR_RLOVR.POSTAL
+     let $Country = &PA_CONTR_RLOVR.COUNTRY
+
+     if $Country = ' '
+          let $Country_Descr = ' '
+     else
+          do Get-Country-Descr
+     end-if
+     
+     let $PA_Adj_Amt = &PA_CONTR_RLOVR.PA_ADJ_AMT
+     
+     let $PA_Adj_Amt_NoTax = &PA_CONTR_RLOVR.PA_ADJ_AMT_NOTAX
+     
+    
+     do Print-Contribution-Rollover-Data
+          
+FROM PS_PA_CONTR_RLOVR PA_CONTR_RLOVR
+WHERE PA_CONTR_RLOVR.EMPLID = $Emplid
+AND PA_CONTR_RLOVR.EMPL_RCD = #Empl_Rcd_Num
+AND PA_CONTR_RLOVR.PA_RUN_ID = $pa_run_id
+AND PA_CONTR_RLOVR.BENEFIT_PLAN = $Benefit_Plan
+ORDER BY PA_CONTR_RLOVR.EMPLID ASC,
+PA_CONTR_RLOVR.EMPL_RCD ASC
+END-SELECT
+
+
+end-procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Get-Country-Descr
+! Description:  This procedure reads the PS_COUNTRY_TBL table in order
+!               to obtain country name.
+!-----------------------------------------------------------------------
+begin-procedure Get-Country-Descr
+
+BEGIN-SELECT
+COUNTRY_TABLE.DESCR
+     
+     let $Country_Descr = &COUNTRY_TABLE.DESCR
+     
+FROM PS_COUNTRY_TBL COUNTRY_TABLE
+WHERE COUNTRY = $Country
+END-SELECT
+
+end-procedure
+
+
+
+#Include 'paextrct.sqc'  !Report ID INPUT
+#Include 'stdapi.sqc'    !Update Process Request API
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'datemath.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'getrplng.sqc'  !Gets the report language
+#Include 'readxlat.sqc'  !read translate table
+#Include 'sqrtrans.sqc'  !Access Strings Table

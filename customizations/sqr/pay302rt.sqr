@@ -1,0 +1,421 @@
+!***********************************************************************
+!  PAY302RT:  Retro Pay Summary Report                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/17:15:39:56                        
+!       $Release:  HR92                                       
+!      $Revision:  101                                        
+!                                                                      *
+!  History: 05/22/01 RLW -- Add Retropay Interest Column               *
+!           07/08/08 AM  -- Replace Interest with Amount Override      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+
+begin-report
+
+   do Init-DateTime
+   do Init-Number
+   do Get-Current-Datetime
+   do Init-Report
+   do Process-Main
+   do Reset
+   do Stdapi-Term
+
+end-report
+
+!***********************************************************************
+
+
+
+!******************  H E A D I N G      S E C T I O N  *****************
+
+#include 'setup32.sqc'  !Printer and page-size initialization
+
+begin-heading 10
+
+#include 'stdhdg01.sqc'
+
+    print $Pay302rt_Rqst_Type       (+4,1)
+    print $Rqst-Descr                (0,15)
+
+    if $RqstType = 'M'
+       print $Pay302rt_Mass_ID       (0,28)
+       print $MassID                 (0,37)
+    end-if
+
+    if $SortOption = '5'
+       if $PromptCompany = ''
+          print $Pay302rt_All_Comp  (+1,1)
+       else
+          let $Comp = $Pay302rt_Company || ': ' || $PromptCompany
+          print $Comp               (+1,1)
+       end-if
+    end-if
+
+    print $Pay302rt_Old_Ern_Amt     (+3,30)
+    print $Pay302rt_New_Ern_Amt      (0,55)
+    print $Pay302rt_Prior            (0,80)
+    print $Pay302rt_Retropay         (0,105)
+    print $Pay302rt_Amount_Ovrd      (0,129)
+
+end-heading
+
+!******************  I N I T I A L I Z A T I O N   *********************
+
+begin-procedure Init-Report
+
+    move 'PAY302RT' to $ReportID
+
+    do Stdapi-Init
+    do Get-Report-Language
+    move $Pay302rt_ReportTitle to $ReportTitle
+    display $ReportTitle
+
+    do Select-Parameters
+    do Array-Initialization
+
+    do Build-Where-Clause
+    do Build-Order-Clause
+
+    if $SortOption = '6'
+       move 4 to #t
+    else
+       move 2 to #t
+    end-if
+
+end-procedure
+
+! This procedure is used to read language-dependent text from the database.
+begin-procedure Report-Translation
+! Read from PAY302RT program ids
+  do Init_Report_Translation($ReportID,$language_cd)
+
+  do Get_Field_Information ('PAY302RT', 'REPORTTITLE',  $Pay302rt_ReportTitle,  #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'RQST_TYPE',    $Pay302rt_Rqst_Type,    #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'RQST_TYPE_A',  $Pay302rt_Rqst_Type_A,  #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'RQST_TYPE_J',  $Pay302rt_Rqst_Type_J,  #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'RQST_TYPE_M',  $Pay302rt_Rqst_Type_M,  #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'MASS_ID',      $Pay302rt_Mass_ID,      #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'OLD_ERN_AMT',  $Pay302rt_Old_Ern_Amt,  #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'NEW_ERN_AMT',  $Pay302rt_New_Ern_Amt,  #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'PRIOR',        $Pay302rt_Prior,        #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'RETROPAY',     $Pay302rt_Retropay,     #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'AMOUNT_OVRD',  $Pay302rt_Amount_Ovrd,  #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'GRAND_TOT',    $Pay302rt_Grand_Tot,    #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'RQST_TOT',     $Pay302rt_Rqst_Tot,     #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'COMPANY',      $Pay302rt_Company,      #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'PAYGROUP',     $Pay302rt_Paygroup,     #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'TOTAL',        $Pay302rt_Total,        #dummy_width)
+  do Get_Field_Information ('PAY302RT', 'ALL_COMP',     $Pay302rt_All_Comp,     #dummy_width)
+
+
+end-procedure
+
+!**************************************************************
+!                                                             *
+!  Function:     Array-Initialization                         *
+!                                                             *
+!  Description:  Loads Amounts into the array to accumulate   *
+!                  totals.                                    *
+!                                                             *
+!**************************************************************
+
+begin-procedure Array-Initialization
+
+    CREATE-ARRAY NAME=Totals                -
+                 SIZE=5                     -
+                 FIELD=TotalName:char       -
+                 FIELD=LevelName:char       -
+                 FIELD=Total:number:5       -
+                 FIELD=startCol:number:5
+
+    put 'G'  into Totals(1) TotalName
+    put 'R'  into Totals(2) TotalName
+    put 'C'  into Totals(3) TotalName
+    put 'P'  into Totals(4) TotalName
+
+    put  32  into Totals(0) startCol(0)
+    put  57  into Totals(0) startCol(1)
+    put  82  into Totals(0) startCol(2)
+    put 106  into Totals(0) startCol(3)
+    put 130  into Totals(0) startCol(4)
+
+ end-procedure
+
+!*********************   M A I N   P R O C E S S   *********************
+
+begin-procedure Process-Main
+
+begin-SELECT
+
+A.RETROPAY_RQST_TYPE  () on-break print=never level=2 procedure=Rqst-Type-Change
+
+    if &A.RETROPAY_RQST_TYPE = 'A'
+        move $Pay302rt_Rqst_Type_A to $Rqst-Descr
+    end-if
+    if &A.RETROPAY_RQST_TYPE = 'J'
+        move $Pay302rt_Rqst_Type_J to $Rqst-Descr
+    end-if
+    if &A.RETROPAY_RQST_TYPE = 'M'
+        move $Pay302rt_Rqst_Type_M to $Rqst-Descr
+        move &A.MASS_RETRO_RQST_ID to $MassID
+    end-if
+
+A.MASS_RETRO_RQST_ID
+B.COMPANY             () on-break print=never level=3 procedure=Company-Change
+
+    put &B.COMPANY            into Totals(3) LevelName
+
+B.PAYGROUP            () on-break print=never level=4 procedure=Paygroup-Change
+
+    put &B.PAYGROUP           into Totals(4) LevelName
+
+B.EMPLID
+B.EMPL_RCD
+B.RETROPAY_EFFDT
+B.EARNS_AMT
+B.NEW_EARNS_AMT
+B.PRIOR_RETRO_PAID
+B.AMOUNT_DIFF
+B.EARNS_AMT_OVRD
+B.RETROPAY_ERNCD
+
+    do Store-Totals
+
+FROM PS_RETROPAY_RQST A,
+     PS_RETROPAY_EARNS B
+
+WHERE [$Rqst_Type_Where]
+AND   A.RETROPAY_PRCS_FLAG = 'C'
+      [$Company_Where]
+      [$Paygroup_Where]
+      [$PayEndDt_Where]
+AND   B.RETROPAY_SEQ_NO    = A.RETROPAY_SEQ_NO
+AND   B.EMPLID             = A.EMPLID
+AND   B.EMPL_RCD           = A.EMPL_RCD
+AND   B.RETROPAY_EFFDT     = A.RETROPAY_EFFDT
+AND   B.RETROPAY_LOAD_SW   = 'Y'
+
+ORDER BY A.RETROPAY_RQST_TYPE
+         [$Sort_Order]
+
+end-SELECT
+
+   move 1 to #changeLevel
+   move 'Y' to $End
+   do Print-Totals
+
+end-procedure
+
+!*********************   S T O R E  T O T A L S    *********************
+
+begin-procedure Store-Totals
+
+    move &B.EARNS_AMT          to #Earns
+    move &B.NEW_EARNS_AMT      to #Newerns
+    move &B.PRIOR_RETRO_PAID   to #Prior
+    move &B.AMOUNT_DIFF        to #Diff
+    move &B.EARNS_AMT_OVRD     to #Ovrd
+
+    array-add #Earns   to Totals(#t) Total(0)
+    array-add #Newerns to Totals(#t) Total(1)
+    array-add #Prior   to Totals(#t) Total(2)
+    array-add #Diff    to Totals(#t) Total(3)
+    array-add #Ovrd    to Totals(#t) Total(4)
+
+end-procedure
+
+!***********************************************************************
+
+begin-procedure Rqst-Type-Change
+
+    move 2 to #changeLevel
+    do Print-Totals
+
+end-procedure
+
+!***********************************************************************
+
+begin-procedure Company-Change
+
+    if $SortOption = '6'
+       move 3 to #changeLevel
+       do Print-Totals
+    end-if
+
+end-procedure
+
+!***********************************************************************
+
+begin-procedure Paygroup-Change
+
+    if $SortOption = '6'
+        move 4 to #changeLevel
+        do Print-Totals
+    end-if
+
+end-procedure
+
+!********************   P R I N T    T O T A L S   *********************
+
+begin-procedure Print-Totals
+
+    move #t to #totalRow
+
+    while #totalRow >= #changeLevel
+
+        move #totalRow to #rollRow
+        subtract 1 from #rollRow
+        get $TotalName from Totals(#totalRow) TotalName
+        get $LevelName from Totals(#totalRow) LevelName
+
+        if $TotalName = 'P'
+           let $Total = $Pay302rt_Paygroup || ' ' || $LevelName || ' ' ||  $Pay302rt_Total
+        end-if
+
+        if $TotalName = 'C'
+           let $Total = $Pay302rt_Company || ' ' || $LevelName || ' ' ||  $Pay302rt_Total
+        end-if
+
+        if $TotalName = 'R'
+           let $Total = $Pay302rt_Rqst_Tot
+        end-if
+
+        if $TotalName = 'G'
+           let $Total = $Pay302rt_Grand_Tot
+        end-if
+
+        print $Total (+5,2)
+        move 0 to #i
+
+        while #i <= 4
+            get #total from Totals(#totalRow) total(#i)
+            get #startCol from Totals(0) startCol(#i)
+            do Format-Number(#total, $out, '999,999,999.99mi')
+            print $out (0,#startCol)
+            array-add #total to Totals(#rollRow) total(#i)
+            put 0 into Totals(#totalRow) total(#i)
+            add 1 to #i
+        end-while
+
+        subtract 1 from #totalRow
+
+    end-while
+
+    if #changeLevel = 2     !skip to new page on change in Request Type
+           new-page
+    end-if
+
+    if $End = 'Y'
+        do Reset
+    end-if
+
+end-procedure
+
+!**************  B U I L D   W H E R E   C L A U S E  ******************
+
+begin-procedure Build-Where-Clause
+
+
+  let $W1  = 'A.RETROPAY_RQST_TYPE = '''
+  let $W2  = $Rqst-TypeA
+  let $W3  = $Rqst-TypeJ
+  let $W4  = $Rqst-TypeM
+  let $W5  = ''' AND A.MASS_RETRO_RQST_ID = '''
+  let $W6  = $Mass_ID
+  let $W7  = ''''
+  let $W8  = '(A.RETROPAY_RQST_TYPE = '''
+  let $W9  = ''' OR A.RETROPAY_RQST_TYPE = '''
+  let $W10 = ''')'
+  let $W11 =  'AND B.COMPANY = '''
+  let $W12 = $PromptCompany
+  let $W13 = 'AND B.PAYGROUP = '''
+  let $W14 = $PromptPaygroup
+  let $W15 = 'AND B.PAY_END_DT = '''
+  let $W16 = $PromptPayEndDt
+
+  if $RqstType = 'A'
+     let $Rqst_Type_Where = $W1 || $W2 ||$W7
+  end-if
+
+  if $RqstType = 'J'
+     let $Rqst_Type_Where = $W1 || $W3 || $W7
+  end-if
+
+  if $RqstType = 'M'
+     let $Rqst_Type_Where = $W1 || $W4 || $W5 || $W6 || $W7
+  end-if
+
+  if $RqstType = 'Z'
+     let $Rqst_Type_Where = $W8 || $W2 || $W9 || $W3 || $W9 || $W4 || $W10
+  end-if
+
+  if $PromptCompany = ''
+      let $Company_Where = ''
+  else
+      let $Company_Where = $W11 || $W12 || $W7
+  end-if
+
+  if $PromptPaygroup = ''
+     let $Paygroup_Where = ''
+  else
+     let $Paygroup_Where = $W13 || $W14 || $W7
+  end-if
+
+  if $PromptPayEndDt = ''
+     let $PayEndDt_Where = ''
+  else
+     let $PayEndDt_Where = $W15 || $W16 || $W7
+  end-if
+
+end-procedure
+
+!**************  B U I L D   O R D E R   C L A U S E  ******************
+
+begin-procedure Build-Order-Clause
+
+  if $SortOption = '5'
+     let $Sort_Order = ' '
+  else
+     let $Sort_Order = ', B.COMPANY, B.PAYGROUP'
+  end-if
+
+end-procedure
+
+!***********************************************************************
+#Include 'payrtrpt.sqc'  !Custom Run Control Parameters
+#Include 'getpgdta.sqc'  !Get-PayGroup-Data procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'sqrtrans.sqc'  !Translate SQR strings to given language
+#Include 'getrplng.sqc'  !Get the report language
+

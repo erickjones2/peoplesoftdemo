@@ -1,0 +1,1138 @@
+!***********************************************************************
+!  GPINRM02:  PF Remittance Report                                     *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2015, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2015/05/17:23:14:22                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  104                                                 !
+!                                                                      *
+!***********************************************************************
+!                                                                      *
+! Global Payroll       Release 8                                       *
+!***********************************************************************
+!                     Modification History                             *
+!                                                                      *
+!     Date           Incident                 Description              *
+! 03/Jan/2008       1698275002      The procedures Process_Main and    *
+!                                   Print_Header have been modified to *
+!                                   print the complete name and address*
+!                                   of the establishment.              *
+!                                                                      *
+! 13/Mar/2008       1743891002      Modified the procedure Print_Header*
+!                                   to correctly print the name of the *
+!                                   establishment.                     *
+!
+! 06/May/2008       1705540002      The SQR has been modified to print *
+!                                   the establishment name from        *
+!                                   GPIN_REG_NAME from the             *
+!                                   ESTAB_TBL_GPIN record.
+! 01/JULY/2008      1753960000      Modified the procedure print_report*
+!                                   _flds to correctly print emplid and*
+!                                   Empname without truncating if it   *
+!                                   exceeds maximum character.         *
+!                                                                      *
+! 31/AUG/2009       1865184000      Mofified the procedure Process_Main*
+!                                   to correctly pick up the data with *
+!                                   the maximum version and revision   *
+!                                   numbers.                           *
+!***********************************************************************
+
+#include 'setenv.sqc'    !Set environment
+#include 'rellang.sqc'
+
+Begin-Setup
+  #Include 'ptset02.sqc'   ! Printer and page-size initialization
+   DECLARE-LAYOUT PF_REMIT
+   PAPER-SIZE  =  (18,11)
+   end-declare
+
+   DECLARE-LAYOUT Form_12A
+  PAPER-SIZE  =  (a4)
+      max-lines = 45
+      top-margin    = 0.30
+   orientation = landscape
+   end-declare
+
+   declare-report PF_REMIT
+    LAYOUT =  PF_REMIT
+   END-DECLARE
+
+   declare-report Form_12A
+    Layout = Form_12A
+   END-DECLARE
+End-Setup
+
+
+!***********************************************************************
+begin-program
+!***********************************************************************
+
+  do Init-Report
+  do Stdapi-Term
+end-program
+
+!***********************************************************************
+!  Heading
+!***********************************************************************
+
+Begin-Heading 4
+End-Heading
+
+!***********************************************************************
+!  Init Report
+!***********************************************************************
+begin-procedure Init-Report
+
+  move 'GPINRM02' to $ReportID
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Stdapi-Init
+  do Init_Printer
+
+
+  let $language_cd = $CURR_LANGUAGE_CD
+
+  do Init_Report_Translation($ReportID, $language_cd)
+  do Append_Report_Translation($ReportID)
+
+  if $prcs_process_instance = ''
+    else
+    let #prcs_process_instance=To_number($prcs_process_instance)
+  end-if
+
+  do Get_Translat_Info
+  do Get-Run_Cntl_Values
+  do Process_Main
+
+end-procedure
+
+!***********************************************************************
+! Function:    Get-Values                                              *
+!                                                                      *
+! Description: Load parameters from report setup and run control       *
+!                                                                      *
+!***********************************************************************
+
+Begin-Procedure Get-Run_Cntl_Values
+LET $estid = ''
+Begin-Select on-error=SQL-Error
+GPINRC.GPIN_REPORT_ID
+GPINRC.ESTABID
+GPINRC.CAL_PRD_ID
+GPINRC.END_DT
+GPINRC.BGN_DT
+GPINRC.GP_GENRPT_SORT_OPT
+
+     MOVE &GPINRC.END_DT TO $PRDENDDATE
+     LET $SORTOPTION = RTRIM(LTRIM(&GPINRC.GP_GENRPT_SORT_OPT, ' '), ' ')
+
+FROM PS_GPIN_PR_RC GPINRC
+WHERE OPRID = $prcs_oprid
+AND RUN_CNTL_ID = $prcs_run_cntl_id
+End-Select
+
+End-Procedure !Get-Run_Cntl_Values
+
+
+!************************************************************************!
+!Procedure : Main - Process                                              !
+!Descr : To Perform the Main Processing                                  !
+!************************************************************************!
+Begin-Procedure Process_Main
+LET #YEAR1 = 0
+LET #YEAR2 = 0
+Let $ESTABLISHMENT = ''
+Let $ESTABLISHID   = ''
+Let $LSTESTABID   = ''
+LET $INDICATOR = ''
+Let #slno = 0
+LET $EMPID = ''
+LET $LSTEMPID = ''
+Let #pcon = 0
+Let #vpfcn = 0
+Let #econ = 0
+Let #epscon = 0
+Let #eadchg = 0
+Let #edlcon = 0
+Let #edlchg = 0
+let #edlgross = 0
+let $est_break = 'N'
+let $first_est = 'Y'
+let #tot_pcon  = 0
+let #tot_vpfcn = 0
+let #tot_econ  = 0
+let #tot_epscon = 0
+let #tot_eadchg = 0
+let #tot_edlcon = 0
+let #tot_edlchg = 0
+let #tot_edlgross = 0
+Let #Line-num  = 0
+LET $EMPLOYEE_ID = ''
+LET $BEGIN_DT =''
+LET $END_DT = ''
+
+let $ORDERBYCLAUSE = 'ORDER BY ENRL.ESTABID, TMP.GP_GENRPT_BREAK1, '
+
+IF $SORTOPTION = '20'
+  LET $ORDERBYCLAUSE = $ORDERBYCLAUSE || 'EMPNM.NAME'
+ELSE
+  LET $ORDERBYCLAUSE = $ORDERBYCLAUSE || 'TMP.EMPLID'
+END-IF
+
+  let $12BA_HEADIN2 = ltrim(rtrim($12BA_HEADIN2,' '),' ') ||' '|| ltrim(rtrim($12BA_HEADIN3,' '),' ')
+  let $12BA_HEADIN2 = ltrim(rtrim($12BA_HEADIN2,' '),' ')
+
+DO GET-MONTH-YEAR
+
+Begin-Select
+TMP.JOBINSTANCE
+TMP.EMPLID
+TMP.CAL_RUN_ID
+TMP.EMPL_RCD
+TMP.GP_PAYGROUP
+TMP.CAL_ID
+TMP.ORIG_CAL_RUN_ID
+TMP.RSLT_SEG_NUM
+TMP.RSLT_VER_NUM
+TMP.RSLT_REV_NUM
+TMP.GP_GENRPT_BREAK1
+TMP.PRD_BGN_DT
+TMP.PRD_END_DT
+ENRL.ESTABID
+ESTBL.DESCR
+ESTGPIN.GPIN_PF_NBR
+ESTGPIN.GPIN_PF_DT
+EMPNM.NAME
+ESTBL.COUNTRY
+ESTBL.ADDRESS1
+ESTBL.ADDRESS2
+ESTBL.ADDRESS3
+ESTBL.ADDRESS4
+ESTBL.CITY
+ESTBL.STATE
+ESTBL.POSTAL
+
+    Let $ESTABLISHID   = RTRIM(LTRIM(&ENRL.ESTABID , ' '), ' ')
+    LET $empid = RTRIM(LTRIM(&tmp.emplid, ' '), ' ')
+
+    IF $LSTESTABID = '' OR $ESTABLISHID <> $LSTESTABID
+        if $LSTESTABID <> ''
+            do Print-12A-Report
+            USE-REPORT Form_12A
+            new-page
+        end-if
+        Let #tot_pcon     = 0
+        Let #tot_vpfcn    = 0
+        Let #tot_econ     = 0
+        Let #tot_epscon   = 0
+        Let #tot_eadchg   = 0
+        Let #tot_edlcon   = 0
+        Let #tot_edlchg   = 0
+        Let #tot_edlgross = 0
+
+        Let $STRESTAB  = ''
+        Let $STRESTAB1 = ''
+        Let $STRESTAB2 = ''
+        Let $STRESTAB3 = ''
+        Let $STRESTAB4 = ''
+        Let $STRESTAB5 = ''
+
+        LET $LSTESTABID = $ESTABLISHID
+
+        let $estname    = rtrim(ltrim(&estbl.descr        , ' '), ' ')
+        let $regno      = rtrim(ltrim(&ESTGPIN.GPIN_PF_NBR, ' '), ' ')
+        LET $COUNTRY    = RTRIM(LTRIM(&ESTBL.COUNTRY  , ' '), ' ')
+        LET $ADDRESS1   = RTRIM(LTRIM(&ESTBL.ADDRESS1 , ' '), ' ')
+        LET $ADDRESS2   = RTRIM(LTRIM(&ESTBL.ADDRESS2 , ' '), ' ')
+        LET $ADDRESS3   = RTRIM(LTRIM(&ESTBL.ADDRESS3 , ' '), ' ')
+        LET $ADDRESS4   = RTRIM(LTRIM(&ESTBL.ADDRESS4 , ' '), ' ')
+        LET $CITY       = RTRIM(LTRIM(&ESTBL.CITY     , ' '), ' ')
+        LET $STATE      = RTRIM(LTRIM(&ESTBL.STATE    , ' '), ' ')
+        LET $POSTAL     = RTRIM(LTRIM(&ESTBL.POSTAL   , ' '), ' ')
+
+        lET $STRESTAB  = $estname
+        LET $STRESTAB1 = $ADDRESS1
+        LET $STRESTAB2 = $ADDRESS2
+        LET $STRESTAB3 = $ADDRESS3
+        LET $STRESTAB4 = $ADDRESS4
+        LET $STRESTAB5 = $CITY || ', ' || $POSTAL || ', ' || $STATE || ', '|| $COUNTRY
+
+       Move &ESTGPIN.GPIN_PF_DT To $regdt
+       Do Print_Header
+       let #line = #line + 1
+    END-IF
+
+    Do Get-Rpt_Fields
+
+    IF $LSTEMPID = '' OR $LSTEMPID <> $EMPID
+        if $LSTEMPID <> ''
+        do determine-break-logic
+        end-if
+        let $empname =  rtrim(ltrim(&EMPNM.NAME, ' '), ' ')
+        Do print_Report_flds
+        Let #tot_pcon     = #tot_pcon + #pcon
+        Let #tot_vpfcn    = #tot_vpfcn + #vpfcn
+        Let #tot_econ     = #tot_econ + #econ
+        Let #tot_epscon   = #tot_epscon + #epscon
+        Let #tot_eadchg   = #tot_eadchg + #eadchg
+        Let #tot_edlcon   = #tot_edlcon + #edlcon
+        Let #tot_edlchg   = #tot_edlchg + #edlchg
+        Let #tot_edlgross = #tot_edlgross + #edlgross
+        Let #pcon         = 0
+        Let #vpfcn        = 0
+        Let #econ         = 0
+        Let #epscon       = 0
+        Let #eadchg       = 0
+        Let #edlcon       = 0
+        Let #edlchg       = 0
+        LET #edlgross     = 0
+        let $LSTEMPID     = $EMPID
+    END-IF
+
+From PS_GPIN_PR_TMP TMP, PS_JOB JB, PS_ESTAB_TBL ESTBL, PS_ESTAB_TBL_GPIN ESTGPIN, PS_NAMES  EMPNM, PS_GPIN_PF_ENROLL ENRL
+WHERE TMP.JOBINSTANCE = #prcs_job_instance
+AND TMP.LAST_SEG_IND = 'Y'
+AND TMP.RSLT_VER_NUM = (SELECT MAX(RSLT_VER_NUM) 
+                FROM PS_GPIN_PR_TMP 
+                WHERE EMPLID = TMP.EMPLID 
+                AND EMPL_RCD = TMP.EMPL_RCD 
+                AND GP_PAYGROUP = TMP.GP_PAYGROUP 
+                AND RSLT_SEG_NUM = TMP.RSLT_SEG_NUM)
+AND TMP.RSLT_REV_NUM = (SELECT MAX(RSLT_REV_NUM) 
+                FROM PS_GPIN_PR_TMP 
+                WHERE EMPLID = TMP.EMPLID 
+                AND EMPL_RCD = TMP.EMPL_RCD 
+                AND GP_PAYGROUP = TMP.GP_PAYGROUP 
+                AND RSLT_SEG_NUM = TMP.RSLT_SEG_NUM
+                AND RSLT_VER_NUM = TMP.RSLT_VER_NUM)
+AND JB.EMPLID = TMP.EMPLID
+AND JB.EMPL_RCD = TMP.EMPL_RCD
+AND JB.EFFDT = (SELECT MAX(EFFDT)
+                FROM PS_JOB JB1
+                WHERE JB1.EMPLID = JB.EMPLID
+                AND JB1.EMPL_RCD = JB.EMPL_RCD
+                AND  JB1.EFFDT <= $PRDENDDATE)
+AND JB.EFFSEQ = (SELECT MAX(EFFSEQ)
+                FROM PS_JOB JB2
+                WHERE JB2.EMPLID = JB.EMPLID
+                AND JB2.EMPL_RCD = JB.EMPL_RCD
+                AND  JB2.EFFDT = JB.EFFDT)
+AND ENRL.EMPLID = TMP.EMPLID
+AND ESTBL.ESTABID = ENRL.ESTABID
+AND ENRL.EFF_STATUS = 'A'
+AND ENRL.EFFDT = (SELECT MAX(EFFDT) FROM PS_GPIN_PF_ENROLL
+                  WHERE EMPLID = ENRL.EMPLID
+                  AND EFF_STATUS = 'A'
+                  AND EFFDT <= $PRDENDDATE)
+And ESTBL.EFFDT = (SELECT MAX(EFFDT)
+                    FROM PS_ESTAB_TBL WHERE
+                    ESTABID = ESTBL.ESTABID
+                    AND EFFDT <= $PRDENDDATE)
+AND ESTGPIN.ESTABID = ENRL.ESTABID
+And ESTGPIN.EFFDT = (SELECT MAX(EFFDT)
+                      FROM PS_ESTAB_TBL_GPIN
+                      WHERE ESTABID = ESTGPIN.ESTABID
+                      AND EFFDT <= $PRDENDDATE)
+AND EMPNM.EMPLID = TMP.EMPLID
+AND EMPNM.NAME_TYPE = 'PRI'
+AND EMPNM.EFFDT = (SELECT MAX(EFFDT)
+                   FROM PS_NAMES
+                   WHERE EMPLID = EMPNM.EMPLID
+                   AND NAME_TYPE = EMPNM.NAME_TYPE
+                   AND EFFDT <= $PRDENDDATE)
+[$ORDERBYCLAUSE]
+End-Select
+
+if $EMPID = ''
+       Do Print_Header
+       Do Print_Header2
+       let #line = #line + 1
+end-if
+
+do Print-12A-Report
+
+
+End-Procedure !Process_Main
+
+!************************************************************************!
+!Procedure : Print-12A-Report                                            !
+!Descr : To Create Form 12 A report                                      !
+!************************************************************************!
+Begin-Procedure  Print-12A-Report
+
+If #page-count = 1
+   let #gline = 14
+   let #gcol = 10
+   Let #vdepth = #line - 14
+Else
+   let #gline = 2
+   let #gcol = 10
+   Let #vdepth = #line - 2
+End-If
+
+     IF #LINE > 0
+        USE-REPORT PF_REMIT
+    GRAPHIC (#line,10,160) HORZ-LINE
+        let #col = 11
+
+        print 'Total'         (+1,#col,6)
+        add 11 to #col
+        add 30 to #col
+        add 15 to #col
+        print  #tot_pcon      (,#col,15) EDIT 9,99,999.99 !1
+        add 15 to #col
+        print #tot_vpfcn         (,#col,15) EDIT 9,99,999.99 !2
+        add 15 to #col
+        print  #tot_econ         (,#col,15) EDIT 9,99,999.99 !3
+        add 15 to #col
+        print #tot_epscon        (,#col,15) EDIT 9,99,999.99 !4
+        add 15 to #col
+        print #tot_eadchg        (,#col,15) EDIT 9,99,999.99 !5
+        add 15 to #col
+        print #tot_edlcon        (,#col,15) EDIT 9,99,999.99 !6
+        add 15 to #col
+        print #tot_edlchg        (,#col,15) EDIT 9,99,999.99 !7
+
+        new-page
+END-IF
+
+     Let #Line-vert = #Line-header
+     Let #Line-header = #Line-header - 1
+     Let #Col-0 = 30
+     Let #Col-1 = 65
+     Let #Col-2 = 90
+     Let #Col-3 = 120
+
+
+     Let #EPF_Reco_Emplr = #tot_pcon + #tot_vpfcn
+     Let #EPF_Pay_Emply = #tot_econ
+     Let #Pen_Pay_Emply = #tot_epscon
+     Let #DLI_Pay_Emply = #tot_edlcon
+
+     Use-report Form_12A
+     alter-printer font=4 point-size=8
+     show '#Line-header : ' #Line-header
+     ! - 1
+     print $12BA_PARTICULARS (#Line-header,3)
+
+     graphic (-1,1,90) box 13
+     graphic (-1,10,13) vert-line 1 ! 1st
+      graphic (,18,13) vert-line 1 ! 2nd
+       graphic (,32,13) vert-line 1 ! 3rd
+        graphic (,50,13) vert-line 1 ! 4th
+         graphic (,62,13) vert-line 1 ! 5th
+          graphic (,77,13) vert-line 1 ! 6th
+
+
+     print $WAGES      (#Line-header,11) WRAP 13 4
+
+     print 'Amount of Contribution' (#Line-header,19)
+
+     Let #Line-3 = #Line-header + 1
+     PRINT '3' (#Line-3,25)
+     GRAPHIC ( ,18,18) HORZ-LINE 1
+     graphic (,25,10) vert-line 1
+     GRAPHIC ( , 32,18) HORZ-LINE 1
+
+     Let #Line-header1 = #Line-header + 1
+     print $AMT_RECO_WORKER (#Line-header1,19) wrap 13 3
+     print $AMT_PAY_EMPLR   (#Line-header1, 26) wrap 10 2
+     PRINT $12BA_AMT_REMITTED (#Line-header,33)
+     PRINT '4' (+1,40)
+     PRINT $WORKER_SHARE (+1,33) WRAP 15 2
+     print $12BA_EMPLOYER_SHAR ( ,43) wrap 15 2
+     graphic (#Line-3,42,10) vert-line 1
+     print $ADMIN_CHARGES (#Line-header,53) wrap 15 3
+
+     print $12BA_ADMIN_REM (#Line-header,65) wrap 15 4
+     print 'Date of'  (#Line-header,80)
+     LET #Line-header1 = #Line-header + 1
+     print 'Remittance(enc' (#Line-header1, 80)
+     LET #Line-header1 = #Line-header1 + 1
+     print 'lose triplicate' (#Line-header1, 80)
+     LET #Line-header1 = #Line-header1 + 1
+     print 'copies of' (#Line-header1, 80)
+     LET #Line-header1 = #Line-header1 + 1
+     PRINT 'challan)'  (#Line-header1, 80)
+
+     Let #Line-horz = #Line-header + 5
+     Let #Line-header = #Line-header + 6
+
+     graphic (#Line-horz,1,90) horz-line 1
+     PRINT '1' (#Line-horz,6)
+     PRINT '2' (#Line-horz,13)
+     PRINT '5' (#Line-horz,55)
+     PRINT '6' (#Line-horz,67)
+
+     alter-printer font=4 point-size=7
+     print $EPF_ACCT_NO    (#Line-header,1)
+     print #tot_edlgross (,11)
+     print #EPF_Reco_Emplr (#Line-header,19)
+     print #EPF_Pay_Emply  (,26)
+     print #tot_eadchg     (,53)
+
+
+     GRAPHIC (23,81,6) BOX 1
+     GRAPHIC (-1,18,1) VERT-LINE 1
+      GRAPHIC (22,81,1) VERT-LINE 1
+       GRAPHIC (22,82,1) VERT-LINE 1
+        GRAPHIC (22,83,1) VERT-LINE 1
+         GRAPHIC (22,84,1) VERT-LINE 1
+          GRAPHIC (22,85,1) VERT-LINE 1
+          GRAPHIC (22,86,1) VERT-LINE 1
+
+          graphic (+1,1,90) horz-line 1 !NEW
+
+  ! Pension Row
+     alter-printer font=4 point-size=6
+     print $PENSIONFUND_AC_NO (+1,1 )
+     alter-printer font=4 point-size=7
+     print 'NIL' ( ,19)
+     print #Pen_Pay_Emply  (,26)
+     print 'NIL' ( ,34)
+     print 'NIL' ( ,54)
+     print 'NIL' ( ,66)
+
+     GRAPHIC (25,81,6) BOX 1
+     GRAPHIC (-1,18,1) VERT-LINE 1
+      GRAPHIC (24,81,1) VERT-LINE 1
+       GRAPHIC (24,82,1) VERT-LINE 1
+        GRAPHIC (24,83,1) VERT-LINE 1
+         GRAPHIC (24,84,1) VERT-LINE 1
+          GRAPHIC (24,85,1) VERT-LINE 1
+          GRAPHIC (24,86,1) VERT-LINE 1
+
+          graphic (+1,1,90) horz-line 1 !NEW
+
+     ! DLI row
+     alter-printer font=4 point-size=7
+     print $DL_ACCT_NO  (+1,1)
+     print 'NIL' ( ,19)
+     print #DLI_Pay_Emply  (,26)
+     print 'NIL' ( ,34)
+
+     GRAPHIC (27,81,6) BOX 1
+     GRAPHIC (26,82,1) VERT-LINE 1
+     GRAPHIC (26,83,1) VERT-LINE 1
+     GRAPHIC (26,84,1) VERT-LINE 1
+     GRAPHIC (26,85,1) VERT-LINE 1
+     GRAPHIC (26,86,1) VERT-LINE 1
+
+     print #tot_edlchg (,53)
+
+     alter-printer font=4 point-size=8
+     print $12BA_TOT_EMPL (+3,5)
+     PRINT $12BA_NAME_ADD (+1,33)
+
+     LET $12BA_BANK = RTRIM ($12BA_BANK,' ')
+
+     print $12BA_BANK (+1,33)
+
+     PRINT $12BA_CONTRACT (,5)
+
+     GRAPHIC (,12,10) HORZ-LINE 1
+     GRAPHIC (,48,30) HORZ-LINE 1
+
+     PRINT $12BA_REST (+1,5)
+
+     GRAPHIC (,12,10) HORZ-LINE 1
+
+     print $12BA_REMITTED (,33)
+     GRAPHIC (,48,30) HORZ-LINE 1
+     PRINT $12BA_TOTAL (+1,5)
+     GRAPHIC (,12,10) HORZ-LINE 1
+
+     GRAPHIC (+3,4,53) BOX 5
+     graphic (-1,37,5) vert-line 1
+     graphic ( ,43,5)  vert-line 1
+     graphic ( ,51,5)  vert-line 1
+
+     PRINT $12BA_SUB_DET (+1,5)
+     GRAPHIC (,4,53) HORZ-LINE 1
+     PRINT $12BA_EPF ( ,38)
+     PRINT $12BA_PEN_FUND (,44)
+     PRINT $12BA_EDLI (,52)
+     PRINT $12BA_SUB_MNTH (+1,5)
+     GRAPHIC (,4,53) HORZ-LINE 1
+     PRINT $12BA_SUB_VIDE5 (+1,5)
+     GRAPHIC (,4,53) HORZ-LINE 1
+     GRAPHIC (,62,17) HORZ-LINE 1
+     PRINT $12BA_SUB_VIDE10 (+1,5)
+     GRAPHIC (,4,53) HORZ-LINE 1
+     print 'Signature of the Employer' (,64)
+     PRINT $12BA_TOT_SUB (+1,5)
+     PRINT '(with official seal)' (,66)
+
+End-Procedure !Process_Main
+
+BEGIN-PROCEDURE GET-MONTH-YEAR
+move &GPINRC.END_DT to $EndDate 'YYYY-MM-DD'
+DO DTU-PARSE-DATE($EndDate, #YEAR, #MONTH, #DAY)
+Evaluate  #MONTH
+    when = 1
+        LET $MONTH = 'JAN'
+        LET #YEAR1 = #YEAR - 1
+        LET #YEAR2 = #YEAR
+        break
+    when = 2
+        LET $MONTH = 'FEB'
+        LET #YEAR1 = #YEAR - 1
+        LET #YEAR2 = #YEAR
+        break
+    when = 3
+        LET $MONTH = 'MAR'
+        LET #YEAR1 = #YEAR - 1
+        LET #YEAR2 = #YEAR
+        break
+    when = 4
+        LET $MONTH = 'APR'
+        LET #YEAR1 = #YEAR
+        LET #YEAR2 = #YEAR + 1
+        break
+    when = 5
+        LET $MONTH = 'MAY'
+        LET #YEAR1 = #YEAR
+        LET #YEAR2 = #YEAR + 1
+        break
+    when = 6
+        LET $MONTH = 'JUN'
+        LET #YEAR1 = #YEAR
+        LET #YEAR2 = #YEAR + 1
+        break
+    when = 7
+        LET $MONTH = 'JUL'
+        LET #YEAR1 = #YEAR
+        LET #YEAR2 = #YEAR + 1
+        break
+    when = 8
+        LET $MONTH = 'AUG'
+        LET #YEAR1 = #YEAR
+        LET #YEAR2 = #YEAR + 1
+        break
+    when = 9
+        LET $MONTH = 'SEP'
+        LET #YEAR1 = #YEAR
+        LET #YEAR2 = #YEAR + 1
+        break
+    when = 10
+        LET $MONTH = 'OCT'
+        LET #YEAR1 = #YEAR
+        LET #YEAR2 = #YEAR + 1
+        break
+    when = 11
+        LET $MONTH = 'NOV'
+        LET #YEAR1 = #YEAR
+        LET #YEAR2 = #YEAR + 1
+        break
+    when = 12
+        LET $MONTH = 'DEC'
+        LET #YEAR1 = #YEAR
+        LET #YEAR2 = #YEAR + 1
+        break
+End-Evaluate
+LET $Month-Of-Contr = $MONTH || ', ' || TO_CHAR(#YEAR)
+end-procedure
+
+!***********************************************************************!
+!Procedure: Get-Estab-Details                                           !
+!Descr:     To get the Establishment details                            !
+!***********************************************************************!
+Begin-procedure Get-Estab-Details
+
+Begin-Select
+ESTGPIN.GPIN_PF_NBR &PF_NBR
+ESTGPIN.GPIN_PF_DT &PF_DT
+   Move &PF_NBR To $regno
+   Move &PF_DT To $regdt
+From PS_ESTAB_TBL_GPIN ESTGPIN
+Where ESTGPIN.ESTABID = $tmpestab
+And ESTGPIN.EFFDT <= (SELECT MAX(EFFDT)
+FROM PS_ESTAB_TBL_GPIN WHERE
+ESTABID = ESTGPIN.ESTABID
+AND EFFDT <= &tmp.prd_end_dt)
+End-Select
+End-Procedure !Get-Estab-Details
+
+!***********************************************************************!
+Begin-Procedure Get-Rpt_Fields
+
+Begin-Select
+TMP3.EMPLID
+TMP3.GPIN_FLD_NAME
+   Move &tmp3.gpin_fld_name  To  $rptfldname
+TMP3.CALC_RSLT_VAL
+   Move &tmp3.calc_rslt_val To #repval
+
+   let $rptfldname = rtrim($rptfldname,' ')
+   let $rptfldname = ltrim($rptfldname,' ')
+
+
+   Evaluate  $rptfldname
+      when = 'RM02_PF_PCON'
+          add #repval to #pcon
+          break
+
+      when = 'RM02_PF_VPFCN'
+          add #repval to #vpfcn
+          break
+
+      when = 'RM02_PF_ECON'
+           add #repval to #econ
+           break
+
+      when = 'RM02_PF_EPSCON'
+            add #repval to #epscon
+            break
+
+      when = 'RM02_PF_EADCHG'
+           add #repval to #eadchg
+           break
+
+      when = 'RM02_PF_EDLCON'
+           add #repval to #edlcon
+           break
+
+      when = 'RM02_PF_EDLCHG'
+           add #repval to #edlchg
+           break
+
+      when = 'RM02_PF_GROSS'
+           add #repval to #edlgross
+           break
+
+   End-Evaluate
+
+FROM PS_GPIN_PR_TMP3 TMP3
+WHERE  TMP3.JOBINSTANCE =#prcs_job_instance
+AND TMP3.EMPLID = &tmp.emplid
+AND TMP3.CAL_RUN_ID = &tmp.cal_run_id
+AND TMP3.EMPL_RCD = &tmp.empl_rcd
+AND TMP3.GP_PAYGROUP = &tmp.gp_paygroup
+AND TMP3.CAL_ID = &tmp.cal_id
+AND TMP3.ORIG_CAL_RUN_ID = &tmp.orig_cal_run_id
+AND TMP3.RSLT_SEG_NUM = &tmp.rslt_seg_num
+AND TMP3.RSLT_VER_NUM = &tmp.rslt_ver_num
+AND TMP3.RSLT_REV_NUM = &tmp.rslt_rev_num
+ORDER BY TMP3.EMPLID
+End-Select
+End-Procedure !Get-Rpt_Fields
+!***********************************************************************!
+
+Begin-Procedure Get_Payee_Name
+
+Let $pfenrolflg = 'N'
+LET $pfregno = ''
+Begin-Select
+ENROL.GPIN_REG_NBR &REG_NBR
+   Move &REG_NBR To $pfregno
+  Let $pfenrolflg = 'Y'
+FROM PS_GPIN_PF_ENROLL ENROL
+WHERE ENROL.EMPLID = &tmp.emplid
+AND EFF_STATUS = 'A'
+AND ENROL.EFFDT = (SELECT MAX(EFFDT) FROM
+PS_GPIN_PF_ENROLL WHERE EMPLID = &tmp.emplid
+AND EFFDT <= &tmp.prd_end_dt)
+End-Select
+
+End-Procedure !Get_Payee_Name
+
+!***************************************************************************
+begin-procedure determine-break-logic
+
+
+  If #line > 45
+     if $est_break = 'N'
+        let #gline = 2
+        let #gcol = 10
+        Let #vdepth = #line - 2
+     else
+        let #gline = 14
+        let #gcol = 10
+        Let #vdepth = #line - 14
+        let $est_break = 'N'
+     end-if
+
+
+     GRAPHIC (#line,10,160) HORZ-LINE
+     new-page
+     Let #line = 3
+     Do Print_Header
+     !Let #line = 31
+     !Do Print_Header2
+
+     add 1 to #line
+
+  else     !***This part of code is for New Establishment ID's.
+
+           if $est_break = 'Y'
+             let #gline = 14
+             let #gcol = 10
+             Let #vdepth = #line - 14
+             let $est_break = 'N'
+             GRAPHIC (#line,10,160) HORZ-LINE  !****Last line of the page
+             new-page
+             Let #line = 3
+             Do Print_Header
+             add 1 to #line
+             let $first_est = 'N'
+             let #gline = 2
+             let #gcol = 10
+             Let #vdepth = #line - 2
+          end-if
+  End-If
+
+
+end-procedure
+
+!***********************************************************************
+!Procedure : print_Report_flds                                         *
+!                                                                      *
+!Description : Prints the Report Fields                                *
+!***********************************************************************
+Begin-Procedure print_Report_flds
+Do Get_Payee_Name
+
+do determine-break-logic
+
+If $pfenrolflg = 'Y'
+
+  add 1 to #line
+
+let #col = 11
+
+USE-REPORT PF_REMIT
+alter-printer font=4 point-size=11
+print $empid         (#line,#col,11)!1753960000
+add 11 to #col
+!Begin 1753960000
+let $Flag = 'True'
+if LENGTH($empname) < 25
+  let $empname1 =  RTRIM(LTRIM(SUBSTR($empname,1,24),' '), ' ')
+  print  $empname1      (,#col,)
+else
+ let $Flag = 'False'
+ let $empname1 = RTRIM(LTRIM(substr($empname, 1,24),' '), ' ')
+ let $empname2 = RTRIM(LTRIM(substr($empname, 25,30), ' '), ' ')
+ print  $empname1      (,#col,)
+ print  $empname2      (+1,#col,)
+end-if
+add 30 to #col
+if $Flag = 'False'
+ add 1 to #line
+print $pfregno        (#line,#col,)
+else
+print $pfregno        (,#col,)
+end-if
+!End 1753960000
+add 15 to #col
+print  #pcon         (,#col,15) EDIT 9,99,999.99 !1
+add 15 to #col
+print #vpfcn         (,#col,15) EDIT 9,99,999.99 !2
+add 15 to #col
+print  #econ         (,#col,15) EDIT 9,99,999.99 !3
+add 15 to #col
+print #epscon        (,#col,15) EDIT 9,99,999.99 !4
+add 15 to #col
+print #eadchg        (,#col,15) EDIT 9,99,999.99 !5
+add 15 to #col
+print #edlcon        (,#col,15) EDIT 9,99,999.99 !6
+add 15 to #col
+print #edlchg        (,#col,15) EDIT 9,99,999.99 !7
+
+Let #Line-num = #current-line
+End-If
+
+
+End-Procedure  !print_Report_flds
+
+!***********************************************************************
+! Function:    Print_Header                                            *
+!                                                                      *
+! Description: Prints the Search Period of the report                  *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure   Print_Header
+  USE-REPORT PF_REMIT
+  #Include 'stdhdgtr.sqc'
+  alter-printer font=4 point-size=12
+  print $xv_PF_RM   (3,80,#xfw_PF_RM) BOLD
+  alter-printer font=4 point-size=12
+  alter-printer font=4 point-size=8
+  print $xv_ESTBLMNT  (5,10,#xfw_ESTBLMNT)
+  print $estname (5,32,)
+  print $xv_EST_ID    (5,100,#xfw_EST_ID)
+  print $LSTESTABID  (5,120,)
+  print $xv_REG_NO    (8,10,#xfw_REG_NO)
+  print $regno (8,32,)
+  print $xv_REG_DATE  (8,100,#xfw_REG_DATE)
+  print $regdt (8,121,10) edit 'dd/mm/yyyy'
+  print $xv_CON_PRD   (11,10,#xfw_CON_PRD)
+  print $xv_FR_DT     (11,32,#xfw_FR_DT)
+  print &tmp.prd_bgn_dt     (11,46,10) edit 'dd/mm/yyyy'
+  print $xv_TO     (11,100,#xfw_TO)
+  print &tmp.prd_end_dt     (11,121,11) edit 'dd/mm/yyyy'
+  Let #line = 16
+
+  USE-REPORT Form_12A
+  alter-printer font=4 point-size=8
+    print $12BA_TITLE (1,45)
+    print $12BA_UNEXPECTED (+1,2)
+    print $12BA_HEADIN1 (,34) BOLD
+    print $12BA_HEADIN2 (+1,38) BOLD
+
+  alter-printer font=4 point-size=7
+  alter-printer font=4 point-size=8
+  LET $12BA_CURRENCY_PER1 = $12BA_CURRENCY_PER || ' ' || TO_CHAR(#YEAR1)
+  print $12BA_CURRENCY_PER1 (+1,38)
+  LET $TMPSTR = ' to 31st March, ' || TO_CHAR(#YEAR2)
+  print $TMPSTR (,56)
+  print $12BA_FILLED (,80)
+
+  print $12BA_STATEMENT (,39)
+  print $Month-Of-Contr (,60) BOLD
+  print $12BA_ESTAB_STATUS  (+1,80)
+  graphic (,91,2) BOX 1
+    print $12BA_NAME (,2)
+  print $12BA_STAT_CONT (,41)
+  graphic (,56,2) BOX 1
+  graphic (,58,2) BOX 1
+  graphic (,60,2) BOX 1
+  graphic (,62,2) BOX 1
+  print '1' (,59)
+  print '2' (,61)
+  print '%' (,63)
+
+  Print 'M/s' (+1,2)
+
+  print $STRESTAB    (0,5)
+  graphic            (0,4,16)  horz-line
+
+  if rtrim($STRESTAB1,' ') <> ''
+    print $STRESTAB1                            (+1,2)
+    graphic                                       (,2,18)  horz-line
+  end-if
+  if rtrim ($STRESTAB2,' ') <> ''
+     print $STRESTAB2                          (+1,2)
+     graphic                                       (,2,18)  horz-line
+  end-if
+   if rtrim($STRESTAB3,' ') <> ''
+     print $STRESTAB3                          (+1,2)
+     graphic                                       (,2,18)  horz-line
+  end-if
+   if rtrim($STRESTAB4,' ') <> ''
+     print $STRESTAB4                          (+1,2)
+     graphic                                       (,2,18)  horz-line
+    end-if
+  if rtrim($STRESTAB5,' ') <> ''
+    print $STRESTAB5                          (+1,2)
+    graphic                                       (,2,18)  horz-line
+  end-if
+
+  print $12BA_GROUP (8,80)
+  graphic (8,87,2) BOX 1
+  graphic (8,89,2) BOX 1
+  graphic (8,91,2) BOX 1
+  graphic (8,93,2) BOX 1
+  graphic (8,95,2) BOX 1
+  graphic (8,97,2) BOX 1
+
+  print $12BA_CODENO (14,2)
+  print $regno (,8) bold
+
+  let #Line-header = 17 !#current-line - 2
+
+  Do Print_Header2
+End-procedure !Print_Header
+
+!*********************************************************************
+
+Begin-Procedure Print_Header2
+  USE-REPORT PF_REMIT
+ 
+  Let #hrline = #line - 2
+  
+ 
+  GRAPHIC (#hrline,10,160) HORZ-LINE
+  alter-printer font=4 point-size=12
+  let #col = 11
+  let #line = #line + 1
+
+  print $xv_ID            (#line,#col,#xfw_ID)
+  add 11 to #col
+  print $xv_PY_NAME       (#line,#col,#xfw_PY_NAME)
+
+  add 30 to #col
+  print $xv_REG_NO         (#line,#col,#xfw_PY_REG_NBR)  wrap 15 3
+
+
+  add 15 to #col
+  print $xv_PY_PF_CONT  (#line,#col,#xfw_PY_PF_CONT) wrap 13 3
+
+
+  add 15 to #col
+  print $xv_PY_VPF_CONT   (#line,#col,#xfw_PY_VPF_CONT) wrap 15 3
+
+
+  add 15 to #col
+  print $xv_EMP_PF_CONT      (#line,#col,#xfw_EMP_PF_CONT)  wrap 15 3
+
+
+  add 15 to #col
+  print $xv_EMP_EPS_CONT      (#line,#col,#xfw_EMP_EPS_CONT) wrap 15 3
+
+
+  add 15 to #col
+  print $xv_EMP_AI_CHGS       (#line,#col,#xfw_EMP_AI_CHGS) wrap 15 3
+
+
+  add 15 to #col
+  PRINT 'Employers EDLIS '  (#line,#col,#xfw_EMP_EDLIS_CONT)
+  print 'Contribution' (+1,#col)
+
+
+  let $xv_EMP_EA_CHGS = LTRIM(RTRIM($xv_EMP_EA_CHGS , ' '),' ')
+  add 15 to #col
+  print $xv_EMP_EA_CHGS  (#line,#col,#xfw_EMP_EA_CHGS) wrap 15 2
+
+  Let #hrline = #line + 2
+  GRAPHIC (#hrline,10,160) HORZ-LINE
+
+  add 2 to #line
+
+End-procedure   !Print-Header2
+
+!***********************************************************************
+! Function:    Get_Tranlat_Info                                        *
+!                                                                      *
+
+! Description: Gets the strings printed in this report (Globalization) *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_Translat_Info
+
+   do Add_Report_Translation($ReportID, $rpt_language_cd)
+
+   do Get_Field_Information('GPINRM02','PF_RM',$xv_PF_RM,
+     #xfw_PF_RM)
+   do Get_Field_Information('GPINRM02','ESTBLMNT',$xv_ESTBLMNT ,#xfw_ESTBLMNT)
+   do Get_Field_Information('GPINRM02','EST_ID',$xv_EST_ID,
+     #xfw_EST_ID)
+   do Get_Field_Information('GPINRM02','REG_NO',$xv_REG_NO,
+     #xfw_REG_NO)
+   do Get_Field_Information('GPINRM02','REG_DATE',$xv_REG_DATE,
+     #xfw_REG_DATE)
+   do Get_Field_Information('GPINRM02','ID',$xv_ID,#xfw_ID)
+   do Get_Field_Information('GPINRM02','PY_NAME',$xv_PY_NAME,
+     #xfw_PY_NAME)
+   do Get_Field_Information('GPINRM02','CON_PRD',$xv_CON_PRD,
+        #xfw_CON_PRD)
+   do Get_Field_Information('GPINRM02','FR_DT',$xv_FR_DT,
+     #xfw_FR_DT)
+   do Get_Field_Information('GPINRM02','TO',$xv_TO,
+     #xfw_TO)
+   do Get_Field_Information('GPINRM02','PY_PF_CONT',$xv_PY_PF_CONT,
+     #xfw_PY_PF_CONT)
+   do Get_Field_Information('GPINRM02','PY_VPF_CONT',$xv_PY_VPF_CONT ,
+     #xfw_PY_VPF_CONT)
+   do Get_Field_Information('GPINRM02','EMP_PF_CONT',$xv_EMP_PF_CONT,
+     #xfw_EMP_PF_CONT)
+   do Get_Field_Information('GPINRM02','EMP_EPS_CONT',$xv_EMP_EPS_CONT,
+     #xfw_EMP_EPS_CONT)
+   do Get_Field_Information('GPINRM02','EMP_AI_CHGS',$xv_EMP_AI_CHGS,
+     #xfw_EMP_AI_CHGS)
+   do Get_Field_Information('GPINRM02','EMP_EDLIS_CONT',$xv_EMP_EDLIS_CONT,
+     #xfw_EMP_EDLIS_CONT)
+   do Get_Field_Information('GPINRM02','EMP_EA_CHGS',$xv_EMP_EA_CHGS,
+     #xfw_EMP_EA_CHGS)
+
+     !****************** 12BA***********************
+     do Get_Field_Information('GPINRM02','12BA_TITLE',$12BA_TITLE,#DW)
+     do Get_Field_Information('GPINRM02','12BA_HEADIN1',$12BA_HEADIN1,#DW)
+     do Get_Field_Information('GPINRM02','12BA_HEADIN2',$12BA_HEADIN2,#DW)
+     do Get_Field_Information('GPINRM02','12BA_HEADIN3',$12BA_HEADIN3,#DW)
+     do Get_Field_Information('GPINRM02','12BA_FILLED',$12BA_FILLED,#DW)
+     do Get_Field_Information('GPINRM02','12BA_UNEXPECTED',$12BA_UNEXPECTED,#DW)
+     do Get_Field_Information('GPINRM02','12BA_NAME',$12BA_NAME,#DW)
+     do Get_Field_Information('GPINRM02','12BA_CURRENCY_PER',$12BA_CURRENCY_PER,#DW)
+     do Get_Field_Information('GPINRM02','12BA_CURRENCY_PER2',$12BA_CURRENCY_PER2,#DW)
+     do Get_Field_Information('GPINRM02','12BA_ESTAB_STATUS',$12BA_ESTAB_STATUS,#DW)
+
+     do Get_Field_Information('GPINRM02','12BA_STATEMENT',$12BA_STATEMENT,#DW)
+     do Get_Field_Information('GPINRM02','12BA_GROUP',$12BA_GROUP,#DW)
+     do Get_Field_Information('GPINRM02','12BA_CODENO',$12BA_CODENO,#DW)
+     do Get_Field_Information('GPINRM02','12BA_STAT_CONT',$12BA_STAT_CONT,#DW)
+     do Get_Field_Information('GPINRM02','12BA_PARTICULARS',$12BA_PARTICULARS,#DW)
+
+
+
+     do Get_Field_Information('GPINRM02','WAGES',$WAGES,#DW)
+     do Get_Field_Information('GPINRM02','AMT_RECO_WORKER',$AMT_RECO_WORKER,#DW)
+     do Get_Field_Information('GPINRM02','AMT_PAY_EMPLR',$AMT_PAY_EMPLR,#DW)
+     do Get_Field_Information('GPINRM02','WORKER_SHARE',$WORKER_SHARE,#DW)
+     do Get_Field_Information('GPINRM02','ADMIN_CHARGES',$ADMIN_CHARGES,#DW)
+     do Get_Field_Information('GPINRM02','EPF_ACCT_NO',$EPF_ACCT_NO,#DW)
+     do Get_Field_Information('GPINRM02','PENSIONFUND_AC_NO',$PENSIONFUND_AC_NO,#DW)
+     do Get_Field_Information('GPINRM02','DL_ACCT_NO',$DL_ACCT_NO,#DW)
+
+     do Get_Field_Information('GPINRM02','12BA_AMT_REMITTED',$12BA_AMT_REMITTED,#DW)
+     do Get_Field_Information('GPINRM02','12BA_EMPLOYER_SHAR',$12BA_EMPLOYER_SHAR,#DW)
+     do Get_Field_Information('GPINRM02','12BA_ADMIN_REM',$12BA_ADMIN_REM,#DW)
+     do Get_Field_Information('GPINRM02','12BA_DATE_REM',$12BA_DATE_REM,#DW)
+     do Get_Field_Information('GPINRM02','12BA_DATE_REM1',$12BA_DATE_REM1,#DW)
+     do Get_Field_Information('GPINRM02','12BA_DATE_REM2',$12BA_DATE_REM2,#DW)
+     do Get_Field_Information('GPINRM02','12BA_DATE_REM_3',$12BA_DATE_REM_3,#DW)
+     do Get_Field_Information('GPINRM02','12BA_TOT_EMPL',$12BA_TOT_EMPL,#DW)
+     do Get_Field_Information('GPINRM02','12BA_NAME_ADD',$12BA_NAME_ADD,#DW)
+     do Get_Field_Information('GPINRM02','12BA_CONTRACT',$12BA_CONTRACT,#DW)
+     do Get_Field_Information('GPINRM02','12BA_REST',$12BA_REST,#DW)
+     do Get_Field_Information('GPINRM02','12BA_TOTAL',$12BA_TOTAL,#DW)
+     do Get_Field_Information('GPINRM02','12BA_BANK',$12BA_BANK,#DW)
+     do Get_Field_Information('GPINRM02','12BA_SUB_DET',$12BA_SUB_DET,#DW)
+     do Get_Field_Information('GPINRM02','12BA_SUB_MNTH',$12BA_SUB_MNTH,#DW)
+     do Get_Field_Information('GPINRM02','12BA_SUB_VIDE5',$12BA_SUB_VIDE5,#DW)
+     do Get_Field_Information('GPINRM02','12BA_SUB_VIDE10',$12BA_SUB_VIDE10,#DW)
+     do Get_Field_Information('GPINRM02','12BA_TOT_SUB',$12BA_TOT_SUB,#DW)
+     do Get_Field_Information('GPINRM02','12BA_EPF',$12BA_EPF,#DW)
+     do Get_Field_Information('GPINRM02','12BA_PEN_FUND',$12BA_PEN_FUND,#DW)
+     do Get_Field_Information('GPINRM02','12BA_EDLI',$12BA_EDLI,#DW)
+     do Get_Field_Information('GPINRM02','12BA_REMITTED',$12BA_REMITTED,#DW)
+
+end-procedure
+!***********************************************************************
+
+#include 'gprnctl1.sqc'  !Get run control parameter values
+#include 'stdapi.sqc'    !Routines to update run status
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'useprntr.sqc'
+#Include 'sqrtrans.sqc'
+#Include 'datemath.sqc'
+#Include 'getprimj.sqc'  !Routines for selecting EE's primary job
+#include 'readxlat.sqc'  ! Get shortname or longname from xlattable
+!***********************************************************************

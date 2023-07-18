@@ -1,0 +1,801 @@
+!******************************************************************************
+! Report Name: STOP013 - Exercise and Releases Payroll Income and Tax Reversals
+!******************************************************************************
+!
+!
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!----------------------------------------------------------------------
+!                                                                      
+!          $Date:  2013/01/18:02:54:05                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!
+!******************************************************************************
+! Program Descr: This report calculates and prints Income information from
+!                sales of Exercises or Releases that have been reversed.  Info
+!                will be reported to the payroll department.  Report prompts 
+!                for New Report or Reprint.  If new report is selected, 
+!                ST_PR_DT must not be Null, REVERSAL_DT must be Null and 
+!                DISPOSITION_STATUS = 'V'.  For these selected rows, the report
+!                will update REVERSAL_DT to the date the report is being 
+!                processed.  If reprint is selected, report only retrieves rows
+!                where REVERSAL_DT is not Null.  The report is also run by 
+!                Process Group or employee.  If Process Group is choosen the 
+!                report sorts and breaks by process group.  If employee is 
+!                choosen, it sorts by employee name.
+!******************************************************************************
+! Prompts:       Stock ID, Stock Plan ID, Emplid, From Date, Thru Date,
+!                Reprint Indicator, Process Group, Run Type, Option Type,
+!                Transaction Type
+! Options:       None
+! Tables:        ST_GRANT
+!                ST_GRANT_EXER
+!                ST_EXER_RELEASE
+!                JOB
+!                ST_PERSON_NAME
+!                PAYGROUP_TBL
+!                R_PRCS_GRP_DTL
+!                TAX_LOCATION1
+! Sorts:         Process Group,
+!                Transaction Type
+!                Option Type
+!                Name
+!                Transaction Date
+!******************************************************************************
+
+#include 'setenv.sqc'
+
+!******************************************************************************
+Begin-Setup
+
+ #include 'ptpsl177.sqc'               ! Landscape 177 Columns
+
+End-Setup
+
+!******************************************************************************
+! Procedure: Begin-Program
+! Descr:     Main report driver.  Calls two different main procedures
+!            depending if run is for reprint or new report.
+!******************************************************************************
+Begin-Program
+
+  do Init-Report
+  do Build-Where-Clause
+  do Create-Array
+  do Main-Process
+  do Reset
+  do Successful-EOJ
+
+  let $CurrentTime = datenow()
+  show 'Process ended at:   ' $SysDateTime      !standard output info to sqr.log
+
+End-Program
+
+!-----------------------------------------------------------------------
+! Procedure: Begin-Heading
+! Descr:     Prints at the beginning of each page
+!-----------------------------------------------------------------------
+Begin-Heading 10
+
+  #include 'stdhdg01.sqc'
+
+  print $StockIdLbl                                        (03,001,008)
+  print ':'                                                (  ,   ,001)
+  print $RC_Stock_ID                                       (  ,020,010)
+
+  print $FromLbl                                           (  ,073,004)
+  print ':'                                                (  ,   ,001)
+  print $FromDate                                          (  , +1,010)
+
+  print $ThruLbl                                           (  , +2,004)
+  print ':'                                                (  ,   ,001)
+  print $ThruDate                                          (  , +1,010)
+
+  print $StockPlanLbl                                      (04,001,010)
+  print ':'                                                (  ,   ,001)
+  print $RC_Stock_Plan                                     (  ,020,010)
+
+  print $PrcsGrpLbl                                        (05,001,013)
+  print ':'                                                (  ,   ,001)
+
+  print $PrcsGrp                                           (  ,020,010)
+
+  print $TransTypeLbl                                      (06,001,016)
+  print ':'                                                (  ,   ,001)
+  if $Type = 'E'
+     print $ExerLbl                                        (  ,020,008)
+  else
+     print $RelLbl                                         (  ,020,007)
+  end-if
+  print $OptTypeLbl                                        (07,001,011)
+  print ':'                                                (  ,   ,001)
+  print $OptionType                                        (  ,020,004)
+
+  print $NameLbl                                           (09,001,030)
+  print $GrantPriceLbl                                     (  ,032,012)
+  print $TransFmvLbl                                       (  ,046,016)
+  print $TransLbl                                          (  ,066,011)
+
+  print $EmpIDLbl                                          (10,001,030)
+  print $GrantNbrLbl                                       (  ,032,012)
+  print $TransNbrLbl                                       (  ,046,018)
+  print $DateLbl                                           (  ,066,011)
+  print $SharesLbl                                         (  ,094,006)
+  print $OrdIncLbl                                         (  ,105,015)
+  print $TaxTypeLbl                                        (  ,122,008)
+  print $TaxAmtLbl                                         (  ,162,010)
+  print '-'                                                (11,001,171) fill
+
+End-Heading
+
+!-----------------------------------------------------------------------
+! Procedure: Init-Report
+! Descr:     Report initialization procedure.  Set variables and retrieves
+!            report parameters.
+!-----------------------------------------------------------------------
+Begin-Procedure Init-Report
+
+  let $ReportID      = 'STOP013'
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Define-Prcs-Vars
+  do Get-Run-Control-Parms
+  do Get-Report-Language
+  let $AsOfDate = $AsOfToday
+
+  if $prcs_process_instance = ''
+  else
+    do Get-SQR-Parms                   ! Get Run Control Values
+  end-if
+
+  let $RC_Reprint     = rtrim($RC_Reprint_Prompt,' ')
+
+  show 'Reprint:       ' $RC_Reprint_Prompt
+  show 'Stock ID:      ' $RC_Stock_ID
+  show 'from Date:     ' $RC_FromDate
+  show 'Thru Date:     ' $RC_ThruDate
+
+  if $RC_Stock_Plan <> ''
+    show 'Stock Plan:    ' $RC_Stock_Plan
+  end-if
+
+  if $RC_PrcsGrp <> ''
+    show 'Prcs Group:    ' $RC_PrcsGrp
+  end-if
+
+  if $RC_Emplid <> ''
+    show 'Emplid:        ' $RC_Emplid
+  end-if
+
+  if $RC_DispType <> ''
+    show 'Transactions:  ' $RC_DispType
+  else
+    show 'Transactions:  All'
+  end-if
+
+  if $RC_Option_Type <> ''
+    show 'Option Type:   ' $RC_Option_Type
+  else
+    show 'Option Type:   All'
+  end-if
+
+  do Format-DateTime ($RC_FromDate, $FromDate, {DEFDATE}, '', '')
+  do Format-DateTime ($RC_ThruDate, $ThruDate, {DEFDATE}, '', '')
+
+  show ' '
+  let $CurrentTime = datenow()
+  show 'Process started at: ' $SysDateTime      !standard output info to sqr.log
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Report-Translation
+! Descr:     This procedure is used to read language-dependent text from
+!            the database.
+!-----------------------------------------------------------------------
+Begin-Procedure Report-Translation
+
+  do Init_Report_Translation ('STOCK',$language_cd)
+  do Append_Report_Translation ('STOP012')
+
+  do Get_Field_Information ('STOCK',  'TOTAL',            $TotalLbl,      #DW)
+  do Get_Field_Information ('STOCK',  'GRAND_TOTAL',      $GrndTotLbl,    #DW)
+  do Get_Field_Information ('STOCK',  'STOCK_ID',         $StockIdLbl,    #DW)
+  do Get_Field_Information ('STOCK',  'STOCK_PLAN',       $StockPlanLbl,  #DW)
+  do Get_Field_Information ('STOCK',  'PROCESS_GRP',      $PrcsGrpLbl,    #DW)
+  do Get_Field_Information ('STOCK',  'NAME',             $NameLbl,       #DW)
+  do Get_Field_Information ('STOCK',  'EMPLID',           $EmpIdLbl,      #DW)
+  do Get_Field_Information ('STOCK',  'GRANT_PRICE',      $GrantPriceLbl, #DW)
+  do Get_Field_Information ('STOCK',  'GRANT_NBR',        $GrantNbrLbl,   #DW)
+  do Get_Field_Information ('STOCK',  'DATE',             $DateLbl,       #DW)
+  do Get_Field_Information ('STOCK',  'SHARES',           $SharesLbl,     #DW)
+  do Get_Field_Information ('STOCK',  'ST_ORD_INCOME',    $OrdIncLbl,     #DW)
+  do Get_Field_Information ('STOCK',  'ST_OPTION_TYPE',   $OptTypeLbl,    #DW)
+  do Get_Field_Information ('STOCK',  'FROM',             $FromLbl,       #DW)
+  do Get_Field_Information ('STOCK',  'THRU',             $ThruLbl,       #DW)
+  do Get_Field_Information ('STOCK',  'EXERCISE',         $ExerLbl,       #DW)
+  do Get_Field_Information ('STOCK',  'RELEASE',          $RelLbl,        #DW)
+
+  do Get_Field_Information ('STOP012','STOP013',          $ReportTitle,   #DW)
+  do Get_Field_Information ('STOP012','TRANSACTION',      $TransLbl,      #DW)
+  do Get_Field_Information ('STOP012','TRANSACTION_NBR',  $TransNbrLbl,   #DW)
+  do Get_Field_Information ('STOP012','TRANSACTION_FMV',  $TransFmvLbl,   #DW)
+  do Get_Field_Information ('STOP012','TRANSACTION_TYPE', $TransTypeLbl,  #DW)
+  do Get_Field_Information ('STOP012','TAX_AMOUNT',       $TaxAmtLbl,     #DW)
+  do Get_Field_Information ('STOP012','TAX_TYPE',         $TaxTypeLbl,    #DW)
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Build-Where-Clause
+! Descr:     Construct portions of where clause, to be used in the main select,
+!            based on report parameters choosen.
+!-----------------------------------------------------------------------
+Begin-Procedure Build-Where-Clause
+
+  let $SQLQuote      = ''''
+  let $WhereReprint  = ''
+  let $WhereReprint2 = ''
+  let $WhereNew      = ''
+  let $WhereNew2     = ''
+
+  if $RC_Stock_Plan <> ''
+    let $WhereStockPlan  = ' and A.STOCK_PLAN  = '    || $SQLQuote || $RC_Stock_Plan || $SQLQuote
+  else
+    let $WhereStockPlan  = ''
+  end-if
+
+  if $RC_PrcsGrp <> '' 
+    let $WherePrcsGrp    = ' and B.PROCESS_GROUP  = ' || $SQLQuote || $RC_PrcsGrp    || $SQLQuote
+    let $WherePrcsGrp2   = ' and H.PROCESS_GROUP  = ' || $SQLQuote || $RC_PrcsGrp    || $SQLQuote
+  else
+    let $WherePrcsGrp    = ''
+    let $WherePrcsGrp2   = ''
+  end-if
+ 
+  if $RC_Option_Type <> ''
+    let $WhereOption     = ' and A.ST_OPTION_TYPE = '  || $SQLQuote || $RC_Option_Type || $SQLQuote
+  else
+    let $WhereOption     = ''
+  end-if 
+
+  evaluate $RC_DispType
+    when = 'E'
+       if $RC_Emplid <> ''
+          let $WhereEmplid  = ' and A.EMPLID = '      || $SQLQuote || $RC_Emplid   || $SQLQuote
+          let $WhereEmplid2 = ' and A.EMPLID = ''''' 
+       else
+          let $WhereEmplid  = ''
+          let $WhereEmplid2 = ' and A.EMPLID = ''''' 
+       end-if
+    break
+    when = 'R'
+       if $RC_Emplid <> ''
+          let $WhereEmplid  = ' and A.EMPLID = '''''
+          let $WhereEmplid2 = ' and A.EMPLID = '      || $SQLQuote || $RC_Emplid   || $SQLQuote
+       else
+          let $WhereEmplid  = ' and A.EMPLID = ''''' 
+          let $WhereEmplid2 = '' 
+       end-if
+    break
+    when-other
+       if $RC_Emplid <> ''
+          let $WhereEmplid  = ' and A.EMPLID = '      || $SQLQuote || $RC_Emplid   || $SQLQuote
+          let $WhereEmplid2 = ' and A.EMPLID = '      || $SQLQuote || $RC_Emplid   || $SQLQuote
+       else
+          let $WhereEmplid  = ''
+          let $WhereEmplid2 = ''
+       end-if
+    break
+  end-evaluate
+
+  if $RC_Reprint = 'Y'
+    if $RC_FromDate <> ''
+       let $WhereFromDate   = ' and B.REVERSAL_DT  >= ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+       let $WhereFromDate2  = ' and H.REVERSAL_DT  >= ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+    else
+       let $WhereFromDate   = ''
+       let $WhereFromDate2  = ''
+    end-if
+    if $RC_ThruDate <> ''
+       let $WhereThruDate   = ' and B.REVERSAL_DT  <= ' || $SQLQuote || $RC_ThruDate   || $SQLQuote
+       let $WhereThruDate2  = ' and H.REVERSAL_DT  <= ' || $SQLQuote || $RC_ThruDate   || $SQLQuote
+    else
+       let $WhereThruDate   = ''
+       let $WhereThruDate2  = ''
+    end-if
+    let $WhereReprint       = ' and B.REVERSAL_DT IS NOT NULL'
+    let $WhereReprint2      = ' and H.REVERSAL_DT IS NOT NULL'
+  else
+    if $RC_FromDate <> ''
+       let $WhereFromDate   = ' and B.EXERCISE_DT  >= ' || $SQLQuote || $RC_FromDate   || $SQLQuote
+       let $WhereFromDate2  = ' and H.RELEASE_DT  >= '  || $SQLQuote || $RC_FromDate   || $SQLQuote
+    else
+       let $WhereFromDate   = ''
+       let $WhereFromDate2  = ''
+    end-if
+    if $RC_ThruDate <> ''
+       let $WhereThruDate   = ' and B.EXERCISE_DT  <= ' || $SQLQuote || $RC_ThruDate   || $SQLQuote
+       let $WhereThruDate2  = ' and H.RELEASE_DT  <= '  || $SQLQuote || $RC_ThruDate   || $SQLQuote
+    else
+       let $WhereThruDate   = ''
+       let $WhereThruDate2  = ''
+    end-if
+    let $WhereNew          = ' and B.REVERSAL_DT IS NULL'   ||
+                             ' and B.ST_PR_DT IS NOT NULL' 
+    let $WhereNew2         = ' and H.REVERSAL_DT IS NULL'   ||
+                             ' and H.ST_PR_DT IS NOT NULL' 
+  end-if
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Create-Array
+! Descr:   Creates array used for computing
+!-----------------------------------------------------------------------
+Begin-Procedure Create-Array
+
+  create-array name  = Taxes            -
+               size  = 100              -
+               field = TaxDescr:char    -
+               field = TaxState:char    -
+               field = TaxLocality:char -
+               field = TaxAmt:number
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Main-Process
+! Descr:     Main report logic for a new report run. Selects exercise and 
+!            releases that have been voided. Union is used to retrieve both 
+!            exercise and release rows for a given emplid. Report breaks for 
+!            each combo of process group, transaction type, and option type.  
+!            Updates respective transaction record.
+!-----------------------------------------------------------------------
+Begin-Procedure Main-Process
+
+  do Define-PrimJob-Clause('C',$AsOfToday, $PRIM_JOB_CLAUSE)
+  let $Print      = 'N'
+
+Begin-Select
+B.PROCESS_GROUP         () on-break print=never level=1 procedure=PrcsGrp-Change
+'E'              &Type  () on-break print=never level=2 procedure=Trans-Change
+A.ST_OPTION_TYPE        () on-break print=never level=2 procedure=Trans-Change
+A.EMPLID
+A.GRANT_NBR
+A.GRANT_PRICE
+B.EXERCISE_NBR
+B.EXERCISE_DT
+B.EXERCISE_FMV
+0             &RelNbr
+B.SHARES_EXERCISED
+B.ST_ORD_INCOME
+D.NAME
+G.COUNTRY
+
+  let $Print      = 'Y'
+  let $Emplid     = rtrim(&a.emplid,' ')
+  let $Type       = &Type
+  let $OptionType = rtrim(&a.st_option_type,' ')
+  let #GrantPrice = &a.grant_price
+  let $GrantNbr   = rtrim(&a.grant_nbr,' ')
+  let #ExerNbr    = &b.exercise_nbr
+  let #ExerFmv    = &b.exercise_fmv
+  let #RelNbr     = &RelNbr
+  let #Shares     = &b.shares_exercised * -1
+  let #OrdIncome  = round(&b.st_ord_income,2) * -1
+  let $Name       = rtrim(&d.name,' ')
+  let $PrcsGrp    = rtrim(&b.process_group,' ')
+  let $Country    = rtrim(&g.country,' ')
+  let #ArrayCount = 1
+
+  if $Type = 'E'
+    do Get-Exer-Taxes
+    dO Update-Grant-Exer
+  else
+    do Get-Rel-Taxes
+    do Update-Exer-Release
+  end-if
+
+  do Format-DateTime (&b.exercise_dt, $ExerDt, {DEFDATE}, '', '')
+  do Print-Detail
+ 
+ FROM PS_ST_GRANT         A,
+      PS_ST_GRANT_EXER    B,
+      PS_JOB              C,
+      PS_ST_PERSON_NAME   D,
+      PS_TAX_LOCATION1    G
+ WHERE A.EMPLID             = B.EMPLID
+   and A.STOCK_ID           = $RC_Stock_ID
+   AND A.STOCK_ID           = B.STOCK_ID
+   AND A.GRANT_NBR          = B.GRANT_NBR
+   AND C.EMPLID             = A.EMPLID
+   AND C.EFFDT              = (SELECT MAX(EFFDT)   FROM PS_JOB
+                               WHERE     EMPLID    = C.EMPLID
+                                 AND     EMPL_RCD  = C.EMPL_RCD
+                                 AND     EFFDT    <= B.EXERCISE_DT)
+   AND C.EMPL_RCD           = [$PRIM_JOB_CLAUSE]
+   AND C.EFFSEQ             = (SELECT MAX(EFFSEQ)  FROM PS_JOB
+                               WHERE     EMPLID    = C.EMPLID
+                                 AND     EMPL_RCD  = C.EMPL_RCD
+                                 AND     EFFDT     = C.EFFDT)
+   AND D.EMPLID             = A.EMPLID
+   AND G.TAX_LOCATION_CD    = C.TAX_LOCATION_CD
+   AND B.EXERCISE_STATUS    = 'V'
+   [$WhereFromDate]
+   [$WhereThruDate]
+   [$WhereStockPlan]
+   [$WhereEmplid]
+   [$WherePrcsGrp]
+   [$WhereReprint]
+   [$WhereNew]
+   [$WhereOption]
+ 
+ UNION
+ SELECT
+  H.PROCESS_GROUP
+ ,'R'
+ ,A.ST_OPTION_TYPE
+ ,A.EMPLID
+ ,A.GRANT_NBR
+ ,A.GRANT_PRICE
+ ,B.EXERCISE_NBR
+ ,H.RELEASE_DT
+ ,H.RELEASE_FMV
+ ,H.RELEASE_NBR
+ ,H.SHARES_RELEASED
+ ,H.ST_ORD_INCOME
+ ,D.NAME
+ ,G.COUNTRY
+ FROM PS_ST_GRANT         A,
+      PS_ST_GRANT_EXER    B,
+      PS_JOB              C,
+      PS_ST_PERSON_NAME   D,
+      PS_TAX_LOCATION1    G,
+      PS_ST_EXER_RELEASE  H
+ WHERE A.EMPLID             = B.EMPLID
+   and A.STOCK_ID           = $RC_Stock_ID
+   AND A.STOCK_ID           = B.STOCK_ID
+   AND A.GRANT_NBR          = B.GRANT_NBR
+   AND B.EMPLID             = H.EMPLID
+   AND B.STOCK_ID           = H.STOCK_ID
+   AND B.GRANT_NBR          = H.GRANT_NBR
+   AND B.EXERCISE_NBR       = H.EXERCISE_NBR
+   AND C.EMPLID             = A.EMPLID
+   AND C.EFFDT              = (SELECT MAX(EFFDT)   FROM PS_JOB
+                               WHERE     EMPLID    = C.EMPLID
+                                 AND     EMPL_RCD  = C.EMPL_RCD
+                                 AND     EFFDT    <= H.RELEASE_DT)
+   AND C.EMPL_RCD           = [$PRIM_JOB_CLAUSE]
+   AND C.EFFSEQ             = (SELECT MAX(EFFSEQ)  FROM PS_JOB
+                               WHERE     EMPLID    = C.EMPLID
+                                 AND     EMPL_RCD  = C.EMPL_RCD
+                                 AND     EFFDT     = C.EFFDT)
+   AND D.EMPLID             = A.EMPLID
+   AND G.TAX_LOCATION_CD    = C.TAX_LOCATION_CD
+   AND H.RELEASE_STATUS     = 'V'
+   [$WhereFromDate2]
+   [$WhereThruDate2]
+   [$WhereStockPlan]
+   [$WhereEmplid2]
+   [$WherePrcsGrp]
+   [$WhereNew2]
+   [$WhereReprint2]
+   [$WhereOption]
+ ORDER BY 1,2,3,13,8
+
+End-Select
+
+  if $Print = 'Y'
+    do PrcsGrp-Change
+    do Print-Totals
+  end-if
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Print-Detail
+! Descr:     Prints the detail lines.
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Detail
+
+  print $Name                                              (+2,001,030)
+  print #GrantPrice                                        (  ,032,012) edit $9999.999999
+  print #ExerFMV                                           (  ,046,012) edit $9999.999999
+  print $ExerDt                                            (  ,066,010)
+  print #Shares                                            (  ,078,022) edit 999,999,999,999.999999
+  print #OrdIncome                                         (  ,102,018) edit $99,999,999,999.99
+  if #ArrayCount > 1
+    get $TaxDescr $TaxState $TaxLocality #TaxAmt from Taxes(1) TaxDescr TaxState TaxLocality TaxAmt
+    print $TaxDescr                                        (  ,122,010)
+    print $TaxState                                        (  ,134,006)
+    print $TaxLocality                                     (  ,142,010)
+    print #TaxAmt                                          (  ,154,018) edit $99,999,999,999.99
+  end-if
+
+  print $Emplid                                            (+1,001,030)
+  print $GrantNbr                                          (  ,032,010)
+  if $Type = 'E'
+    print #ExerNbr                                         (  ,046,008) edit 99999999
+  else
+    print #RelNbr                                          (  ,046,008) edit 99999999
+  end-if
+  if #ArrayCount > 2
+    get $TaxDescr $TaxState $TaxLocality #TaxAmt from Taxes(2) TaxDescr TaxState TaxLocality TaxAmt
+    print $TaxDescr                                        (  ,122,010)
+    print $TaxState                                        (  ,134,006)
+    print $TaxLocality                                     (  ,142,010)
+    print #TaxAmt                                          (  ,154,018) edit $99,999,999,999.99
+  end-if
+
+  if #ArrayCount > 3
+  let #Row = 3
+    while #Row < #ArrayCount
+      get $TaxDescr $TaxState $TaxLocality #TaxAmt from Taxes(#Row) TaxDescr TaxState TaxLocality TaxAmt
+      print $TaxDescr                                      (+1,122,010)
+      print $TaxState                                      (  ,134,006)
+      print $TaxLocality                                   (  ,142,010)
+      print #TaxAmt                                        (  ,154,018) edit $99,999,999,999.99
+      add 1 to #Row
+    end-while
+  end-if
+
+  if #TotalTax > 0
+    print '-'                                              (+1,154,018) fill
+    print #TotalTax                                        (+1,154,018) edit $99,999,999,999.99
+  end-if
+
+  let #TransShr = #Shares    + #TransShr
+  let #TransInc = #OrdIncome + #TransInc
+  let #TransTax = #Taxes     + #TransTax
+  let #PrcsShr  = #Shares    + #PrcsShr
+  let #PrcsInc  = #OrdIncome + #PrcsInc
+  let #PrcsTax  = #Taxes     + #PrcsTax
+
+  clear-array  name=Taxes
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Get-Exer-Taxes
+! Descr:     Retrieve tax data for a given exercise and prints the data.
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Exer-Taxes
+
+  let #Taxes = 0
+
+Begin-Select
+
+ET.TAX_CUR
+ET.STATE
+ET.LOCALITY
+ET.ST_STOCK_TAX_TYPE
+T1.DESCRSHORT
+
+  let $TaxDescr    = rtrim(&t1.descrshort,' ')
+  let $TaxState    = rtrim(&et.state,' ')
+  let $TaxLocality = rtrim(&et.locality,' ')
+  let #TaxAmt      = round(&et.tax_cur,2) * -1
+  let #Taxes       = #Taxes + #TaxAmt
+  if $TaxState = '$U'
+    let $TaxState    = ''
+    let $TaxLocality = ''
+  end-if
+  put $TaxDescr $TaxState $TaxLocality #TaxAmt into Taxes(#ArrayCount) TaxDescr TaxState TaxLocality TaxAmt
+  add 1 to #ArrayCount
+
+from PS_ST_EXER_TAXES      ET,
+     PS_ST_TAX_TYPE_TBL    T1
+where ET.EMPLID             = $Emplid
+  and ET.STOCK_ID           = $RC_Stock_ID
+  and ET.GRANT_NBR          = $GrantNbr
+  and ET.EXERCISE_NBR       = #ExerNbr
+  and ET.COUNTRY            = $Country
+  and T1.COUNTRY            = ET.COUNTRY
+  and T1.ST_STOCK_TAX_TYPE  = ET.ST_STOCK_TAX_TYPE
+order by ET.STATE,
+         ET.ST_STOCK_TAX_TYPE,
+         ET.LOCALITY
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Get-Rel-Taxes
+! Descr:     Retrieve tax data for a given release and prints the data.
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Rel-Taxes
+
+  let #Taxes = 0
+
+Begin-Select
+
+RT.TAX_CUR
+RT.STATE
+RT.ST_STOCK_TAX_TYPE
+RT.LOCALITY
+T2.DESCRSHORT
+
+  let $TaxDescr    = rtrim(&t2.descrshort,' ')
+  let $TaxState    = rtrim(&rt.state,' ')
+  let $TaxLocality = rtrim(&rt.locality,' ')
+  let #TaxAmt      = round(&rt.tax_cur,2) * -1
+  let #Taxes       = #Taxes + #TaxAmt
+  if $TaxState = '$U'
+    let $TaxState    = ''
+    let $TaxLocality = ''
+  end-if
+  put $TaxDescr $TaxState $TaxLocality #TaxAmt into Taxes(#ArrayCount) TaxDescr TaxState TaxLocality TaxAmt
+  add 1 to #ArrayCount
+
+from PS_ST_REL_TAXES    RT,
+     PS_ST_TAX_TYPE_TBL T2
+where RT.EMPLID             = $Emplid
+  and RT.STOCK_ID           = $RC_Stock_ID
+  and RT.GRANT_NBR          = $GrantNbr
+  and RT.EXERCISE_NBR       = #ExerNbr
+  and RT.RELEASE_NBR        = #RelNbr
+  and RT.COUNTRY            = $Country
+  and T2.COUNTRY            = RT.COUNTRY
+  and T2.ST_STOCK_TAX_TYPE  = RT.ST_STOCK_TAX_TYPE
+order by RT.STATE,
+         RT.ST_STOCK_TAX_TYPE,
+         RT.LOCALITY
+
+End-Select
+
+End-Procedure
+!-----------------------------------------------------------------------
+! Procedure: Update-Grant-Exer
+! Descr:     Updates ST_GRANT_EXER record
+!-----------------------------------------------------------------------
+Begin-Procedure Update-Grant-Exer
+
+  let $Procedure = 'Update-Grant-Exer'
+  let $SQL-Statement = 'Procedure: ' || $Procedure
+
+Begin-Sql                           on-error = SQL-Error
+UPDATE PS_ST_GRANT_EXER
+   SET REVERSAL_DT  = $AsOfToday
+ where EMPLID       = $Emplid
+   and STOCK_ID     = $RC_Stock_ID
+   and GRANT_NBR    = $GrantNbr
+   and EXERCISE_NBR = #ExerNbr
+End-Sql
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Update-Exer-Release
+! Descr:     Updates ST_EXER_RELEASE record.
+!-----------------------------------------------------------------------
+Begin-Procedure Update-Exer-Release
+
+  let $Procedure = 'Update-Exer-Release'
+  let $SQL-Statement = 'Procedure: ' || $Procedure
+
+Begin-Sql                           on-error = SQL-Error
+UPDATE PS_ST_EXER_RELEASE
+   SET REVERSAL_DT  = $AsOfToday
+ where EMPLID       = $Emplid
+   and STOCK_ID     = $RC_Stock_ID
+   and GRANT_NBR    = $GrantNbr
+   and EXERCISE_NBR = #ExerNbr
+   and RELEASE_NBR  = #RelNbr
+End-Sql
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: PrcsGrp-Change
+! Descr:     Prints Totals for each process group and advances a new page
+!-----------------------------------------------------------------------
+Begin-Procedure PrcsGrp-Change
+
+  next-listing need=4
+  let $ChangeLbl = $TransTypeLbl || ' \ ' || $OptTypeLbl || ' ' || $TotalLbl || ':'
+  print '-'                                                (+2,001,171) fill
+  print $ChangeLbl                                         (+1,032,   )
+  print #TransShr                                          (  ,078,022) edit 999,999,999,999.999999
+  print #TransInc                                          (  ,102,018) edit $99,999,999,999.99
+  print #TransTax                                          (  ,154,018) edit $99,999,999,999.99
+  print '-'                                                (+1,001,171) fill
+  let #TransShr = 0
+  let #TransInc = 0
+  let #TransTax = 0
+
+  next-listing need=4
+  let $ChangeLbl = $PrcsGrpLbl || ' ' || $TotalLbl || ':'
+  print '-'                                                (+2,001,171) fill
+  print $ChangeLbl                                         (+1,032,   )
+  print #PrcsShr                                           (  ,078,022) edit 999,999,999,999.999999
+  print #PrcsInc                                           (  ,102,018) edit $99,999,999,999.99
+  print #PrcsTax                                           (  ,154,018) edit $99,999,999,999.99
+  print '-'                                                (+1,001,171) fill
+  let #TotalShr = #TotalShr  + #PrcsShr
+  let #TotalInc = #TotalInc  + #PrcsInc
+  let #TotalTax = #TotalTax  + #PrcsTax
+  let #PrcsShr = 0
+  let #PrcsInc = 0
+  let #PrcsTax = 0
+  new-page
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Trans-Change
+! Descr:     Prints new Process Group, Transaction Type and Option Type header
+!-----------------------------------------------------------------------
+Begin-Procedure Trans-Change
+
+  next-listing need=4
+  let $ChangeLbl = $TransTypeLbl || ' \ ' || $OptTypeLbl || ' ' || $TotalLbl || ':'
+  print '-'                                                (+2,001,171) fill
+  print $ChangeLbl                                         (+1,032,   )
+  print #TransShr                                          (  ,078,022) edit 999,999,999,999.999999
+  print #TransInc                                          (  ,102,018) edit $99,999,999,999.99
+  print #TransTax                                          (  ,154,018) edit $99,999,999,999.99
+  print '-'                                                (+1,001,171) fill
+  let #TransShr = 0
+  let #TransInc = 0
+  let #TransTax = 0
+  new-page
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Print-Totals
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Totals
+
+  next-listing need=4
+  print '-'                                                (+2,001,171) fill
+  print $GrndTotLbl                                        (+1,032,   )
+  print ':'                                                (  ,   ,001)
+  print #TotalShr                                          (  ,078,022) edit 999,999,999,999.999999
+  print #TotalInc                                          (  ,102,018) edit $99,999,999,999.99
+  print #TotalTax                                          (  ,154,018) edit $99,999,999,999.99
+  print '-'                                                (+1,001,171) fill
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! SQC Includes
+!-----------------------------------------------------------------------
+#include 'curdttim.sqc'                !Procedures: Get-Current-DateTime
+#include 'datetime.sqc'                !Procedures: Init-Datetime
+#include 'eoj.sqc'                     !End of Report Format
+#include 'number.sqc'                  !Procedures: Init-Number
+#include 'prcsapi.sqc'                 !Process Scheduler API
+#include 'prcsdef.sqc'                 !Update Process Open_Trans variable declaration
+#include 'reset.sqc'                   !Reset printer procedure
+#include 'strunctl.sqc'                !Stock Admin's Run Control Record
+#include 'getrplng.sqc'                !Gets the report language
+#include 'sqlerr.sqc'                  !SQL error processing
+#include 'getprimj.sqc'                !Get primary job
+#include 'askftd.sqc'                  !Prompt for from thru date range
+#include 'stprcgrp.sqc'                !Creates temp table with all combos for process groups
+#include 'sqrtrans.sqc'
+#include 'readxlat.sqc'
+#include 'datemath.sqc'

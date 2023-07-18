@@ -1,0 +1,1624 @@
+!***********************************************************************
+!  TAX960PD :  Create EFW2 W-2 Reports for Puerto Rico                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  32132129                                            !
+!                                                                      *
+!***********************************************************************
+!***********************************************************************
+! Modified for Education & Government                                  *
+! HP00001       MQGE Changes                                           *
+!***********************************************************************
+
+#include 'setenv.sqc'  !Set environment
+#include 'setup31.sqc' !Printer and page-size initialization
+
+Begin-Program
+
+  display ''
+  display 'Creating Puerto Rico W-2 File in EFW2 Format'
+
+  Let $t1 = datenow()
+  Show 'Report Started at : ' $t1
+
+  Let $Zero_fill = '0000000000000000000000000000000000'
+
+  do Init-Report
+  do Process-Main
+
+  do Stdapi-Term
+
+  Display ''
+  Let $t2 = datenow()
+  Show 'Report Ended at : ' $t2
+End-Program
+
+
+Begin-Procedure Init-Report
+  do Get-EandG                                                          !HP00001
+  do Get-FederalProduct                                                 !FED0001
+  do Init-DateTime
+  do Init-Number
+  do Get-Calendar-Year-Id
+  do Stdapi-Init
+  do Get-Tax-Reporting-Run-Controls
+  do Initialization
+
+  If $Prcs_Process_Instance = ''
+    Display 'Report cannot be run outside of PeopleSoft, please use process scheduler.'
+    Stop
+  End-if
+
+End-Procedure
+
+begin-heading 6
+  #Include 'stdhdg01.sqc'
+  print 'Transmitter Company '   (3,1)
+  print $XCompany                (0,+2)
+  print &X.Descr                 (0,+2)
+  let $TaxYear = 'Tax Year ' || $CalYear
+  print $TaxYear                 (3,)    center
+  print 'Federal EIN '           (4,1)
+  move &X.Federal_EIN to $FederalEIN
+  let #loc = length($FederalEIN)
+  extract $Federal_EIN from $FederalEIN 0 #loc
+  if #loc <> 9
+     print '0'                   (0,+2)
+     print $Federal_EIN          (0,0) edit X-XXXXXXX
+  else
+     print $Federal_EIN          (0,+2) edit XX-XXXXXXX
+  end-if
+  print ' Totals by'             (+2,4)
+  print '   Number of'           (,20)
+  print '                    '   (,32)
+  print '                    '   (,52)
+  print 'EIN'                    (+1,7)
+  print ' W-2 Records'           (,20)
+  print '               Wages'   (,32)
+  print '          Income Tax'   (,52)
+end-heading
+
+Begin-Procedure Populate-Headings
+  let $ReportID2 = 'TAX960PR'
+  let $ReportID = 'TAX960PD'
+  move $ME.W2_State to $State
+  do Get-ee-State-Code
+  move '  '        to $StateNumCdA
+!  let $StateName = rtrim(&S.DESCR, ' ')
+  let $ReportTitle = ' W-2 File Summary Report'
+  show 'Puerto Rico W-2 File Records'
+  show ' '
+  do File-Create
+
+End-Procedure
+
+
+Begin-Procedure Initialization
+
+  do Get-Current-DateTime
+  move '1' to $MMLZero
+  do Format-DateTime($AsOfToday, $960Date, {DEFYMD},'','')
+  move $960Date to $AsOfYear xxxx   !extract the current year
+  move $AsOfYear  to #AsOfYear
+  move #AsOfYear  to #saveAsOfYear
+  subtract 1    from #AsOfYear
+
+  If &TX.Balance_Year <> #AsOfYear
+    display ''
+    display 'Please note : Current Year is not one greater than Tax Reporting Year.'
+    display 'Current Year is    ' noline
+    display  #saveAsOfYear  9999
+    display 'Tax Reporting Year ' noline
+    display &TX.Balance_Year
+    display ''
+  End-if
+
+Begin-Select
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+End-Select
+End-Procedure
+
+
+Begin-Procedure File-Create
+
+  do Close-File
+  let $Invalid_Chars = '(),.-/ '
+  move &TX.Company       to $XCompany  !TX.Company is the Transmitter
+  move &TX.Balance_Year to $CalYear 9999
+  let $AsOfDate = $CalYear || '1231'
+  do Format-DateTime($AsOfDate, $AsOfDate, {DEFCMP}, '', 'native')
+  let $EffDate = $CalYear || '1231'
+  do Format-DateTime($EffDate, $EffDate, {DEFCMP}, '', 'native')
+  do Get-Transmitter-Data
+  do Open-File
+  do Write-Transmitter-Records
+  do Create-ExemptSal-Array
+End-Procedure
+
+
+Begin-Procedure Get-Transmitter-Data
+  Let $XmitterFound = 'N'
+Begin-Select
+X.DESCR
+X.FEDERAL_EIN
+X.CITY
+X.STATE
+X.POSTAL
+X.COUNTRY
+
+  Let $XmitterFound = 'Y'
+
+FROM  PS_W2_COMPANY X
+WHERE COMPANY = $XCompany
+  AND X.CALENDAR_YEAR = &TX.Balance_Year
+End-Select
+
+  If $XmitterFound = 'N'
+    Show 'W2 COMPANY DATA NOT SETUP FOR COMPANY : ' $XCompany '  BALANCE YEAR : ' &TX.Balance_Year
+    Stop
+  End-if
+
+  move $XCompany to $Trans_Company
+  move &TX.Balance_Year to #Trans_Balance_Year
+  do Get-X-Address
+
+Begin-Select
+RC960.EMPLR_PIN
+RC960.RESUB_INDICATOR
+RC960.RESUB_TLCN
+RC960.CONTACT_NAME_SSA
+RC960.TELEPHONE_NBR
+RC960.PHONE_EXTN
+RC960.EMAIL_ADDR_MMREF
+RC960.CONTACT_FAX
+RC960.NOTIFY_METHOD
+
+FROM PS_TAX960_PARM RC960
+
+End-Select
+
+
+  if rtrim(&RC960.CONTACT_NAME_SSA, ' ') = ''
+    Show 'Electronic Parameters must be set up on SETUP Menu.'
+    Show 'Re-execute after establishing Electronic Parameters.'
+    Stop
+  End-if
+
+  move &RC960.EMAIL_ADDR_MMREF to $RC960.EMAIL_ADDR
+  uppercase $RC960.EMAIL_ADDR
+  Let $RC960.CONTACT_NAME_SSA = translate(&RC960.CONTACT_NAME_SSA,',','')
+  let $RC960.Telephone_Nbr = rtrim(&RC960.TELEPHONE_NBR, ' ')
+  let $RC960.Telephone_Nbr = translate($RC960.Telephone_Nbr,$Invalid_Chars,'')
+  if rtrim($RC960.Telephone_Nbr, ' ') = ''
+    let $RC960.Telephone_Nbr = '          '
+  end-if
+  move 0                       to $SpecRegNbr       09999
+
+End-Procedure
+
+Begin-Procedure Write-Transmitter-Records
+  move &X.Federal_EIN       to $FedEIN  099999999
+  move &RC960.EMPLR_PIN     to $EmprPIN ! 09999999999999999
+!  let  $EmprPIN = rpad(rtrim(&RC960.EMPLR_PIN, ' '),17,'0')
+
+  move '99'  to $SoftwareCd
+
+  If &RC960.RESUB_INDICATOR = 'Y'
+    Let $RS_Ind = '1'
+  Else
+    Let $RS_Ind = '0'
+  End-if
+
+  If &RC960.PHONE_EXTN <> 0
+    move &RC960.PHONE_EXTN to $Phone_Extn
+  Else
+    move '    ' to $Phone_Extn
+  End-if
+
+  move &RC960.RESUB_TLCN      to $TLCN
+  move &X.Descr        to $Xmitr_Name
+  move &X.City         to $City
+  let  $StateCd = rtrim(&X.State, ' ')
+  move &X.Postal       to $Zip
+  move &X.Country      to $Country
+  do Foreign-Address-Test('Format 3',25)
+
+  uppercase $Xmitr_Name
+
+  If $ForeignAddrInd = 'X'
+     Let $US_Zip      = ' '
+     Let $US_ZipXtnsn = ' '
+     Let $US_State    = ' '
+     Let $Frgn_Zip    = $Zip
+     Let $Frgn_State  = $StateName
+  Else
+     Let $US_Zip      = $Zip
+     Let $US_ZipXtnsn = $ZipExtsn
+     Let $US_State    = $StateCd
+     Let $Frgn_Zip    = ' '
+     Let $Frgn_State  = ' '
+     Let $Country-2Char   = ' '
+  End-if
+
+  let $RA_ContactName = $RC960.Contact_Name_SSA
+  let $RA_PhoneNbr    = &RC960.TELEPHONE_NBR
+  let $RA_PhoneExtn   = $Phone_Extn
+  let $RA_EmailAddr   = $RC960.Email_Addr
+  let $RA_ContactFax  = &RC960.CONTACT_FAX
+
+  do Write-RA-Record
+
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+
+End-Procedure
+
+
+Begin-Procedure Process-Main
+do Before-State
+Begin-Select DISTINCT
+ME.W2_STATE
+MA.W2_REPORTING_CO
+
+  let $W2_State          = &ME.W2_STATE
+  let $W2_Reporting_Co   = &MA.W2_REPORTING_CO
+  do Get-W2-Reporting-Co-Info
+
+  if &A.MQGE_EMPLOYEES  = 'N' or                                        !HP00001
+     ($PublicSector = 'N' and $FederalProduct = 'N')                    !HP00001
+                                                                        !HP00001
+      let $Process_MQGE  = 'NA'                                         !HP00001
+      let $Medicare_Only = 'N'                                          !HP00001
+
+      do Prepare-W2-Select-Parms
+      do Before-W2-Reporting-Co-Chg
+      do Process-W2-Reporting-Co
+      do After-W2-Reporting-Co-Chg
+
+  else                                                                  !HP00001
+      let $Process_MQGE  = 'N'                                          !HP00001
+      do Prepare-W2-Select-Parms                                        !HP00001
+                                                                        !HP00001
+      let $MQGE_Employee_Found = 'N'                                    !HP00001
+      do Find-MQGE-Employee                                             !HP00001
+                                                                        !HP00001
+      if $MQGE_Employee_Found = 'Y'                                     !HP00001
+          do Before-W2-Reporting-Co-Chg                                 !HP00001
+          do Process-W2-Reporting-Co                                    !HP00001
+          do After-W2-Reporting-Co-Chg                                  !HP00001
+      end-if                                                            !HP00001
+                                                                        !HP00001
+      let $Process_MQGE  = 'Y'                                          !HP00001
+      do Prepare-W2-Select-Parms                                        !HP00001
+                                                                        !HP00001
+      let $MQGE_Employee_Found = 'N'                                    !HP00001
+      do Find-MQGE-Employee                                             !HP00001
+                                                                        !HP00001
+      if $MQGE_Employee_Found = 'Y'                                     !HP00001
+          do Before-W2-Reporting-Co-Chg                                 !HP00001
+          do Process-W2-Reporting-Co                                    !HP00001
+          do After-W2-Reporting-Co-Chg                                  !HP00001
+      end-if                                                            !HP00001
+  end-if                                                                !HP00001
+
+FROM  PS_W2_COMPANY MA, PS_YE_EE MEE, PS_YE_DATA ME
+WHERE MA.CALENDAR_YEAR    = &TX.Balance_Year
+  AND MA.W2_REPORTING_CO <> ' '
+  AND MA.TAXFORM_ID       =  'W'
+  AND MA.COMPANY          = ME.COMPANY
+  AND MA.CALENDAR_YEAR    = ME.CALENDAR_YEAR
+  AND ME.TAXFORM_ID       = 'P'
+  AND ME.COMPANY          = MEE.COMPANY
+  AND ME.EMPLID           = MEE.EMPLID
+  AND ME.TAXFORM_ID       = MEE.TAXFORM_ID
+  AND ME.CALENDAR_YEAR    = MEE.CALENDAR_YEAR
+  AND MEE.PROCESS_FLAG   <> 'V'
+ORDER BY  ME.W2_STATE, MA.W2_REPORTING_CO
+end-SELECT
+do After-State
+End-Procedure
+
+Begin-Procedure Get-W2-Reporting-Co-Info
+
+  let $RE_ContactName  = $RA_ContactName
+  let $RE_PhoneNbr     = $RC960.Telephone_Nbr
+  let $RE_PhoneExtn    = $RA_PhoneExtn
+  let $RE_EmailAddr    = $RA_EmailAddr
+  let $RE_ContactFax   = $RA_ContactFax
+
+Begin-Select
+A.W2_REPORTING_CO
+A.DESCR
+A.FEDERAL_EIN
+A.CITY
+A.STATE
+A.POSTAL
+A.COUNTRY
+A.OTHER_EIN
+A.BUSI_TERM_IND
+A.BUSI_TERM_DT
+A.MQGE_EMPLOYEES                                                        !HP00001
+A.SAME_CONTACT
+A.CONTACT_NAME_SSA
+A.TELEPHONE_NBR
+A.PHONE_EXTN
+A.EMAIL_ADDR_MMREF
+A.CONTACT_FAX
+
+  if &A.SAME_CONTACT <> 'Y'
+     let $RE_ContactName  = translate(&A.CONTACT_NAME_SSA,',','')
+     let $RE_PhoneNbr = rtrim(&A.TELEPHONE_NBR, ' ')
+     let $RE_PhoneNbr = translate($RE_PhoneNbr,$Invalid_Chars,'')
+     if  rtrim($RE_PhoneNbr, ' ') = ''
+         let $RE_PhoneNbr = '          '
+     end-if
+     
+     if &A.PHONE_EXTN <> 0
+        move &A.PHONE_EXTN to $RE_PhoneExtn
+     else
+        let $RE_PhoneExtn = ' '
+     end-if
+     let $RE_EmailAddr    = &A.EMAIL_ADDR_MMREF
+     uppercase $RE_EmailAddr
+     let $RE_ContactFax   = &A.CONTACT_FAX
+  end-if
+
+FROM  PS_W2_COMPANY A
+WHERE A.CALENDAR_YEAR    = &TX.Balance_Year
+  AND A.W2_REPORTING_CO <> ' '
+  AND A.TAXFORM_ID      =  'W'
+  AND A.W2_REPORTING_CO  = $W2_Reporting_Co
+end-Select
+
+  move $W2_Reporting_Co to $Co_Company
+  move &TX.Balance_Year to #Co_Balance_Year
+  do Get-A-Address
+
+End-Procedure
+
+Begin-Procedure Prepare-W2-Select-Parms                                         !HP00001
+                                                                                !HP00001
+  evaluate $Process_MQGE                                                        !HP00001
+     when = 'Y'                                                                 !HP00001
+          let $Medicare_Select_Parms = 'AND E.MEDICARE_ONLY = ''Y'''            !HP00001
+          let $Employee_Select_Parms = 'AND CHK_E.MEDICARE_ONLY = ''Y'''        !HP00001
+          break                                                                 !HP00001
+     when = 'N'                                                                 !HP00001
+          let $Medicare_Select_Parms = 'AND E.MEDICARE_ONLY = ''N'''            !HP00001
+          let $Employee_Select_Parms = 'AND CHK_E.MEDICARE_ONLY = ''N'''        !HP00001
+          break                                                                 !HP00001
+     when-other                                                                 !HP00001
+          let $Medicare_Select_Parms = ' '                                      !HP00001
+          let $Employee_Select_Parms = ' '                                      !HP00001
+  end-evaluate                                                                  !HP00001
+                                                                                !HP00001
+End-Procedure                                                                   !HP00001
+
+Begin-Procedure Find-MQGE-Employee                                              !HP00001
+                                                                                !HP00001
+Begin-Select                                                                    !HP00001
+ISTN.COUNTRY                                                                    !HP00001
+                                                                                !HP00001
+   let $MQGE_Employee_Found = 'Y'                                               !HP00001
+                                                                                !HP00001
+FROM PS_INSTALLATION ISTN                                                       !HP00001
+WHERE EXISTS (SELECT 'X'                                                        !HP00001
+              FROM  PS_W2_COMPANY CHK_A, PS_YE_EE CHK_EE, PS_YE_DATA CHK_E      !HP00001
+              WHERE CHK_A.CALENDAR_YEAR   = &TX.Balance_Year                    !HP00001
+                AND CHK_A.W2_REPORTING_CO <> ' '                                !HP00001
+                AND CHK_A.TAXFORM_ID      =  'W'                                !HP00001
+                AND CHK_A.W2_REPORTING_CO = $W2_Reporting_Co                    !HP00001
+                AND CHK_A.COMPANY         = CHK_E.COMPANY                       !HP00001
+                AND CHK_A.CALENDAR_YEAR   = CHK_E.CALENDAR_YEAR                 !HP00001
+                AND CHK_E.TAXFORM_ID       = 'P'                                !HP00001
+                AND CHK_E.W2_STATE         = $W2_State                          !HP00001
+                AND CHK_E.COMPANY          = CHK_EE.COMPANY                     !HP00001
+                AND CHK_E.EMPLID           = CHK_EE.EMPLID                      !HP00001
+                AND CHK_E.TAXFORM_ID       = CHK_EE.TAXFORM_ID                  !HP00001
+                AND CHK_E.CALENDAR_YEAR    = CHK_EE.CALENDAR_YEAR               !HP00001
+                AND CHK_EE.PROCESS_FLAG   <> 'V'                                !HP00001
+                [$Employee_Select_Parms]                                        !HP00001
+             )                                                                  !HP00001
+end-Select                                                                      !HP00001
+                                                                                !HP00001
+End-Procedure                                                                   !HP00001
+
+Begin-Procedure Process-W2-Reporting-Co
+
+Begin-Select
+PA.W2_REPORTING_CO () on-break print=never before=Before-Company  level=1
+E.EMPLID           () on-break print=never before=Before-EmplID   level=2
+                                            after=After-EMPLID    level=2
+E.COMPANY
+E.SEQUENCE_NUMBER
+E.TAXFORM_ID
+E.W2_STATE
+E.EMPLOYER_ID_SWT
+E.SSN
+E.YE_FNAME
+E.YE_MIDDLE_NAME
+E.YE_LNAME
+E.YE_SUFFIX
+E.CITY
+E.STATE
+E.POSTAL
+E.COUNTRY
+E.STATUTORY_EE
+E.PENSION_PLAN
+E.DECEASED
+E.THIRDPARTY_SICKPAY
+E.MAR_STATUS
+E.SPOUSE_SSN
+E.CONTROL_NUMBER
+EE.PROCESS_FLAG
+
+  move &E.Company         to $E.Company
+  move &E.TaxForm_ID      to $E.TaxForm_ID
+  move &E.Sequence_Number to #E.Sequence_Number
+  move &E.Employer_ID_SWT to $E.Employer_ID_SWT
+
+  move &E.Mar_Status to $Civil_Status_PR
+  move &E.Spouse_SSN to $Spouse_SSN_PR
+
+  do Format-Control-Number
+
+  if isnull(&A.BUSI_TERM_DT)
+     let $A.ClosingDate = ' '
+  else
+     do Format-DateTime(&A.BUSI_TERM_DT, $A.ClosingDateTest, {DEFCMP},'','')
+     let $A.ClosingDate = substr($A.ClosingDateTest,5,4) || substr($A.ClosingDateTest,1,4)
+  end-if
+
+  do Load-PR-Amounts
+
+FROM  PS_W2_COMPANY PA, PS_YE_EE EE, PS_YE_DATA E
+WHERE PA.CALENDAR_YEAR   = &TX.Balance_Year
+  AND PA.W2_REPORTING_CO <> ' '
+  AND PA.TAXFORM_ID      =  'W'
+  AND PA.W2_REPORTING_CO = $W2_Reporting_Co
+  AND PA.COMPANY         = E.COMPANY
+  AND PA.CALENDAR_YEAR   = E.CALENDAR_YEAR
+  AND E.TAXFORM_ID       = 'P'
+  AND E.W2_STATE         = $W2_State
+  AND E.COMPANY          = EE.COMPANY
+  AND E.EMPLID           = EE.EMPLID
+  AND E.TAXFORM_ID       = EE.TAXFORM_ID
+  AND E.CALENDAR_YEAR    = EE.CALENDAR_YEAR
+  AND EE.PROCESS_FLAG   <> 'V'
+  [$Medicare_Select_Parms]                                              !HP00001
+
+ORDER BY  PA.W2_REPORTING_CO, E.SSN, E.EMPLID
+
+end-select
+
+End-Procedure
+
+
+Begin-Procedure  Before-W2-Reporting-Co-Chg
+
+  move '  ' to $RESp
+  move &A.W2_Reporting_Co to $Company
+  move &A.Descr           to $A.Descr
+  move &A.Federal_EIN     to $A.Federal_EIN
+  move &A.City            to $A.City
+  let  $A.State = rtrim(&A.State, ' ')
+  move &A.Postal          to $A.Zip
+  move &A.Country         to $A.Country
+  move &A.Other_EIN       to #A.Other_EIN
+  move &A.W2_Reporting_Co to $A.W2_Reporting_Co
+  move &A.Busi_Term_Ind   to $A.Busi_Term_Ind
+
+  If $A.Busi_Term_Ind = 'Y'
+     Let $A.Busi_Term_Ind = '1'
+  Else
+     Let $A.Busi_Term_Ind = '0'
+  End-if
+
+  do Get-Third-Party-Amount
+
+  do Get-Third-Party-Sick
+
+  move 'P' to $Tax_Jurisdiction
+
+  move 0 to #Count-S
+  move 0 to #Count-T
+  move 0 to #Count-U
+  do Write-E-Record
+
+end-procedure
+
+Begin-Procedure  After-W2-Reporting-Co-Chg
+
+  If #Count-T <> 0
+    do Write-T-Record
+  End-if
+
+  If #Count-U <> 0
+    do Write-U-Record
+  End-if
+
+  If #Count-T <> 0
+    do Write-V-Record
+  End-if
+
+  print $StateEIN      (+2,3)                             !State Tax ID
+
+  do Format-Number(#Count-S, $out, 'B99,999')             !Count
+  print $out  (,23)
+
+  let #out = #State_Wages-T / 100
+  do Format-Number(#out, $out, 'B99,999,999.99')          !State wages
+  print $out  (,38)
+
+  let #out = #State_Tax-T / 100
+  do Format-Number(#out, $out, 'B9,999,999.99')           !State tax
+  print $out  (,59)
+
+  do Zero-T-Record
+
+End-Procedure
+
+Begin-Procedure Get-Third-Party-Amount
+   Let #Third_party_tax = 0
+
+Begin-Select
+TRD_PTY.THIRD_PARTY_TAX
+
+   add &TRD_PTY.THIRD_PARTY_TAX to #Third_party_tax
+
+FROM  PS_RC_THIRD_PARTY   TRD_PTY,  PS_W2_COMPANY  TRD_W2_CPNY
+WHERE TRD_PTY.OPRID               = $Prcs_OprID
+  AND TRD_PTY.RUN_CNTL_ID         = $Prcs_Run_Cntl_ID
+  AND TRD_PTY.COMPANY             = TRD_W2_CPNY.COMPANY
+  AND TRD_W2_CPNY.CALENDAR_YEAR   = &TX.Balance_Year
+  AND TRD_W2_CPNY.TAXFORM_ID      = 'W'
+  AND TRD_W2_CPNY.W2_REPORTING_CO = &A.W2_REPORTING_CO
+End-Select
+
+   Let #Third_party_tax = #Third_party_tax * 100
+   Move #Third_party_tax to $Third_party_tax 099999999999999
+
+End-Procedure
+
+Begin-Procedure Get-Third-Party-Sick
+   Let $Thrd_Pty_Sick = '0'
+Begin-Select
+TSI.COUNTRY
+
+   Let $Thrd_Pty_Sick = '1'
+
+FROM PS_INSTALLATION TSI
+WHERE EXISTS (SELECT 'X'
+              FROM  PS_YE_EE TSE, PS_YE_DATA TS, PS_W2_COMPANY TSC
+              WHERE TSC.W2_REPORTING_CO   = &A.W2_Reporting_Co
+                AND TSC.COMPANY           = TS.COMPANY
+                AND TSC.CALENDAR_YEAR     = TS.CALENDAR_YEAR
+                AND TS.CALENDAR_YEAR      = &TX.Balance_Year
+                AND TS.SEQUENCE_NUMBER    = 1
+                AND TS.COMPANY            = TSE.COMPANY
+                AND TS.EMPLID             = TSE.EMPLID
+                AND TS.TAXFORM_ID         = TSE.TAXFORM_ID
+                AND TS.CALENDAR_YEAR      = TSE.CALENDAR_YEAR
+                AND TSE.PROCESS_FLAG      <> 'V'
+                AND TS.THIRDPARTY_SICKPAY = 'Y')
+End-Select
+End-Procedure
+
+Begin-Procedure Before-Company
+
+Begin-Select
+
+  move '     ' to $AccessCode
+
+PD.ACCESS_CODE
+
+  move &PD.ACCESS_CODE         to $AccessCode
+
+FROM PS_RC_TAX960PD PD
+  WHERE PD.W2_REPORTING_CO = &A.W2_REPORTING_CO
+    AND PD.OPRID   = $Prcs_OprID
+    AND PD.RUN_CNTL_ID  = $Prcs_Run_Cntl_ID
+
+End-Select
+
+End-Procedure
+
+Begin-Procedure Before-State
+
+  move &ME.W2_State        to $ME.W2_State
+  do Populate-Headings
+  print 'Puerto Rico' (+2,1)
+
+End-Procedure
+
+Begin-Procedure Before-EmplID
+
+  #ifdef TAXDISPLAY
+    Show 'Processing EMPLID : ' &E.EMPLID
+  #endif
+
+  Let $FirstTime = 'Y'
+
+  move &E.SSN to $S123 xxx
+  If $S123 = &Temp_SSN_Mask or RTRIM(&E.SSN, ' ') = ''
+    move '000000000' to $E.SSN
+  else
+    move &E.SSN to $E.SSN
+  End-if
+
+  move &E.YE_Fname  to $FirstName
+  move &E.YE_Middle_name to $MiddleName
+  move &E.YE_Lname  to $LastName
+  move &E.YE_Suffix to $Suffix
+  move '     '      to $TaxingEntityCd
+
+  uppercase $FirstName
+  uppercase $MiddleName
+  uppercase $LastName
+  uppercase $Suffix
+
+  move &E.Emplid       to $E.Emplid
+  move &E.City         to $E.City
+  let  $E.StateCd = rtrim(&E.State, ' ')
+  move &E.Postal       to $E.Zip
+  move &E.Country      to $E.Country
+
+  If &E.Statutory_Ee = 'Y'
+    move '1' to $StatutoryEe
+  else
+    move '0' to $StatutoryEe
+  End-if
+
+  If &E.Pension_Plan = 'Y'
+    move 1 to #RetirePlan
+  else
+    move 0 to #RetirePlan
+  End-if
+
+  If &E.Deceased = 'Y'
+    move '1' to $DeceasedFlag
+  else
+    move '0' to $DeceasedFlag
+  End-if
+
+  if &E.THIRDPARTY_SICKPAY = 'Y'
+     move 1 to #Third_Party_Sick_Ind
+  else
+     move 0 to #Third_Party_Sick_Ind
+  end-if
+
+  do Populate-EE-Address
+
+  End-Procedure
+
+  Begin-Procedure Populate-EE-Address
+
+  If rtrim($E.City,' ') = ''
+    Show 'City is blank in YE data for employee "' $E.Emplid '" in the personal data.'
+    Show 'Fix it and run the load program (Tax910ld.sqr) again.'
+    Stop
+  End-if
+
+
+  move $E.City         to $City
+  move $E.StateCd      to $StateCd
+  move $E.Zip          to $Zip
+  move $E.Country      to $Country
+  do Foreign-Address-Test('Format 3',25)
+  If $ForeignAddrInd = 'X'
+     Let $US_Zip      = ' '
+     Let $US_ZipXtnsn = ' '
+     Let $US_State    = ' '
+     Let $Frgn_Zip    = $Zip
+     Let $Frgn_State  = $StateName
+  else
+     Let $US_Zip      = $Zip
+     Let $US_ZipXtnsn = $ZipExtsn
+     Let $US_State    = $StateCd
+     Let $Frgn_Zip    = ' '
+     Let $Frgn_State  = ' '
+     Let $Country-2Char   = ' '
+  End-if
+
+  move $W2_Reporting_Co   to $W2.W2_Reporting_Co
+  move $E.Emplid          to $W2.EMPLID
+  move &TX.Balance_Year   to #W2.Balance_Year
+  do Get-W2-Address
+
+  uppercase $E.City
+End-Procedure
+
+
+Begin-Procedure Load-PR-Amounts
+
+  move $E.TaxForm_ID to $TAXFORM_ID
+  do Assign-Year-End-Variables
+  move 'N' to $WriteORec
+
+Begin-Select
+DP.BOX
+DP.W2_AMOUNT
+
+  let $DP.Box = RTRIM(&DP.Box,' ')
+  let #Amount = &DP.W2_Amount * 100
+
+  let $D.Box = $DP.Box
+
+  do Evaluate-PR-Boxes
+
+FROM  PS_YE_AMOUNTS DP
+WHERE DP.COMPANY         = &E.Company
+  AND DP.CALENDAR_YEAR   = &TX.Balance_Year
+  AND DP.EMPLID          = &E.Emplid
+  AND DP.TAXFORM_ID      = &E.TaxForm_ID
+  AND DP.SEQUENCE_NUMBER = 1
+  AND DP.STATE           IN ('$U','$UPR','PR')
+End-Select
+End-Procedure
+
+
+Begin-Procedure After-EmplID
+
+  move 0 to #Local_Wages
+  move 0 to #Local_Tax
+
+  move #Local_Wages      to $Local_Wages    09999999999
+  move #Local_Tax        to $Local_Taxes    09999999999
+
+  do Write-W-Record
+  do Write-O-Record
+  do Write-S-Record
+
+  do Zero-W-Record
+  do Zero-O-Record
+  do Zero-S-Record
+  let $Exempt_Sal=' '
+  let $Exempt_Sal_Cd=' '
+  let $Exempt_Sal_A=' '
+  let $Exempt_Sal_Cd_A=' '
+  let $Exempt_Sal_B=' '
+  let $Exempt_Sal_Cd_B=' '
+  let #index_exempt_sal_c=0
+  clear-array name=ExemptSalCode
+  clear-array name=ExemptSalAmts
+  do Clear-Space-Fields
+
+End-Procedure
+
+Begin-Procedure Clear-Space-Fields
+
+!  These fields are space filled  'RS' Record
+  move '  '          to $WorkWeeks
+  move '        '    to $EmployDate
+  move '        '    to $SepDate
+  move '  '          to $OtherStateData
+  move ''            to $SupplData1
+  move ''            to $SupplData2
+  move '      '      to $ReportingPeriod
+  move ' '           to $Tax_Type_CD
+  move '       '     to $StateControlNumber
+
+End-Procedure
+
+Begin-Procedure RW-CommonClear
+
+      move '     '         to $City
+      move '00000000000'   to #SS_Wages
+      move '00000000000'   to #SS_Tax
+      move '00000000000'   to #Med_Wages
+      move '00000000000'   to #Med_Tax
+      move '00000000000'   to #SS_Tips
+      move '00000000000'   to #Adv_EIC
+      move '00000000000'   to #Dep_Care
+      move '00000000000'   to #401K
+      move '00000000000'   to #403B
+      move '00000000000'   to #408K6
+      move '00000000000'   to #457B
+      move '00000000000'   to #501C18
+      move '00000000000'   to #Non_Qual_457_Y
+      move '00000000000'   to #Non_Qual_457_N
+      move '00000000000'   to #Group_Term_ER_Cost
+      move '00000000000'   to #Nonstatutory_Stock_Options
+      move ' '   to $StatutoryEe
+      move '0'   to #RetirePlan
+      move '0'   to #Third_Party_Sick_Ind
+
+End-Procedure
+
+Begin-Procedure RS-CommonClear
+
+      move '     '   to $Suffix
+      move '     '   to $E.Address1
+      move '     '   to $E.Address2
+      move '     '   to $E.City
+      move '     '   to $US_State
+      move '     '   to $US_Zip
+      move '     '   to $US_ZipXtnsn
+      move '     '   to $Frgn_State
+      move '     '   to $Frgn_Zip
+      move '     '   to $Country-2Char
+      move ' '       to $Tax_Type_Cd
+End-Procedure
+
+
+Begin-Procedure After-State
+
+  do Write-F-Record
+  do State-End-Totals
+  do Process-Totals
+  do Zero-F-Record
+
+End-Procedure
+
+
+Begin-Procedure Write-E-Record
+
+!Begin-SELECT
+!CP.COMMON_PAY_ID
+
+!FROM PS_COMPANY_TBL CP
+!WHERE CP.COMPANY = &E.Company
+!  AND EFFDT =
+!      (SELECT MAX(EFFDT)
+!       FROM   PS_COMPANY_TBL
+!       WHERE  COMPANY = &E.Company
+!         AND  EFFDT  <= $EffDate)
+!end-SELECT
+  move $A.Federal_EIN  to $FedEIN   099999999
+  If #A.Other_EIN <> 0
+    move #A.Other_EIN  to $OtherEIN 099999999
+  else
+    move ' '           to $OtherEIN
+  End-if
+  move $A.Descr        to $ErName
+  move $A.City         to $ErCity
+  move $A.State        to $StateCd
+  move $A.Zip          to $Zip
+  move $A.Country      to $Country
+  do Foreign-Address-Test('Format 3',25)
+
+  if $Process_MQGE = 'Y'                                                !HP00001
+      move 'Q'                 to $Employment_Type                            !HP00001
+  else                                                                  !HP00001
+      move &TX.Employment_Type to $Employment_Type
+  end-if                                                                !HP00001
+
+!  let $Common_Pay_ID = RTRIM(&CP.Common_Pay_ID,' ')
+!  If $Common_Pay_ID > ''
+!    move '2' to $AgentID
+!  else
+    move '   ' to $AgentID
+!  end-if
+
+  uppercase $ErName
+  uppercase $ErCity
+
+  move $FedEIN   to $StateEIN
+
+  If $ForeignAddrInd = 'X'
+     Let $ErUS_Zip      = ' '
+     Let $ErUS_ZipXtnsn = ' '
+     Let $ErUS_State    = ' '
+     Let $ErFrgn_Zip    = $Zip
+     Let $ErFrgn_State  = $StateName
+  else
+     Let $ErUS_Zip      = $Zip
+     Let $ErUS_ZipXtnsn = $ZipExtsn
+     Let $ErUS_State    = $StateCd
+     Let $ErFrgn_Zip    = ' '
+     Let $ErFrgn_State  = ' '
+     Let $ErCountry-2Char   = ' '
+  End-if
+
+  do Write-RE-Record
+
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+  move 'Y' to $E-Written
+End-Procedure
+
+begin-Procedure RE-GroupClear
+
+      move '    '    to $A.Busi_Term_Ind
+      move '     '   to $Frgn_State
+      move '     '   to $Frgn_Zip
+      move '     '   to $Country-2Char
+      move '     '   to $Employment_Type
+      move '     '   to $Tax_Jurisdiction
+      move '     '   to $Thrd_Pty_Sick
+end-procedure
+
+
+Begin-Procedure Write-W-Record
+
+  do Write-RW-Record
+
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+  add 1 to #Count-T
+End-Procedure
+
+
+Begin-Procedure Write-O-Record
+  If $WriteORec ='Y'
+
+    do Write-RO-Record
+
+    add 1 to #RecordCount
+    add 1 to #Tot_Record_Count
+    add 1 to #Count-U
+  End-if
+End-Procedure
+
+
+begin-procedure Write-S-Record
+
+  let $BirthdateTest1=''
+  if #Exempt_Sal_05 > 0
+     do Get-Birthdate
+     if isnull(&DA.BIRTHDATE)
+        let $BirthdateTest1=''
+     else
+        do Format-DateTime(&DA.BIRTHDATE, $BirthdateTest1, {DEFYMD},'','')
+     end-if
+  end-if
+
+  do Write-RS-Rec-PR
+
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+
+end-procedure
+
+
+begin-procedure Get-Birthdate
+begin-SELECT 
+MAX(DA.BIRTHDATE) &DA.BIRTHDATE
+FROM PS_YE_DATA DA, PS_W2_COMPANY WA
+WHERE WA.W2_REPORTING_CO=&A.W2_Reporting_Co
+AND   WA.CALENDAR_YEAR=&TX.Balance_Year
+AND   DA.COMPANY=WA.COMPANY
+AND   DA.CALENDAR_YEAR=WA.CALENDAR_YEAR
+AND   DA.TAXFORM_ID=$E.TaxForm_ID
+AND   DA.EMPLID=$E.Emplid
+AND   DA.BIRTHDATE IS NOT NULL
+end-SELECT
+end-procedure
+
+
+Begin-Procedure Write-RS-Rec-PR
+
+  move #CODA_Plans                  to $CODA_Plans              09999999999
+  move #Reimbursed_Expense          to $Reimbursed_Expense      09999999999
+  move #Uncoll_SS_Tax_On_Tips       to $UncollSSTaxOnTips       09999999999
+  move #Uncoll_Med_Tax_On_Tips      to $UncollMedTaxOnTips      09999999999
+  move #Charitable_Contrib          to $Charitable_Contrib      09999999999
+  move #Save_Money_Pgm              to $Save_Money_Pgm          09999999999
+  
+  let #Exempt_Counter = 0
+  let $Exempt_Sal_Code=''
+  move 0 to $Exempt_Sal                                         09999999999
+  move 0 to $Exempt_Sal_A                                       09999999999
+  move 0 to $Exempt_Sal_B                                       09999999999
+  clear-array name=ExemptSalAmts
+  do Get-ExemptSal-Code
+  if instr($Exempt_Sal_Code,'E',1) <> 0
+     let $Comb_Code ='E'
+     let $Com_Var_2 =''
+     let #Com_Var_1 = 0
+     do Get-ExemptSal-Amt
+     do Common-Printing-2016
+     if instr($Exempt_Sal_Code,'F',1) <> 0 and length($Exempt_Sal_Code) = 4
+        move 0 to #i
+           while #i < length($Exempt_Sal_Code) and #Exempt_Counter < 3
+           if ExemptSalAmts.Exempt_Sal_Cd(#i) <> ' '
+              let #Com_Var_1 = ExemptSalAmts.Exempt_Sal_Amt(#i)
+              let $Com_Var_2 = ExemptSalAmts.Exempt_Sal_Cd(#i)
+              do Common-Printing-2016
+           end-if
+           let #i = #i + 1
+        end-while
+     end-if   
+  else
+     if instr($Exempt_Sal_Code,'F',1) <> 0
+        let $Comb_Code ='F'
+        let $Com_Var_2 =''
+        let #Com_Var_1 = 0
+        do Get-ExemptSal-Amt
+        do Common-Printing-2016
+     end-if
+  end-if
+  if length($Exempt_Sal_Code) < 4
+     move 0 to #i
+     while #i < length($Exempt_Sal_Code) and #Exempt_Counter < 3
+        if ExemptSalAmts.Exempt_Sal_Cd(#i) <> ' '
+           let #Com_Var_1 = ExemptSalAmts.Exempt_Sal_Amt(#i)
+           let $Com_Var_2 = ExemptSalAmts.Exempt_Sal_Cd(#i)
+           do Common-Printing-2016
+        end-if
+        let #i = #i + 1
+     end-while
+  else
+     if length($Exempt_Sal_Code) = 4
+        let #PrintExemptSal = 0
+        if instr($Exempt_Sal_Code,'A',1) <> 0
+           let $Comb_Code ='A'
+           let $Com_Var_2 =''
+           let #Com_Var_1 = 0
+           do Get-ExemptSal-Amt
+           if instr($Exempt_Sal_Code,'B',1) <> 0 
+              let $Comb_Code ='B'
+              do Get-ExemptSal-Amt
+              let #PrintExemptSal = 1
+           else
+              if instr($Exempt_Sal_Code,'G',1) <> 0 
+                 let $Comb_Code ='G'
+                 do Get-ExemptSal-Amt
+                 let #PrintExemptSal = 1
+              else
+                 if instr($Exempt_Sal_Code,'H',1) <> 0
+                    let $Comb_Code ='H'
+                    do Get-ExemptSal-Amt
+                   let #PrintExemptSal = 1
+                 end-if
+              end-if
+           end-if
+        else
+           if instr($Exempt_Sal_Code,'B',1) <> 0
+              let $Comb_Code ='B'
+              let $Com_Var_2 =''
+              let #Com_Var_1 = 0
+              do Get-ExemptSal-Amt
+              if instr($Exempt_Sal_Code,'G',1) <> 0
+                 let $Comb_Code ='G'
+                 do Get-ExemptSal-Amt
+                 let #PrintExemptSal = 1
+              else
+                 if instr($Exempt_Sal_Code,'H',1) <> 0
+                    let $Comb_Code ='H'
+                    do Get-ExemptSal-Amt
+                    let #PrintExemptSal = 1
+                  end-if
+              end-if
+           else
+              if instr($Exempt_Sal_Code,'G',1) <> 0
+                 let $Comb_Code ='G'
+                 let $Com_Var_2 =''
+                 let #Com_Var_1 = 0
+                 do Get-ExemptSal-Amt
+                 if instr($Exempt_Sal_Code,'H',1) <> 0
+                    let $Comb_Code ='H'
+                    do Get-ExemptSal-Amt
+                    let #PrintExemptSal = 1
+                  end-if
+              end-if
+           end-if
+        end-if
+        if #PrintExemptSal = 1
+           let $Comb_Code = $Com_Var_2
+           let #Comb_Amt = #Com_Var_1
+           move 0 to #i
+           while #i < length($Exempt_Sal_Code) and #Exempt_Counter < 2
+              if ExemptSalAmts.Exempt_Sal_Cd(#i) <> ' '
+                and
+                 ExemptSalAmts.Exempt_Sal_Pr(#i) <> 'Y'
+                 let #Com_Var_1 = ExemptSalAmts.Exempt_Sal_Amt(#i)
+                 let $Com_Var_2 = ExemptSalAmts.Exempt_Sal_Cd(#i)
+                 do Common-Printing-2016
+              end-if
+              let #i = #i + 1
+           end-while
+           let $Com_Var_2 = $Comb_Code
+           let #Com_Var_1 = #Comb_Amt
+           do Common-Printing-2016
+        else   
+           move 0 to #i
+           while #i < length($Exempt_Sal_Code) and #Exempt_Counter < 2
+              if ExemptSalAmts.Exempt_Sal_Cd(#i) <> ' '
+                 let #Com_Var_1 = ExemptSalAmts.Exempt_Sal_Amt(#i)
+                 let $Com_Var_2 = ExemptSalAmts.Exempt_Sal_Cd(#i)
+                 do Common-Printing-2016
+              end-if
+              let #i = #i + 1
+           end-while
+        end-if
+     else 
+        move 0 to #i
+        while #i < length($Exempt_Sal_Code) and #Exempt_Counter < 2
+           if ExemptSalAmts.Exempt_Sal_Cd(#i) <> ' '
+              let #Com_Var_1 = ExemptSalAmts.Exempt_Sal_Amt(#i)
+              let $Com_Var_2 = ExemptSalAmts.Exempt_Sal_Cd(#i)
+              do Common-Printing-2016
+           end-if
+           let #i = #i + 1
+        end-while
+     end-if
+  end-if 
+ 
+  if Rtrim($Exempt_Sal_Cd, ' ') = ''
+    move ' '                 to $Exempt_Sal_Cd
+  end-if
+  
+  if Rtrim($Exempt_Sal_Cd_A, ' ') = ''
+    move ' '                 to $Exempt_Sal_Cd_A
+  end-if
+
+  if Rtrim($Exempt_Sal_Cd_B, ' ') = ''
+    move '  '                to $Exempt_Sal_Cd_B
+  end-if
+  
+  if Rtrim($BirthdateTest1, ' ') = ''
+    move '00000000'                 to $Date_Of_Birth
+  else
+     let $Date_Of_Birth = substr($BirthdateTest1,1,4) ||
+                          substr($BirthdateTest1,6,2) ||
+                          substr($BirthdateTest1,9,2)
+  end-if  
+  
+  if Rtrim($A.ClosingDate, ' ') = ''
+    move '00000000'                 to $A.ClosingDate
+  end-if
+
+!  Local wages and taxes populated in TAX960PD
+
+  if $FileType = 'D'
+    if #RecordCount >= #MaxRecordsPerDiskette
+      do Open-File
+    end-if
+  end-if
+
+      write 10 from 'RS':2    ! 1 - 2
+              $Zero_fill:2    ! 3 - 4
+              $Zero_fill:5    ! 5 - 9
+                  $E.SSN:9    ! 10 - 18
+              $FirstName:15   ! 19 - 33
+             $MiddleName:15   ! 34 - 48
+               $LastName:20   ! 49 - 68
+                 $Suffix:4    ! 69 - 72
+             $E.Address1:22   ! 73 - 94
+             $E.Address2:22   ! 95 - 116
+                 $E.City:22   ! 117 - 138
+               $US_State:2    ! 139 - 140
+                 $US_Zip:5    ! 141 - 145
+            $US_ZipXtnsn:4    ! 146 - 149
+                     $Sp:1    ! 150 - 150
+                     $Sp:1    ! 151 - 151
+                     $Sp:1    ! 152 - 152
+                     $Sp:40   ! 153 - 192
+                     $Sp:1    ! 193 - 193
+                     $Sp:1    ! 194 - 194
+     $Charitable_Contrib:11   ! 195 - 205
+         $Save_Money_Pgm:11   ! 206 - 216
+              $Zero_fill:15   ! 217 - 231
+           $Exempt_Sal_B:11   ! 232 - 242
+        $Exempt_Sal_Cd_B:2    ! 243 - 244
+                     $Sp:29   ! 245 - 273
+              $Zero_fill:34   ! 274 - 307
+                     $Sp:1    ! 308 - 308
+              $Zero_fill:22   ! 309 - 330
+                     $Sp:17   ! 331 - 347
+          $A.ClosingDate:8    ! 348 - 355
+               $SerialNo:9    ! 356 - 364
+                     $Sp:11   ! 365 - 375
+             $CODA_Plans:11   ! 376 - 386
+     $Reimbursed_Expense:11   ! 387 - 397
+                     $Sp:6    ! 398 - 403
+      $UncollSSTaxOnTips:11   ! 404 - 414
+     $UncollMedTaxOnTips:11   ! 415 - 425
+             $SpecRegNbr:5    ! 426 - 430
+             $Exempt_Sal:11   ! 431 - 441
+          $Exempt_Sal_Cd:1    ! 442 - 442
+                     $Sp:7    ! 443 - 449
+             $SupplData2:38   ! 450 - 487
+           $Exempt_Sal_A:11   ! 488 - 498
+        $Exempt_Sal_Cd_A:1    ! 499 - 499
+                     $Sp:1    ! 500 - 500
+          $Date_Of_Birth:8    ! 501 - 508
+                     $Sp:4    ! 509 - 512
+
+    add #State_Wages         to #State_Wages-T
+    add #State_Tax           to #State_Tax-T
+    add #Local_Wages         to #Local_Wages-T
+    add #Local_Tax           to #Local_Tax-T
+    add 1                    to #Count-S
+    add #State_Wages         to #State_Wages-F
+    add #State_Tax           to #State_Tax-F
+    add #Local_Wages         to #Local_Wages-F
+    add #Local_Tax           to #Local_Tax-F
+    add 1                    to #S-Count-F
+    add #CODA_Plans            to  #CODA_Plans-T
+    add #Reimbursed_Expense    to  #Reimbursed_Expense-T
+    add #Uncoll_SS_Tax_On_Tips  to #Uncoll_SS_Tax_On_Tips-T
+    add #Uncoll_Med_Tax_On_Tips to #Uncoll_Med_Tax_On_Tips-T
+    add #Charitable_Contrib     to #Charitable_Contrib-T
+    add #Save_Money_Pgm         to #Save_Money_Pgm-T
+
+End-Procedure
+
+
+Begin-Procedure Get-ExemptSal-Amt
+  let #k=0
+  while #k <= length($Exempt_Sal_Code)
+     if $Comb_Code = ExemptSalAmts.Exempt_Sal_Cd(#k)
+        let $Com_Var_2 = $Com_Var_2 || ExemptSalAmts.Exempt_Sal_Cd(#k)
+        let #Com_Var_1 = #Com_Var_1 + ExemptSalAmts.Exempt_Sal_Amt(#k)
+        if $Comb_Code = 'E'
+           let ExemptSalAmts.Exempt_Sal_Cd(#k) = ' '
+           let ExemptSalAmts.Exempt_Sal_Amt(#k) = 0
+           let #p=0
+           while #p <= length($Exempt_Sal_Code)
+              if ExemptSalAmts.Exempt_Sal_Cd(#p) = 'F'
+                 let ExemptSalAmts.Exempt_Sal_Cd(#p) = ' '
+                 let ExemptSalAmts.Exempt_Sal_Amt(#p) = 0
+                 break
+              end-if
+              let #p=#p + 1
+           end-while
+        else
+           if $Comb_Code = 'F'
+              let ExemptSalAmts.Exempt_Sal_Cd(#k) = ' '
+              let ExemptSalAmts.Exempt_Sal_Amt(#k) = 0
+           end-if
+        end-if
+        let ExemptSalAmts.Exempt_Sal_Pr(#k) = 'Y'
+        break
+     end-if
+     let #k = #k + 1
+  end-while
+end-procedure
+
+
+Begin-Procedure Get-ExemptSal-Code
+
+  let #i=0
+  while #i < #index_exempt_sal
+     let #k=0
+     while #k < #index_exempt_sal
+        if ExemptSalCode.Exempt_Sal_Codes(#i) < ExemptSalCode.Exempt_Sal_Codes(#k)
+           let $TempSal = ExemptSalCode.Exempt_Sal_Codes(#i)
+           let ExemptSalCode.Exempt_Sal_Codes(#i) = ExemptSalCode.Exempt_Sal_Codes(#k)
+           let ExemptSalCode.Exempt_Sal_Codes(#k) = $TempSal
+        end-if
+        let #k=#k+1
+     end-while
+     let #i=#i+1
+  end-while
+     
+  let #i=0
+  while #i < #index_exempt_sal
+     if INSTR(ExemptSalCode.Exempt_Sal_Codes(#i),$Exempt_Sal_Code,1) = 0
+        let $Exempt_Sal_Code = $Exempt_Sal_Code || ExemptSalCode.Exempt_Sal_Codes(#i)
+     end-if
+     let #i = #i + 1
+  end-while
+
+  clear-array name=ExemptSalAmts
+  let #i = 1
+  while #i <= length($Exempt_Sal_Code)
+
+     let ExemptSalAmts.Exempt_Sal_Cd(#i - 1) = substr($Exempt_Sal_Code,#i,1)
+     let #p = 0
+     while #p < #tmp_idx
+        if ExemptSalAmts.Exempt_Sal_Cd(#i - 1) = TMP_SAL_CODES.TMP_CODE(#p)
+           let $TmpSalCodes = TMP_SAL_CODES.TMP_BOX(#p)
+           evaluate $TmpSalCodes
+              when = '1601'
+                 let ExemptSalAmts.Exempt_Sal_Amt(#i - 1) = #Exempt_Sal_01
+                 break
+              when = '1602'
+                 let ExemptSalAmts.Exempt_Sal_Amt(#i - 1) = #Exempt_Sal_02
+                 break
+              when = '1603'
+                 let ExemptSalAmts.Exempt_Sal_Amt(#i - 1) = #Exempt_Sal_03
+                 break
+              when = '1604'
+                 let ExemptSalAmts.Exempt_Sal_Amt(#i - 1) = #Exempt_Sal_04
+                 break
+              when = '1605'
+                 let ExemptSalAmts.Exempt_Sal_Amt(#i - 1) = #Exempt_Sal_05
+                 break
+              when = '1606'
+                 let ExemptSalAmts.Exempt_Sal_Amt(#i - 1) = #Exempt_Sal_06
+                 break
+              when = '1607'
+                 let ExemptSalAmts.Exempt_Sal_Amt(#i - 1) = #Exempt_Sal_07
+                 break
+              when = '1608'
+                 let ExemptSalAmts.Exempt_Sal_Amt(#i - 1) = #Exempt_Sal_08
+                 break
+              when = '1609'
+                 let ExemptSalAmts.Exempt_Sal_Amt(#i - 1) = #Exempt_Sal_09
+                break
+              when = '1610'
+                 let ExemptSalAmts.Exempt_Sal_Amt(#i - 1) = #Exempt_Sal_10
+                break
+           end-evaluate
+        end-if
+        let #p = #p +1
+     end-while
+     let #i=#i+1
+  end-while
+  
+End-Procedure
+
+
+begin-procedure  Common-Printing-2016
+  if #Exempt_Counter = 0
+     move #Com_var_1 to $Exempt_Sal                      09999999999
+     move $Com_var_2 to $Exempt_Sal_Cd
+     let #Exempt_Counter = #Exempt_Counter + 1
+     let #Exempt_Sal-T = #Exempt_Sal-T + #Com_Var_1
+  else
+      if #Exempt_Counter = 1
+         move #Com_var_1 to $Exempt_Sal_A                09999999999
+         move $Com_var_2 to $Exempt_Sal_Cd_A
+         let #Exempt_Counter = #Exempt_Counter + 1
+         let #Exempt_Sal-T = #Exempt_Sal-T + #Com_Var_1
+      else
+         if #Exempt_Counter = 2
+            move #Com_var_1 to $Exempt_Sal_B             09999999999
+            move $Com_var_2 to $Exempt_Sal_Cd_B
+            let #Exempt_Counter = #Exempt_Counter + 1         
+            let #Exempt_Sal-T = #Exempt_Sal-T + #Com_Var_1
+         end-if
+      end-if
+  end-if
+end-procedure
+
+
+Begin-Procedure Write-T-Record
+  move #Count-T           to $Count-T 0999999                     !Count
+
+  do Write-RT-Record
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+
+  add #Count-T  to    #Count-F !Company count
+
+End-Procedure
+
+
+Begin-Procedure Write-U-Record
+
+  do Write-RU-Record
+
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+  do Zero-U-Record
+End-Procedure
+
+
+Begin-Procedure Write-V-Record
+
+  do Write-RV-Rec-For-PR
+
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+
+End-Procedure
+
+
+Begin-Procedure Write-F-Record
+
+  move #Count-F to $Count-F   099999999
+
+  do Write-RF-Record
+
+  move 0         to #Count-S
+  do Zero-F-Record
+
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+
+End-Procedure
+
+Begin-Procedure Process-Totals
+
+  do Format-Number (#Tot_Record_Count, $out, 'B99,999')
+  print 'Total File Record Count: '(+3,8)
+  print $out (,33)
+  move 0 to #Tot_Record_Count
+
+End-Procedure
+
+
+begin-procedure Ignore
+! dummy procedure to avoid SQL error message on delete of empty table
+end-procedure
+
+begin-procedure Update-Error
+  display 'Error on update of temporary local table '
+end-procedure
+
+
+begin-procedure Foreign-Address-Test($Format,#MaxLength)
+  Let $_StateName = ''
+
+  If $_Country = 'USA'
+    move ' ' to $_ForeignAddrInd
+  else
+    move 'X' to $_ForeignAddrInd
+
+    If $_Country <> $priorCountry
+      do Get-Country-Code
+      move $_Country to $priorCountry
+      move &_Descr   to $CountryName
+      move &_COUNTRY_CD_1042 to $_Country-2Char
+    End-if
+
+    if $_StateCd = ''
+      Show '      Note: No state code for this record.  Country - ' $_Country
+    else
+      do Get-State-Code
+      move &_STATE.DESCR to $_StateName
+      uppercase $_StateName
+    End-if
+
+    Evaluate $Format
+      when = 'Format 1'
+        let #Length = LENGTH(RTRIM($CountryName,' '))
+        let $_City = SUBSTR(RTRIM($_City,' '),1,(#MaxLength - #Length - 4) )
+        let $_City = $_City || ' ' || $_StateCd || ' ' || $CountryName
+        move ' ' to $_StateCd
+      when = 'Format 2'
+        let $_StateCd = $_StateCd || ' ' || $CountryName
+        uppercase $_StateCd
+      when = 'Format 3'
+        let $_StateCd = $_StateCd
+        uppercase $_StateCd
+    End-evaluate
+  End-if
+  uppercase $_City
+  let $EditZip = RTRIM($_Zip, ' ')
+  let #DashPosition = INSTR($EditZip,'-',1)
+  if #DashPosition <> 6
+    move $_Zip to $_ZipExtsn ~~~~~xxxx
+  else
+    move $_Zip to $_ZipExtsn ~~~~~~xxxx
+  end-if
+End-Procedure
+
+Begin-Procedure Get-Country-Code
+  Let $Record_found = 'N'
+Begin-Select
+COUNTRY_2CHAR
+DESCR
+  Let $Record_found = 'Y'
+FROM  PS_COUNTRY_TBL
+WHERE COUNTRY = $Country
+End-Select
+
+ If $Record_found = 'N'
+   Show ' Two Character Country code for ' $Country ' doesn''t exist in Country table.'
+   Stop
+ End-if
+
+  Let $Record_found = 'N'
+Begin-Select
+COUNTRY_CD_1042
+  Let $Record_found = 'Y'
+FROM  PS_CNTRY_1042_TBL
+WHERE COUNTRY = $Country
+End-Select
+
+ If $Record_found = 'N'
+   Show ' Two Character Country code for ' $Country ' doesn''t exist in Country 1042 table.'
+   Stop
+ End-if
+End-Procedure
+
+Begin-Procedure Get-State-Code
+  Let $Record_found = 'N'
+Begin-Select
+STATE.NUMERIC_CD
+STATE.DESCR
+  Let $Record_found = 'Y'
+FROM  PS_STATE_NAMES_TBL  STATE
+WHERE STATE.COUNTRY = $Country
+  AND STATE.STATE   = $StateCd
+End-Select
+
+ If $Record_found = 'N'
+   Show ' State code State : ' $StateCd ', Country : ' $Country ' doesn''t exist in State table.'
+   Stop
+ End-if
+End-Procedure
+
+
+Begin-Procedure Get-ee-State-Code
+
+  Let $Record_found = 'N'
+Begin-Select
+S.NUMERIC_CD
+S.DESCR
+  Let $Record_found = 'Y'
+FROM  PS_STATE_NAMES_TBL  S
+WHERE  S.STATE   = $ME.W2_State
+   AND S.COUNTRY = 'USA'
+End-Select
+
+ If $Record_found = 'N'
+!   Show ' State code State : ' $StateCd ', Country : ' $Country ' doesn''t exist in State table.'
+!   Stop
+   let $StateName = ' '
+ else
+    let $StateName = rtrim(&S.DESCR, ' ')
+ End-if
+
+End-Procedure
+
+Begin-Procedure State-End-Totals
+
+  display ''
+    display 'Upon successful conclusion of this program, one file will have'
+    display 'been created:'
+    display ''
+    let $FileID =  '{IMPORTPREFIX}' || $ReportID2 || '{IMPORTSUFFIX}'
+    display $FileID            noline
+    display ' contains W-2 file.'
+  display ''
+
+End-Procedure
+
+Begin-Procedure Format-Control-Number                    !Report only numeric characters.
+                                                         !alphanumeric prefix.
+  let $Control_Number = rtrim(&E.Control_Number, ' ')
+  let #Max_Lngth = length ($Control_Number)
+  let #Char_Pos  =  1
+  let #Start_Control_Number = 1
+
+  while #Char_Pos <= #Max_Lngth
+    let $Test_Char = substr ($Control_Number, #Char_Pos, 1)
+    let #Which_Digit = instr ('0123456789', $Test_Char, 1)
+
+    if  #Which_Digit = 0
+          let #Start_Control_Number =  #Char_Pos + 1
+    end-if
+    add 1 to #Char_Pos
+  end-while
+
+  let $Control_Number =  substr($Control_Number,#Start_Control_Number,#Max_Lngth - (#Start_Control_Number - 1))
+
+  move $Control_Number to #SerialNo
+  move #SerialNo         to $SerialNo   099999999
+
+End-Procedure
+
+
+#Include 'geteandg.sqc'  !Get-EandG procedure                           !HP00001
+#Include 'getfed.sqc'    !Get-Federalproduct procedure                  !FED0001
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'taxmmref.sqc'  !Format EFW2 for Diskette or Tape
+#Include 'w2.sqc'        !Assign-Year-End-Variables
+#Include 'w2addr.sqc'    !Get-W2-Address procedure
+#Include 'w2prbox.sqc'   !Evaluate-PR-Boxes

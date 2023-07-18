@@ -1,0 +1,3025 @@
+!**********************************************************************
+! GP00PSLP.SQR     GLOBAL PAYROLL PAYSLIP PRINT PROGRAM (Main Driver)  *
+!                                                                      *
+!  Description:                                                        *
+!                  This program will take the results stored in        *
+!                  temporary tables (Ae populated from the main GP     *
+!                  result tables) and based on a payslp template ID    *
+!                  assigned to a payee format and print the results.   *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2017, Oracle and/or its affiliates.       !
+! All Rights Reserved.                                          !
+!       $Release:  HR92                                                *
+!           $Bug:  26371964                                            *
+!***********************************************************************
+!***********************************************************************
+! Debug levels:                                                        *
+!             debug-base level                                         *
+!                    shows procedure calls that are not redundant      *
+!             debug1-medium                                            *
+!                    shows contents of some variables in procedures    *
+!             debug2-high                                              *
+!                    shows more details of some variables              *
+!***********************************************************************
+! Change History
+! Incident ID    Dated     Comments
+!
+! 1263008000      7/05     The assignment of payslip IDs can cause duplicates 
+!                          when running concurrent processes of the same Calendar Group
+!
+! 1269701000      7/05     Redundant reads for some tables. Create arrays and read in data
+!                          up front and access the array instead of the table for subsequent
+!                          data retrieval
+! 
+! 1269952000      7/05     Deadlock issues with the Payslip ID table when running concurrent processes.
+!
+! Release 9       10/05    Remove call to function that fetches GP_OFFCYCLE.PYMT_DT . This field is being removed
+!                          by GP Core.
+!
+! 1237142000      12/05    Accomodate fix in CHECK section that removes hard coded strings
+!
+! 1218750000      1/06     Add options for the Regenerate payslip "process"
+!
+! 1541983000      8/06     When regenerating only an ePay payslip, validate that one doesn't exist first. 
+!
+! 1556187000 &    9/06     Payslips Process is failing due to Commit statements
+! 1556188000
+!
+! 1565599000      9/06     Generate Payslips are not producing any payslips on DB2/Unix when running on PSUNIX
+
+
+#include 'setenv.sqc'    !set database environment
+
+begin-setup
+#include 'gp00pspr.sqc'  !Printer initialization
+#include 'gp00psst.sqc'  !User setup
+
+declare-variable
+  text $gbl_Paycheck_To_Do
+       $gbl_Dynamic_flag
+       $gbl_new_lang_flag
+       $gbl_curr_Section_Country
+       $gbl_curr_Section_Name
+       $gbl_curr_Section_Type
+       $gbl_curr_Section_Style
+       $gbl_curr_Section_Check_Flag
+       $gbl_tgt_Emplid
+       $gbl_tgt_lang_cd
+       $gbl_tgt_full_name
+       $gbl_tgt_first_name
+       $gbl_tgt_last_name
+       $gbl_tgt_adr_type
+       $gbl_tgt_dlvry_opt 
+       $gbl_tgt_other_drop
+       $gbl_tgt_pye_nm_opt
+       $gbl_tgt_deptid
+       $gbl_tgt_location
+       $gbl_tgt_setid_dept
+       $gbl_tgt_setid_location
+       $gbl_tgt_alt_locadr
+       $gbl_tgt_mail_drop
+       $gbl_tgt_setid_jobcode 
+       $gbl_tgt_jobcode 
+       $gbl_tgt_comp_frequency 
+       $gbl_tgt_salary_hrs_flag
+       $gbl_tgt_empl_rcd
+       $gbl_rc_Proc_Name
+       $gbl_rc_Calendar_Group
+       $gbl_rc_Draft_Flag
+       $gbl_rc_Orig_Flag
+       $gbl_GP_CNTRY_PSLP_ELN
+       $gbl_GP_ELN_SET
+       $gbl_pin_array_processing
+       $gbl_Company_array_processing
+       $gbl_Dept_array_processing
+       $gbl_Location_array_processing
+
+  integer #gbl_curr_Section_Start_Line
+          #gbl_curr_Section_Nbr_Lines
+          #gbl_curr_Section_Dtl_Lines
+          #gbl_Paycheck_Start_Line
+          #gbl_Paycheck_Total_Lines
+          #gbl_Line_Ctr
+          #gbl_Page_Ctr
+          #gbl_Page_lines_printed
+          #gbl_Page_lines
+         !#gbl_tgt_Grp_ID
+          #gbl_tgt_comprate
+         !#gbl_job_instance
+          #DefBoxWidth
+          #DefBoxStartCol
+          #BoxThickness
+          #gbl_tgt_salary_pin
+          #gbl_tgt_salary_hrs_pin
+
+   text $EffDate
+        $Template_EffDt
+        $prd_bgn_dt
+        $prd_end_dt
+        $pymt_dt
+        $gbl_tgt_pslp_gen_dt
+        $Template_Valid
+        $Template_Found
+        $Payees_Selected
+        $ePay_Installed
+        $ePay_process
+        $Dtl_Data_Found
+        $Sct_Data_Found
+        $OffCycle_Flag
+        $CalGroup_Country
+        $ReportID
+        $ReportTitle
+        $prcs_language_cd
+        $prcs_language_option
+        $Cntry_Sort_Method
+        $Sort_Method
+        $Ovrd_Lang_Flag 
+        $prcs_stat
+        $Output_Dir
+        $Order
+        $pdf_name
+        $Where_Template
+        $Where_Print_Ind
+        $Where_Blank_Pslp_ID
+        $prev_Dept_SetID
+        $prev_DeptID
+        $Payslip_ID
+        $Dept_Descr
+        $prev_lang_cd 
+        $Payslip_count
+        $namepart
+        $sourcefile
+        $sourceloc
+        $cntry_templ
+        $templ
+        $Templ_Allow_Net_Zero
+        $Templ_Allow_Net_Negative
+        $skip_net_neg_zero_payslip
+ 
+  ! when the epay "file" method is used then these variables should be date datatypes
+  ! date $tgt_Pymt_Dt
+  !      $tgt_Prd_Bgn_Dt 
+  !      $tgt_Prd_End_Dt
+
+end-declare
+
+end-setup
+
+#include 'sqrtrans.sqc'  !Report translation procedure
+#include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#include 'getsetid.sqc'  !Get Set-Id procedure
+#include 'getlocnm.sqc'  !Get-Location-Name procedure
+#include 'readxlat.sqc'  !Read-Translate-Table procedure
+#include 'rotname1.sqc'  !Rotate-Name procedure
+#include 'datetime.sqc'  !general date and time formatting procedures
+#include 'number.sqc'    !general number formatting procedures
+#include 'stdapi.sqc'    !StdAPI-Init procedure
+#include 'tranctrl.sqc'  !Commit-Transaction
+#Include 'getaddr.sqc'   !Get Person Current Address
+#Include 'adformat.sqc'  !Address format
+#include 'getmsgct.sqc'  !Gets Message Catalog
+#include 'getrplng.sqc'  !Gets report language
+#include 'gpsspslp.sqc'  !ePay functions
+#include 'gp00psdf.sqc'  !define variable substitutions
+#include 'gp00psmi.sqc'  !MICR procedure
+#include 'gp00pssg.sqc'  !Signature procedure
+
+!***********************************************************************
+begin-report
+!***********************************************************************
+
+  #debug do Pslp-Proc-Debug-Msg('Payslip Mainline GP00PSLP.SQR ')
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do StdAPI-Init
+  do Init-Variables
+  do Init-Arrays
+  do select-parameters
+  do process-payslips
+  do StdAPI-Term
+
+end-report
+
+
+!***********************************************************************
+begin-procedure Init-Page-Size
+!***********************************************************************
+! This sends a 'Perforation Skip' command to disable any bottom
+! margin and obtain the maximum PCL page.  This is required to
+! print the MICR line sufficiently close to the bottom of the
+! form to be correctly positioned on the check.
+
+#ifndef MVS
+#ifndef OS400
+ encode '<27>&l0L' into $perforation_skip
+#else
+ encode '<39>&l0L' into $perforation_skip
+#endif
+#else
+ encode '<39>&l0L' into $perforation_skip
+#endif
+
+  print $perforation_skip () code-printer={PRINTER_CHQADV}
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Init-Variables
+!***********************************************************************
+
+  let $ReportID    = 'GP00PSLP'
+  let $ReportTitle = 'Payslip '
+
+  let #gbl_job_instance = #prcs_job_instance
+
+   #if {PAGE_PAPER_SIZE} = 'LETTER'
+     let #gbl_Page_lines = 87
+     let #gbl_page_width = 141
+     let #DefBoxWidth = 139
+   #else
+     let #gbl_Page_lines = 92
+     let #gbl_Page_width = 137
+     let #DefBoxWidth = 135
+   #endif
+
+   let #BoxThickness = 10
+   let #DefBoxStartCol = 2
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Init-Arrays
+!***********************************************************************
+
+CREATE-ARRAY NAME = Section  SIZE={Section_array_size}
+FIELD=Country:Char
+FIELD=Name:Char
+FIELD=StartLine:Number
+FIELD=NbrLines:Number
+FIELD=DtlLines:Number
+FIELD=Style:Char
+FIELD=Type:Char
+FIELD=PayCheckSect:Char
+FIELD=BlkNbr:Number:10
+FIELD=BlkType:Char:10
+FIELD=BlkContent:Char:10
+FIELD=BlkPIN:Number:10
+
+CREATE-ARRAY NAME= Sort SIZE={Block_array_size}
+FIELD=Sequence:Char
+FIELD=AscDesc:Char
+
+CREATE-ARRAY NAME= Template SIZE={Template_array_size}
+FIELD=Country:Char
+FIELD=Name:Char
+
+CREATE-ARRAY NAME= PR_Template SIZE={Template_array_size}
+FIELD=Country:Char
+FIELD=Name:Char
+
+CREATE-ARRAY NAME= SS_Template SIZE={Template_array_size}
+FIELD=Country:Char
+FIELD=Name:Char
+
+CREATE-ARRAY NAME= PIN SIZE={Pin_array_size}
+FIELD=NUM:Number
+FIELD=NAME:Char
+FIELD=DESCR:Char
+FIELD=CUSTOM1:Char
+FIELD=CALC_RSLT_VAL:Number
+
+CREATE-ARRAY NAME= COMPANY SIZE={Company_array_size}
+FIELD=NAME:Char
+FIELD=DESCR:Char
+FIELD=ADDRESS1:Char
+FIELD=ADDRESS2:Char
+FIELD=ADDRESS3:Char
+FIELD=ADDRESS4:Char
+FIELD=CITY:Char
+FIELD=STATE:Char
+FIELD=POSTAL:Char
+FIELD=PHONE:Char
+
+CREATE-ARRAY NAME= DEPT SIZE={Dept_array_size}
+FIELD=SETID:Char
+FIELD=NAME:Char
+FIELD=DESCR:Char
+
+CREATE-ARRAY NAME= LOCATION SIZE={Location_array_size}
+FIELD=SETID:Char
+FIELD=NAME:Char
+FIELD=DESCR:Char
+FIELD=ADDRESS1:Char
+FIELD=ADDRESS2:Char
+FIELD=ADDRESS3:Char
+FIELD=ADDRESS4:Char
+FIELD=CITY:Char
+FIELD=STATE:Char
+FIELD=POSTAL:Char
+
+
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Select-Parameters
+!***********************************************************************
+
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Select-parameters')
+#debug1 show '** Payslip Mainline      Process Run Control: Operid = ' $prcs_oprid ' run cntl id = ' $prcs_run_cntl_id
+
+let $sql-statement = 'GP00PSLP.SQR, Select-Parameters, Select, PS_PRCSRUNCNTL'
+
+begin-select on-error=SQL-Error
+
+RCTL.OPRID
+RCTL.LANGUAGE_CD
+RCTL.LANGUAGE_OPTION
+
+      let $prcs_language_cd = &RCTL.LANGUAGE_CD
+      let $prcs_language_option = &RCTL.LANGUAGE_OPTION
+      #debug1 show '** Payslip Mainline      Process Run Control: Lanugage = ' $prcs_language_cd ' Language Option = ' $prcs_language_option
+
+from PS_PRCSRUNCNTL RCTL
+where OPRID = $prcs_oprid
+and RUN_CNTL_ID = $prcs_run_cntl_id
+end-select
+
+
+let $sql-statement = 'GP00PSLP.SQR, Select-Parameters, Select, PS_GP_PSLP_RC'
+
+begin-select on-error=SQL-Error
+
+RC.GP_PSLP_PRCSNAME
+RC.CAL_RUN_ID
+RC.GP_CNTRY_PSLP_SORT
+RC.GP_PSLP_SORT
+RC.GP_PSLP_PRT_DRAFT
+RC.GP_PSLP_OVRD_LANG
+RC.GP_PSLP_ORIG_FLG
+RC.GP_PSLP_PRCS_STAT
+RC.GP_CNTRY_PSLP_ASET
+RC.GP_PSLP_ASGN_SET
+RC.GP_PSLP_TMPL_PRCS
+RC.GP_CNTRY_PSLP_TMPL
+RC.GP_PSLP_TMPL
+RC.GP_PSLP_POPUL_SEL
+RC.GB_GROUP_ID
+RC.GROUP_LIST_ID
+RC.STRM_NUM
+RC.GP_PSLP_PRT_CAT
+RC.GP_PSLP_RGEN_OPT
+RC.GP_PSLP_RGEN_PRT
+
+  let $gbl_rc_Proc_Name      = rtrim(&RC.GP_PSLP_PRCSNAME, ' ')
+  let $gbl_rc_Calendar_Group = rtrim(&RC.CAL_RUN_ID,  ' ')
+  let $Cntry_Sort_Method     = &RC.GP_CNTRY_PSLP_SORT
+  let $Sort_Method           = &RC.GP_PSLP_SORT
+  let $gbl_rc_Draft_Flag     = &RC.GP_PSLP_PRT_DRAFT
+  let $Ovrd_Lang_Flag        = &RC.GP_PSLP_OVRD_LANG
+  let $gbl_rc_Orig_Flag      = &RC.GP_PSLP_ORIG_FLG
+  let $prcs_stat             = &RC.GP_PSLP_PRCS_STAT
+  let $Cntry_Assign_Set      = &RC.GP_CNTRY_PSLP_ASET
+  let $Assign_Set            = &RC.GP_PSLP_ASGN_SET
+  let $Templ_Sel             = &RC.GP_PSLP_TMPL_PRCS
+  let $rc_Cntry_Templ        = &RC.GP_CNTRY_PSLP_TMPL
+  let $rc_Templ              = &RC.GP_PSLP_TMPL
+  let $rc_Population         = &RC.GP_PSLP_POPUL_SEL
+  let $rc_HR_Group           = &RC.GB_GROUP_ID
+  let $rc_GP_Group           = &RC.GROUP_LIST_ID
+  let $rc_Category           = &RC.GP_PSLP_PRT_CAT
+  let $rc_Stream_Num         = &RC.STRM_NUM
+  let $rc_Rgen_Opt           = &RC.GP_PSLP_RGEN_OPT
+  let $rc_Rgen_Prt           = &RC.GP_PSLP_RGEN_PRT
+
+
+  #debug show '** Payslip Mainline      Payslip Run Control: '
+  #debug show '** Payslip Mainline          Process name = ' $gbl_rc_Proc_Name
+  #debug show '** Payslip Mainline          Calendar Group = ' $gbl_rc_Calendar_Group
+  #debug show '** Payslip Mainline          Assignment Set = ' $Cntry_Assign_Set ' ' $Assign_Set 
+  #debug show '** Payslip Mainline          Template Selected (A = ALL; S = specific) = '$Templ_Sel
+  #debug show '** Payslip Mainline          Specific Template  = ' $RC_Cntry_Templ ' '$RC_Templ
+  #debug show '** Payslip Mainline          Sort = '$Cntry_Sort_Method ' '$Sort_Method
+  #debug show '** Payslip Mainline          Draft Flag = ' $gbl_rc_Draft_Flag
+  #debug show '** Payslip Mainline          Language Override Flag = ' $Ovrd_Lang_Flag
+  #debug show '** Payslip Mainline          Original Flag = ' $gbl_rc_Orig_Flag
+  #debug show '** Payslip Mainline          Process Stat = ' $prcs_stat
+  #debug show '** Payslip Mainline          Population = ' $rc_Population 
+  #debug show '** Payslip Mainline          HR Group = ' $rc_HR_Group
+  #debug show '** Payslip Mainline          GP Group = ' $rc_GP_Group
+  #debug show '** Payslip Mainline          Category = ' $rc_Category
+  #debug show '** Payslip Mainline          Stream = '$rc_Stream_Num
+  #debug show '** Payslip Mainline          Regenerate Option = '$rc_Rgen_Opt
+  #debug show '** Payslip Mainline          Regenerate Print = '$rc_Rgen_Prt
+
+FROM  PS_GP_PSLP_RC RC
+WHERE RC.OPRID          = $Prcs_OprID
+AND   RC.RUN_CNTL_ID    = $Prcs_Run_Cntl_ID
+
+end-select
+
+
+#ifdef debug
+  do debug-category-run-control
+#endif
+
+end-procedure
+
+
+
+!***********************************************************************
+begin-procedure debug-category-run-control
+!***********************************************************************
+let $sql-statement = 'GP00PSLP.SQR, debug-category-run-control, Select, PS_GP_PSLP_RC_UNT'
+
+begin-select on-error=SQL-Error
+RCU.GP_PSLP_PRT_CAT
+RCU.BUSINESS_UNIT
+RCU.ORG_LINK_UNIT
+
+        let $rcu_Category            = &RCU.GP_PSLP_PRT_CAT
+        let $rc_BU                   = &RCU.BUSINESS_UNIT
+        let $rc_Org_unit             = &RCU.ORG_LINK_UNIT
+     
+        #debug show '** Payslip Mainline      Payslip Run Control Category Detail: '
+        #debug show '** Payslip Mainline          Category = ' $rcU_Category
+        #debug show '** Payslip Mainline          Business Unit = '$rc_BU
+        #debug show '** Payslip Mainline          Organization Unit = '$rc_Org_unit
+
+FROM PS_GP_PSLP_RC_UNT RCU
+WHERE RCU.OPRID          = $Prcs_OprID
+AND   RCU.RUN_CNTL_ID    = $Prcs_Run_Cntl_ID
+
+end-select
+
+end-procedure
+
+!***********************************************************************
+begin-procedure process-payslips
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Process-Payslips')
+!if result data is populated by the payslip pre-process then continue
+if $prcs_stat <> 'X'
+ !get sort method parameters
+  if $gbl_rc_Proc_Name = 'GEN' 
+    do Get-Sort-Method
+  else
+    let $Order = 'ORDER BY TMP.GP_PSLP_ID'
+  end-if
+
+!process printed template index table
+
+  ! call procedure to 1) get the country of the calendar group (if epay installed,
+  ! then used later to get the epay options by country) and 2) to get the value of
+  ! the offcycle flag for the calendar group
+  do Get-CalGroup-Data
+
+  let $skip_printed_payslip = 'N'
+
+  do build-template-arrays-perf
+
+  !certain run control options will override the skip of the first loop through payslip processing
+  !(the first loop produces the "printed"/non-ePay payslips)
+  if ($gbl_rc_Proc_Name = 'RGEN' AND $rc_Rgen_Opt = 'EPAY')
+    let $skip_printed_payslip = 'Y'
+  else
+    if ($gbl_rc_Proc_Name = 'RGEN' AND $rc_Rgen_Opt = 'PSLP') OR  
+       ($gbl_rc_Proc_Name = 'GEN' AND $gbl_rc_Draft_Flag = 'Y') OR 
+       $gbl_rc_Proc_Name = 'COPY'
+         let $skip_printed_payslip = 'N'
+    end-if
+  end-if
+
+  let $ePay_process = 'N'
+  if $skip_printed_payslip = 'N' 
+    do process-templates
+    #debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Back into Procedure Process-Payslips')
+  end-if
+
+  do Check-ePay-installed ($ePay_Installed)
+
+  ! call the template procedure again to produce ePay payslips for templates populated
+  ! in the ePay index file but don't produce ePay payslips if in Draft mode or for
+  ! a reprint copy or if ePay is not even installed
+  if $gbl_rc_Draft_Flag <> 'Y'
+    if $ePay_Installed = 'Y'
+      
+     #ifdef debug
+       if ($gbl_rc_Proc_Name = 'RGEN' AND $rc_Rgen_Opt <> 'PSLP')
+          display '** Payslip Mainline      Regenerating epay payslips'
+       else
+          display '** Payslip Mainline     No Regenerating epay payslips'
+       end-if
+     #endif
+
+      if $gbl_rc_Proc_Name = 'GEN' OR
+         $gbl_rc_Proc_Name = 'RNUM' OR   
+         ($gbl_rc_Proc_Name = 'RGEN' AND $rc_Rgen_Opt <> 'PSLP')
+        Let $Output_Dir =  '{FILEPREFIX}'
+        !process epay template index table
+        let $ePay_process = 'Y'
+        show 'Processing ePay Templates'
+        !Get the "Not found description label for ePay in case it's needed
+        do Get_Field_Information ($ReportID, 'SS_NO_DESCR', $SelfServiceNoDescr, #DW)
+        do process-templates
+      end-if
+    end-if
+  end-if
+  #debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Process-Payslips - Template processing is complete')
+else 
+  show 'No payslip data was extracted by the pre-process step. No payslips were produced.'
+end-if
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Load-PIN-array
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Load-PIN-array')
+
+CLEAR-ARRAY name = PIN
+let $gbl_Pin_array_processing = 'Y'
+
+let #gbl_pin_array_ctr = 0
+let $sql-statement = 'GP00PSLP.SQR, Load-PIN-array, Select, PS_GP_PIN'
+begin-select DISTINCT On-Error=SQL-Error
+RS.PIN_NUM
+P.PIN_NM
+P.DESCR
+RS.SEQ_NUM
+P.PIN_CUSTOM1
+!RS.CALC_RSLT_VAL
+
+   ! about to go beyond array bounds
+  if #gbl_pin_array_ctr = {Pin_array_size} and '{array_warning_msg}' = 'Y'
+    display 'Error: GP00PSLP.SQR , LOAD-PIN-Array'
+    display ' The current limit on number of elements in the array is {Pin_array_size}.'
+    display ' The current request will exceed that limit therefore the array method used for efficiently '
+    display ' printing PIN Names and descriptions on the payslip will not be used. Instead each PIN that is printed '
+    display ' will be fetched individually from the database resulting in performance degradation. '
+    display ' GP00PSDF.sqc should to be modified to increase the PIN array size.'
+    let $gbl_Pin_array_processing = 'N'
+    Exit-Select
+  end-if
+
+  let #PIN_NUM = &RS.PIN_NUM
+  let $PIN_NM = rtrim(&P.PIN_NM, ' ')
+  let $PIN_DESCR = rtrim(&P.DESCR, ' ')
+  let $PIN_CUSTOM1 = rtrim(&P.PIN_CUSTOM1, ' ')
+  !let #CALC_RSLT_VAL = &RS.CALC_RSLT_VAL
+
+  ! check if we need to get the related language fields
+  if $gbl_tgt_lang_cd <> $SQR_Default_Language
+    do Get-PIN-Rel-Lang
+    if $Rel_Lang_PIN_Found = 'Y'
+      let $PIN_NM = $RL_PIN_NM
+      let $PIN_DESCR = $RL_PIN_DESCR
+    else
+      #debug2 show '** Payslip Mainline      Rel_Lang_PIN NOT Found'
+    end-if
+  end-if
+
+  put #PIN_NUM into PIN (#gbl_pin_array_ctr) NUM
+  put $PIN_NM into PIN (#gbl_pin_array_ctr) NAME
+  put $PIN_DESCR into PIN (#gbl_pin_array_ctr) DESCR
+  put $PIN_CUSTOM1 into PIN (#gbl_pin_array_ctr) CUSTOM1  
+  put #CALC_RSLT_VAL into PIN (#gbl_pin_array_ctr) CALC_RSLT_VAL
+
+  #debug2 show '** Payslip Mainline      Load PIN array: ' #PIN_NUM ' / ' $PIN_NM ' / '$PIN_DESCR ' / '$PIN_CUSTOM1 ' / ' #CALC_RSLT_VAL
+  let #gbl_pin_array_ctr = #gbl_pin_array_ctr + 1 
+  let #SEQ_NUM = &RS.SEQ_NUM
+  LET $Custom1 = $PIN_CUSTOM1
+  #debug1 show '** Payslip Mainline      Load PIN array: ' #PIN_NUM ' / ' $PIN_NM ' / ' #SEQ_NUM ' / ' $Custom1
+  If #SEQ_NUM = 30 and not isblank($Custom1)
+     let $gbl_tgt_salary_hrs_flag = 'Y'
+     #debug1 show '** Payslip Mainline      Load PIN array:  gbl_tgt_salary_hrs_flag set to Y'
+  end-if
+
+FROM PS_GPUS_PSLP_RSLT RS,
+     PS_GP_PIN P
+WHERE RS.JOBINSTANCE = #gbl_job_instance
+AND RS.PIN_NUM = P.PIN_NUM
+ORDER BY RS.PIN_NUM ASC
+END-SELECT
+
+#debug1 show '** Payslip Mainline      Loaded ' #gbl_pin_array_ctr ' PINS into the PIN array. Processing flag = ' $gbl_pin_array_processing
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Get-PIN-Rel-Lang
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-PIN-Rel-Lang')
+
+let $Rel_Lang_PIN_Found = 'N'
+
+let $sql-statement = 'GP00PSLP.SQR, Get-PIN-Rel-Lang, Select, PS_GP_PIN_LANG'
+begin-select  On-Error=SQL-Error
+PL.PIN_NM
+PL.DESCR
+
+  let $Rel_Lang_PIN_Found = 'Y'
+  let $RL_PIN_NM = rtrim(&PL.PIN_NM, ' ')
+  let $RL_PIN_DESCR = rtrim(&PL.DESCR, ' ')
+
+  #debug2 show '** Payslip Mainline      Loaded Related Lang PIN: ' #PIN_NUM ' / ' $PIN_NM ' / '$PIN_DESCR
+
+FROM PS_GP_PIN_LANG PL
+WHERE PL.PIN_NUM = #PIN_NUM
+AND PL.LANGUAGE_CD = $gbl_tgt_lang_cd
+END-SELECT
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Load-Company-array
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Load-Company-array')
+
+CLEAR-ARRAY name = COMPANY 
+let $gbl_Company_array_processing = 'Y'
+
+let #gbl_company_array_ctr = 0
+let $sql-statement = 'GP00PSLP.SQR, Load-COMPANY-array, Select, PS_COMPANY_TBL'
+
+begin-select DISTINCT ON-ERROR=SQL-ERROR
+C.COMPANY,
+C.DESCR,
+C.ADDRESS1,
+C.ADDRESS2,
+C.ADDRESS3,
+C.ADDRESS4,
+C.CITY,
+C.STATE,
+C.POSTAL
+
+  ! about to go beyond array bounds
+  if #gbl_company_array_ctr = {company_array_size} and '{array_warning_msg}' = 'Y' 
+    display 'Error: GP00PSLP.SQR , LOAD-COMPANY-Array'
+    display ' The current limit on number of elements in the array is {company_array_size}.'
+    display ' The current request will exceed that limit therefore the array method used for efficiently '
+    display ' printing Companies on the payslip will not be used. Instead each Company that is printed '
+    display ' will be fetched individually from the database resulting in performance degradation. '
+    display ' GP00PSDF.sqc should to be modified to increase the PIN array size.'
+    let $gbl_Company_array_processing = 'N'
+    Exit-Select
+  end-if
+
+  Move &C.COMPANY to $COMPANY 
+  Move &C.DESCR to $DESCR
+  if $gbl_tgt_lang_cd <> $SQR_Default_Language
+    do Get-Company-Rel-Lang
+    if $Rel_Lang_Company_found = 'Y'
+       Let $DESCR = $RL_Company
+    else
+       #debug2 show '** Payslip Mainline      Rel_Lang_Company NOT Found'
+    end-if
+  end-if
+   
+  Move &C.ADDRESS1 to $ADDRESS1
+  Move &C.ADDRESS2 to $ADDRESS2
+  Move &C.ADDRESS3 to $ADDRESS3
+  Move &C.ADDRESS4 to $ADDRESS4
+  Move &C.CITY to $CITY
+  Move &C.STATE to $STATE
+  Move &C.POSTAL to $POSTAL 
+
+  do get-company-phone($COMPANY,$PHONE)
+
+  put $COMPANY  into COMPANY(#gbl_company_array_ctr) NAME
+  put $DESCR    into COMPANY(#gbl_company_array_ctr) DESCR
+  put $ADDRESS1 into COMPANY(#gbl_company_array_ctr) ADDRESS1
+  put $ADDRESS2 into COMPANY(#gbl_company_array_ctr) ADDRESS2
+  put $ADDRESS3 into COMPANY(#gbl_company_array_ctr) ADDRESS3
+  put $ADDRESS4 into COMPANY(#gbl_company_array_ctr) ADDRESS4
+  put $CITY into COMPANY(#gbl_company_array_ctr) CITY
+  put $STATE into COMPANY(#gbl_company_array_ctr) STATE
+  put $POSTAL into COMPANY(#gbl_company_array_ctr) POSTAL
+  put $PHONE into COMPANY(#gbl_company_array_ctr) PHONE
+   
+  #debug2 show '** Payslip Mainline      Load company array: ' $COMPANY ' / ' $DESCR
+  #debug3 show '** Payslip Mainline      Load company array:  EFFDT = ' $AsOfToday 
+  let #gbl_company_array_ctr = #gbl_company_array_ctr + 1 
+
+FROM PS_GP_PSLP_GDE_TMP TC,
+     PS_COMPANY_TBL C
+WHERE TC.JOBINSTANCE = #gbl_job_instance
+  AND C.COMPANY = TC.COMPANY 
+  AND C.EFFDT = (SELECT MAX(EFFDT)
+    FROM PS_COMPANY_TBL
+    WHERE COMPANY = C.COMPANY AND EFFDT <= $AsOfToday)   
+ORDER BY C.COMPANY                
+
+END-SELECT
+
+#debug1 show '** Payslip Mainline      Loaded ' #gbl_Company_array_ctr ' Companies into the Company array. Processing flag = ' $gbl_company_array_processing
+
+end-procedure
+
+!***********************************************************************
+begin-procedure get-Company-phone ($COMPANY, :$PHONE)
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure get-Company-phone')
+
+let $sql-statement = 'GP00PSLP.SQR, Get-Company-Phone, Select, PS_COMP_PHONE_TBL'
+
+  #debug3 show '** Payslip Mainline      Lookup Company phone / Company = ' $COMPANY ' EFFDT = ' $_AsOfToday
+
+begin-select DISTINCT ON-ERROR=SQL-ERROR
+P.PHONE
+
+  Move &P.PHONE to $PHONE
+
+FROM PS_COMP_PHONE_TBL P
+WHERE P.COMPANY = $COMPANY 
+  AND P.EFFDT = (SELECT MAX(EFFDT)
+    FROM PS_COMP_PHONE_TBL
+    WHERE COMPANY = P.COMPANY AND EFFDT <= $_AsOfToday AND PHONE_TYPE = 'BUSN')  
+AND P.PHONE_TYPE = 'BUSN'                 
+
+END-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure  Get-Company-Rel-Lang
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Company-Rel-Lang')
+
+let $Rel_Lang_Company_found = 'N'
+
+let $sql-statement = 'GP00PSLP.SQR, Get-Company-Rel-Lang, Select, PS_COMPANY_VWLNG'
+BEGIN-SELECT  On-Error=SQL-Error
+CL.DESCR
+
+  let $Rel_Lang_Company_found = 'Y'
+  let $RL_Company = rtrim(&CL.DESCR, ' ')
+
+  #debug2 show '** Payslip Mainline      Loaded Related Lang Company: ' $COMPANY ' / ' $RL_Company
+
+FROM PS_COMPANY_VWLNG CL
+WHERE CL.COMPANY     = $COMPANY
+  AND CL.LANGUAGE_CD = $gbl_tgt_lang_cd
+END-SELECT
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Load-Dept-array
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Load-Dept-array')
+
+CLEAR-ARRAY name =  DEPT 
+let $gbl_Dept_array_processing = 'Y'
+
+let #gbl_Dept_array_ctr = 0
+let $sql-statement = 'GP00PSLP.SQR, Load-Dept-array, Select, PS_DEPT_TBL'
+
+begin-select DISTINCT ON-ERROR=SQL-ERROR
+D.SETID,
+D.DEPTID,
+D.DESCR,
+
+  ! about to go beyond array bounds
+  if #gbl_Dept_array_ctr = {dept_array_size} and '{array_warning_msg}' = 'Y' 
+    display 'Error: GP00PSLP.SQR , LOAD-DEPT-Array'
+    display ' The current limit on number of elements in the array is {dept_array_size}.'
+    display ' The current request will exceed that limit therefore the array method used for efficiently '
+    display ' printing Departments on the payslip will not be used. Instead each Departments that is printed '
+    display ' will be fetched individually from the database resulting in performance degradation. '
+    display ' GP00PSDF.sqc should to be modified to increase the Department array size.'
+    let $gbl_Dept_array_processing = 'N'
+    Exit-Select
+  end-if
+
+  Move &D.SETID to $Setid_Dept
+  Move &D.DEPTID to $DEPT 
+  LET $Setid_Dept = rtrim($Setid_Dept, ' ')
+  LET $Dept = rtrim($Dept, ' ')
+
+  Move &D.DESCR to $DESCR
+  if $gbl_tgt_lang_cd <> $SQR_Default_Language
+    do Get-Dept-Rel-Lang
+    if $Rel_Lang_Dept_found = 'Y'
+       Let $DESCR = $RL_Dept
+    else
+       #debug2 show '** Payslip Mainline      Rel_Lang_Dept NOT Found'
+       #debug2 show '                         $Rel_Lang_Dept_found = ' $Rel_Lang_Dept_found 
+    end-if
+  end-if
+   
+
+  put $Setid_Dept into DEPT(#gbl_dept_array_ctr) SETID
+  put $DEPT  into DEPT(#gbl_dept_array_ctr) NAME
+  put $DESCR into DEPT(#gbl_dept_array_ctr) DESCR
+   
+  #debug2 show '** Payslip Mainline      Load Dept array: ' $DEPT ' / ' $DESCR
+  let #gbl_dept_array_ctr = #gbl_dept_array_ctr + 1 
+
+FROM PS_GP_PSLP_GDE_TMP TD,
+     PS_DEPT_TBL D
+WHERE TD.JOBINSTANCE = #gbl_job_instance
+  AND D.SETID  = TD.SETID_DEPT
+  AND D.DEPTID = TD.DEPTID
+  AND D.EFFDT = (SELECT MAX(D1.EFFDT) FROM PS_DEPT_TBL D1
+                WHERE D1.SETID  = D.SETID
+                 AND D1.DEPTID = D.DEPTID
+                    AND D1.EFFDT <= $AsOfToday) 
+ORDER BY D.SETID, D.DEPTID
+                  
+END-SELECT
+
+#debug1 show '** Payslip Mainline      Loaded ' #gbl_Dept_array_ctr ' Departments into the Dept array. Processing flag = ' $gbl_dept_array_processing
+
+end-procedure
+
+!***********************************************************************
+begin-procedure  Get-Dept-Rel-Lang
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Dept-Rel-Lang')
+
+let $Rel_Lang_Dept_found = 'N'
+let $sql-statement = 'GP00PSLP.SQR, Get-Dept-Rel-Lang, Select, PS_DEPT_TBL_LANG'
+BEGIN-SELECT  On-Error=SQL-Error
+DL.DESCR
+
+  let $RL_Dept = rtrim(&DL.DESCR, ' ')
+  let $Rel_Lang_Dept_found = 'Y'
+
+  #debug2 show '** Payslip Mainline      Loaded Related Lang Dept: ' $DEPT ' / ' $RL_Dept
+  #debug2 show '                         $Rel_Lang_Dept_found = ' $Rel_Lang_Dept_found 
+
+FROM PS_DEPT_TBL_LANG DL
+WHERE DL.SETID  = $SetID_Dept
+      AND DL.DEPTID = $Dept
+      AND DL.EFFDT = (SELECT MAX(DL1.EFFDT) FROM PS_DEPT_TBL_LANG DL1,
+                                                 PS_DEPT_TBL D2
+                            WHERE DL1.SETID  = D2.SETID
+                              AND DL1.DEPTID = D2.DEPTID
+                              AND D2.EFF_STATUS = 'A'
+                              AND DL1.SETID = D2.SETID
+                              AND DL1.DEPTID = D2.DEPTID
+                              AND DL1.EFFDT = D2.EFFDT)
+      AND DL.LANGUAGE_CD = $gbl_tgt_lang_cd
+
+END-SELECT
+
+end-procedure
+
+
+
+
+!***********************************************************************
+begin-procedure Load-Location-array
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Load-Location-array')
+
+CLEAR-ARRAY name =  LOCATION 
+let $gbl_Location_array_processing = 'Y'
+
+let #gbl_location_array_ctr = 0
+let $sql-statement = 'GP00PSLP.SQR, Load-Location-array, Select, PS_LOCATION_TBL'
+
+begin-select DISTINCT ON-ERROR=SQL-ERROR
+L.SETID,
+L.LOCATION,
+L.DESCR,
+L.ADDRESS1,
+L.ADDRESS2,
+L.ADDRESS3,
+L.ADDRESS4,
+L.CITY,
+L.STATE,
+L.POSTAL
+
+  ! about to go beyond array bounds
+  if #gbl_location_array_ctr = {location_array_size} and '{array_warning_msg}' = 'Y' 
+    display 'Error: GP00PSLP.SQR , LOAD-LOCATION-Array'
+    display ' The current limit on number of elements in the array is {location_array_size}.'
+    display ' The current request will exceed that limit therefore the array method used for efficiently '
+    display ' printing Locations on the payslip will not be used. Instead each Location that is printed '
+    display ' will be fetched individually from the database resulting in performance degradation. '
+    display ' GP00PSDF.sqc should to be modified to increase the Location array size.'
+    let $gbl_Location_array_processing = 'N'
+    Exit-Select
+  end-if
+
+  Move &L.SETID to $Setid_Location
+  Move &L.LOCATION to $LOCATION 
+  LET $Setid_Location = rtrim($Setid_Location, ' ')
+  LET $Location = rtrim($Location, ' ')
+
+  Move &L.DESCR to $DESCR
+  if $gbl_tgt_lang_cd <> $SQR_Default_Language
+    do Get-Location-Rel-Lang
+    if $Rel_Lang_Location_found = 'Y'
+       Let $DESCR = $RL_Location
+    else
+       #debug2 show '** Payslip Mainline      Rel_Lang_Location NOT Found'
+       #debug2 show '                         $Rel_Lang_Location_found = ' $Rel_Lang_Location_found 
+    end-if
+  end-if
+   
+  Move &L.ADDRESS1 to $ADDRESS1
+  Move &L.ADDRESS2 to $ADDRESS2
+  Move &L.ADDRESS3 to $ADDRESS3
+  Move &L.ADDRESS4 to $ADDRESS4
+  Move &L.CITY to $CITY
+  Move &L.STATE to $STATE
+  Move &L.POSTAL to $POSTAL 
+
+  put $Setid_Location into LOCATION(#gbl_location_array_ctr) SETID
+  put $LOCATION  into LOCATION(#gbl_location_array_ctr) NAME
+  put $DESCR    into LOCATION(#gbl_location_array_ctr) DESCR
+  put $ADDRESS1 into LOCATION(#gbl_location_array_ctr) ADDRESS1
+  put $ADDRESS2 into LOCATION(#gbl_location_array_ctr) ADDRESS2
+  put $ADDRESS3 into LOCATION(#gbl_location_array_ctr) ADDRESS3
+  put $ADDRESS4 into LOCATION(#gbl_company_array_ctr) ADDRESS4
+  put $CITY into LOCATION(#gbl_location_array_ctr) CITY
+  put $STATE into LOCATION(#gbl_location_array_ctr) STATE
+  put $POSTAL into LOCATION(#gbl_location_array_ctr) POSTAL
+   
+  #debug2 show '** Payslip Mainline      Load Location array: ' $LOCATION ' / ' $DESCR
+  let #gbl_location_array_ctr = #gbl_location_array_ctr + 1 
+
+FROM PS_GP_PSLP_GDE_TMP TL,
+     PS_LOCATION_TBL L
+WHERE TL.JOBINSTANCE = #gbl_job_instance
+  AND L.SETID  = TL.SETID_LOCATION
+  AND L.LOCATION = TL.LOCATION
+  AND L.EFFDT = (SELECT MAX(L1.EFFDT) FROM PS_LOCATION_TBL L1
+                WHERE L1.SETID  = L.SETID
+                 AND L1.LOCATION = L.LOCATION
+                    AND L1.EFFDT <= $AsOfToday) 
+ORDER BY L.SETID, L.LOCATION
+                  
+END-SELECT
+
+#debug1 show '** Payslip Mainline      Loaded ' #gbl_Location_array_ctr ' Locations into the Location array. Processing flag = ' $gbl_location_array_processing
+
+end-procedure
+
+!***********************************************************************
+begin-procedure  Get-Location-Rel-Lang
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Location-Rel-Lang')
+
+let $Rel_Lang_Location_found = 'N'
+let $sql-statement = 'GP00PSLP.SQR, Get-Location-Rel-Lang, Select, PS_LOCATION_LANG'
+BEGIN-SELECT  On-Error=SQL-Error
+LL.DESCR
+
+  let $RL_Location = rtrim(&LL.DESCR, ' ')
+  let $Rel_Lang_Location_found = 'Y'
+
+  #debug2 show '** Payslip Mainline      Loaded Related Lang Location: ' $LOCATION ' / ' $RL_Location
+  #debug2 show '                         $Rel_Lang_Location_found = ' $Rel_Lang_Location_found 
+
+FROM PS_LOCATION_LANG LL
+WHERE LL.SETID  = $SetID_Location
+      AND LL.LOCATION = $Location
+      AND LL.EFFDT = (SELECT MAX(LL1.EFFDT) FROM PS_LOCATION_LANG LL1,
+                                                 PS_LOCATION_TBL L2
+                            WHERE LL1.SETID  = L2.SETID
+                              AND LL1.LOCATION = L2.LOCATION
+                              AND L2.EFF_STATUS = 'A'
+                              AND LL1.SETID = L2.SETID
+                              AND LL1.LOCATION = L2.LOCATION
+                              AND LL1.EFFDT = L2.EFFDT)
+      AND LL.LANGUAGE_CD = $gbl_tgt_lang_cd
+
+END-SELECT
+
+end-procedure
+
+
+
+!***********************************************************************
+begin-procedure Process-Templates
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Process-Templates')
+do Build-Process-Array-perf
+
+!Select from templates from temp guide table
+
+let #rpt_seq = 1
+let #idx = 0
+let $Where_Blank_Pslp_ID = ''
+
+while #rpt_seq <= #templ_count
+
+  get $Template_Cntry from template(#idx) Country
+  get $Template_Name from template(#idx) Name
+
+  show 'Processing template: ' $Template_Cntry ' ' $Template_Name
+  #debug1 show '** Payslip Mainline      #rpt_seq = ' #rpt_seq ' template ctr = ' #templ_count
+
+  let $skip_printed_template = 'N'
+
+  if $ePay_process <> 'Y' and $gbl_rc_Proc_Name <> 'COPY' and $gbl_rc_Draft_Flag <> 'Y'
+    do check-for-ePay-match-perf
+  end-if
+
+  !certain run control options will override the "skip printed payslip" setting
+  if ($gbl_rc_Proc_Name = 'RGEN' AND $rc_Rgen_Opt = 'EPAY')
+    let $skip_printed_template = 'Y'
+  else
+    if ($gbl_rc_Proc_Name = 'RGEN' AND $rc_Rgen_Opt = 'PSLP') OR  
+       ($gbl_rc_Proc_Name = 'GEN' AND $gbl_rc_Draft_Flag = 'Y') OR 
+       $gbl_rc_Proc_Name = 'COPY'
+         let $skip_printed_template = 'N'
+    end-if
+  end-if
+
+  if $skip_printed_template = 'N' or $ePay_Process = 'Y'
+
+  !setup report name and template criteria fields
+  !New-Report to create new pdf
+  ! name is template name + index sequence number
+   let $pdf_name = $Template_Name || '.pdf'
+   if $ePay_Process = 'Y'
+     let $Where_Template = ' AND TMP.GP_CNTRY_PSLP_TMSS = '''|| $Template_Cntry || ''''-
+                || ' AND TMP.GP_PSLP_TMPL_SS = '''|| $Template_Name ||''''
+
+     let $Where_Print_Ind = ' AND TMP.GP_PSLP_SS_IND = ''N'''
+     let $Report_Name = '{FILEPREFIX}' || '{epay_prefix}' || $pdf_name
+   else
+     let $Where_Template = ' AND TMP.GP_CNTRY_PSLP_TMPL = '''|| $Template_Cntry || ''''-
+                || ' AND TMP.GP_PSLP_TMPL = '''|| $Template_Name ||''''
+
+     !if generating payslips then only select payees that have a blank payslip ID
+     if $gbl_rc_Proc_Name = 'GEN'
+       let $Where_Blank_Pslp_ID = ' AND TMP.GP_PSLP_ID = '' '''
+     end-if
+     let $Report_Name = '{FILEPREFIX}' || $pdf_name
+   end-if
+
+   #ifdef MVS
+      do format_MVS_report_name   
+       #debug1 show '** Payslip Mainline      MVS reportname = ' $MVS_report_name
+      new-report $MVS_report_name
+   #else
+      #debug1 show '** Payslip Mainline      reportname = ' $Report_Name
+      new-report $Report_Name
+   #end-if
+   
+   do Get-Template-Data
+
+   !if all the components of a template are found (template parent, Template detail,
+   ! template section rows) then continue otherwise skip to the next template in the list
+
+   if $Template_Valid = 'Y'        
+     if $ePay_Process = 'Y' OR ($gbl_rc_Proc_Name = 'RGEN' AND $rc_Rgen_Opt = 'PSLP')
+       let $prev_Dept_SetID = ''
+       let $prev_DeptID = ''
+       IF NOT ($gbl_rc_Proc_Name = 'RGEN' AND $rc_Rgen_Opt = 'PSLP')
+         do GP-epay-init
+       end-if
+       do Process-Last-Payslip-ID
+     end-if
+
+     !reset the language code so every template has to load the language strings initially
+     let $prev_lang_cd = ''
+
+     !Select payees for this template from the temp guide table in the sort method order
+     do Select-Payees
+
+       let $Payslip_count = edit(#Payslip_count,'999,999')
+       show '*** ' $Payslip_count ' Payslips processed'
+
+     #debug1 show '** Payslip Mainline      process name = ' $gbl_rc_Proc_Name
+     #debug1 show '** Payslip Mainline      payees selected flag = ' $Payees_Selected
+
+     !continue when payees are found in the templ guide table
+     if $Payees_Selected = 'Y'
+       ! for all processes except payslip copy
+       if $gbl_rc_Proc_Name <> 'COPY'
+         !only update the permanent guide table and the payslip id table if generating
+         !non-draft payslips
+         #debug1 show '** Payslip Mainline      gbl_rc_draft_flag = ' $gbl_rc_Draft_Flag
+         if $gbl_rc_Draft_Flag <> 'Y'
+           do update-print-flag
+           if $ePay_Process = 'Y'
+             do GP-epay-Control
+           end-if
+         end-if
+       end-if
+     else
+       show '** No payees meet the criteria for template: '$Template_Cntry ' ' $Template_Name
+     end-if
+   else
+     if not isblank($Template_Name) 
+       show '** Incomplete definition found for template: '$Template_Cntry ' ' $Template_Name
+     end-if
+   end-if
+  end-if
+
+let #rpt_seq = #rpt_seq + 1
+let #idx = #idx + 1
+
+end-while
+
+if #templ_count = 0
+  if $ePay_Process = 'N'
+    show 'No regular payslips were produced. No payees were found in the population selection.' 
+  else
+    show 'No ePay payslips were produced. No payees were found in the population selection.'
+  end-if
+end-if 
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure format_MVS_report_name
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Format_MVS_report_name')
+! split the filename between the name and extension
+unstring $Report_Name by '.' into $namepart $extension
+
+! MVS filenames are limited to 8 characters
+Let $namepart = substr($namepart,1,8)
+
+! the mvs data set is all caps and no extension - we will copy this
+Let $sourcefile = upper($namepart)
+
+let $sql-statement = 'GP00PSLP.SQR, format_MVS_name, Select, PSPRCSRQSTSTRNG'
+Begin-Select on-error=SQL-Error
+T.PRCSRQSTSTRING
+
+   Let $sourceloc = rtrim(&T.PRCSRQSTSTRING,' ')
+
+FROM PSPRCSRQSTSTRNG T, PSPRCSQUE Q
+WHERE T.PRCSINSTANCE = #prcs_process_instance AND T.RQSTSTRINGTYPE = '2' AND T.PRCSINSTANCE = Q.PRCSINSTANCE
+
+End-Select
+
+
+let $MVS_report_name = $sourceloc || '(' || $sourcefile || ')'
+DISPLAY $MVS_report_name
+
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure check-for-payslip-IDs
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Check-For-Payslip-IDs')
+let $sql-statement = 'GP00PSLP.SQR, Check-for-payslip-IDs, Select, PS_GP_PSLP_GDE_TMP'
+
+!get the number of Payslip IDs previously assigned for this template and job - in case of a restart or Regenerate
+begin-select On-Error=SQL-Error
+
+COUNT(*)       &payslip_ID_count
+  let #Payslip_IDs_assigned = &payslip_ID_count
+   
+  #ifdef debug1
+     if $gbl_rc_Proc_Name = 'GEN'
+        display '** Payslip Mainline      Payslip IDs prev assigned for this job/template= ' noline
+        display #Payslip_IDs_assigned
+     else
+        display '** Payslip Mainline      Payslip IDs prev generated for this template payslip ID range = ' noline
+        display #Payslip_IDs_assigned
+     end-if
+  #endif
+
+FROM PS_GP_PSLP_GDE_TMP TMP
+WHERE TMP.JOBINSTANCE = #gbl_job_instance
+      [$Where_Template]
+      AND TMP.GP_PSLP_ID <> ' '
+end-select
+
+!find out how many payslip Ids will be assigned to this template for this job
+begin-select On-Error=SQL-Error
+
+COUNT(*)       &payslip_IDs_to_assign
+  let #Payslip_IDs_to_assign = &payslip_IDs_to_assign
+
+  #ifdef debug1
+    if $gbl_rc_Proc_Name = 'GEN'
+      display '** Payslip Mainline      #Payslip_IDs that will be assigned for this job/template = ' noline
+      display #Payslip_IDs_to_assign
+    end-if
+  #endif
+
+FROM PS_GP_PSLP_GDE_TMP TMP
+WHERE TMP.JOBINSTANCE = #gbl_job_instance
+      [$Where_Template]
+      AND TMP.GP_PSLP_ID = ' '
+end-select
+
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Build-Template-Array
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Build-Template-Array')
+let #templ_count = 0
+
+CLEAR-ARRAY name = template
+
+if $ePay_Process = 'Y'
+  do Build-ePay-Template-Array
+else
+  do Build-Printed-Template-Array
+end-if
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Build-ePay-Template-Array
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Build-ePay-Template-Array')
+let $sql-statement = 'GP00PSLP.SQR, Build-epay-template-array, Select, PS_GP_PSLP_GDE_TMP'
+Begin-select DISTINCT on-error=SQL-Error
+TMP.GP_CNTRY_PSLP_TMSS
+TMP.GP_PSLP_TMPL_SS
+
+  let $cntry_templ = rtrim(&TMP.GP_CNTRY_PSLP_TMSS, ' ')
+  let $templ = rtrim(&TMP.GP_PSLP_TMPL_SS, ' ')
+  !if the template is not blank (ie. where there are not unassigned templates to payees) 
+  if not isblank($templ)
+    put $cntry_templ into template(#templ_count) Country
+    put $templ into template(#templ_count) Name
+
+
+    #debug1 show '** Payslip Mainline      Build epay array: count = ' #templ_count
+    #debug1 show '** Payslip Mainline      Build epay array: country = ' $cntry_templ ' template = '$templ
+
+  let #templ_count = #templ_count + 1
+  end-if
+
+FROM PS_GP_PSLP_GDE_TMP TMP
+WHERE TMP.JOBINSTANCE =  #gbl_job_instance
+
+end-select
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Build-Printed-Template-Array
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Build-Printed-Template-Array')
+let $sql-statement = 'GP00PSLP.SQR, Build-printed-template-array, Select, PS_GP_PSLP_GDE_TMP'
+Begin-select DISTINCT on-error=SQL-Error
+TMP.GP_CNTRY_PSLP_TMPL
+TMP.GP_PSLP_TMPL
+
+  let $cntry_templ = rtrim(&TMP.GP_CNTRY_PSLP_TMPL, ' ')
+  let $templ = rtrim(&TMP.GP_PSLP_TMPL, ' ')
+  !if the template is not blank (ie. where there are not unassigned templates to payees) 
+  if not isblank($templ)
+    put $cntry_templ into template(#templ_count) Country
+    put $templ into template(#templ_count) Name
+
+    #debug1 show '** Payslip Mainline      Build printed array: country = ' $cntry_templ ' template = '$templ
+
+    let #templ_count = #templ_count + 1
+  end-if
+
+FROM PS_GP_PSLP_GDE_TMP TMP
+WHERE TMP.JOBINSTANCE = #gbl_job_instance
+
+end-select
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Build-Template-Arrays-perf
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Build-Template-Arrays-perf')
+let #SS_count = 0
+let #PR_count = 0
+
+
+CLEAR-ARRAY name = PR_template
+CLEAR-ARRAY name = SS_template
+
+!build the ePay template array
+let $sql-statement = 'GP00PSLP.SQR, Build-epay-template-array, Select, PS_GP_PSLP_GDE_TMP'
+Begin-select DISTINCT on-error=SQL-Error
+TMP4.GP_CNTRY_PSLP_TMSS
+TMP4.GP_PSLP_TMPL_SS
+
+  let $cntry_templ = rtrim(&TMP4.GP_CNTRY_PSLP_TMSS, ' ')
+  let $templ = rtrim(&TMP4.GP_PSLP_TMPL_SS, ' ')
+  !if the template is not blank (ie. where there are not unassigned templates to payees) 
+  if not isblank($templ)
+    put $cntry_templ into SS_template(#SS_count) Country
+    put $templ into SS_template(#SS_count) Name
+
+    let #SS_count = #SS_count + 1
+
+    #debug1 show '** Payslip Mainline      Build epay array: count = ' #SS_count
+    #debug1 show '** Payslip Mainline      Build epay array: country = ' $cntry_templ ' template = '$templ
+
+  end-if
+
+FROM PS_GP_PSLP_GDE_TMP TMP4
+WHERE TMP4.JOBINSTANCE =  #gbl_job_instance
+
+end-select
+
+
+!build the "printed" template array
+let $sql-statement = 'GP00PSLP.SQR, Build-printed-template-array, Select, PS_GP_PSLP_GDE_TMP'
+Begin-select DISTINCT on-error=SQL-Error
+TMP5.GP_CNTRY_PSLP_TMPL
+TMP5.GP_PSLP_TMPL
+
+  let $cntry_templ = rtrim(&TMP5.GP_CNTRY_PSLP_TMPL, ' ')
+  let $templ = rtrim(&TMP5.GP_PSLP_TMPL, ' ')
+  !if the template is not blank (ie. where there are not unassigned templates to payees) 
+  if not isblank($templ)
+    put $cntry_templ into PR_template(#PR_count) Country
+    put $templ into PR_template(#PR_count) Name
+
+    let #PR_count = #PR_count + 1
+    #debug1 show '** Payslip Mainline      Build printed array: count = ' #PR_count
+    #debug1 show '** Payslip Mainline      Build printed array: country = ' $cntry_templ ' template = '$templ
+
+  end-if
+
+FROM PS_GP_PSLP_GDE_TMP TMP5
+WHERE TMP5.JOBINSTANCE = #gbl_job_instance
+
+end-select
+
+!if only one "printed" payslip found then see if it matches the ePay payslip(s), if so then set the skip printed payslip flag
+if #PR_Count = 1 
+  let #index = 0
+  let $PR_Country = PR_template.Country(0)
+  let $PR_Template = PR_template.Name(0)    
+
+  while #index < #SS_count
+
+    let $SS_Country = SS_template.Country(#index)
+    let $SS_Template = SS_template.Name(#index)
+   
+    if $PR_Country = $SS_Country
+    and $PR_Template = $SS_Template
+      let $skip_printed_payslip = 'Y'
+      let #index = #SS_count
+    end-if
+    let #index = #index + 1
+  end-while
+end-if
+
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Build-Process-Array-perf
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Build-Process-Array-perf')
+
+CLEAR-ARRAY name = template
+
+if $ePay_Process = 'Y'
+  do Build-ePay-Process-Array-perf
+else
+  do Build-Printed-Process-Array-perf
+end-if
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Build-ePay-Process-Array-perf
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Build-ePay-Process-Array-perf')
+let #templ_count = 0
+
+let $SS_Country = SS_template.Country(#templ_count)  
+let $SS_Template = SS_template.Name(#templ_count)
+  
+while #templ_count < #SS_count
+
+  put $SS_Country into template(#templ_count) Country
+  put $SS_Template into template(#templ_count) Name
+  
+  let #templ_count = #templ_count + 1
+
+  let $SS_Country = SS_template.Country(#templ_count)  
+  let $SS_Template = SS_template.Name(#templ_count)
+
+end-while
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Build-Printed-Process-Array-perf
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Build-Printed-Process-Array-perf')
+let #templ_count = 0
+
+let $PR_Country = PR_template.Country(#templ_count)  
+let $PR_Template = PR_template.Name(#templ_count)
+  
+while #templ_count < #PR_count
+
+  put $PR_Country into template(#templ_count) Country
+  put $PR_Template into template(#templ_count) Name
+  
+  let #templ_count = #templ_count + 1
+
+  let $PR_Country = PR_template.Country(#templ_count)  
+  let $PR_Template = PR_template.Name(#templ_count)
+
+end-while
+
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure check-for-ePay-match-perf
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure check-for-ePay-match-perf')
+
+let #index = 0
+let $PR_Country = PR_template.Country(0)
+let $PR_Template = PR_template.Name(0)    
+
+!loop through ePay template array with the current "printed" template name looking for a match
+!if found then skip printing the "printed" payslips for this template
+while #index < #SS_count
+  let $SS_Country = SS_template.Country(#index)
+  let $SS_Template = SS_template.Name(#index)  
+  if $Template_Cntry = $SS_Country
+    and $Template_Name = $SS_Template
+     let $skip_printed_template = 'Y'
+     let #index = #SS_count
+  end-if
+  let #index = #index + 1
+end-while
+
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Get-Template-Data
+!***********************************************************************
+let $Template_Valid = 'N'
+let $Template_Found = 'N'
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Template-Data')
+#debug1 show '** Payslip Mainline      Country = ' $Template_Cntry ' Template = ' $Template_Name
+let $sql-statement = 'GP00PSLP.SQR, Get-Template-Data, Select,PS_GP_PSLP_TMPL'
+
+Begin-select  on-error=SQL-Error
+TMPL.GP_PSLP_PAGETYPE
+TMPL.DEFN_ASOFDT_OPTN
+TMPL.GP_CNTRY_PSLP_ELN
+TMPL.GP_ELN_SET
+TMPL.GP_PSLP_NET_ZERO
+TMPL.GP_PSLP_NET_NEG
+
+  let $Template_Found = 'Y'
+  ! get page type
+  let $Templ_Page_type = &TMPL.GP_PSLP_PAGETYPE
+  let $Templ_Asof_Dt = &TMPL.DEFN_ASOFDT_OPTN
+  let $gbl_GP_CNTRY_PSLP_ELN = &TMPL.GP_CNTRY_PSLP_ELN
+  let $gbl_GP_ELN_SET = &TMPL.GP_ELN_SET
+  let $Templ_Allow_Net_Zero = &TMPL.GP_PSLP_NET_ZERO
+  let $Templ_Allow_Net_Negative = &TMPL.GP_PSLP_NET_NEG
+
+#debug1 show '** Payslip Mainline      ELN Cntry = ' $gbl_GP_CNTRY_PSLP_ELN ' ELN Set = ' $gbl_GP_ELN_SET
+#debug1 show '** Payslip Mainline      Allow Net Zero = ' $Templ_Allow_Net_Zero ' Allow Net Negative = ' $Templ_Allow_Net_Negative
+
+FROM PS_GP_PSLP_TMPL TMPL
+WHERE TMPL.GP_CNTRY_PSLP_TMPL = $Template_Cntry
+      AND TMPL.GP_PSLP_TMPL = $Template_Name
+end-select
+
+if $Template_Found = 'Y'
+  do set-templ-effdt
+  do get-template-detail-data
+  if $Dtl_Data_Found = 'Y'
+    do get-template-section-data
+    if $Sct_Data_Found = 'Y'
+      let $Template_Valid = 'Y'
+    end-if
+  end-if
+end-if
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Get-Template-Detail-Data
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Template-Detail-Data')
+
+Let $Dtl_Data_Found = 'N'
+
+let $sql-statement = 'GP00PSLP.SQR, Get-Template-Detail-Data, Select, PS_GP_PSLP_DTL'
+#debug1 show '** Payslip Mainline      Using date of '$EffDate ' for Template Effective Dated row fetch'
+
+Begin-select  on-error=SQL-Error
+{DateOut-Prefix}TMPLDTL.EFFDT{DateOut-Suffix} &TMPLDTL.EFFDT
+
+    let $Dtl_Data_Found = 'Y'
+    let $Template_Effdt = &TMPLDTL.EFFDT
+    #debug1 show '** Payslip Mainline      Template Effdate fetched = '$Template_Effdt
+    
+FROM PS_GP_PSLP_TMPLDTL TMPLDTL
+WHERE TMPLDTL.GP_CNTRY_PSLP_TMPL = $Template_Cntry
+      AND TMPLDTL.GP_PSLP_TMPL = $Template_Name
+      AND TMPLDTL.EFFDT = (SELECT MAX(DTL1.EFFDT) FROM PS_GP_PSLP_TMPLDTL DTL1
+                              WHERE DTL1.GP_CNTRY_PSLP_TMPL = TMPLDTL.GP_CNTRY_PSLP_TMPL
+                                AND DTL1.GP_PSLP_TMPL = TMPLDTL.GP_PSLP_TMPL
+                                AND DTL1.EFFDT <= $EffDate)
+
+end-select
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Set-Templ-Effdt
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Set-Templ-Effdt')
+#debug show '** Payslip Mainline  Procedure:  Set templ effdt'
+
+if $OffCycle_Flag = 'Y'
+  let $Cal_Run_Tbl = 'PS_GP_CAL_RUN_OFF'
+else
+  let $Cal_Run_Tbl = 'PS_GP_CAL_RUN_DTL'
+end-if
+
+#debug1 show '** Payslip Mainline    $Cal_Run_Tbl = ' $Cal_Run_Tbl
+
+evaluate $Templ_Asof_Dt
+
+!Period Begin Date
+!Use the first calendar defined (lowest sequence number) in the Calendar Group
+when = 'B'
+let $sql-statement = 'GP00PSLP.SQR, Set-Templ-Effdt, Select Begin Dt, PS_GP_CAL_RUN_DTL'
+
+  if $Offcycle_Flag = 'Y'
+    do get-offcycle-Prd-Bgn-Dt
+  else
+    do get-oncycle-Prd-Bgn-Dt
+  end-if
+    break
+
+!Period End Date
+!Use the first calendar defined (lowest sequence number) in the Calendar Group
+when = 'E'
+  let $sql-statement = 'GP00PSLP.SQR, Set-Templ-Effdt, Select End Dt, PS_GP_CAL_RUN_DTL'
+
+  if $Offcycle_Flag = 'Y'
+    do get-offcycle-Prd-End-Dt
+  else
+    do get-oncycle-Prd-End-Dt
+  end-if
+
+  break
+
+! Payment Date
+! Use the first calendar defined (lowest sequence number) in the Calendar Group
+when = 'P'
+  let $sql-statement = 'GP00PSLP.SQR, Set-Templ_Effdt, Select Pymt Dt, PS_GP_CAL_RUN_DTL'
+
+  if $Offcycle_Flag = 'Y'
+    do get-offcycle-pymt-dt
+  else
+    do get-oncycle-pymt-dt
+  end-if
+
+  break
+
+! Process Begin Date
+! Get the process begin date from the process stat table thru the calendar group
+when = 'R'
+let $sql-statement = 'GP00PSLP.SQR, Set-Templ-Effdt, Select Prcs Bgn Dt, PS_GP_PYE_PRC_STAT'
+
+  if $Offcycle_Flag = 'Y'
+    do get-offcycle-Prcs-Bgn-Dt
+  else
+    do get-oncycle-Prcs-Bgn-Dt
+  end-if
+  
+  break
+ 
+! Process End Date
+! Get the process end date from the process stat table thru the calendar group
+when = 'S'
+let $sql-statement = 'GP00PSLP.SQR, Set-Templ-Effdt, Select Prcs End Dt, PS_GP_PYE_PRC_STAT'
+
+ if $Offcycle_Flag = 'Y'
+    do get-offcycle-Prcs-End-Dt
+  else
+    do get-oncycle-Prcs-End-Dt
+  end-if
+
+  break
+
+end-evaluate
+
+end-procedure
+
+!*******************************************************
+begin-procedure get-offcycle-Prd-Bgn-Dt
+!*******************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure get-offcycle-Prd-Bgn-Dt')
+let $sql-statement = 'GP00PSLP.SQR, get-offcycle-Prd-Bgn-Dt, Select Prd Bgn Dt, PS_GP_CAL_PRD'
+begin-SELECT On-Error=SQL-Error
+{DateOut-Prefix}P.PRD_BGN_DT{DateOut-Suffix} &P.PRD_BGN_DT
+
+   let $effDate = &P.PRD_BGN_DT
+
+FROM PS_GP_CAL_PRD P
+WHERE P.CAL_PRD_ID = (SELECT B.CAL_PRD_ID FROM PS_GP_CAL_RUN_OFF B
+                        WHERE B.CAL_RUN_ID = $gbl_rc_Calendar_Group
+                        AND B.CAL_SEQ_NUM = (SELECT MIN(C.CAL_SEQ_NUM) FROM PS_GP_CAL_RUN_OFF C
+                                                WHERE C.CAL_RUN_ID = $gbl_rc_Calendar_Group ))
+end-select
+end-procedure
+
+!*******************************************************
+begin-procedure get-oncycle-Prd-Bgn-Dt 
+!*******************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure get-oncycle-Prd-Bgn-Dt')
+let $sql-statement = 'GP00PSLP.SQR, get-oncycle-Prd-Bgn-Dt, Select Prd Bgn Dt, PS_GP_CAL_PRD'
+begin-SELECT On-Error=SQL-Error
+{DateOut-Prefix}A.PRD_BGN_DT{DateOut-Suffix} &A.PRD_BGN_DT
+
+   let $effDate = &A.PRD_BGN_DT
+
+FROM PS_GP_CAL_RUN_DTL A
+WHERE CAL_RUN_ID = $gbl_rc_Calendar_Group
+        AND CAL_SEQ_NUM = (SELECT MIN(CAL_SEQ_NUM) FROM PS_GP_CAL_RUN_DTL
+        WHERE CAL_RUN_ID = $gbl_rc_Calendar_Group AND CALC_TYPE = 'P')
+end-select
+
+end-procedure
+
+
+!*******************************************************
+begin-procedure get-offcycle-Prd-End-Dt
+!*******************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure get-offcycle-Prd-End-Dt')
+let $sql-statement = 'GP00PSLP.SQR, get-offcycle-Prd-End-Dt, Select Prd End Dt, PS_GP_CAL_PRD'
+begin-SELECT On-Error=SQL-Error
+{DateOut-Prefix}P.PRD_END_DT{DateOut-Suffix} &P.PRD_END_DT
+
+   let $effDate = &P.PRD_END_DT
+
+FROM PS_GP_CAL_PRD P
+WHERE P.CAL_PRD_ID = (SELECT B.CAL_PRD_ID FROM PS_GP_CAL_RUN_OFF B
+                        WHERE B.CAL_RUN_ID = $gbl_rc_Calendar_Group
+                        AND B.CAL_SEQ_NUM = (SELECT MIN(C.CAL_SEQ_NUM) FROM PS_GP_CAL_RUN_OFF C
+                                                WHERE C.CAL_RUN_ID = $gbl_rc_Calendar_Group ))
+end-select
+end-procedure
+
+!*******************************************************
+begin-procedure get-oncycle-Prd-End-Dt
+!*******************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure get-oncycle-Prd-End-Dt')
+let $sql-statement = 'GP00PSLP.SQR, get-oncycle-Prd-End-Dt, Select Prd End Dt, PS_GP_CAL_PRD'
+begin-SELECT On-Error=SQL-Error
+{DateOut-Prefix}A.PRD_END_DT{DateOut-Suffix} &A.PRD_END_DT
+
+   let $effDate = &A.PRD_END_DT
+
+FROM PS_GP_CAL_RUN_DTL A
+WHERE CAL_RUN_ID = $gbl_rc_Calendar_Group
+        AND CAL_SEQ_NUM = (SELECT MIN(CAL_SEQ_NUM) FROM PS_GP_CAL_RUN_DTL
+        WHERE CAL_RUN_ID = $gbl_rc_Calendar_Group AND CALC_TYPE = 'P')
+end-select
+
+end-procedure
+
+!**********************************************************************
+begin-procedure get-oncycle-pymt-dt
+!**********************************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure get-oncycle-pymt-dt')
+let $sql-statement = 'GP00PSLP.SQR, get-oncycle-pymt-dt, Select Prd End Dt, PS_GP_CAL_RUN_DTL'
+begin-SELECT On-Error=SQL-Error
+{DateOut-Prefix}A.PYMT_DT{DateOut-Suffix} &A.PYMT_DT 
+
+   let $effDate = &A.PYMT_DT
+
+FROM PS_GP_CAL_RUN_DTL A
+WHERE CAL_RUN_ID = $gbl_rc_Calendar_Group
+        AND CAL_SEQ_NUM = (SELECT MIN(CAL_SEQ_NUM) FROM PS_GP_CAL_RUN_DTL
+        WHERE CAL_RUN_ID = $gbl_rc_Calendar_Group AND CALC_TYPE = 'P')
+end-select
+
+end-procedure
+
+
+!**********************************************************************
+begin-procedure get-offcycle-pymt-dt
+!**********************************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure get-offcycle-pymt-dt')
+let $effdate = ' '
+
+!if a default payment date was not defined for any of the offcycle requests then look at the payee
+!population for this job instance (ie. calendar group) in the temp guide table.
+!Use the minimum payment date found for all of these payees
+  do get-payee-pymt-date
+
+end-procedure
+
+!**********************************************************************
+begin-procedure get-payee-pymt-date
+!**********************************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure get-payee-pymt-date')
+let $sql-statement = 'GP00PSLP.SQR, get-payee-pymt-date, Select Payment Dt, PS_GP_PSLP_GDE_TMP'
+begin-SELECT
+{DateOut-Prefix}MIN(PYMT_DT){DateOut-Suffix} &T.PYMT_DT 
+
+  Let $effDate = &T.PYMT_DT
+
+FROM PS_GP_PSLP_GDE_TMP T
+WHERE JOBINSTANCE = #gbl_job_instance
+end-select
+end-procedure
+
+!*******************************************************
+begin-procedure get-offcycle-Prcs-Bgn-Dt
+!*******************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure  get-offcycle-Prcs-Bgn-Dt')
+let $sql-statement = 'GP00PSLP.SQR, get-offcycle-prcs-Bgn-Dt, Select Prcs Bgn Dt, PS_GP_PYE_PRC_STAT'
+begin-SELECT LOOPS = 1 On-Error=SQL-Error
+{DateOut-Prefix}A.PRC_BGN_DT{DateOut-Suffix} &A.PRC_BGN_DT
+
+   let $effDate = &A.PRC_BGN_DT
+
+FROM PS_GP_PYE_PRC_STAT A
+WHERE A.CAL_RUN_ID = $gbl_rc_Calendar_Group
+      AND A.CAL_PRD_ID = (SELECT B.CAL_PRD_ID FROM [$Cal_Run_Tbl] B
+                        WHERE B.CAL_RUN_ID = $gbl_rc_Calendar_Group
+                        AND B.CAL_SEQ_NUM = (SELECT MIN(C.CAL_SEQ_NUM) FROM [$Cal_Run_Tbl] C
+                                                WHERE C.CAL_RUN_ID = $gbl_rc_Calendar_Group))
+end-select
+
+end-procedure
+
+!*******************************************************
+begin-procedure get-oncycle-Prcs-Bgn-Dt
+!*******************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure get-oncycle-Prcs-Bgn-Dt')
+let $sql-statement = 'GP00PSLP.SQR, get-oncycle-prcs-Bgn-Dt, Select Prcs Bgn Dt, PS_GP_PYE_PRC_STAT'
+begin-SELECT LOOPS = 1 On-Error=SQL-Error
+{DateOut-Prefix}X.PRC_BGN_DT{DateOut-Suffix} &X.PRC_BGN_DT
+
+   let $effDate = &X.PRC_BGN_DT
+
+FROM PS_GP_PYE_PRC_STAT X
+WHERE X.CAL_RUN_ID = $gbl_rc_Calendar_Group
+      AND X.CAL_PRD_ID = (SELECT B.CAL_PRD_ID FROM [$Cal_Run_Tbl] B
+                        WHERE B.CAL_RUN_ID = $gbl_rc_Calendar_Group
+                        AND B.CAL_SEQ_NUM = (SELECT MIN(C.CAL_SEQ_NUM) FROM [$Cal_Run_Tbl] C
+                                                WHERE C.CAL_RUN_ID = $gbl_rc_Calendar_Group AND C. CALC_TYPE = 'P'))
+end-select
+
+end-procedure
+
+!*******************************************************
+begin-procedure get-offcycle-Prcs-End-Dt
+!*******************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure get-offcycle-Prcs-End-Dt')
+let $sql-statement = 'GP00PSLP.SQR, Get-offcycle-prcs-end-dt, Select Prcs Bgn Dt, PS_GP_PYE_PRC_STAT'
+begin-SELECT LOOPS = 1 On-Error=SQL-Error
+{DateOut-Prefix}A.PRC_END_DT{DateOut-Suffix} &A.PRC_END_DT
+
+   let $effDate = &A.PRC_END_DT
+
+FROM PS_GP_PYE_PRC_STAT A
+WHERE A.CAL_RUN_ID = $gbl_rc_Calendar_Group
+      AND A.CAL_PRD_ID = (SELECT B.CAL_PRD_ID FROM [$Cal_Run_Tbl] B
+                        WHERE B.CAL_RUN_ID = $gbl_rc_Calendar_Group
+                        AND B.CAL_SEQ_NUM = (SELECT MIN(C.CAL_SEQ_NUM) FROM [$Cal_Run_Tbl] C
+                                                WHERE C.CAL_RUN_ID = $gbl_rc_Calendar_Group))
+end-select
+
+end-procedure
+
+!*******************************************************
+begin-procedure get-oncycle-Prcs-End-Dt
+!*******************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure get-oncycle-Prcs-End-Dt')
+let $sql-statement = 'GP00PSLP.SQR, get-oncycle-prcs-end-dt, Select Prcs Bgn Dt, PS_GP_PYE_PRC_STAT'
+begin-SELECT LOOPS = 1 On-Error=SQL-Error
+{DateOut-Prefix}X.PRC_END_DT{DateOut-Suffix} &X.PRC_END_DT
+
+   let $effDate = &X.PRC_END_DT
+
+FROM PS_GP_PYE_PRC_STAT X
+WHERE X.CAL_RUN_ID = $gbl_rc_Calendar_Group
+      AND X.CAL_PRD_ID = (SELECT B.CAL_PRD_ID FROM [$Cal_Run_Tbl] B
+                        WHERE B.CAL_RUN_ID = $gbl_rc_Calendar_Group
+                        AND B.CAL_SEQ_NUM = (SELECT MIN(C.CAL_SEQ_NUM) FROM [$Cal_Run_Tbl] C
+                                                WHERE C.CAL_RUN_ID = $gbl_rc_Calendar_Group AND C. CALC_TYPE = 'P'))
+end-select
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Get-Template-Section-Data
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Template-Section-Data')
+
+Let $Sct_Data_Found = 'N'
+
+!initialize paycheck fields
+let $gbl_Paycheck_To_Do = 'N'
+let #gbl_Paycheck_Start_Line = 0
+let #gbl_Paycheck_Total_Lines = 0
+
+!initialize section array
+CLEAR-ARRAY name = section
+
+Let #i = 0
+
+let $sql-statement = 'GP00PSLP.SQR, Get-Template-Section-Data, Select, PS_GP_PSLP_TMPLSCT'
+
+#debug1 show '** Payslip Mainline      Effective Date = ' $EffDate
+Begin-select  on-error=SQL-Error
+TMPLSCT.SEQ_NUM
+TMPLSCT.GP_CNTRY_PSLP_SCT
+TMPLSCT.GP_PSLP_SECTION
+TMPLSCT.GP_PSLP_SECT_BGNLN
+TMPLSCT.GP_PSLP_SECT_TYPE
+TMPLSCT.GP_PSLP_SECT_STYLE
+
+      Let $Sct_Data_Found = 'Y'
+      Let #Seq_Num = &TMPLSCT.SEQ_NUM
+      Let $Cntry_Section = rtrim(&TMPLSCT.GP_CNTRY_PSLP_SCT, ' ')
+      Let $Section_Name = rtrim(&TMPLSCT.GP_PSLP_SECTION, ' ')
+      Let #Sect_Start_Line = &TMPLSCT.GP_PSLP_SECT_BGNLN
+      Let $Section_Type = &TMPLSCT.GP_PSLP_SECT_TYPE
+      Let $Section_Style = &TMPLSCT.GP_PSLP_SECT_STYLE
+
+      put $Cntry_Section into section(#i) Country
+      put $Section_Name into section(#i) Name
+      put #Sect_Start_Line into section(#i) StartLine
+      put $Section_Type into section(#i) Type
+      put $Section_Style into section(#i) Style
+
+        #debug1 show '** Payslip Mainline      Section cntry = ' $Cntry_section ' Name = ' $Section_name
+        #debug1 show '** Payslip Mainline      start line = ' #Sect_Start_line ' type = ' $Section_type
+        #debug1 show '** Payslip Mainline      style = ' $Section_style
+
+        do Get-Section-Data
+ 
+        #debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure- Back into Get-Template-Section-Data')
+
+        ! initialize Header or Footer sections if applicable
+        if $Section_Type <> 'B'
+          if $Section_Type = 'H'
+            do Init-Header
+          else
+             if $Section_Type = 'F'
+               do Init-Footer
+             end-if
+          end-if
+        end-if
+
+        do Get-Template-Blocks
+
+        #debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure- Back into Get-Template-Section-Data')
+
+        Let #i = #i + 1
+        
+FROM PS_GP_PSLP_TMPLSCT TMPLSCT
+WHERE TMPLSCT.GP_CNTRY_PSLP_TMPL = $Template_Cntry
+      AND TMPLSCT.GP_PSLP_TMPL = $Template_Name
+      AND TMPLSCT.EFFDT = (SELECT MAX(SCT.EFFDT) FROM PS_GP_PSLP_TMPLSCT SCT
+                            WHERE SCT.GP_CNTRY_PSLP_TMPL = TMPLSCT.GP_CNTRY_PSLP_TMPL
+                              AND SCT.GP_PSLP_TMPL = TMPLSCT.GP_PSLP_TMPL
+                              AND SCT.EFFDT <= $EffDate)
+ORDER BY TMPLSCT.SEQ_NUM
+end-select
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Get-Section-Data
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Section-Data ENTER')
+let $sql-statement = 'GP00PSLP.SQR, Get-Section-Data, Select, PS_GP_PSLP_SCT'
+
+Begin-select  on-error=SQL-Error
+SCT.GP_PSLP_SECT_TOTAL
+SCT.GP_PSLP_SECT_DTL
+SCT.GP_PSLP_PAYCHKSECT
+
+        Let #Sect_Tot_Lines = &SCT.GP_PSLP_SECT_TOTAL
+        Let #Sect_Dtl_Lines = &SCT.GP_PSLP_SECT_DTL
+        Let $Bank_Draft_Flag = &SCT.GP_PSLP_PAYCHKSECT
+
+        put &SCT.GP_PSLP_SECT_TOTAL into section(#i) NbrLines
+        put &SCT.GP_PSLP_SECT_DTL into section(#i) DtlLines
+        put &SCT.GP_PSLP_PAYCHKSECT into section(#i) PayCheckSect
+
+
+        !if paycheck section hasn't already been flagged then check to see
+        ! if this section is a paycheck section
+        if $gbl_Paycheck_To_Do = 'N'
+          if $Bank_Draft_Flag = 'Y'
+            let $gbl_Paycheck_To_Do = 'Y'
+            let #gbl_Paycheck_Start_Line = #Sect_Start_Line
+            let #gbl_Paycheck_Total_Lines = #Sect_Tot_Lines
+          end-if
+        end-if
+
+        #debug1 show '** Payslip Mainline  Total lines = ' #Sect_tot_lines ' Detail Lines = ' #Sect_dtl_lines ' Bank Draft = ' $Bank_draft_flag
+
+FROM PS_GP_PSLP_SCT SCT
+WHERE SCT.GP_CNTRY_PSLP_SCT = $Cntry_Section
+      AND SCT.GP_PSLP_SECTION   = $Section_Name
+
+end-select
+
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Section-Data EXIT')
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Init-Header
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Init-Header')
+
+  alter-report
+    HEADING = $Section_Name
+    HEADING-SIZE = #Sect_Tot_Lines
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Init-Footer
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Init-Footer')
+
+  alter-report
+    FOOTING = $Section_Name
+    FOOTING-SIZE = #Sect_Tot_Lines
+
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Get-Template-Blocks
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Template-Blocks ENTER')
+Let #j = 0
+
+let $sql-statement = 'GP00PSLP.SQR, Get-Template-Blocks, Select, PS_GP_PSLP_TMPLBLK'
+
+#debug1 show '** Payslip Mainline      Effective Date = ' $EffDate
+Begin-select  on-error=SQL-Error
+TMPLBLK.GP_PSLP_BLK_SEQ
+TMPLBLK.GP_PSLP_BLOCK_NBR
+TMPLBLK.GP_PSLP_BLOCK_TYPE
+TMPLBLK.GP_PSLP_BLOCK_CONT
+TMPLBLK.PIN_ELEM_GRP_NUM
+
+        put &TMPLBLK.GP_PSLP_BLOCK_NBR into section(#i) BlkNbr(#j)
+        put &TMPLBLK.GP_PSLP_BLOCK_TYPE into section(#i) BlkType(#j)
+        put &TMPLBLK.GP_PSLP_BLOCK_CONT into section(#i) BlkContent(#j)
+        put &TMPLBLK.PIN_ELEM_GRP_NUM into section(#i) BlkPIN(#j)
+
+        let #j = #j + 1
+
+FROM PS_GP_PSLP_TMPLBLK TMPLBLK
+WHERE TMPLBLK.GP_CNTRY_PSLP_TMPL = $Template_Cntry
+      AND TMPLBLK.GP_PSLP_TMPL = $Template_Name
+      AND TMPLBLK.EFFDT = (SELECT MAX(BLK.EFFDT) FROM PS_GP_PSLP_TMPLBLK BLK
+                                WHERE BLK.GP_CNTRY_PSLP_TMPL = TMPLBLK.GP_CNTRY_PSLP_TMPL
+                                  AND BLK.GP_PSLP_TMPL = TMPLBLK.GP_PSLP_TMPL
+                                  AND BLK.EFFDT <= $EffDate)
+      AND TMPLBLK.SEQ_NUM = #Seq_Num
+
+end-select
+
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Template-Blocks EXIT')
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Init-Last-Payslip-ID
+!***********************************************************************
+!verify that a last Payslip ID row is in the table for this calendar group
+! and if not then create the row
+#debug show '** Payslip Mainline  Procedure:  Init payslip ID'
+let $sql-statement = 'GP00PSLP.SQR, Init-Last-Payslip-ID, Select, PS_GP_PSLP_ID_TBL'
+Begin-select  on-error=SQL-Error
+COUNT(*)        &Last_ID_Count
+   Let #Last_ID_Count = &Last_ID_Count
+FROM PS_GP_PSLP_ID_TBL
+WHERE CAL_RUN_ID = $gbl_rc_Calendar_Group
+
+end-select
+
+if #Last_ID_Count = 0
+
+  let $sql-statement = 'GP00PSLP.SQR, Init-Last-Payslip-ID, Insert, PS_GP_PSLP_ID_TBL'
+  
+  begin-sql on-error=SQL-Error
+    INSERT INTO PS_GP_PSLP_ID_TBL (CAL_RUN_ID, GP_PSLP_ID_LAST) VALUES ($gbl_rc_Calendar_Group,0)
+  end-sql
+  #ifdef SYBASE
+    Begin-SQL
+      COMMIT TRANSACTION
+    End-SQL
+  #else
+    commit
+  #endif
+
+end-if
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Process-Last-Payslip-ID
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Process-Last-Payslip-ID')
+
+!get the last payslip ID for this calendar group to use as the starting sequence
+!for the next batch of payees
+IF $gbl_rc_Draft_Flag <> 'Y'
+  do Get-Last-Payslip-ID
+  do check-for-payslip-IDs
+  ! if there are payslip ID's already assigned then bump up the last ID counter to
+  ! avoid issuing duplicate payslip IDs
+  if $gbl_rc_Proc_Name = 'GEN' 
+    let #Payslip_Last_ID = #Last_Payslip_ID + #Payslip_IDs_to_assign
+  else
+      let #Payslip_Last_ID = #Last_Payslip_ID + #Payslip_IDs_assigned
+  end-if
+  do update-payslip-id-table
+  ! set the last payslip ID assigned to the new payslip ID counter
+  let #Payslip_Next_ID = #Last_Payslip_ID
+end-if
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Get-Last-Payslip-ID
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Last-Payslip-ID')
+
+do init-last-payslip-id
+
+let $sql-statement = 'GP00PSLP.SQR, Get-Last-Payslip-ID, Select, PS_GP_PSLP_ID_TBL'
+Begin-select  on-error=SQL-Error
+ID.GP_PSLP_ID_LAST
+
+   Let #Last_Payslip_ID = &ID.GP_PSLP_ID_LAST
+
+   #debug1 show '** Payslip Mainline      Last ID = ' #Last_Payslip_id
+
+FROM PS_GP_PSLP_ID_TBL ID
+WHERE ID.CAL_RUN_ID = $gbl_rc_Calendar_Group
+
+end-select
+end-procedure
+
+!***********************************************************************
+begin-procedure Select-Payees
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Select-Payees (From Temp Guide table)')
+
+#debug1 show '** Payslip Mainline       $Where clause for Temp Guide table = ' $Where_Template
+
+  let #gbl_Line_Ctr = 1
+  let #gbl_Page_Ctr = 1
+  let #gbl_Page_lines_printed = 0
+  let $gbl_Dynamic_flag = 'N'
+  let $Payees_Selected = 'N'
+  let $Payees_Printed = 'Y'
+  let #Payslip_count = 0
+
+#debug1 show '** Payslip Mainline      Paycheck fields: paycheck_to_do= ' $gbl_Paycheck_To_Do
+#debug1 show '** Payslip Mainline      Paycheck start line = ' #gbl_Paycheck_Start_Line ' Paycheck total lines = '#gbl_Paycheck_Total_Lines
+
+let $Where_Name_Table = 'AND TMP.EMPLID = PN.EMPLID -
+                                            AND PN.ASOFDATE = (SELECT MAX(B.EFFDT) -
+                                                FROM PS_NAMES B -
+                                                WHERE B.EMPLID = PN.EMPLID -
+                                                AND B.NAME_TYPE = PN.NAME_TYPE -
+                                                AND B.EFFDT <= ' || '''' || $EffDate -
+                                                || '''' || ')'
+
+#debug1 show '** Payslip Mainline      Where Criteria: Job Instance = ' #gbl_job_instance
+#debug1 show '** Payslip Mainline                      Where Template = ' $Where_Template 
+#debug1 show '** Payslip Mainline                      Where_Blank_Pslp_ID = ' $Where_Blank_Pslp_ID
+#debug1 show '** Payslip Mainline                      Where Name = ' $where_name_table
+#debug1 show '** Payslip Mainline      Order By = ' $Order
+
+let $sql-statement = 'GP00PSLP.SQR, Select-payees, Select, PS_GP_PSLP_GDE_TMP'
+!Select payees from temp guide table in sort method order
+Begin-select on-error=SQL-Error
+TMP.EMPLID
+TMP.PMT_GRP_ID
+TMP.GP_PSLP_ID
+TMP.GP_PSLP_ISSUEHDCPY
+TMP.LANG_CD
+TMP.SUPERVISOR_ID
+TMP.COMPANY
+TMP.PAY_ENTITY
+TMP.GP_PAYGROUP
+TMP.DEPTID
+TMP.LOCATION
+TMP.PYMT_DT
+TMP.PRD_BGN_DT
+TMP.PRD_END_DT
+TMP.SETID_DEPT
+TMP.SETID_LOCATION
+TMP.RUN_TYPE
+TMP.GP_PSLP_NET_PAY
+PN.FIRST_NAME
+PN.LAST_NAME
+PN.NAME
+TMP.POSTAL
+TMP.GP_PSLP_PYE_ADRTYP
+TMP.GP_PSLP_DLVRY_OPT 
+TMP.GP_PSLP_MAIL_DROP
+TMP.GP_PSLP_ALT_LOCADR
+TMP.GP_PSLP_OTHER_DROP
+TMP.GP_PSLP_PYE_NM_OPT
+TMP.GP_PSLP_GEN_DT
+TMP.SETID_JOBCODE
+TMP.JOBCODE
+TMP.COMPRATE
+TMP.COMP_FREQUENCY
+  ! Get Empl Record for Payslip ID
+GXT.EMPL_RCD
+
+   let $gbl_tgt_Emplid = rtrim(&TMP.EMPLID , ' ')
+   let #gbl_tgt_Grp_ID = &TMP.PMT_GRP_ID
+   let $gbl_tgt_payslip_ID = &TMP.GP_PSLP_ID
+   let $Print_Payee = &TMP.GP_PSLP_ISSUEHDCPY
+   let $gbl_tgt_lang_cd = &TMP.LANG_CD
+   let $gbl_tgt_company = &TMP.COMPANY
+
+   let $gbl_tgt_Cal_Group = $gbl_rc_Calendar_Group
+
+   let $gbl_tgt_first_name = rtrim(&PN.FIRST_NAME,' ')
+   let $gbl_tgt_last_name = rtrim(&PN.LAST_NAME,' ')
+   let $gbl_tgt_full_name = rtrim(&PN.NAME,' ')
+
+   let $tgt_Dept_SetID = &TMP.SETID_DEPT
+   let $tgt_SetID_Location = &TMP.SETID_LOCATION
+   let $tgt_deptid = rtrim(&TMP.DEPTID, ' ')
+   let $tgt_location = rtrim(&TMP.LOCATION, ' ')
+   let $tgt_gbl_adr_type = &TMP.GP_PSLP_PYE_ADRTYP
+   let $gbl_postal = &TMP.POSTAL
+   let $gbl_tgt_mail_drop = &TMP.GP_PSLP_MAIL_DROP
+   let $gbl_tgt_alt_locadr = &TMP.GP_PSLP_ALT_LOCADR
+   let $gbl_tgt_pslp_gen_dt = &TMP.GP_PSLP_GEN_DT
+
+   let $gbl_tgt_setid_dept = &TMP.SETID_DEPT
+   let $gbl_tgt_setid_location = &TMP.SETID_LOCATION
+   let $gbl_tgt_deptid = rtrim(&TMP.DEPTID, ' ')
+   let $gbl_tgt_location = rtrim(&TMP.LOCATION, ' ')
+   let $gbl_tgt_adr_type = &TMP.GP_PSLP_PYE_ADRTYP
+   let $gbl_tgt_dlvry_opt = &TMP.GP_PSLP_DLVRY_OPT
+   let $gbl_tgt_other_drop = &TMP.GP_PSLP_OTHER_DROP
+   let $gbl_tgt_pye_nm_opt = &TMP.GP_PSLP_PYE_NM_OPT
+
+   let $gbl_tgt_Pymt_Dt = &TMP.PYMT_DT
+   let $gbl_tgt_Prd_Bgn_Dt = &TMP.PRD_BGN_DT
+   let $gbl_tgt_Prd_End_Dt = &TMP.PRD_END_DT
+
+   let $tgt_Run_Type = rtrim(&TMP.RUN_TYPE, ' ')
+   let #tgt_Net_Pay = &TMP.GP_PSLP_NET_PAY
+
+   let $gbl_tgt_setid_jobcode = &TMP.SETID_JOBCODE
+   let $gbl_tgt_jobcode = &TMP.JOBCODE
+   let #gbl_tgt_comprate = &TMP.COMPRATE
+   let $gbl_tgt_comp_frequency = &TMP.COMP_FREQUENCY
+   ! Set Empl Rec
+   let $gbl_tgt_empl_rcd = ltrim(edit(&GXT.EMPL_RCD,'999'), ' ')
+
+   let $validate_payments = 'Y'
+   do validate-payments-status
+   #debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Back into Procedure Select-Payees ')
+
+   let $skip_net_neg_zero_payslip = 'N'
+   do Get-Net-Neg-Zero-Print-Status
+   #debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Back into Procedure Select-Payees ')
+
+   ! if a payment is not on Hold or Void for the payee OR if a Negative amount payment method is found 
+   ! and the template option allows payslip generation of this type then proceed with the 
+   ! payslip otherwise skip it
+   #debug1 show '** Payslip Mainline     $validate_payments = ' $validate_payments ' $skip_net_neg_zero_payslip = '$skip_net_neg_zero_payslip
+   if $validate_payments = 'Y' and $skip_net_neg_zero_payslip = 'N'
+
+     let #Payslip_count = #Payslip_count + 1
+
+     #debug1 show '** Payslip Mainline     Empl = ' $gbl_tgt_Emplid ' issue Hard copy flag  = ' $Print_payee
+     #debug1 show '** Payslip Mainline     Payslip ID = ' $tmp_payslip_ID
+
+     ! if the language code is blank or if the override language flag is on
+     ! then use the language code from the run control record
+     if isblank($gbl_tgt_lang_cd) or $Ovrd_Lang_Flag = 'Y'
+       do Get-Language-Codes
+       let $gbl_tgt_lang_cd = $curr_language_cd
+     end-if
+
+     #debug1 show '** Payslip Mainline     $gbl_tgt_lang_cd = ' $gbl_tgt_lang_cd ' new lang = ' $gbl_new_lang_flag
+     #debug1 show '** Payslip Mainline     $gbl_tgt_pslp_gen_dt = '$gbl_tgt_pslp_gen_dt
+
+     let $Payees_Selected = 'Y'
+
+      ! call the section procedures if any of these are true:
+      !    1) if processing ePay templates
+      !    2) if processing "printed" templates and the Payee's print option is ON and they already
+      !       have not received a payslip
+      !    3)  if the template has a paycheck section - (ignoring the 'issue hard copy' flag for a payee)
+      !
+      if $ePay_process = 'Y' or $Print_Payee = 'Y' or $gbl_Paycheck_To_Do = 'Y' 
+         OR ($gbl_rc_Proc_Name = 'RGEN' AND $rc_Rgen_Opt = 'PSLP')
+
+         if $gbl_tgt_lang_cd <> $prev_lang_cd
+           let $gbl_new_lang_flag = 'Y'
+           do Report-Translation
+           do Load-PIN-array
+           do Load-Company-array
+           do Load-Dept-array
+           do Load-Location-array
+           #debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Back into Procedure Select-Payees ')
+         else
+           let $gbl_new_lang_flag = 'N'
+         end-if
+
+         #debug1 show '** Payslip Mainline     $gbl_tgt_adr_type = '$gbl_tgt_adr_type
+         #debug1 show '** Payslip Mainline     $gbl_tgt_dlvry_opt = '$gbl_tgt_dlvry_opt
+
+         let #sect_ctr = 0
+ 
+         get $gbl_curr_Section_Name from section(0) Name
+         while not isblank($gbl_curr_Section_Name)
+
+                ! assign the Section's attributes to global variables
+                get $gbl_curr_Section_Country           from section(#sect_ctr) Country
+                get #gbl_curr_Section_Start_Line        from section(#sect_ctr) StartLine
+                get $gbl_curr_Section_Type              from section(#sect_ctr) Type
+                get $gbl_curr_Section_Style             from section(#sect_ctr) Style
+                get #gbl_curr_Section_Nbr_Lines         from section(#sect_ctr) NbrLines
+                get #gbl_curr_Section_Dtl_Lines         from section(#sect_ctr) DtlLines
+                get $gbl_curr_Section_Check_Flag        from section(#sect_ctr) PayCheckSect
+
+                if $gbl_curr_Section_Style = 'D'
+                  let $gbl_Dynamic_flag = 'Y'
+                end-if
+
+                do Process-Section
+
+                let #sect_ctr = #sect_ctr + 1
+                get $gbl_curr_Section_Name from section(#sect_ctr) Name
+          end-while
+
+          let $prev_lang_cd = $gbl_tgt_lang_cd
+
+           NEW-PAGE
+
+      end-if       !print payee
+
+
+      #debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Back into Procedure Select-Payees ')
+ 
+      if $epay_process = 'Y' or ($gbl_rc_Proc_Name = 'RGEN' AND $rc_Rgen_Opt = 'PSLP') 
+        ! get the payee's payslip id from the payslip guide table
+
+        let #Payslip_Next_ID = #Payslip_Next_ID + 1
+        let $Payslip_ID = RTRIM($gbl_rc_Calendar_Group, ' ') || '_' || edit(#Payslip_Next_ID,'000000000')  || '_' || $gbl_tgt_empl_rcd
+
+        !if the dept is different than the previous payee then get the descr
+        !otherwise just use the same description as before
+        if ($prev_Dept_SetID <> $tgt_Dept_SetID) or ($prev_DeptID <> $tgt_DeptID)
+          do  Get-dept-Descr
+          let $prev_Dept_SetID = $tgt_Dept_SetID
+          let $prev_DeptID = $tgt_DeptID
+        end-if
+        if not ($gbl_rc_Proc_Name = 'RGEN' AND $rc_Rgen_Opt = 'PSLP') 
+          ! write to the ePay guide table
+          do GP-epay-guide
+        end-if
+        #debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Back into Procedure Select-Payees ')
+        !update the payslip ID for the payee when printed payslip was skipped
+        do update-temp-guide-payslip-id
+        #debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Back into Procedure Select-Payees ')
+      end-if
+
+      let #gbl_Line_Ctr = 1
+      let #gbl_Page_Ctr = #gbl_Page_Ctr + 1
+      let #gbl_Page_lines_printed = 0
+      let $gbl_Dynamic_flag = 'N'
+
+    end-if   ! validate payments
+
+FROM PS_GP_PSLP_GDE_TMP TMP,
+     PS_GP_PSLP_PERS_NM PN,
+     PS_GP_PSLP_GDE_EXT GXT
+WHERE TMP.JOBINSTANCE = #gbl_job_instance
+    [$Where_Template]
+    AND TMP.JOBINSTANCE = GXT.JOBINSTANCE AND TMP.EMPLID = GXT.EMPLID
+    AND TMP.CAL_RUN_ID = GXT.CAL_RUN_ID AND TMP.PMT_GRP_ID = GXT.PMT_GRP_ID
+    [$Where_Blank_Pslp_ID]
+    [$Where_Name_Table]
+    [$Order]
+
+End-select
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Validate-Payments-Status
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Validate-Payments-Status')
+
+let $sql-statement = 'GP00PSLP.SQR, Validate-Payments-Status, Select, PS_GP_PAYMENT'
+
+Begin-select on-error=SQL-Error
+P.PMT_STATUS
+
+    let $validate_payments = 'N'
+
+FROM PS_GP_PYMT_BNK_TBL B, 
+     PS_GP_PAYMENT P
+WHERE B.CAL_RUN_ID = $gbl_tgt_Cal_Group
+   AND B.EMPLID = $gbl_tgt_Emplid
+   AND B.PMT_GRP_ID = #gbl_tgt_Grp_ID
+   AND B.CAL_RUN_ID =  P.CAL_RUN_ID 
+   AND B.EMPLID = P.EMPLID 
+   AND B.EMPL_RCD = P.EMPL_RCD 
+   AND B.GP_PAYGROUP = P.GP_PAYGROUP  
+   AND B.CAL_ID = P.CAL_ID 
+   AND B.ORIG_CAL_RUN_ID = P.ORIG_CAL_RUN_ID 
+   AND B.RSLT_SEG_NUM = P.RSLT_SEG_NUM 
+   AND B.PIN_NUM = P.PIN_NUM 
+   AND B.INSTANCE = P.INSTANCE 
+   AND B.RECIPIENT_TAG = P.RECIPIENT_TAG
+   AND P.PMT_TYPE = '01'
+   AND (P.PMT_STATUS = 'W' OR P.PMT_STATUS = 'V')
+
+end-select
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Get-Net-Neg-Zero-Print-Status
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Net-Neg-Zero-Print-Status')
+
+let $sql-statement = 'GP00PSLP.SQR, Get-Net-Neg-Zero-Print-Status, Select, PS_GP_PSPLP_BNK_TBL'
+
+Begin-select on-error=SQL-Error
+B.PAYMENT_MTHD1
+
+   let $pay_mthd = &B.PAYMENT_MTHD1
+   #debug1 show '** Payslip Mainline      $pay_mthd = ' $pay_mthd ' $Net_Zero  = '$Templ_Allow_Net_Zero ' $Net Neg = '$Templ_Allow_Net_Negative
+
+      !Net Zero methods where the template suppress them will not print
+   if ($pay_mthd = 'Z' and $Templ_Allow_Net_Zero = 'N')
+     or
+      !Net Negative methods where the template suppress them will not print
+      ($pay_mthd = 'N' and $Templ_Allow_Net_Negative = 'N')
+
+        let $skip_net_neg_zero_payslip = 'Y'
+
+   end-if
+
+FROM PS_GP_PYMT_BNK_TBL B 
+WHERE B.CAL_RUN_ID = $gbl_tgt_Cal_Group
+   AND B.EMPLID = $gbl_tgt_Emplid
+   AND B.PMT_GRP_ID = #gbl_tgt_Grp_ID
+   
+end-select
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Get-Sort-Method
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-Sort-Method')
+
+#debug1 show '** Payslip Mainline      Sort method cntry = ' $Cntry_Sort_Method ' Sort Method = ' $Sort_Method
+let $sql-statement = 'GP00PSLP.SQR, Get-sort-Method, Select, PS_GP_PSLP_SORT'
+Begin-select  on-error=SQL-Error
+SORT.GP_PSLP_SEQ01
+SORT.GP_PSLP_ASC_DESC01
+SORT.GP_PSLP_SEQ02
+SORT.GP_PSLP_ASC_DESC02
+SORT.GP_PSLP_SEQ03
+SORT.GP_PSLP_ASC_DESC03
+SORT.GP_PSLP_SEQ04
+SORT.GP_PSLP_ASC_DESC04
+SORT.GP_PSLP_SEQ05
+SORT.GP_PSLP_ASC_DESC05
+
+      !put sort field translate values and ordering sequence into an array
+      put &SORT.GP_PSLP_SEQ01 &SORT.GP_PSLP_ASC_DESC01  into Sort(0)
+      put &SORT.GP_PSLP_SEQ02 &SORT.GP_PSLP_ASC_DESC02  into Sort(1)
+      put &SORT.GP_PSLP_SEQ03 &SORT.GP_PSLP_ASC_DESC03  into Sort(2)
+      put &SORT.GP_PSLP_SEQ04 &SORT.GP_PSLP_ASC_DESC04  into Sort(3)
+      put &SORT.GP_PSLP_SEQ05 &SORT.GP_PSLP_ASC_DESC05  into Sort(4)
+
+      Let $Sort_SEQ01           = &SORT.GP_PSLP_SEQ01
+      Let $Sort_ASC_DESC01      = &SORT.GP_PSLP_ASC_DESC01
+      Let $Sort_SEQ02   = &SORT.GP_PSLP_SEQ02
+      Let $Sort_ASC_DESC02      = &SORT.GP_PSLP_ASC_DESC02
+      Let $Sort_SEQ03   = &SORT.GP_PSLP_SEQ03
+      Let $Sort_ASC_DESC03      = &SORT.GP_PSLP_ASC_DESC03
+      Let $Sort_SEQ04   = &SORT.GP_PSLP_SEQ04
+      Let $Sort_ASC_DESC04      = &SORT.GP_PSLP_ASC_DESC04
+      Let $Sort_SEQ05   = &SORT.GP_PSLP_SEQ05
+      Let $Sort_ASC_DESC05      = &SORT.GP_PSLP_ASC_DESC05
+
+
+FROM PS_GP_PSLP_SORT SORT
+WHERE SORT.GP_CNTRY_PSLP_SORT = $Cntry_Sort_Method
+      AND SORT.GP_PSLP_SORT = $Sort_Method
+end-select
+
+let $Order = 'ORDER BY '
+
+let $Join_Name_Table = 'N'
+let $First_Name = ''
+let $Last_Name = ''
+let $Full_Name = ''
+let $Where_Name_Table = ''
+
+let $Mail_Drop = ''
+let $Postal = ''
+
+let #i = 0
+while #i <= 4
+
+
+    get $Sort_Field $Asc_Desc from Sort(#i)
+
+
+    if isblank($Sort_Field)
+       break
+    else
+       if #i > 0
+         let $Order = $Order || ', '
+       end-if
+    end-if
+
+    if $Asc_Desc = 'D'
+      let $AscDesc = ' DESC'
+    end-if
+
+    #debug1 show '** Payslip Mainline      Sortfield = '$Sort_Field
+
+    Evaluate $Sort_Field
+         !Company
+         when = 'COMP'
+           let $Order = $Order || 'TMP.COMPANY' || $AscDesc
+           break
+
+         !Department
+         when = 'DEPT'
+           let $Order = $Order || 'TMP.DEPTID'  || $AscDesc
+           break
+
+         !Employee ID
+         when = 'EMPD'
+           let $Order = $Order || 'TMP.EMPLID'  || $AscDesc
+           break
+
+         !First Name
+         when = 'EMPF'
+           let $Order = $Order || 'PN.FIRST_NAME' || $AscDesc
+           let $First_Name = 'PN.FIRST_NAME'
+           break
+
+         !Last Name
+         when = 'EMPL'
+           let $Order = $Order || 'PN.LAST_NAME'  || $AscDesc
+           let $Last_Name = 'PN.LAST_NAME'
+           break
+
+         !Full Name
+         when = 'EMPN'
+           let $Order = $Order || 'PN.NAME'  || $AscDesc
+           let $Full_Name = 'PN.NAME'
+           break
+
+         !Employee Type
+         when = 'EMPT'
+           let $Order = $Order || 'TMP.EMPL_TYPE' || $AscDesc
+           break
+
+         !Location
+         when = 'LOCN'
+           let $Order = $Order || 'TMP.LOCATION'  || $AscDesc
+           break
+
+         !Delivery Address
+         when = 'DLVR'
+           let $Order = $Order || 'TMP.POSTAL' || $AscDesc || ', '
+                               || 'TMP.GP_PSLP_MAIL_DROP'   || $AscDesc
+           break
+
+         !Pay Entity
+         when = 'PYEN'
+           let $Order = $Order || 'TMP.PAY_ENTITY' || $AscDesc
+           break
+
+         !Pay Group
+         when = 'PYGP'
+           let $Order = $Order || 'TMP.GP_PAYGROUP' || $AscDesc
+           break
+
+         !Supervisor ID
+         when = 'SUCO'
+           let $Order = $Order || 'TMP.SUPERVISOR_ID' || $AscDesc
+           break
+
+    End-Evaluate
+
+  let #i = #i + 1
+
+end-while
+
+   #debug1 show '** Payslip Mainline      $Order = '$Order
+
+end-procedure
+
+!***********************************************************************
+begin-procedure update-temp-guide-payslip-id
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Update-temp-guide-payslip-ID')
+#debug1 show '** Payslip Mainline      Next payslip id = '#payslip_Next_id ' Payslip id = '$payslip_id
+#debug1 show '** Payslip Mainline       process = '#gbl_job_instance ' emplid = ' $gbl_tgt_Emplid ' Group ID = ' #gbl_tgt_Grp_ID
+
+let $sql-statement = 'GP00PSLP.SQR, Update-temp-guide-payslip-ID, Update, PS_GP_PSLP_GDE_TMP'
+
+  begin-sql on-error=SQL-Error
+
+    UPDATE PS_GP_PSLP_GDE_TMP
+        SET GP_PSLP_ID = $Payslip_ID
+    WHERE JOBINSTANCE = #gbl_job_instance
+          AND EMPLID = $gbl_tgt_Emplid
+          AND PMT_GRP_ID = #gbl_tgt_Grp_ID
+
+  end-sql
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure update-print-flag
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure Update-print-flag')
+#debug1 show '** Payslip Mainline      Epay = ' $ePay_process
+
+if $ePay_process = 'Y'
+  ! Update the epay (self-service) printed flag
+  let $sql-statement = 'GP00PSLP.SQR, Update-print-flag, Update SS_IND, PS_GP_PSLP_GDE_TMP'
+  let $Where_Template = ' AND GP_CNTRY_PSLP_TMSS = '''|| $Template_Cntry || ''''-
+                || ' AND GP_PSLP_TMPL_SS = '''|| $Template_Name ||''''
+  begin-sql on-error=SQL-Error
+  UPDATE PS_GP_PSLP_GDE_TMP
+    SET GP_PSLP_SS_IND = 'Y'
+  WHERE JOBINSTANCE = #gbl_job_instance
+        [$Where_Template]
+
+  end-sql
+
+else
+  ! update the printed flag
+  let $sql-statement = 'GP00PSLP.SQR, Update-print-flag, Update PRINT_IND, PS_GP_PSLP_GDE_TMP'
+  let $Where_Template = ' AND GP_CNTRY_PSLP_TMPL = '''|| $Template_Cntry || ''''-
+                || ' AND GP_PSLP_TMPL = '''|| $Template_Name ||''''
+  begin-sql on-error=SQL-Error
+  UPDATE PS_GP_PSLP_GDE_TMP
+    SET GP_PSLP_PRINT_IND = GP_PSLP_ISSUEHDCPY
+  WHERE JOBINSTANCE = #gbl_job_instance
+        [$Where_Template]
+
+  end-sql
+
+end-if
+
+#ifdef SYBASE
+    Begin-SQL
+      COMMIT TRANSACTION
+    End-SQL
+#else
+  commit
+#endif
+
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Get-Payee-Payslip-ID
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline: Procedure Get-Payee-Payslip-ID')
+let $sql-statement = 'GP00PSLP.SQR, Get-Payee-Payslip-ID, Select, PS_GP_PSLP_GDE_TMP'
+begin-select on-error=SQL-Error
+GP_PSLP_ID
+
+  Let $Payslip_ID = &GP_PSLP_ID
+
+FROM PS_GP_PSLP_GDE_TMP
+WHERE JOBINSTANCE = #gbl_job_instance
+      AND EMPLID = $gbl_tgt_Emplid
+      AND PMT_GRP_ID = #gbl_tgt_Grp_ID
+end-select
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Update-Payslip-ID-Table
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure Update-payslip-id-table')
+#debug1 show '** Payslip Mainline      payslip_id = ' #Payslip_Last_ID
+let $sql-statement = 'GP00PSLP.SQR, Update-payslip-ID-table, Update, PS_GP_PSLP_ID_TBL'
+
+  commit
+  begin-sql on-error=SQL-Error
+    UPDATE PS_GP_PSLP_ID_TBL
+        SET GP_PSLP_ID_LAST = #Payslip_Last_ID
+    WHERE CAL_RUN_ID = $gbl_rc_Calendar_Group
+
+  end-sql
+  commit
+
+end-procedure
+
+!***********************************************************************
+Begin-Procedure Report-Translation
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline Procedure: Report-Translation')
+
+do Init_Report_Translation ($ReportID, $gbl_tgt_lang_cd)
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Begin-Trans
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline Procedure: Begin-Trans')
+  #ifdef SYBASE
+    Begin-SQL
+      BEGIN TRANSACTION
+    End-SQL
+  #endif
+
+  #ifdef MICROSOFT
+  #debug1 show '    Microsoft Begin Trans'
+      Begin-SQL
+        BEGIN TRANSACTION
+      End-SQL
+  #endif
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Commit-Trans
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline Procedure: Commit-Trans')
+  #ifdef SYBASE
+    Begin-SQL
+      COMMIT TRANSACTION
+    End-SQL
+  #endif
+
+  #ifdef MICROSOFT
+  #debug1 show '    Microsoft Commit'
+       Begin-SQL
+         COMMIT TRANSACTION
+       End-SQL
+  #endif
+
+  #ifdef ORACLE
+      COMMIT
+  #endif
+end-procedure
+
+!**************************************************************************
+Begin-Procedure Get-CalGroup-Data
+!**************************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-CalGroup-Data')
+let $sql-statement = 'GP00PSLP.SQR, Get-CalGroup-Data, Select, PS_GP_CAL_RUN CALRUN'
+Begin-Select on-error=SQL-Error
+CALRUN.COUNTRY
+CALRUN.OFF_CYCLE
+  let $CalGroup_Country = &CALRUN.COUNTRY
+  let $OffCycle_Flag = &CALRUN.OFF_CYCLE
+
+  #debug1 show '** Payslip Mainline      Offcycle = ' $OffCycle_Flag
+FROM PS_GP_CAL_RUN CALRUN
+WHERE CALRUN.CAL_RUN_ID = $gbl_rc_Calendar_Group
+
+End-Select
+
+end-procedure
+
+!**************************************************************************
+Begin-Procedure Get-dept-Descr
+!**************************************************************************
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procdure Get Dept Descr')
+#debug1 show '** Payslip Mainline      SetID Dept = '$tgt_Dept_SetID ' DeptID = '$tgt_DeptID ' prev_SetID Dept = '$prev_Dept_SetID ' prev_DeptID = ' $prev_DeptID
+#debug1 show '** Payslip Mainline      Effective Date = ' $EffDate
+let $sql-statement = 'GP00PSLP.SQR, Get-Dept-Descr, Select, PS_DEPT_TBL'
+Begin-Select on-error=SQL-Error
+
+DEPT.DESCR
+      Let $Dept_Descr = rtrim(&DEPT.DESCR,' ')
+      
+FROM PS_DEPT_TBL DEPT
+WHERE DEPT.SETID  = $tgt_Dept_SetID
+      AND DEPT.DEPTID = $tgt_DeptID
+      AND DEPT.EFFDT = (SELECT MAX(DEPT1.EFFDT) FROM PS_DEPT_TBL DEPT1
+                            WHERE DEPT1.SETID  = DEPT.SETID
+                              AND DEPT1.DEPTID = DEPT.DEPTID
+                              AND DEPT1.EFFDT  <= $EffDate)
+End-Select
+End-Procedure
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Init                                             *
+! Initialize variables that we’ll use for ePay processing              *
+!***********************************************************************
+begin-procedure GP-ePay-Init
+
+#debug do Pslp-Proc-Debug-Msg('** Payslip Mainline:  Procedure GP epay init')
+
+ let $sql-statement = 'GP00PSLP.sqr, GP-ePay-Init '
+
+  Do Check-ePay-installed ($ePay_Installed)
+
+    If $ePay_Installed = 'Y'
+
+      let #eV4 =  #prcs_process_instance
+
+      !* have the Output Working Directory from the Process parameters table
+      do Get-Output-Wrk-Directory(#eV4, $PRCSOUTPUTDIR, $PRCSNAME)
+
+      #debug1 show '** Payslip Mainline      Cal Group Country = ' $CalGroup_Country
+      !* have the URL id from the Payslip option table
+      do Get-ePay-URLid ($CalGroup_Country, $File_Url)
+
+      #debug1 show '** Payslip Mainline      File_Url = ' $File_Url
+
+      !* Global ePay variable settings used in GP-ePay procedures in this SQR
+      let $eV1 = $prcs_oprid
+      let $eV2 = $prcs_run_cntl_id
+      let $eV3 = $ReportID
+
+      ! Open the file for writing epay control data
+      ! make assignments and call this procedure when the epay "file" method is used
+      ! Let $GP_PSLP_CTLFILE = $Template_Name || '{epay_prefix}' || '.txt'
+      ! Let $FILELAYOUT = 'GP_SS_PSLP_TMP'
+      ! Do Open-ePay-Guide-DataFile($PRCSOUTPUTDIR,$GP_PSLP_CTLFILE)
+
+      ! When the epay "table" method is used we do not pass a control file.
+       Let $GP_PSLP_CTLFILE = ' '
+       Let $FILELAYOUT = ' '
+
+
+    End-If
+
+end-procedure !GP-ePay-Init
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Guide                                            *
+! Insert one row per payslip into the temporary guide table for ePay   *
+!***********************************************************************
+
+begin-procedure GP-ePay-Guide
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure GP-ePay-Guide')
+#debug show '    ePay_Installed = ' $ePay_Installed
+
+let $sql-statement = 'GP00PSLP.sqr, GP-ePay-Guide'
+
+ If $ePay_Installed = 'Y'
+
+   let $eV5  = rtrim($gbl_tgt_Emplid, ' ')
+   let $eV5  = ltrim($eV5, ' ')
+   let $eV6 = rtrim($gbl_rc_Calendar_Group,' ')
+   let $eV6 = rtrim($eV6,' ')
+   let $eV7  = 'GP' || $CalGroup_Country
+   let $eV8  = rtrim($Payslip_ID, ' ')
+
+   ! the date format used in the following statements MUST match the date format for these three fields 
+   ! in the file layout object named GP_SS_PSLP_TMP
+
+   ! assignments when the epay "file" method is used
+   ! let $eV9 = datetostr($gbl_tgt_Pymt_Dt, 'YYYY-MM-DD')
+   ! let $eV10 = datetostr($gbl_tgt_Prd_End_Dt, 'YYYY-MM-DD')
+   ! let $eV11 = datetostr($gbl_tgt_Prd_Bgn_Dt, 'YYYY-MM-DD')
+
+   !assignments when the epay "table" method is used
+   let $eV9 = $gbl_tgt_Pymt_Dt
+   let $eV10 = $gbl_tgt_Prd_End_Dt
+   let $eV11 = $gbl_tgt_Prd_Bgn_Dt
+
+
+   let #eV12 = #tgt_Net_Pay
+   let $eV13 = rtrim($Dept_Descr, ' ')
+   if $eV13 = ''
+     let $eV13 = rtrim($SelfServiceNoDescr, ' ')
+   end-if
+   let $eV14 = rtrim($tgt_Run_Type, ' ')
+
+   !turn on flag - may get turned OFF if running regenerate epay and the epay payslip already exists.
+   let $Insert_epay_guide_data = 'Y'  
+
+   evaluate $gbl_rc_Proc_Name
+     when =  'GEN'
+       let $eV15 = 'ORIG'        ! payslip status ORIGINAL
+     break
+     when = 'RGEN'
+       if $rc_Rgen_Opt <> 'EPAY'
+         let $eV15 = 'MDFY'               ! Modify Status
+       else
+         do Get-ePay-Pslp-Status
+         let $ev15 = $SS_Pslp_Status
+       end-if
+     break
+     when = 'RNUM'
+       let $eV15 = 'MDFY'
+     break
+   end-evaluate
+   let $eV16 = $eV5 || '_' || $eV6 || '_' ||$eV7 || '_' ||$eV8 || '.pdf'   ! sysfilename of the payslip pdf
+   let $eV17 = $eV16                             !userfilename  - what the payee sees filename as
+   let $ev18 = $File_Url
+   let #eV19 = #gbl_page_ctr                       !begin page number of payslip in output report
+   let #eV20 = #gbl_Page_Ctr                          !end page number of payslip in output report
+
+   !Input:OPRID, RUN_CNTL_ID, PROCNAME, DATAINST, EMPLID, CAL_RUN_ID, SRCPRODUCT,
+   !GP_PSLP_ID,PYMT_DT,PRD_END_DT,PRD_BGN_DT,#NET_PAY,Payslip DESCR,RUN_TYPE,
+   !PSLP_STATUS,ATTACHSYSFILENAME, ATTACHUSERFILE,FILEURLID, BGNPGNBR,ENDPGNBR
+
+   !call the epay "table" method
+   if $Insert_epay_guide_data = 'Y'
+      do Insert-ePay-Guide-Data($eV1,$eV2,$eV3,#rpt_seq,$eV5,$eV6,$eV7,$eV8,$eV9,$eV10,$eV11,#eV12,$eV13,$eV14,$eV15,$eV16,$eV17,$eV18,#eV19,#eV20)
+   end-if
+
+   !call the epay "file" method
+!   do Write-ePay-Guide-Data($eV1,$eV2,$eV3,#rpt_seq,$eV5,$eV6,$eV7,$eV8,$eV9,$eV10,$eV11,#eV12,$eV13,$eV14,$eV15,$eV16,$eV17,$eV18,#eV19,#eV20)
+
+ End-If
+
+end-procedure ! GP-ePay-Guide
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Control                                          *
+! Insert one row per report into the epay run control table            *
+!***********************************************************************
+begin-procedure GP-ePay-Control
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure GP-ePay-Control')
+
+let $sql-statement = 'GPOOPSLP.sqr, GP-ePay-Control '
+
+ If $ePay_Installed = 'Y'
+
+   let $eCV7  = '{epay_prefix}' || $pdf_name 
+   let $eCV8  = rtrim($PRCSOUTPUTDIR, ' ')
+
+   ! Input:OPRID,RUN_CNTL_ID,PROCNAME,SPLIT_IND,ATCH_IND,CTLFILE,SOURCEFILE,
+   ! SOURCELOC,WORKINGLOC,FILELAYOUT,DATAINST,FILEURLID,CLEANUP
+
+  do Insert-ePay-RunControl($eV1,$eV2,$eV3,'Y', 'Y', $GP_PSLP_CTLFILE, $eCV7,$eCV8,' ',$FILELAYOUT,#rpt_seq,$eV18,'Y')
+
+ End-If
+
+end-procedure !GP-ePay-Control
+
+!***********************************************************************
+begin-procedure Get-ePay-Pslp-Status
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Get-ePay-Pslp-Status')
+#debug1 show '** Payslip Mainline      Emplid = ' $gbl_tgt_Emplid ' Cal Group = '$gbl_rc_Calendar_Group ' Payslip ID = '$Payslip_ID  
+let $sql-statement = 'GP00PSLP.SQR, Get-ePay-Pslp-Status, Select, PS_GP_SS_PSLP_GDE'
+Let $SS_Pslp_Status = ' '
+Begin-Select on-error=SQL-Error
+
+
+G.EMPLID
+G.CAL_RUN_ID
+G.GP_PSLP_ID    
+G.GP_SS_PSLP_STATUS
+    Let $SS_Pslp_Status = rtrim(&G.GP_SS_PSLP_STATUS,' ')
+    Let $dbg_emplid = rtrim(&G.EMPLID,' ')
+    Let $dbg_pslp_id = rtrim(&G.GP_PSLP_ID,' ')
+    Let $dbg_cal_run_id = rtrim(&G.CAL_RUN_ID,' ')
+
+FROM PS_GP_SS_PSLP_GDE G
+WHERE G.EMPLID = $gbl_tgt_Emplid
+  AND G.CAL_RUN_ID = $gbl_rc_Calendar_Group
+  AND G.GP_PSLP_SRCPRODUCT = 'GPUSA'
+  AND G.GP_PSLP_ID = $Payslip_ID
+
+end-select
+
+#debug1 show '** Payslip Mainline      $SS_Pslp_Status = ' $SS_Pslp_Status ' emplid = ' $dbg_emplid ' pslp id = ' $dbg_pslp_id ' cal_run_id = '$dbg_cal_run_id
+
+if not isblank($SS_Pslp_Status)
+   #debug1 show '** Payslip Mainline      $SS_Pslp_Status <> blank'
+   let $Insert_epay_guide_data = 'N'  
+else 
+   #debug1 show '** Payslip Mainline      $SS_Pslp_Status = blank'
+   do Determine-ePay-Pslp-Status 
+end-if
+
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Determine-ePay-Pslp-Status
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Determine-ePay-Pslp-Status')
+#debug1 show '** Payslip Mainline      Emplid = ' $gbl_tgt_Emplid ' Cal Group = '$gbl_rc_Calendar_Group
+let $sql-statement = 'GP00PSLP.SQR, Determine-ePay-Pslp-Status, Select, PS_GP_PSLP_GDE'
+Begin-Select on-error=SQL-Error
+
+MIN(GP_PSLP_ID)
+    Let $Min_Pslp_ID = rtrim(&GP_PSLP_ID,' ')
+
+FROM PS_GP_PSLP_GDE
+WHERE EMPLID = $gbl_tgt_Emplid
+  AND CAL_RUN_ID = $gbl_rc_Calendar_Group
+
+end-select
+
+#debug1 show '** Payslip Mainline      $Min_Pslp_ID = ' $Min_Pslp_ID ' $Payslip_ID = ' $Payslip_ID
+!if the lowest numbered payslip ID for this cal group/emplid found in the payslip guide table is the same as the 
+!one being processed then the processed Payslip ID was the original payslip otherwise this is a regenerated payslip ID
+if rtrim($Min_Pslp_ID,' ') = rtrim($Payslip_ID,' ')
+    let $SS_Pslp_Status = 'ORIG'
+else
+    let $SS_Pslp_Status = 'MDFY'
+end-if
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Process-Section
+!***********************************************************************
+#debug do Pslp-Proc-Debug-Msg('Payslip Mainline: Procedure Process-Section')
+#debug1 show '** Payslip Mainline      Country = ' $gbl_curr_Section_Country
+
+  Evaluate $gbl_curr_Section_Country
+    When = 'ALL'
+      do ALL-Payslip-Sections
+      break
+
+    when = 'USA'
+      do USA-Payslip-Sections
+      break
+
+  End-Evaluate
+
+
+end-procedure
+
+!--------------------------------------------------------------------!
+! Debug Msg                                                          !
+!--------------------------------------------------------------------!
+begin-procedure Pslp-Proc-Debug-Msg($procedure_name)
+  ! display ' '
+  ! display '----------------------------------'
+   SHOW '** ' $procedure_name
+   #debug date-time () hh:mi:ss &timeBegan
+   #debug move &timeBegan to $timeBegan
+   #debug show '**   Entered at ' $timeBegan
+   !display ' '
+end-procedure ! Fin-Debug-Msg
+
+#include 'gp00ps00.sqc'
+#include 'gpusps00.sqc'

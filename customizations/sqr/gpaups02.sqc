@@ -1,0 +1,1851 @@
+!***********************************************************************
+!  GPAUPS02: PAYG Payment Summary Non Business Print                   *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2018, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------*
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  28291577                                            !
+!                                                                      *
+!***********************************************************************
+!                                                                      *
+!  Date      Modified By  Description                                  *
+! =========  ===========  ============================================ *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Payment-Summary-NB
+
+  Do Get-Current-DateTime
+
+#IFDEF INFORMIX
+  Do Convert-From-DTU-Date($AsOfToday,$AsOfToday)
+#ENDIF
+
+  Move 'PAYG Payment Summary Non-Business Laser Print' to $ReportTitle
+  display $ReportTitle
+  show 'For Year Ending ' $Tax_Yr_End
+  display ' '
+
+  Let $Year_Start = '1 July '
+  concat $Tax_Year_Start with $Year_Start
+  concat ' to' with $Year_Start
+  Let $Year_End = '30 June '
+  concat $Tax_Year_End with $Year_End
+  Let $Tax_Year = to_char(#Tax_Year)
+
+  Do Build-Order-By
+
+  Do Build-PSM-SQL
+
+  Do Process-PSM-NB-Data
+
+end-procedure
+
+!***********************************************************************
+! Procedure: Array-Initialisation                                      *
+!            Creation  of array to store the dates and Lump E amount   *
+!            required.                                                 *
+!***********************************************************************
+begin-procedure Array-Initialisation
+
+  create-array  name=Accrued_Yr size=1000
+   field=accrued_year:char
+   field=LumpE_Amount:number
+
+end-procedure
+
+!************************************
+!Procedure: Initialize-Array-Vars
+!************************************
+begin-procedure Initialize-Array-Vars
+
+let #k=0
+
+while #k<1000
+    let Accrued_Yr.accrued_year(#k) = 0
+    let Accrued_Yr.LumpE_Amount(#k) = 0
+    let #k= #k+1
+end-while
+
+end-Procedure
+
+!***********************************************************************
+! Procedure: Build-Order-By                                            *
+!            Dynamically build the order by clause according to flags. *
+!***********************************************************************
+begin-Procedure Build-Order-By
+
+
+  Move ' ' to $OrderClause
+  Move ' ' to $PyGrpSet
+  Move ' ' to $DeptSet
+  Move ' ' to $LocnSet
+  Move ' ' to $PayeeSet
+
+  if $Pyent_SW = 'Y'
+     Let $OrderByClause = 'ORDER BY PSM.PAY_ENTITY'
+  else
+   if $PyGrp_SW = 'Y'
+      Let $OrderByClause = 'ORDER BY JOB.GP_PAYGROUP'
+      Let $PyGrpSet = 'Y'
+   else
+    if $Dept_SW = 'Y'
+       Let $OrderByClause = 'ORDER BY JOB.DEPTID'
+       Let $DeptSet = 'Y'
+    else
+     if $Locn_SW = 'Y'
+        Let $OrderByClause = 'ORDER BY JOB.LOCATION'
+        Let $LocnSet = 'Y'
+     else
+         Let $OrderByClause = 'ORDER BY PSNLN.NAME'
+         Let $PayeeSet = 'Y'
+     end-if
+    end-if
+   end-if
+  end-if
+
+ if $PyGrp_SW = 'Y' and $PyGrpSet <> 'Y'
+    Let $OrderByClause = $OrderByClause || ',' || ' JOB.GP_PAYGROUP'
+ end-if
+
+ if $Dept_SW = 'Y' and $DeptSet <> 'Y'
+    Let $OrderByClause = $OrderByClause || ',' || ' JOB.DEPTID'
+ end-if
+
+ if $Locn_SW = 'Y' and $LocnSet <> 'Y'
+    Let $OrderByClause = $OrderByClause || ',' || ' JOB.LOCATION'
+ end-if
+
+ if $Payee_SW = 'Y' and $PayeeSet <> 'Y'
+    Let $OrderByClause = $OrderByClause || ',' || ' PSNLN.NAME'
+ end-if
+
+end-Procedure
+
+
+!***********************************************************************
+! Procedure: Build-PSM-SQL                                             *
+!                                                                      *
+!***********************************************************************
+begin-procedure Build-PSM-SQL
+
+   if $Pop_Ind = '10'
+      Let $PSM_From = 'PS_GPAU_RC_PSM_PYE PYE'
+      Let $PSM_Select = 'PYE.OPRID = ' || '''' || $PRCS_OPRID || ''''
+      Let $PSM_Select = $PSM_Select || ' AND PYE.RUN_CNTL_ID = ' || '''' || $PRCS_RUN_CNTL_ID || ''''
+      Let $PSM_Select = $PSM_Select || ' AND PSM.PAY_ENTITY = PYE.PAY_ENTITY'
+   else
+    if $Pop_Ind = '20'
+       Let $PSM_From = 'PS_GPAU_RC_PSM_PYG PYG'
+       Let $PSM_Select = 'PYG.OPRID = ' || '''' || $PRCS_OPRID || ''''
+       Let $PSM_Select = $PSM_Select || ' AND PYG.RUN_CNTL_ID = ' || '''' || $PRCS_RUN_CNTL_ID || ''''
+       Let $PSM_Select = $PSM_Select || ' AND PYG.GP_PAYGROUP = JOB.GP_PAYGROUP'
+    else
+        Let $PSM_From = 'PS_GPAU_RC_PSM_EE EE'
+        Let $PSM_Select = 'EE.OPRID = ' || '''' || $PRCS_OPRID || ''''
+        Let $PSM_Select = $PSM_Select || ' AND EE.RUN_CNTL_ID = ' || '''' || $PRCS_RUN_CNTL_ID || ''''
+        Let $PSM_Select = $PSM_Select || ' AND PSM.EMPLID = EE.EMPLID'
+        Let $PSM_Select = $PSM_Select || ' AND PSM.PAY_ENTITY = EE.PAY_ENTITY'
+        Let $PSM_Select = $PSM_Select || ' AND PSM.BALANCE_GRP_NUM = EE.BALANCE_GRP_NUM'
+    end-if
+   end-if
+
+end-procedure
+
+!***********************************************************************
+!                                                                      *
+! This is the main driving logic to print the Non-Business Summaries   *
+!                                                                      *
+!***********************************************************************
+begin-procedure Process-PSM-NB-Data
+  Show 'SQC 02 Process-PSM-NB-Data'
+  Let #Rows_Processed = 0
+  let $emplid_prep = ' '
+  let $Bal_grp_prep = ' '
+  let $FBT_Exempt_prep = ' '
+
+begin-SELECT DISTINCT
+PSM.EMPLID
+PSM.PAY_ENTITY
+PSM.BALANCE_GRP_NUM
+PSM.GPAU_TAX_YEAR
+PSM.GPAU_FBT_EXEMPT
+JOB.GP_PAYGROUP
+JOB.DEPTID
+JOB.LOCATION
+JOB.ACTION
+JOB.ACTION_REASON
+PSNLN.NAME
+PSNLN.NAME_PREFIX
+PSNLN.LAST_NAME
+PSNLN.FIRST_NAME
+PSNLN.MIDDLE_NAME
+PSNL.BIRTHDATE
+PSM.GPAU_TFN
+PSM.GPAU_CNTRCTR_YN
+PSM.GPAU_ABN
+PYENTAU.GPAU_REGISTERED_NM
+PYENTAU.GPAU_ABN
+PYENTAU.GPAU_ABN_BRANCH
+PYENTAU.GPAU_SIGNATORY
+PSM.GPAU_EE_START_DT
+PSM.GPAU_EE_END_DT
+PSM.GPAU_AMENDED_IND
+PSM.GPAU_PSM_TAX_WHELD
+PSM.GPAU_PSM_GROSS_PAY
+PSM.GPAU_PSM_CDEP_PAY
+PSM.GPAU_PSM_OTHER_PAY
+PSM.GPAU_PSM_ER_SC
+PSM.GPAU_PSM_LUMPA
+PSM.GPAU_PSM_LUMPB
+PSM.GPAU_PSM_LUMPD
+PSM.GPAU_PSM_LUMPE
+PSM.GPAU_PSM_FBT_EARNS
+PSM.GPAU_PSM_ALLOW1
+PSM.GPAU_PSM_ALLOW1_NM
+PSM.GPAU_PSM_ALLOW2
+PSM.GPAU_PSM_ALLOW2_NM
+PSM.GPAU_PSM_ALLOW3
+PSM.GPAU_PSM_ALLOW3_NM
+PSM.GPAU_PSM_ALLOW4
+PSM.GPAU_PSM_ALLOW4_NM
+PSM.GPAU_PSM_UNION
+PSM.GPAU_PSM_UNION_NM
+PSM.GPAU_PSM_UNION1
+PSM.GPAU_PSM_UNION_NM1
+PSM.GPAU_PSS_WRK_PLC
+PSM.GPAU_PSM_WRK_PL_NM
+PSM.GPAU_PSM_WHOLD_RT
+PSM.GPAU_STATUS
+PSM.GPAU_PSM_INCOM_TYP
+PSM.GPAU_PSM_FBT_EXERN
+ADDR.ADDRESS1
+ADDR.ADDRESS2
+ADDR.CITY
+ADDR.STATE
+ADDR.POSTAL
+
+   Let $Emplid    = rtrim(&PSM.EMPLID, ' ')
+   Let $Bal_grp   = rtrim(&PSM.BALANCE_GRP_NUM , ' ')
+   let $GPAU_FBT_EXEMPT = rtrim(&PSM.GPAU_FBT_EXEMPT, ' ')
+   show '$Emplid'  $Emplid
+   
+     if ($Emplid <>  $emplid_prep) or  ( $Bal_grp <> $Bal_grp_prep)   or ( $GPAU_FBT_EXEMPT <> $FBT_Exempt_prep )
+   Let $Income_type  = &PSM.GPAU_PSM_INCOM_TYP
+   Let $FBT_TYPE  = &PSM.GPAU_FBT_EXEMPT
+   
+   Let #Rows_Processed = #Rows-Processed + 1
+   Do Prepare-Data
+
+   Let #CU = 5
+   Let #PU = 15
+   Let #LU = 73
+   Do Print-Tax-Return-Copy
+   
+   If &PSM.GPAU_PSM_ALLOW1_NM = 'VARIOUS'
+      Do Allowance-Breakdown
+   End-If
+
+   If &PSM.GPAU_PSM_UNION_NM  = 'VARIOUS'
+      Do Union-Fees-Breakdown
+   End-If
+
+   If &PSM.GPAU_PSM_WRK_PL_NM = 'VARIOUS'
+      Do Workplace-Giving-Breakdown
+   End-If
+   
+   !Do Print-Side-Col (36,131, 'EMPLOYEES TAX RETURN COPY')
+   if &RC.GPAU_PSM_DPLX_SW = 'Y'
+     new-page
+   end-if
+
+   !Let #CU = 5
+   !new-page
+   !Do Print-Tax-Return-Copy
+   !Do Print-Side-Col (34,131,'EMPLOYEES PERSONAL RECORDS COPY')
+
+   if $Empl_SW = 'Y'
+      Do Print-Empl-Copy
+   else
+     if &RC.GPAU_PSM_DPLX_SW = 'Y'
+        !new-page
+     end-if
+    end-if
+     
+   if #LumpE <> 0
+      Do Print-LumpE-Letter
+   end-if
+
+   Do Update-Issue-Status
+   new-page
+
+   end-if
+   let $emplid_prep = $emplid 
+   let $Bal_grp_prep = $Bal_grp
+   let $FBT_Exempt_prep = $GPAU_FBT_EXEMPT
+
+FROM [$PSM_From]
+, PS_GPAU_EE_PSM PSM
+, PS_GP_PYENT PYENT
+, PS_GP_PYENT_SGPAU PYENTAU
+, PS_JOB JOB
+, PS_NAMES PSNLN
+, PS_PERSON PSNL
+, PS_ADDRESSES ADDR
+WHERE [$PSM_Select]
+AND PSM.GPAU_TAX_YEAR = #Tax_Year
+AND PSM.GPAU_PSM_TYPE = '10'
+AND PSM.GPAU_CNTRCTR_YN <> 'Y'
+AND PSM.GPAU_STATUS = $PrintStatus
+AND JOB.EMPLID = PSM.EMPLID
+!AND JOB.EMPL_RCD = 0
+AND JOB.EFFDT =
+(SELECT MAX(JOB2.EFFDT)
+ FROM PS_JOB JOB2
+ WHERE JOB2.EMPLID = JOB.EMPLID
+  ! AND JOB2.EMPL_RCD = JOB.EMPL_RCD
+   AND JOB2.EFFDT <= $Tax_Yr_End
+   AND JOB2.GP_PAYGROUP in (SELECT PYG.GP_PAYGROUP
+FROM  PS_GP_PYGRP PYG
+WHERE
+PYG.PAY_ENTITY =PSM.PAY_ENTITY
+)
+
+   )
+AND JOB.EFFSEQ =
+(SELECT MAX(EFFSEQ)
+FROM PS_JOB JOB3
+WHERE JOB3.EMPLID = JOB.EMPLID
+!AND JOB3.EMPL_RCD = JOB.EMPL_RCD
+AND JOB3.EFFDT = JOB.EFFDT)
+AND PSNLN.EMPLID = PSM.EMPLID
+AND PSNLN.NAME_TYPE = 'PRI'
+AND PSNLN.EFFDT =
+(SELECT MAX(PSNLN2.EFFDT)
+ FROM PS_NAMES PSNLN2
+ WHERE PSNLN2.EMPLID = PSNLN.EMPLID
+   AND PSNLN2.EFFDT <= $Tax_Yr_End
+   AND PSNLN2.NAME_TYPE = PSNLN.NAME_TYPE)
+AND PSNL.EMPLID = PSM.EMPLID
+AND PYENTAU.PAY_ENTITY = PSM.PAY_ENTITY
+AND PYENTAU.EFFDT = (SELECT MAX(PYENTAU2.EFFDT)
+               FROM PS_GP_PYENT_SGPAU PYENTAU2
+               WHERE PYENTAU2.PAY_ENTITY = PYENTAU.PAY_ENTITY
+               AND PYENTAU2.EFFDT <= $Tax_Yr_End)
+AND PYENT.PAY_ENTITY = PSM.PAY_ENTITY
+AND ADDR.EMPLID = PSM.EMPLID
+AND (
+      (ADDR.ADDRESS_TYPE = 'HOME'
+       AND ADDR.EFFDT = (SELECT MAX(ADDR1.EFFDT)
+               FROM PS_ADDRESSES ADDR1
+               WHERE ADDR1.EFFDT <= $AsOfToday
+               AND ADDR1.EMPLID = ADDR.EMPLID
+               AND ADDR1.ADDRESS_TYPE = ADDR.ADDRESS_TYPE) AND ADDR.EFF_STATUS <> 'I')
+      OR 
+      (ADDR.ADDRESS_TYPE = 'MAIL'
+       AND ADDR.EMPLID NOT IN
+                  (SELECT ADDR1.EMPLID
+                  FROM PS_ADDRESSES ADDR1
+                  WHERE ADDR1.EMPLID = ADDR.EMPLID
+                  AND ADDR1.ADDRESS_TYPE = 'HOME'
+                  AND ADDR1.EFFDT = (SELECT MAX(ADDR2.EFFDT)
+                                FROM PS_ADDRESSES ADDR2
+                                WHERE ADDR2.EFFDT <= $AsOfToday
+                                AND ADDR2.EMPLID = ADDR1.EMPLID
+                                AND ADDR2.ADDRESS_TYPE = ADDR1.ADDRESS_TYPE)
+                  AND ADDR1.EFF_STATUS = 'A')
+        AND ADDR.EFFDT = (SELECT MAX(ADDR1.EFFDT)
+               FROM PS_ADDRESSES ADDR1
+               WHERE ADDR1.EFFDT <= $AsOfToday
+               AND ADDR1.EMPLID = ADDR.EMPLID
+               AND ADDR1.ADDRESS_TYPE = ADDR.ADDRESS_TYPE)
+        AND ADDR.EFF_STATUS <> 'I'
+        )
+     )
+
+[$OrderByClause]
+end-Select
+
+end-procedure
+
+!***********************************************************************
+! Procedure: Prepare-Data                                              *
+!***********************************************************************
+begin-Procedure Prepare-Data
+
+  Let #Allowance_Tot = 0
+  Let #Deduction_Tot = 0
+
+ ! Let $Emplid    = rtrim(&PSM.EMPLID, ' ')
+  Let $PayEntity = rtrim(&PSM.PAY_ENTITY, ' ')
+  Move &PSM.BALANCE_GRP_NUM to $Balance_Grp_Num
+
+  Let $Name = rtrim(&PSNLN.NAME, ' ')
+  Let $Name_Prefix = rtrim(&PSNLN.NAME_PREFIX, ' ')
+  Let $Last_Name = rtrim(&PSNLN.LAST_NAME, ' ')
+  Let $First_Name = rtrim(&PSNLN.FIRST_NAME, ' ')
+  Let $Middle_Name = rtrim(&PSNLN.MIDDLE_NAME, ' ')
+
+  Let $Emp_Name = $Name_Prefix || ' ' || $First_Name || ' ' || $Middle_Name || ' ' ||$Last_Name
+
+  Move &PSNL.BIRTHDATE to $Birthdate
+  Do Format-Datetime($Birthdate,$Birthdate,{DEFDMY},'','')
+
+  Let $Address1 = rtrim(&ADDR.ADDRESS1, ' ')
+  uppercase $Address1
+  Let $Address2 = rtrim(&ADDR.ADDRESS2, ' ')
+  uppercase $Address2
+  Let $City     = rtrim(&ADDR.CITY, ' ')
+  Let $State    = rtrim(&ADDR.STATE, ' ')
+  Let $Postal   = rtrim(&ADDR.POSTAL, ' ')
+
+  Let $Job_Action = rtrim(&JOB.ACTION, ' ')
+  Let $Job_Action_Reason = rtrim(&JOB.ACTION_REASON, ' ')
+
+
+  Move &PSM.GPAU_TFN to $TFN
+
+  Move &PYENTAU.GPAU_ABN to $ABN
+  Move &PYENTAU.GPAU_ABN_BRANCH to #ABN_Branch
+  !Let $ABN_Branch = rtrim(&PYENTAU.GPAU_ABN_BRANCH, ' ')
+  Let $Signatory = rtrim(&PYENTAU.GPAU_SIGNATORY, ' ')
+
+  Let $Pay_Entity_Name = rtrim(&PYENTAU.GPAU_REGISTERED_NM, ' ')
+
+  Move &PSM.GPAU_EE_START_DT to $EE_Start_Dt
+  Do Format-DateTime($EE_Start_Dt,$EE_Start_Dt,{DEFDMY},'','')
+  Move &PSM.GPAU_EE_END_DT to $EE_End_Dt
+  Do Format-Datetime($EE_End_Dt,$EE_End_Dt,{DEFDMY},'','')
+
+  Let $AMENDED_IND = rtrim(&PSM.GPAU_AMENDED_IND, ' ')
+
+  Move &PSM.GPAU_PSM_TAX_WHELD to #Tax_Wheld
+  If #Tax_Wheld < 0
+    Move 0 to #Tax_Wheld
+  End-if
+  Let #Tax_WheldX = Trunc(#Tax_Wheld,0)
+  Move #Tax_WheldX to $Tax_Wheld 99999999.99
+
+  Do Wheld-tax-in-words
+
+  uppercase $Million
+  uppercase $Thousands
+  uppercase $Hundreds
+  uppercase $Tens
+  uppercase $Units
+  uppercase $Cents
+
+  Move &PSM.GPAU_PSM_GROSS_PAY to #Gross_Pay
+  Let #Gross_PayX = Trunc(#Gross_Pay,0)
+
+  Move &PSM.GPAU_PSM_CDEP_PAY to #CDEP_Pay
+  Let #CDEP_PayX = Trunc(#CDEP_Pay,0)
+
+  Move &PSM.GPAU_PSM_OTHER_PAY to #Other_Pay
+  Let #Other_PayX = Trunc(#Other_Pay,0)
+
+  Move &PSM.GPAU_PSM_ER_SC to #Super_Contrib
+  Let #Super_ContribX = Trunc(#Super_Contrib,0)
+
+  Move &PSM.GPAU_PSM_LUMPA to #LumpA
+  Let #LumpAX = Trunc(#LumpA,0)
+  Move #LumpAX to $LumpA
+
+  Move &PSM.GPAU_PSM_LUMPB to #LumpB
+  Let #LumpBX = Trunc(#LumpB,0)
+
+  Move &PSM.GPAU_PSM_LUMPD to #LumpD
+  Let #LumpDX = Trunc(#LumpD,0)
+
+  Move &PSM.GPAU_PSM_LUMPE to #LumpE
+  Let #LumpEX = Trunc(#LumpE,0)
+
+  Move &PSM.GPAU_PSM_FBT_EARNS to  #FBT_Earns
+  Let #FBT_EarnsX = Trunc(#FBT_Earns,0)
+  
+  Move &PSM.GPAU_PSM_FBT_EXERN  to #FBT_EXEarns
+  Let #FBT_EXEarnsX = Trunc(#FBT_EXEarns,0)
+
+  Move &PSM.GPAU_PSM_ALLOW1 to #Allow1
+  !add #Allow1 to #Allowance_Tot
+  Let #Allow1X = Trunc(#Allow1,0)
+  add #Allow1X to #Allowance_Tot
+  Let $Allow1_Name = rtrim(&PSM.GPAU_PSM_ALLOW1_NM, ' ')
+
+  Move &PSM.GPAU_PSM_ALLOW2 to #Allow2
+  !add #Allow2 to #Allowance_Tot
+  Let #Allow2X = Trunc(#Allow2,0)
+  add #Allow2X to #Allowance_Tot
+  Let $Allow2_Name = rtrim(&PSM.GPAU_PSM_ALLOW2_NM, ' ')
+
+  Move &PSM.GPAU_PSM_ALLOW3 to #Allow3
+  !add #Allow3 to #Allowance_Tot
+  Let #Allow3X = Trunc(#Allow3,0)
+  add #Allow3X to #Allowance_Tot
+  Let $Allow3_Name = rtrim(&PSM.GPAU_PSM_ALLOW3_NM, ' ')
+
+  Move &PSM.GPAU_PSM_ALLOW4 to #Allow4
+  !add #Allow4 to #Allowance_Tot
+  Let #Allow4X = Trunc(#Allow4,0)
+  add #Allow4X to #Allowance_Tot
+  Let $Allow4_Name = rtrim(&PSM.GPAU_PSM_ALLOW4_NM, ' ')
+
+  Let #Allowance_TotX = Trunc(#Allowance_Tot,0)
+
+  Move &PSM.GPAU_PSM_UNION to #Union
+  Let #UnionX = Trunc(#Union,0)
+  Let $Union_Name = rtrim(&PSM.GPAU_PSM_UNION_NM, ' ')
+  
+  Move &PSM.GPAU_PSM_UNION1 to #Union1
+  Let #UnionX1 = Trunc(#Union1,0)
+  Let $Union_Name1 = rtrim(&PSM.GPAU_PSM_UNION_NM1, ' ')
+  
+  Move &PSM.GPAU_PSS_WRK_PLC to #Wrkplc
+  Let #Wrkplc = Trunc(#Wrkplc,0)
+  Let $Wrkplc_Name = rtrim(&PSM.GPAU_PSM_WRK_PL_NM, ' ')
+
+  Do Format-Datetime($Tax_Yr_End,$Print_Tax_Yr,{DEFDMY},'','')
+
+  Let $Heading1 = 'PAYG payment summary - individual non-business'
+  Let $Heading2 = 'FBT Year'
+
+  Move 'Payment summary for year ending 30 June' to $Heading3
+  Move 'NOTICE TO PAYEE' to $Heading4
+  Move 'This is an amended payment summary' to $Amended_Heading
+
+  Let $Message1 = 'If this payment summary shows an amount in the total'
+  Let $Message2 = 'tax withheld box you must lodge a tax return. If no tax'
+  Let $Message3 = 'was withheld you may still have to lodge a tax return.'
+  Let $Message4 = 'For more information on whether you have to lodge, or'
+  Let $Message5 = 'about this payment and how it is taxed, you can:'
+
+  Let $Message6 = 'If this payment summary shows an amount in the total'
+  Let $Message7 = 'tax withheld box, you must lodge a tax return. If you'
+  Let $Message8 = 'have already lodged your tax return, you may need to'
+  Let $Message9 = 'lodge an amendment request. For more information'
+  Let $Message10 = 'about this payment summary, lodging your tax return'
+  Let $Message11 = 'or an amendment request, you can:'
+
+end-Procedure
+
+!***********************************************************************
+! Procedure: Print-Tax-Return-Copy                                     *
+!            Prints the certificates for the employees selected.       *
+!***********************************************************************
+Begin-Procedure Print-Tax-Return-Copy
+
+  graphic () font 4 15
+  Print $Heading1                      (#CU,30,46)  bold   !Main Heading
+!*************************************************************************************
+  Let #AM = #CU - 3
+
+  if $AMENDED_IND = 'Y'
+    graphic () font 4 11
+   graphic                             (#AM,48,53)  box 2  !Tax Withheld box
+   Print $Amended_Heading              (+1,50,35)
+  end-if
+!***************************************************************************************
+  Let #CU = #CU + 2
+  graphic () font 4 11
+  Print $Heading3                      (#CU,43,39) bold     !Year Ending Heading
+  Print $Tax_Year_End                  (0,102,4)   bold
+
+  Let #CU = #CU + 3
+
+  Print 'Payee details'                 (#CU,10,13) bold
+
+  Print $Heading4                       (0,93,15) bold
+
+  Let #CU = #CU + 2
+  graphic () font 4 10
+
+  if $AMENDED_IND = 'Y'
+
+  Print $Message6                        (#CU,75)
+  Let #CU = #CU + 1
+  Print $Message7                        (#CU,75)
+  Let #CU = #CU + 1
+  Print $Message8                        (#CU,75)
+  Let #CU = #CU + 1
+  Print $Message9                        (#CU,75)
+  Let #CU = #CU + 1
+  Print $Message10                       (#CU,75)
+  Let #CU = #CU + 1
+  Print $Message11                       (#CU,75)
+
+  else
+
+  Print $Message1                        (#CU,75)
+  Let #CU = #CU + 1
+  Print $Message2                        (#CU,75)
+  Let #CU = #CU + 1
+  Print $Message3                        (#CU,75)
+  Let #CU = #CU + 2
+  Print $Message4                        (#CU,75)
+  Let #CU = #CU + 1
+  Print $Message5                        (#CU,75)
+
+  end-if
+
+  Let #CU = #CU + 2
+  graphic () font 4 40
+  Let $Var1 = '.'
+
+
+  Print $Var1                            (#CU,73,1) bold
+  graphic () font 4 10
+  Print 'visit'                           (0,77,5)
+  Print 'www.ato.gov.au'                  (0,83,14) bold
+  Let #CU = #CU + 2
+  !graphic () font 4 40
+  !Print $Var1                            (#CU,73,1) bold
+  !graphic () font 4 10
+  !Print 'refer to'                       (0,77,8)
+  !graphic () font 32 10
+  !Print 'TaxPack'                        (0,86,7)
+  !graphic () font 4 10
+  !Let #CU = #CU + 2
+  graphic () font 4 40
+  Print $Var1                            (#CU,73,1) bold
+  graphic () font 4 10
+  Print 'phone'                          (0,77,5)
+  Print '13 28 61'                       (0,85,8) bold
+  Print 'between 8.00am and 6.00pm,' (0,96,32)
+  Let #CU = #CU + 1
+  Print 'Monday to Friday.'            (#CU,77,21)
+
+
+
+  graphic () font 4 9
+  Let #PU = #PU + 2
+  Print $Emp_Name                       (#PU,15)            !Name
+
+  Let $Emp_Address1 =   $Address1  || ',  '
+  Let #PU = #PU + 1
+  Print $Emp_Address1                   (#PU,15)
+
+  if $Address2 <> ''
+     Let $Emp_Address1 =   $Address2
+     Let #PU = #PU + 1
+     Print $Emp_Address1                   (#PU,15)
+  end-if
+
+  Let #PU = #PU + 1
+  Let $Emp_Address2 =  $City || ' ' || $State || ' ' || $Postal
+  Print $Emp_Address2                   (#PU,15)
+
+  graphic () font 4 7
+  Let #CU = #CU + 2
+  Print 'Day/Month/Year'                (#CU,40,14)
+  Print 'Day/Month/Year'                (0,70,14)
+
+
+  graphic () font 4 10
+  Let #CU = #CU + 1
+  Print 'Period of payment' (#CU,10,38)
+  Print $EE_Start_Dt                    (0,40,10)
+  Print 'to'                            (0,60,2)
+  Print $EE_End_Dt                      (0,70,10)
+
+  Let   $PTFN       = 'Payee' || {QUOTE} || 's tax file number'
+  !Let   $DOB        = 'Payee' || {QUOTE} || 's date of birth(optional)'
+
+  Let #CU = #CU + 4
+
+  Print $PTFN                           (#CU,10,23)
+  !Print $DOB                            (0,40,31)
+
+  Print $TFN                            (0,40) edit  xxxbxxxbxxxb
+
+  !Print $Birthdate                      (0,49)
+
+  Let #CU = #CU - 2
+
+  graphic                               (#CU,73,59)  box 4 4 !Tax Withheld box
+  graphic                               (+1,106,25) box 2
+  Print 'TOTAL TAX WITHHELD'            (+1,74,18) bold
+  graphic () font 4 13
+  Print '$'                             (0,104,1) bold
+  graphic () font 4 10
+
+  ! The Tax Withheld is in #Tax_Wheld for amount to words conversion
+
+
+  Move $Tax_Wheld  to   #Tax_Wheld
+  If #Tax_Wheld < 0
+    Move 0 to #Tax_Wheld
+  End-if
+
+  Let #Tax_WheldX = Trunc(#Tax_Wheld,0)
+
+  Print #Tax_WheldX                     (0,119)   edit 9,999,999
+
+  Let #CU = #CU + 5
+  graphic () font 4 9
+ 
+  if #Tax_Year >= 2017
+  Print 'Type'                          (#CU,82)
+  end-if
+  
+  graphic () font 4 10
+  Print 'Lump sum payments'             (#CU,100)
+  Print 'Type'                          (0,127)
+  graphic () font 4 10
+  
+  Let #CU = #CU + 3
+  Print 'Gross Payments'                (#CU,10)                 !row 1
+  Let #CU = #CU - 1
+  graphic                               (#CU,55,26) box 2
+  
+  if #Tax_Year >= 2017
+  graphic                               (#CU,83,4) box 2
+  end-if
+
+  graphic                               (0,100,26) box 2
+  graphic                               (0,128,4) box 2
+  graphic () font 4 12
+  Let #CU = #CU + 1
+  Print '$'                             (#CU,53) bold
+  Print 'A'                             (0,94) bold
+  Print '$'                             (0,98) bold
+  graphic () font 4 10
+  Print #Gross_PayX                     (0,66)       edit  999,999,999
+  If #Tax_Year >= 2017
+  Print $Income_type                    (#CU,84)
+  end-If
+  Print #LumpAX                         (0,112)      edit   99,999,999
+  graphic () font 4 12
+  if #LumpAX <> 0
+    if ($Job_Action = 'TER' and  ($Job_Action_Reason = 'PTD' or $Job_Action_Reason = 'ELI' or $Job_Action_Reason = 'ERT')) or #LumpDX <> 0
+  Print 'R'                        (0,129)
+  else
+  Print 'T'                        (0,129)
+    end-if
+  end-if
+  graphic () font 4 10                                                      !row 2
+
+  Let #CU = #CU + 3
+  Print 'CDEP payments'                (#CU,10)
+  Let #CU = #CU - 1
+  graphic                               (#CU,55,26) box 2
+
+  graphic                               (0,100,26) box 2
+  graphic () font 4 12
+  Let #CU = #CU + 1
+  Print '$'                             (#CU,53) bold
+  Print 'B'                             (0,94) bold
+  Print '$'                             (0,98) bold
+  graphic () font 4 10
+  Print #CDEP_PayX                      (0,66)       edit 999,999,999
+  Print #LumpBX                         (0,112)      edit 99,999,999
+
+  
+  if #Tax_Year >= 2017
+  
+  Let #CU = #CU + 3
+  graphic () font 4 9
+  Print 'superannuation contributions'  (#CU,10)
+  graphic () font 4 10
+  Let #CU = #CU - 1
+  Print 'Reportable employer'      (#CU,10)
+  graphic                               (#CU,55,26) box 2
+
+  graphic                               (0,100,26) box 2
+  graphic () font 4 12
+  Let #CU = #CU + 1
+  Print '$'                             (#CU,53) bold
+  Print 'D'                             (0,94) bold
+  Print '$'                             (0,98) bold
+  graphic () font 4 10
+  Print #Super_ContribX                 (0,66)    edit   999,999,999
+  Print #LumpDX                         (0,112)   edit    99,999,999
+  
+  Let #CU = #CU + 3
+  graphic () font 4 9
+  Print 'FBT year 1 April to 31 March'  (#CU,10)
+  graphic () font 4 10
+
+  Let #CU = #CU - 1
+  Print 'Reportable Fringe benefits amount'      (#CU,10)
+  graphic                               (#CU,55,26) box 2
+
+  graphic                               (0,100,26) box 2
+  graphic () font 4 12
+  Let #CU = #CU + 1
+  Print '$'                             (#CU,53) bold
+  Print 'E'                             (0,94) bold
+  Print '$'                             (0,98) bold
+  graphic () font 4 10
+  IF  $FBT_TYPE = 'N'
+  Print #FBT_EarnsX                (0,66)       edit   999,999,999
+  else 
+  Print #FBT_EXEarnsX                (0,66)       edit   999,999,999
+  end-if
+  
+  Print #LumpEX                       (0,112)      edit    99,999,999
+ 
+ else
+ show 'For  Tax Year:' #Tax_Year
+  
+  Let #CU = #CU + 3
+  graphic () font 4 9
+  Print 'FBT year 1 April to 31 March'  (#CU,10)
+  graphic () font 4 10
+
+  Let #CU = #CU - 1
+  Print 'Reportable Fringe benefits amount'      (#CU,10)
+  graphic                               (#CU,55,26) box 2
+
+  graphic                               (0,100,26) box 2
+  graphic () font 4 12
+  Let #CU = #CU + 1
+  Print '$'                             (#CU,53) bold
+  Print 'D'                             (0,94) bold
+  Print '$'                             (0,98) bold
+  graphic () font 4 10
+  Print #FBT_EarnsX                    (0,66)       edit   999,999,999 
+  Print #LumpDX                       (0,112)      edit    99,999,999
+  
+   Let #CU = #CU + 3
+  graphic () font 4 9
+  Print 'superannuation contributions'  (#CU,10)
+  graphic () font 4 10
+  Let #CU = #CU - 1
+  Print 'Reportable employer'      (#CU,10)
+  graphic                               (#CU,55,26) box 2
+
+  graphic                               (0,100,26) box 2
+  graphic () font 4 12
+  Let #CU = #CU + 1
+  Print '$'                             (#CU,53) bold
+  Print 'E'                             (0,94) bold
+  Print '$'                             (0,98) bold
+  graphic () font 4 10
+  Print #Super_ContribX                 (0,66)       edit   999,999,999
+  Print #LumpEX                         (0,112)      edit    99,999,999
+  
+  end-if
+   
+   if #Tax_Year >= 2017 
+   Let #CU = #CU + 3
+  graphic () font 4 10
+  Print 'under section 57A of the FBTAA 1986?'  (#CU,10)
+  graphic () font 4 10
+
+  Let #CU = #CU - 1
+  Print 'Is the employer exempt from FBT'      (#CU,10)
+  Let #CU = #CU + 1
+  Print 'No' (#CU,62)
+  Let #CU = #CU - 1
+  graphic                               (#CU,66,4) box 2  
+  if $FBT_TYPE = 'N' and #FBT_EarnsX > 0
+   Let #CU = #CU + 1
+   PRINT 'X'    (#CU , 67)
+   Let #CU = #CU - 1
+   end-if
+  Let #CU = #CU + 1
+  Print 'Yes' (#CU,72)
+  Let #CU = #CU - 1  
+  graphic                               (#CU,77,4) box 2  
+  if $FBT_TYPE = 'Y'
+  Let #CU = #CU + 1
+  Print 'X'    (#CU , 78)
+  Let #CU = #CU - 1
+  end-if
+  
+  end-if
+  
+  Let #CU = #CU + 4
+  Print 'Total Allowances'                (#CU,10)
+  Let #CU = #CU - 1
+  graphic                               (#CU,55,26) box 2
+
+
+  graphic () font 4 8
+  Print 'Total allowances are not included in Gross payments above.'    (#CU,83)
+  Let #CU = #CU + 1
+  graphic () font 4 12
+  Print '$'                             (#CU,53) bold
+  graphic () font 4 8
+  Print 'This amount needs to be shown separately on your tax return.'  (#CU,83)
+  graphic () font 4 10
+  Print #Allowance_TotX                     (#CU,66)       edit   999,999,999
+
+
+    !***********************************************************************************************************
+  Let #CU = #CU + 3
+
+
+  if  (#Allow1X <> 0 or #Allow2X <> 0 or #Allow3X <> 0 or #Allow4X <> 0) <> 0
+  Print 'Allowances:'                    (#CU,10)
+  Let #CU = #CU + 1
+  Let #num_nonzero = 0
+  if #Allow1X <> 0 
+  Let #num_nonzero = #num_nonzero + 1
+  end-if
+  if #Allow2X <> 0
+  Let #num_nonzero = #num_nonzero + 1
+  end-if
+  if #Allow3X <> 0
+  Let #num_nonzero = #num_nonzero + 1
+  end-if
+  if #Allow4X <> 0
+  Let #num_nonzero = #num_nonzero + 1
+  end-if
+  !************************************************************************************
+  if #num_nonzero > 2
+  graphic                               (#CU,10,122) box 5
+  else
+     if #num_nonzero > 0 
+     graphic                               (#CU,10,122) box 3
+     end-if
+  end-if
+  !************************************************************************************
+  Let #CU = #CU + 1
+  Let #column_no = 14
+  
+  if #Allow1X <> 0                                                       !Allowance 1
+  Print $Allow1_Name                    (#CU,12)
+  Let #column_no = #column_no + 40
+  Print '$'                             (0,#column_no)
+  Let #column_no = #column_no + 2
+  Print #Allow1X                        (0,#column_no)       edit   99,999,999
+  end-if
+
+  if #column_no = 56
+  Let #column_no = #column_no + 18
+  end-if
+  
+  if #Allow2X <> 0
+    Let #CU = #CU + 1
+    Let #column_no = 14 
+
+  Print $Allow2_Name                    (#CU,12)                             !Allowance 2
+  Let #column_no = #column_no + 40
+  Print '$'                             (0,#column_no)
+  Let #column_no = #column_no + 2
+  Print #Allow2X                        (0,#column_no)       edit   99,999,999
+  end-if
+
+  if #column_no = 56
+  Let #column_no = #column_no + 18
+  end-if
+  
+  if #column_no = 116
+  Let #column_no = 14
+  Let #CU = #CU + 2
+  else
+  Let #CU = #CU + 1
+  end-if
+  
+  if  (#Allow3X <> 0 or #Allow4X <> 0) <> 0
+  if #Allow3X <> 0
+
+   Let #CU = #CU + 1 
+    Let #column_no = 14
+
+  Print $Allow3_Name                    (#CU,12)                           !Allowance 3
+  Let #column_no = #column_no + 40
+  Print '$'                             (0,#column_no)
+  Let #column_no = #column_no + 2
+  Print #Allow3X                        (0,#column_no)       edit   99,999,999
+  end-if
+
+  if #column_no = 56
+  Let #column_no = #column_no + 18
+  end-if
+  
+  if #column_no = 116
+  Let #column_no = 14
+  Let #CU = #CU + 2
+  end-if
+  
+  if #Allow4X <> 0
+   Let #CU = #CU + 1 
+    Let #column_no = 14
+
+  Print $Allow4_Name                    (#CU,#column_no)                             !Allowance 4
+  Let #column_no = #column_no + 40
+  Print '$'                             (0,#column_no)
+  Let #column_no = #column_no + 2
+  Print #Allow4X                        (0,#column_no)       edit   99,999,999
+  end-if
+  Let #CU = #CU + 2
+  end-if
+
+  ! Print 'Total Allowances'             (#CU,12) bold
+  ! Print '$'                             (0,54)
+  ! Print #Allowance_TotX                 (0,55)        edit   999,999,999
+  Let #CU = #CU + 2
+  end-if
+
+  if #Other_PayX <> 0                                                           !Union
+  ! Print 'Other payments:'  (#CU,10)
+  ! Let #CU = #CU + 1
+  graphic                               (#CU,10,122) box 3
+  Let #CU = #CU + 1
+  Print 'Exempt Foreign Employment Income'                     (#CU,12)
+  Print '$'                             (0,54)
+  Print #Other_PayX                     (0,55)      edit   999,999,999 
+  Let #CU = #CU + 3
+  end-if
+
+  Let #column_no = 14  
+  if #UnionX <> 0                                                           !Union
+  Print 'Deductions(Union fees, etc):'  (#CU,10)
+  Let #CU = #CU + 1
+  graphic                               (#CU,10,122) box 3
+   Let #CU = #CU + 1
+  Print $Union_Name                     (#CU,12)
+  Let #column_no = #column_no + 40
+  Print '$'                             (0,54)
+   Let #column_no = #column_no + 2
+  Print #UnionX      (0,#column_no)     edit  99,999,999  ! (0,55)   
+  
+  Let #column_no = 14  
+  if #UnionX1 <> 0
+   Let #CU = #CU + 1
+  Print $Union_Name1                    (#CU,12)        !Union2
+  Let #column_no = #column_no + 40
+  Print '$'                              (0,#column_no)
+  Let #column_no = #column_no + 2
+  Print #UnionX1                         (0,#column_no)      edit   99,999,999  
+  end-if
+  
+  Let #CU = #CU + 3
+  end-if
+
+  if #Wrkplc <> 0                                                         !Workplace Giving
+  Print 'Workplace Giving DGR(s):'      (#CU,10)
+  Let #CU = #CU + 1
+  graphic                               (#CU,10,122) box 3
+  Let #CU = #CU + 1
+  Print $Wrkplc_Name                    (#CU,12)
+  Print '$'                             (0,54)
+  Print #Wrkplc                         (0,55)     edit   999,999,999
+  end-if
+
+
+
+  !***********************************************************************************************************
+  !Payer's Details
+  !***********************************************************************************************************
+  graphic () font 4 11
+  graphic                               (#LU,10,122) horz-line 5
+  Let #LU = #LU + 2
+  Print 'Payer details'                 (#LU,10,13) bold
+  graphic () font 4 10
+  Let #LU = #LU + 2
+  Let $ABN_Head =  'Payer' || {QUOTE} || 's ABN or withholding payer number'
+  Print $ABN_Head                       (#LU,10,39)
+  Print  $ABN                           (0,61)   edit  xx-xxx-xxx-xxx
+  Print 'Branch Number'                 (0,92,13)
+  Print  #ABN_Branch                    (0,112) edit   999
+
+  Let #LU = #LU + 2
+  Let $Name_Head =  'Payer' || {QUOTE} || 's Name'
+  Print $Name_Head                      (#LU,10,12)
+  Print $Pay_Entity_Name                (0,30)wrap 60 4
+  Let #LU = #LU + 2
+  Print 'Privacy'  (#LU,10) bold
+  Print ' - For information about your privacy, go to '  (0,19)
+  Print 'www.ato.gov.au/privacy'  (0, 68) bold  
+  
+  Let #LU = #LU + 4
+
+  graphic                               (#LU,10,122) box 3
+  Let #LU = #LU + 1
+  Print 'Signature of authorised person' (#LU,11,30)
+  Print $Signatory                       (0,49,35)
+  Print 'Date'                           (0,103,4)
+
+  let $Current_Date=datetostr(datenow(),  'DD/MM/YYYY')
+  print $Current_Date (#LU,110) 
+
+  !Let #LU = #LU + 2
+  !graphic () font 4 8
+  !if $AMENDED_IND = 'Y'
+  !Print 'NAT72711B-12.2008'              (#LU,10,17)
+  !else
+  !Print 'NAT72710B-12.2008'              (#LU,10,17)
+  !end-if
+
+  !***********************************************************************************************************
+
+
+end-procedure
+
+!***********************************************************************
+! Procedure: Print-Employee-Copy                                       *
+!            Prints the employee copy of the certificate               *
+!***********************************************************************
+Begin-Procedure Print-Empl-Copy
+
+  let $text_fbt = 'payer for the (FBT) year (1 April to 31 March), where the taxable value of those benefits exceeds $2000 for the FBT year ($1000'
+  new-page
+  graphic () font 5 8
+  Let $Note1 = 'A Payee to whom this summary has been issued, where there is tax withheld or reportable fringe benefits amount shown,
+  must lodge an '
+  Print 'NOTICE TO PAYEE' (10,47) bold
+  Print $Note1 (11,1)
+
+begin-document (12,1)
+income tax return for the year to which this payment summary relates with the nearest taxation office. The 'Payee's Tax Return Copy' of this
+payment summary must be attached to the return.
+.b
+Where this payment summary is to be attached to an income tax return you will be allowed a credit for the tax withheld as shown on this
+payment summary. The tax withheld will reduce any liability raised in your assessment.
+.b
+Where no tax has been withheld and the payee is required to lodge an income tax return, the 'Payee's Tax Return Copy' of this payment
+summary should be attached to the return.
+.b
+Information on tax return lodgement obligations is available in TaxPack.
+.b
+.b
+end-document
+
+
+print 'AMENDING A PAYMENT SUMMARY' (23,1) bold
+
+begin-document (25,1)
+When you receive a Payment summary that has been completed by your payer with corrected information, the 'amending a
+payment summary' box on top of this form will be marked with an X.
+.b
+If you have received an amended payment summary and have not yet lodged your income tax return, use the information on
+the amended payment summary - not the original - to complete your return.
+.b
+However, if you have already lodged your income tax return and then receive an amended payment summary, you may need
+to lodge an amendment to that income tax return.
+end-document
+
+Print 'LUMP SUM PAYMENTS ON TERMINATION OF EMPLOYMENT' (34,1) bold
+
+begin-document (35,1)
+.b
+The amount at lump sum A was paid to you for unused leave payments. This includes:
+.b
+  * unused long service leave that accrued after 15 August 1978 but before 18 August 1993
+.b
+  * unused annual leave and other related leave that accrued before 18 August 1993, or
+.b
+  * unused long service leave accrued after 17 August 1993, or unused annual leave and other related leave, where the amount was paid
+    in connection with a payment that includes, or consists of genuine redundancy payment, an early retirement scheme payment or
+    the invalidity segment of an employment termination payment or superannuation benefit.
+.b
+All of this amount is taxable, The maximum rate of tax is 30% plus the applicable Medicare levy rate.
+.b
+The amount at lump sum B was paid to you for unused long service leave which accrued before 16 August 1978. Only 5% of this amount is taxable.
+.b
+The amount at lump sum D represents a tax-free genuine redundancy payment or early retirement scheme payment below the tax free threshold.
+This amount is not taxable. Do not include it on your income tax return.
+.b
+The amount at lump sum E was paid to you for back payment of certain amounts including a payment of salary or wages which accrued more than
+12 months ago.This amount is taxable, but a tax offset may be available.
+.b
+* If you received any employment termination payment (ETP) cash lump sum on termination of employment, you will have been issued a separate PAYG
+  payment summary - Employment termination Payment(NAT70866) showing full details of the payment. For more information on on lump sum payments and
+  employment termination payments please refer to TaxPack.
+.b
+.b
+end-document
+
+Print 'REPORTABLE FRINGE BENEFIT AMOUNT' (+1,1) bold
+begin-document (+2,1)
+The reportable fringe benefits amount is the grossed up taxable value of certain fringe benefits provided to you by your employer
+$text_fbt
+for the FBT year ended 31 march 2007 and earlier years).
+end-document
+
+ Print 'COMMUNITY DEVELOPMENT EMPLOYMENT PROJECT SALARY OR WAGES' (+2,1) bold
+begin-document (+2,1)
+This amount of your gross salary or wages was paid to you from a Community Development Employment Project (CDEP) wages grant. While
+it is taxable, a tax rebate (also known as a tax offset) may be available.
+end-document
+
+ Print 'EXEMPT FOREIGN EMPLOYMENT INCOME' (+2,1) bold
+
+begin-document (+2,1)
+This amount was paid to you for working overseas.Your employer or payer has determined that the income meets the
+conditions to be exempt from Australian tax. Although you do not pay Australian tax on this income it must be included
+(net of any allowable expenses) on your tax return.
+end-document
+
+ Print 'REPORTABLE EMPLOYER SUPERANNUATION CONTRIBUTIONS' (+2,1) bold
+
+begin-document (+2,1)
+
+From 2009-10, all reportable superannuation contributions will be reported on your payment summary. They are not ncluded
+in your assessable income.
+.b
+* You must report reportable superannuation contributions to us in your income tax return as they may affect your
+  entitlements and obligations.
+
+end-document
+
+  graphic () font 5 10
+
+end-procedure
+
+!
+!***********************************************************************
+! Procedure: Print-Side-Col                                            *
+!            Print A String value as columns on the specified position *
+!***********************************************************************
+Begin-Procedure Print-Side-Col (#StartRow,#StartCol,$OutStr)
+
+    Let #Strlen = length($OutStr)
+    Let #StrStart = 1
+    while #StrStart <= #StrLen
+        Let $CharVal = substr($OutStr,#StrStart,1)
+        print $CharVal (#StartRow,#StartCol)
+        Add 1 to #StrStart
+        Add 1 to #StartRow
+    end-while
+end-Procedure
+
+!***********************************************************************
+! Procedure: Allowance-Breakdown                                       *
+!            Print Allowance-Breakdown                                 *
+!***********************************************************************
+Begin-Procedure Allowance-Breakdown
+  
+  Let $Allow_Heading = 'Addendum for Allowances for year ending 30 June'
+
+  New-page
+
+  graphic () font 4 15
+  Print $Heading1                      (3,30,46)  bold   !Main Heading
+!*************************************************************************************
+
+  graphic () font 4 11
+  Print $Allow_Heading                 (+2,39,49) bold     !Year Ending Heading
+  Print $Tax_Year_End                  (0,109,4)   bold
+
+  graphic () font 4 10
+  Let #CU = #CU + 5
+  Print $PTFN (+6,10)
+  print $TFN             (0,42)    edit xxxbxxxbxxx
+  graphic () font 4 11
+  Print 'Payee details'                (+3, 10) bold
+
+  graphic () font 4 9
+  Print $Emp_Name                       (+2,10)            !Name
+
+  Let $Emp_Address1 =   $Address1  || ',  '
+  Let #PU = #PU + 1
+  Print $Emp_Address1                   (+1,10)
+
+  if $Address2 <> ''
+     Let $Emp_Address1 =   $Address2
+     Let #PU = #PU + 1
+     Print $Emp_Address1                   (+1,10)
+  end-if
+
+  Let #PU = #PU + 1
+  Let $Emp_Address2 =  $City || ' ' || $State || ' ' || $Postal
+  Print $Emp_Address2                   (+1,10)
+
+  graphic () font 4 7
+  Print 'Day/Month/Year'                (+2,60,14)
+  Print 'Day/Month/Year'                (0,90,14)
+
+
+  graphic () font 4 10
+  Print 'Period of payment' (+1,10,38)
+  Print $EE_Start_Dt                    (0,60,10)
+  Print 'to'                            (0,80,2)
+  Print $EE_End_Dt                      (0,90,10)
+
+  Let $Allow_Msg1 = 'You have received Allowances and the details are shown below. Allowances are payments made to you'
+  Let $Allow_Msg2 = 'to cover work related expenses. The sum of Allowances is displayed under "VARIOUS" on your ' || $Tax_Year_End
+  Let $Allow_Msg3 =  'Payment Summary.'
+  
+  Print $Allow_Msg1                     (+2, 10) 
+  Print $Allow_Msg2                     (+1, 10)
+  Print $Allow_Msg3                     (+1, 10)
+  
+  Let $Allow_Title1 = 'SL No.'
+  Let $Allow_Title2 = 'Nature of the Payment'
+  Let $Allow_Title3 = 'Amount ($)'
+
+  Print $Allow_Title1                    (+2, 13) underline
+  Print $Allow_Title2                    (0, 28)  underline
+  Print $Allow_Title3                    (0, 110)  underline 
+
+  Let #Total = 0
+ 
+Begin-Select
+SEQNUM          &SEQNUMA
+GPAU_PSM_NAME   &GPAU_PSM_NAMEA
+GPAU_PSM_AMOUNT &GPAU_PSM_AMOUNTA
+   
+   Print &SEQNUMA         (+2, 15)
+   Print &GPAU_PSM_NAMEA   (0, 30)
+   Print &GPAU_PSM_AMOUNTA (0, 109) edit   99,999,999
+   Let #Total = #Total + trunc(&GPAU_PSM_AMOUNTA,0)
+
+FROM PS_GPAU_PSM_VR_ADP
+WHERE EMPLID = &PSM.EMPLID
+AND PAY_ENTITY = &PSM.PAY_ENTITY
+AND BALANCE_GRP_NUM = &PSM.BALANCE_GRP_NUM
+AND GPAU_TAX_YEAR = &PSM.GPAU_TAX_YEAR
+AND GPAU_PSM_TYPE = 'A'
+End-Select
+
+  Print '---------------'(+3, 110)
+  Print 'Total' (+1, 30) Bold
+  Print #Total  (0, 109) Bold edit  99,999,999  
+  Print '---------------'(+1, 110)
+        
+
+  !***********************************************************************************************************
+  !Payer's Details
+  !***********************************************************************************************************
+  graphic () font 4 11
+  graphic                               (+10,10,122) horz-line 5
+  Print 'Payer details'                 (+2,10,13) bold
+  graphic () font 4 10
+  Let $ABN_Head =  'Payer' || {QUOTE} || 's ABN or withholding payer number'
+  Print $ABN_Head                       (+2,10,39)
+  Print  $ABN                           (0,61)   edit  xx-xxx-xxx-xxx
+  Print 'Branch Number'                 (0,92,13)
+  Print  #ABN_Branch                    (0,112) edit   999
+
+  Let $Name_Head =  'Payer' || {QUOTE} || 's Name'
+  Print $Name_Head                      (+2,10,12)
+  Print $Pay_Entity_Name                (0,30)wrap 60 4
+  
+  Print 'Privacy'  (+2,10) bold
+  Print ' - For information about your privacy, go to '  (0,19)
+  Print 'www.ato.gov.au/privacy'  (0, 68) bold
+
+  
+
+  graphic                               (+4,10,122) box 3
+  Let #LU = #LU + 1
+  Print 'Signature of authorised person' (+1,11,30)
+  Print $Signatory                       (0,49,35)
+  Print 'Date'                           (0,103,4)
+ 
+  let $Current_Date=datetostr(datenow(),  'DD/MM/YYYY')
+  print $Current_Date (0,110) 
+
+End-Procedure
+
+!***********************************************************************
+! Procedure: Union-Fees-Breakdown                                      *
+!            Print Union-Fees-Breakdown                                *
+!***********************************************************************
+Begin-Procedure Union-Fees-Breakdown
+  
+  Let $Union_Heading = 'Addendum for Union Fees Deductions for year ending 30 June'
+
+  New-page
+
+  graphic () font 4 15
+  Print $Heading1                      (3,30,46)  bold   !Main Heading
+!*************************************************************************************
+
+  graphic () font 4 11
+  Print $Union_Heading                 (+2,31,58) bold     !Year Ending Heading
+  Print $Tax_Year_End                  (0,116,4)   bold
+
+  graphic () font 4 10
+  Print $PTFN (+6,10)
+  print $TFN             (0,42)    edit xxxbxxxbxxx
+  graphic () font 4 11
+  Print 'Payee details'                (+3, 10) bold
+
+  graphic () font 4 9
+  Print $Emp_Name                       (+2,10)            !Name
+
+  Let $Emp_Address1 =   $Address1  || ',  '
+  Let #PU = #PU + 1
+  Print $Emp_Address1                   (+1,10)
+
+  if $Address2 <> ''
+     Let $Emp_Address1 =   $Address2
+     Let #PU = #PU + 1
+     Print $Emp_Address1                   (+1,10)
+  end-if
+
+  Let #PU = #PU + 1
+  Let $Emp_Address2 =  $City || ' ' || $State || ' ' || $Postal
+  Print $Emp_Address2                   (+1,10)
+
+  graphic () font 4 7
+  Print 'Day/Month/Year'                (+2,60,14)
+  Print 'Day/Month/Year'                (0,90,14)
+
+
+  graphic () font 4 10
+  Print 'Period of payment' (+1,10,38)
+  Print $EE_Start_Dt                    (0,60,10)
+  Print 'to'                            (0,80,2)
+  Print $EE_End_Dt                      (0,90,10)
+
+  Let $Union_Msg1 = 'Following are the list of Union and Professional Association Fee deductions made from your payments.'
+  Let $Union_Msg2 = 'The sum of deductions is displayed under "VARIOUS" on your ' || $Tax_Year_End || ' Payment Summary.'
+  
+  Print $Union_Msg1                     (+2, 10) 
+  Print $Union_Msg2                     (+1, 10)
+  !Print $Union_Msg3                     (+1, 10)
+  
+  Let $Union_Title1 = 'SL No.'
+  Let $Union_Title2 = 'Nature of the Payment'
+  Let $Union_Title3 = 'Amount ($)'
+
+  Print $Union_Title1                    (+2, 13) underline
+  Print $Union_Title2                    (0, 28)  underline
+  Print $Union_Title3                    (0, 110)  underline 
+
+  Let #Total = 0
+ 
+Begin-Select
+SEQNUM           &SEQNUMU
+GPAU_PSM_NAME    &GPAU_PSM_NAMEU
+GPAU_PSM_AMOUNT  &GPAU_PSM_AMOUNTU
+   
+   Print &SEQNUMU         (+2, 15)
+   Print &GPAU_PSM_NAMEU   (0, 30)
+   Print &GPAU_PSM_AMOUNTU (0, 109) edit   99,999,999
+   Let #Total = #Total + trunc(&GPAU_PSM_AMOUNTU,0)
+
+FROM PS_GPAU_PSM_VR_ADP
+WHERE EMPLID = &PSM.EMPLID
+AND PAY_ENTITY = &PSM.PAY_ENTITY
+AND BALANCE_GRP_NUM = &PSM.BALANCE_GRP_NUM
+AND GPAU_TAX_YEAR = &PSM.GPAU_TAX_YEAR
+AND GPAU_PSM_TYPE = 'U'
+End-Select
+
+  Print '---------------'(+3, 110)
+  Print 'Total' (+1, 30) Bold
+  Print #Total  (0, 109) Bold edit  99,999,999  
+  Print '---------------'(+1, 110)
+
+  !***********************************************************************************************************
+  !Payer's Details
+  !***********************************************************************************************************
+  graphic () font 4 11
+  graphic                               (+10,10,122) horz-line 5
+  Print 'Payer details'                 (+2,10,13) bold
+  graphic () font 4 10
+  Let $ABN_Head =  'Payer' || {QUOTE} || 's ABN or withholding payer number'
+  Print $ABN_Head                       (+2,10,39)
+  Print  $ABN                           (0,61)   edit  xx-xxx-xxx-xxx
+  Print 'Branch Number'                 (0,92,13)
+  Print  #ABN_Branch                    (0,112) edit   999
+
+  Let $Name_Head =  'Payer' || {QUOTE} || 's Name'
+  Print $Name_Head                      (+2,10,12)
+  Print $Pay_Entity_Name                (0,30)wrap 60 4
+  
+  Print 'Privacy'  (+2,10) bold
+  Print ' - For information about your privacy, go to '  (0,19)
+  Print 'www.ato.gov.au/privacy'  (0, 68) bold
+
+  graphic                               (+4,10,122) box 3
+  Let #LU = #LU + 1
+  Print 'Signature of authorised person' (+1,11,30)
+  Print $Signatory                       (0,49,35)
+  Print 'Date'                           (0,103,4)
+
+  let $Current_Date=datetostr(datenow(),  'DD/MM/YYYY')
+  print $Current_Date (0,110) 
+
+End-Procedure
+
+!***********************************************************************
+! Procedure: Workplace-Giving-Breakdown                                *
+!            Print Workplace-Giving-Breakdown                          *
+!***********************************************************************
+Begin-Procedure Workplace-Giving-Breakdown
+  
+  Let $Work_Heading = 'Addendum for Workplace Giving for year ending 30 June'
+
+  New-page
+
+  graphic () font 4 15
+  Print $Heading1                      (3,30,46)  bold   !Main Heading
+!*************************************************************************************
+
+  graphic () font 4 11
+  Print $Work_Heading                 (+2,34,53) bold     !Year Ending Heading
+  Print $Tax_Year_End                  (0,112,4)   bold
+
+  graphic () font 4 10
+  Print $PTFN (+6,10)
+  print $TFN             (0,42)    edit xxxbxxxbxxx
+  graphic () font 4 11
+  Print 'Payee details'                (+3, 10) bold
+
+  graphic () font 4 9
+  Print $Emp_Name                       (+2,10)            !Name
+
+  Let $Emp_Address1 =   $Address1  || ',  '
+  Let #PU = #PU + 1
+  Print $Emp_Address1                   (+1,10)
+
+  if $Address2 <> ''
+     Let $Emp_Address1 =   $Address2
+     Let #PU = #PU + 1
+     Print $Emp_Address1                   (+1,10)
+  end-if
+
+  Let #PU = #PU + 1
+  Let $Emp_Address2 =  $City || ' ' || $State || ' ' || $Postal
+  Print $Emp_Address2                   (+1,10)
+
+  graphic () font 4 7
+  Print 'Day/Month/Year'                (+2,60,14)
+  Print 'Day/Month/Year'                (0,90,14)
+
+
+  graphic () font 4 10
+  Print 'Period of payment' (+1,10,38)
+  Print $EE_Start_Dt                    (0,60,10)
+  Print 'to'                            (0,80,2)
+  Print $EE_End_Dt                      (0,90,10)
+
+  Let $Work_Msg1 = 'Following are the list of payments made to an eligible deductible gift recipient (DGR) on behalf of you.'
+  Let $Work_Msg2 = 'The sum of Workplace Giving DGR(s) is displayed under "VARIOUS" on your ' || $Tax_Year_End || ' Payment Summary.'
+  
+  Print $Work_Msg1                     (+2, 10) 
+  Print $Work_Msg2                     (+1, 10)
+    
+  Let $Work_Title1 = 'SL No.'
+  Let $Work_Title2 = 'Nature of the Payment'
+  Let $Work_Title3 = 'Amount ($)'
+
+  Print $Work_Title1                    (+2, 13) underline
+  Print $Work_Title2                    (0, 28)  underline
+  Print $Work_Title3                    (0, 110)  underline 
+
+  Let #Total = 0
+ 
+Begin-Select
+SEQNUM            &SEQNUMW 
+GPAU_PSM_NAME     &GPAU_PSM_NAMEW
+GPAU_PSM_AMOUNT   &GPAU_PSM_AMOUNTW
+   
+   Print &SEQNUMW         (+2, 15)
+   Print &GPAU_PSM_NAMEW   (0, 30)
+   Print &GPAU_PSM_AMOUNTW (0, 109) edit   99,999,999
+   Let #Total = #Total + trunc(&GPAU_PSM_AMOUNTW,0)
+
+FROM PS_GPAU_PSM_VR_ADP
+WHERE EMPLID = &PSM.EMPLID
+AND PAY_ENTITY = &PSM.PAY_ENTITY
+AND BALANCE_GRP_NUM = &PSM.BALANCE_GRP_NUM
+AND GPAU_TAX_YEAR = &PSM.GPAU_TAX_YEAR
+AND GPAU_PSM_TYPE = 'W'
+End-Select
+
+  Print '---------------'(+3, 110)
+  Print 'Total' (+1, 30) Bold
+  Print #Total  (0, 109) Bold edit  99,999,999  
+  Print '---------------'(+1, 110)
+
+  !***********************************************************************************************************
+  !Payer's Details
+  !***********************************************************************************************************
+  graphic () font 4 11
+  graphic                               (+10,10,122) horz-line 5
+  Print 'Payer details'                 (+2,10,13) bold
+  graphic () font 4 10
+  Let $ABN_Head =  'Payer' || {QUOTE} || 's ABN or withholding payer number'
+  Print $ABN_Head                       (+2,10,39)
+  Print  $ABN                           (0,61)   edit  xx-xxx-xxx-xxx
+  Print 'Branch Number'                 (0,92,13)
+  Print  #ABN_Branch                    (0,112) edit   999
+
+  Let $Name_Head =  'Payer' || {QUOTE} || 's Name'
+  Print $Name_Head                      (+2,10,12)
+  Print $Pay_Entity_Name                (0,30)wrap 60 4
+  
+  Print 'Privacy'  (+2,10) bold
+  Print ' - For information about your privacy, go to '  (0,19)
+  Print 'www.ato.gov.au/privacy'  (0, 68) bold
+
+  graphic                               (+4,10,122) box 3
+  Let #LU = #LU + 1
+  Print 'Signature of authorised person' (+1,11,30)
+  Print $Signatory                       (0,49,35)
+  Print 'Date'                           (0,103,4)
+
+  let $Current_Date=datetostr(datenow(),  'DD/MM/YYYY')
+  print $Current_Date (0,110) 
+
+End-Procedure
+
+!***********************************************************************
+! Procedure: Print-LumpE-Letter                                        *
+!            Print Lump Sum E Letter                                   *
+!***********************************************************************
+Begin-Procedure Print-LumpE-Letter
+
+  graphic () font 4 10
+  Do Get-Payer-Data
+  New-page
+  Print $Pay_Entity_Name (1,2)
+  Print $PYRAddress1     (+1,2)
+  Print $PYRAddress2     (+1,2)
+  Print $CityPCode       (+1,2)
+
+  Print 'Tax File Number : ' (+3,2)
+  print $TFN             (0,24)    edit xxxbxxxbxxx
+  print $Name            (+2,2)
+
+  if rtrim($Address1,' ') <> ''
+     Print $Address1        (+1,2)
+  end-if
+
+  if rtrim($Address2,' ') <> ''
+     Print $Address2        (+1,2)
+  end-if
+  Let $CityState = ' '
+  Let $CityState = rtrim($City, ' ')
+  concat ', ' with $CityState
+  Let $CityState = $CityState || $State
+
+  Print $CityState          (+1,2)
+  Print $Postal             (0,+5)
+begin-document (+3,2)
+You have received a Lump Sum E payment and the details are shown below. Lump Sum E payments are retroactive
+payments (back pay) attributable to pay periods more than twelve months earlier than the date the retroactive
+payment was actually made. Accrued for the year indicates the period in which lump sum payments are accrued
+for the respective financial year. The Back Payment Value is the total of the back pay in those periods and
+end-document
+Let $LumpEStr = 'it will appear in the Lump Sum E box on your ' || $Tax_Year_End || ' Payment Summary.'
+print $LumpEStr (+1,2)
+!print 'From Date' (+2,2)
+!print 'To Date' (0,17)
+Print 'Accrued for the Year'    (+2,2)
+print 'Back payment value ($)'  (0,36)
+Let #i = 0
+Let #counter = 0
+Do Initialize-Array-Vars
+begin-select DISTINCT
+A.EMPLID
+A.EMPL_RCD
+B.CAL_ID
+B.CALC_DELTA_VAL
+P.PIN_NM
+CALEN.PYMT_DT
+
+  Let $Sovr_Date_Unf = &CALEN.PYMT_DT
+
+  do Format-DateTime($Sovr_Date_Unf, $Sovr_Date, {DEFDATE}, '', '')
+
+  Let $GET_TaxYear = substr($Sovr_Date,7,4)
+  Let $GET_Month = substr($Sovr_Date,1,2)
+  Let #get_year = edit($GET_TaxYear,'9999')
+  Let #month = edit($GET_Month,'99')
+
+  If #month < 07
+
+  let #Current_Year = #get_year
+  let #Previous_Year = #get_year - 1
+
+  else
+
+  let #Current_Year =   #get_year + 1
+  let #Previous_Year =  #get_year
+
+  end-if
+
+  let $Prev_Year = #Previous_Year
+  let $Curr_Year = #Current_Year
+  let $Previous_Year = edit($Prev_Year,'9999')
+  let $Current_Year  =  edit($Curr_Year,'9999')
+  let $year =  $Previous_Year || '-' || $Current_Year
+  let #LumpE_Val = &B.CALC_DELTA_VAL
+
+  let Accrued_Yr.accrued_year(#i) = $year
+  let Accrued_Yr.LumpE_Amount(#i) = #LumpE_Val
+  get $a #b from Accrued_Yr(#i) accrued_year LumpE_Amount
+  let #i=#i+1
+  Let #counter = #counter + 1
+
+  FROM PS_GP_RSLT_ERN_DED A,
+       PS_GP_RSLT_DELTA B,
+       PS_GP_PYE_SEG_STAT S,
+       PS_GP_PIN P,
+       PS_GP_CAL_PRD PRD,
+       PS_GP_CALENDAR CALEN,
+       PS_GP_ELM_DFN_SOVR SOVR
+
+ WHERE SOVR.PIN_SOVR_NUM = (SELECT X.PIN_NUM FROM PS_GP_PIN X WHERE X.PIN_CODE = 'EOY VR CATEGORY AUS')
+   AND A.PIN_NUM = SOVR.PIN_NUM
+   AND SOVR.SOVR_VAL_CHAR = 'LE'
+   AND A.CAL_RUN_ID = B.FWD2_CAL_RUN_ID
+   AND A.EMPLID = $Emplid
+   AND A.CAL_RUN_ID NOT IN (SELECT DISTINCT CAL_RUN_ID FROM PS_GPAU_LE_TAO
+                        WHERE GPAU_CALC_RSLT_VAL <#LUMPE_RPT_VAL
+                        AND EMPLID = $Emplid)
+   AND A.EMPLID = B.EMPLID
+   AND A.EMPL_RCD = B.EMPL_RCD
+   AND A.GP_PAYGROUP = B.FWD2_PAYGROUP
+   AND A.CAL_ID = B.FWD2_CAL_ID
+   AND A.PIN_NUM = B.PIN_RTO_ADJ_NUM
+   AND A.USER_FLD1 = B.USER_FLD1
+   AND A.USER_FLD2 = B.USER_FLD2
+   AND A.USER_FLD3 = B.USER_FLD3
+   AND A.USER_FLD4 = B.USER_FLD4
+   AND A.USER_FLD5 = B.USER_FLD5
+   AND A.USER_FLD6 = B.USER_FLD6
+   AND A.EMPLID = S.EMPLID
+   AND A.EMPL_RCD = S.EMPL_RCD
+   AND A.GP_PAYGROUP = S.GP_PAYGROUP
+   AND A.CAL_ID = S.CAL_ID
+   AND A.CAL_RUN_ID = S.CAL_RUN_ID
+   AND A.ORIG_CAL_RUN_ID = S.ORIG_CAL_RUN_ID
+   AND A.RSLT_SEG_NUM = S.RSLT_SEG_NUM
+   AND S.PYMT_KEY1 = B.PYMT_KEY1
+   AND S.PYMT_KEY2 = B.PYMT_KEY2
+   AND S.PYMT_KEY3 = B.PYMT_KEY3
+   AND S.PYMT_KEY4 = B.PYMT_KEY4
+   AND B.PIN_NUM = P.PIN_NUM
+   AND B.CAL_ID = CALEN.CAL_ID
+   AND B.GP_PAYGROUP = CALEN.GP_PAYGROUP
+  !Begin Resolution 726785
+   AND A.SLICE_END_DT between $Tax_Yr_Start AND $Tax_Yr_End
+  !End Resolution 726785
+end-select
+
+  Do Sort-Array
+  DO Print-LumpELetter-Data
+  graphic () font 5 10
+
+end-Procedure
+
+!******************************************************************
+! Gets Pay Entity data that needs printed on the group cert.
+!******************************************************************
+begin-procedure Get-Payer-Data
+
+begin-SELECT
+PYR.ADDRESS1
+PYR.ADDRESS2
+PYR.CITY
+PYR.POSTAL
+      let $PYRAddress1 = rtrim(&PYR.ADDRESS1, ' ')
+      let $PYRAddress2 = rtrim(&PYR.ADDRESS2, ' ')
+      let $CityPCode = rtrim(&PYR.CITY,' ') || ' ' || &PYR.POSTAL
+FROM  PS_GP_PYENT_DTL PYR
+WHERE PYR.PAY_ENTITY = $Pay_Entity
+AND PYR.EFFDT = (SELECT MAX(PYR1.EFFDT)
+                  FROM   PS_GP_PYENT_DTL PYR1
+                  WHERE  PYR1.PAY_ENTITY = PYR.PAY_ENTITY
+                  AND    PYR1.EFFDT  <= $Tax_Yr_End)
+AND PYR.EFF_STATUS = 'A'
+end-SELECT
+
+end-procedure  Get-Payer-Data
+
+!******************************************************************
+! Data for lump E letter.
+!******************************************************************
+begin-procedure Print-LumpELetter-Data
+!**********************************************************
+  Let #i = 0
+   Let #Sum = 0
+   Let #Summation = 0
+
+  while #i < #counter
+
+  get $accrued_year1 #LumpE_Amount1 from Accrued_Yr(#i) accrued_year LumpE_Amount
+
+  Let #j = #i + 1
+  Let #Sum = 0
+  Let #Sum = #Sum + #LumpE_Amount1
+  while #j < #counter
+
+   get $accrued_year2 #LumpE_Amount2 from Accrued_Yr(#j) accrued_year LumpE_Amount
+   if $accrued_year1 = $accrued_year2
+    Let #LumpE_Amount1 = #Sum + #LumpE_Amount2
+    Let #Sum = #LumpE_Amount1
+    Let Accrued_Yr.accrued_year(#j) = '0'
+    Let Accrued_Yr.LumpE_Amount(#j) = 0
+    end-if
+      Let #j = #j + 1
+  end-while
+
+  if Accrued_Yr.accrued_year(#i) <> '0'
+   Print $accrued_year1    (+1,12)
+   Print #LumpE_Amount1    (0,42)  edit '99999999999.99'
+   end-if
+  Let #i = #i + 1
+  end-while
+  Do Initialize-Array-Vars
+  Let #i = 0
+  Let #j = 0
+  end-procedure  Print-LumpELetter-Data
+
+
+!**********************************************************************
+!*       Sort Array                                                   *
+!**********************************************************************
+
+begin-procedure Sort-Array
+
+let #ARRmax  = #counter
+let #SORTptr = 0
+
+while #SORTptr < #ARRmax
+
+   let #SCANptr = #SORTptr + 1
+
+        get $accrued_year1 #LumpE_Amount1 from Accrued_Yr(#SORTptr) accrued_year LumpE_Amount
+
+   while #SCANptr < #ARRmax
+
+        get $accrued_year2 #LumpE_Amount2 from Accrued_Yr(#SCANptr) accrued_year LumpE_Amount
+
+
+      if  ($accrued_year1 > $accrued_year2)
+        or  ($accrued_year1 = $accrued_year2)
+
+
+        put $accrued_year1 #LumpE_Amount1 into Accrued_Yr(#SCANptr) accrued_year LumpE_Amount
+
+        put $accrued_year2 #LumpE_Amount2 into Accrued_Yr(#SORTptr) accrued_year LumpE_Amount
+
+          let $accrued_year1 =  $accrued_year2
+          let #LumpE_Amount1 =  #LumpE_Amount2
+
+      end-if
+
+      let #SCANptr = #SCANptr + 1
+
+   end-while
+
+   let #SORTptr = #SORTptr + 1
+
+end-while
+
+end-procedure

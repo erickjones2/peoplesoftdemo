@@ -1,0 +1,1819 @@
+!***********************************************************************
+!  TAX951LD: Load 1042-S Year End Data
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2018, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  27579294                                            !
+!                                                                      *
+!***********************************************************************
+! This program is specific to HRMS for Public Sector.                  *
+!***********************************************************************
+
+#include 'setenv.sqc'   ! set environment
+#include 'usarpt.sqc'   ! NID_COUNTRY defined
+
+begin-setup
+
+#include 'pfrm1042.sqc' ! 1042 Form Layout selection
+                        ! Edit this file to direct output to printer
+#include 'setupdb.sqc'  ! Database specific setup
+
+end-setup
+
+!***********************************************************************
+begin-report
+  do Init-Report
+
+  do Process-1042S-Company
+
+  if $Parm_ProcOptn = 'I' or $Parm_ProcOptn = 'C'
+      let $UpdateClause = 'AND COMPANY IN ' || $CompanyList
+      do Update-Xref-Rec-by-Comp (#Parm_TaxYear, 'N', $UpdateClause)
+  else
+      do Update-Xref-Rec-by-EE (#Parm_TaxYear, 'N')
+  end-if
+
+  do Delete-Temp-Work-Records
+  do Delete-Run-Control
+
+  do Stdapi-Term
+end-report
+
+
+!***********************************************************************
+begin-procedure Init-Report
+  move 'TAX951LD' to $ReportID
+  move 'Load 1042-S Year End Data' to $ReportTitle
+  display ' '
+  display $ReportTitle
+  display ' '
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Calendar-Year-Id
+  do Get-Current-DateTime
+  do Stdapi-Init
+
+  Create-array name=Company_Total  Size = 20
+        field=Company:Char
+        field=CompanyName:Char
+        field=1042sCount:Number
+        field=GrossIncome:Number
+        field=Taxes:Number
+
+  Clear-Array name=Company_Total
+
+  do Get-Parameters
+  do Prepare-Load
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-Parameters
+! Description:
+!   This routine gets the run control parameters
+!***********************************************************************
+begin-procedure Get-Parameters
+
+begin-SELECT
+RC.TAX_YEAR
+RC.TRANSMITTER
+RC.PY_1042S_PROC_OPTN
+
+  let #Parm_TaxYear     = &RC.TAX_YEAR
+  let $Parm_Transmitter = RTRIM(&RC.TRANSMITTER, ' ')
+  let $Parm_ProcOptn    = RTRIM(&RC.PY_1042S_PROC_OPTN, ' ')
+
+FROM PS_RC_LD_YE_1042 RC
+WHERE RC.OPRID       = $Prcs_OprID
+  AND RC.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-SELECT
+
+  move #Parm_TaxYear to $Parm_TaxYear 9999
+  let $YEDate = $Parm_TaxYear || '-12' || '-31'
+  do Convert-From-DTU-Date($YEDate, $CompYEDate)
+
+  let $IRS_Date = $Parm_TaxYear || '0101'
+  do Format-DateTime($IRS_Date, $IRS_Date, {DEFCMP}, '', 'native')
+
+  let $First_Company = 'Y'
+  let #Comp_Cnt = 0
+
+  do Get-Transmitter-Information
+
+  evaluate $Parm_ProcOptn
+     when = 'C'
+          do Select-Company-Parm
+          break
+     when = 'E'
+          do Select-EE-Company-Parm
+          break
+     when = 'I'
+          do Get-Transmitter-Company
+          break
+     when-other
+          break
+  end-evaluate
+
+  do Format-Select-Parms
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Get-Transmitter-Information
+
+begin-SELECT
+TRMCTL.TRANSMIT_CNTRL_COD
+
+  let $TransmitterCntrlCd = ltrim(rtrim(&TRMCTL.TRANSMIT_CNTRL_COD, ' '),' ')
+
+FROM PS_PY_1042S_TRMCTL TRMCTL
+WHERE TRMCTL.TAX_YEAR    = #Parm_TaxYear
+  AND TRMCTL.TRANSMITTER = $Parm_Transmitter
+end-SELECT
+
+  if isNull($TransmitterCntrlCd)
+      let $TransmitterCntrlCd = ' '
+  end-if
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Select-Company-Parm
+
+begin-SELECT
+RCC.COMPANY
+
+  let $Parm_Company = RTRIM(&RCC.COMPANY, ' ')
+  if not isnull($Parm_Company)
+      do Add-to-Company-Array
+  end-if
+
+FROM PS_RC_LD_YE_SEL RCC
+WHERE RCC.OPRID       = $Prcs_OprID
+  AND RCC.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-SELECT
+
+end-procedure
+
+!*****************************************************
+begin-procedure Select-EE-Company-Parm
+
+begin-SELECT DISTINCT
+RCEJ.COMPANY
+
+  let $Parm_Company = RTRIM(&RCEJ.COMPANY, ' ')
+  if not isnull($Parm_Company)
+      do Add-to-Company-Array
+  end-if
+
+FROM PS_RC_LD_YE_SEL RCE, PS_JOB RCEJ, PS_PY_1042S_TRMCOM RCET
+WHERE RCE.OPRID        = $Prcs_OprID
+  AND RCE.RUN_CNTL_ID  = $Prcs_Run_Cntl_ID
+  AND RCE.EMPLID       = RCEJ.EMPLID
+  AND RCEJ.EFFDT       = (SELECT MAX(RCEJ1.EFFDT) FROM PS_JOB RCEJ1
+                           WHERE RCEJ1.EMPLID   = RCEJ.EMPLID
+                             AND RCEJ1.EMPL_RCD = RCEJ.EMPL_RCD
+                             AND RCEJ1.EFFDT   <= $CompYEDate)
+  AND RCEJ.EFFSEQ      = (SELECT MAX(RCEJ2.EFFSEQ) FROM PS_JOB RCEJ2
+                           WHERE RCEJ2.EMPLID   = RCEJ.EMPLID
+                             AND RCEJ2.EMPL_RCD = RCEJ.EMPL_RCD
+                             AND RCEJ2.EFFDT    = RCEJ.EFFDT)
+  AND RCET.TAX_YEAR    = #Parm_TaxYear
+  AND RCET.TRANSMITTER = $Parm_Transmitter
+  AND RCET.COMPANY     = RCEJ.COMPANY
+end-SELECT
+
+end-procedure
+
+!*****************************************************
+begin-procedure Get-Transmitter-Company
+
+begin-SELECT
+TC.COMPANY
+
+  let $Parm_Company = RTRIM(&TC.COMPANY, ' ')
+  if not isnull($Parm_Company)
+      do Add-to-Company-Array
+  end-if
+
+FROM PS_PY_1042S_TRMCOM TC
+WHERE TC.TAX_YEAR = #Parm_TaxYear
+  AND TC.TRANSMITTER = $Parm_Transmitter
+
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Add-to-Company-Array
+! Description:
+!***********************************************************************
+begin-procedure Add-to-Company-Array
+
+  Put $Parm_Company ' ' 0 0 0
+  Into Company_Total(#Comp_Cnt) Company CompanyName 1042sCount GrossIncome Taxes
+
+  add 1 to #Comp_Cnt
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Format-Select-Parms
+
+  let $CompanyList = ''
+  let #CompIdx = 0
+  let #LastComp = #Comp_Cnt - 1
+  while #CompIdx < #Comp_Cnt
+      Get $Parm_Company From Company_Total(#CompIdx) Company
+
+      if #CompIdx = #LastComp
+          let $CompanyList = $CompanyList || '''' || $Parm_Company || ''''
+      else
+          let $CompanyList = $CompanyList || '''' || $Parm_Company || '''' || ', '
+      end-if
+
+      add 1 to #CompIdx
+  end-while
+
+  let $CompanyList = '(' || $CompanyList || ')'
+
+  let $FromClause1  = ''
+  let $WhereClause1 = ''
+  let $FromClause2  = ''
+  let $WhereClause2 = ''
+  let $FromClause3  = ''
+  let $WhereClause3 = ''
+
+  if $Parm_ProcOptn = 'E'
+
+      let $FromClause1  = ', PS_RC_LD_YE_SEL RS1'
+      let $WhereClause1 = 'AND RS1.OPRID = ' || '''' || $Prcs_OprID || '''' || ' ' ||
+                          'AND RS1.RUN_CNTL_ID = ' || '''' || $Prcs_Run_Cntl_ID || '''' || ' ' ||
+                          'AND RS1.EMPLID = TB1.EMPLID'
+
+      let $FromClause2  = ', PS_RC_LD_YE_SEL RS2'
+      let $WhereClause2 = 'AND RS2.OPRID = ' || '''' || $Prcs_OprID || '''' || ' ' ||
+                          'AND RS2.RUN_CNTL_ID = ' || '''' || $Prcs_Run_Cntl_ID || '''' || ' ' ||
+                          'AND RS2.EMPLID = XR.EMPLID'
+
+      let $FromClause3  = ', PS_RC_LD_YE_SEL RS3'
+      let $WhereClause3 = 'AND RS3.OPRID = ' || '''' || $Prcs_OprID || '''' || ' ' ||
+                          'AND RS3.RUN_CNTL_ID = ' || '''' || $Prcs_Run_Cntl_ID || '''' || ' ' ||
+                          'AND RS3.EMPLID = TR.EMPLID'
+  end-if
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Prepare-Load
+
+  do Identify-Missing-Xref
+
+  if $Parm_ProcOptn = 'I' or $Parm_ProcOptn = 'C'
+      let $UpdateClause = 'AND COMPANY IN ' || $CompanyList
+      do Update-Xref-Rec-by-Comp (#Parm_TaxYear, 'Y', $UpdateClause)
+
+      do Reset-YE-Records-by-Comp
+  else
+      do Update-Xref-Rec-by-EE (#Parm_TaxYear, 'Y')
+
+      do Reset-YE-Records-by-EE
+  end-if
+
+  do Commit-Transaction
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Identify-Missing-Xref
+! Description:
+!***********************************************************************
+begin-procedure Identify-Missing-Xref
+
+  do Delete-Temp-Work-Records
+
+  do Remove-Transfer-In-XREF
+
+  let $err-statement1 = 'TAX951LD, Insert Error - Identify-Missing-Xref 1'
+  let $err-statement2 = 'Key Values: TABLE: PS_R_TAX951LD'
+
+begin-SQL
+INSERT INTO PS_R_TAX951LD (TAX_YEAR,
+                           COMPANY,
+                           EMPLID,
+                           COUNTRY,
+                           INCOME_CD_1042,
+                           TAX_RT,
+                           PY_FORM_ID,
+                           IRS_INCOME_CD_1042,
+                           PY_NEW_FORM)
+SELECT TB1.BALANCE_YEAR,
+       TB1.COMPANY,
+       TB1.EMPLID,
+       TB1.COUNTRY,
+       TB1.INCOME_CD_1042,
+       TB1.TAX_RT,
+       0,
+       IC1.IRS_INCOME_CD_1042,
+       'Y'
+FROM PS_TAX1042_BALANCE TB1, PS_INC_CD_1042_TBL IC1 [$FromClause1]
+WHERE TB1.BALANCE_ID     = $Calendar_Year_Id
+  AND TB1.BALANCE_YEAR   = #Parm_TaxYear
+  AND TB1.STATE          = '$U'
+  AND TB1.COMPANY IN [$CompanyList]
+  AND TB1.INCOME_CD_1042 = IC1.INCOME_CD_1042
+  AND IC1.EFFDT          = (SELECT MAX(IC11.EFFDT) FROM PS_INC_CD_1042_TBL IC11
+                             WHERE IC11.INCOME_CD_1042 = IC1.INCOME_CD_1042
+                               AND IC11.EFFDT         <= $IRS_Date)
+  AND TB1.BALANCE_PERIOD = (SELECT MAX(TB11.BALANCE_PERIOD) FROM PS_TAX1042_BALANCE TB11
+                             WHERE TB11.EMPLID         = TB1.EMPLID
+                               AND TB11.COMPANY        = TB1.COMPANY
+                               AND TB11.BALANCE_ID     = TB1.BALANCE_ID
+                               AND TB11.BALANCE_YEAR   = TB1.BALANCE_YEAR
+                               AND TB11.STATE          = TB1.STATE
+                               AND TB11.COUNTRY        = TB1.COUNTRY
+                               AND TB11.INCOME_CD_1042 = TB1.INCOME_CD_1042
+                               AND TB11.TAX_RT         = TB1.TAX_RT)
+  AND NOT EXISTS (SELECT 'X' FROM PS_PY_1042S_XREF X1
+                   WHERE X1.TAX_YEAR       = TB1.BALANCE_YEAR
+                     AND X1.EMPLID         = TB1.EMPLID
+                     AND X1.COMPANY        = TB1.COMPANY
+                     AND X1.COUNTRY        = TB1.COUNTRY
+                     AND X1.INCOME_CD_1042 = TB1.INCOME_CD_1042
+                     AND X1.TAX_RT         = TB1.TAX_RT)
+[$WhereClause1]
+end-SQL
+
+begin-SELECT
+COUNT(*) &Add_Xref
+FROM PS_R_TAX951LD
+end-SELECT
+
+  let $err-statement1 = 'TAX951LD, Insert Error - Identify-Missing-Xref 2'
+  let $err-statement2 = 'Key Values: TABLE: PS_R_TAX951LD'
+
+begin-SQL
+INSERT INTO PS_R_TAX951LD (TAX_YEAR,
+                           COMPANY,
+                           EMPLID,
+                           COUNTRY,
+                           INCOME_CD_1042,
+                           TAX_RT,
+                           PY_FORM_ID,
+                           IRS_INCOME_CD_1042,
+                           PY_NEW_FORM)
+SELECT XR.TAX_YEAR,
+       XR.COMPANY,
+       XR.EMPLID,
+       XR.COUNTRY,
+       XR.INCOME_CD_1042,
+       XR.TAX_RT,
+       XR.PY_FORM_ID,
+       XR.IRS_INCOME_CD_1042,
+       'N'
+FROM PS_PY_1042S_XREF XR [$FromClause2]
+WHERE XR.TAX_YEAR = #Parm_TaxYear
+  AND XR.COMPANY IN [$CompanyList]
+[$WhereClause2]
+end-SQL
+
+  let #IncrFormID = &Add_Xref
+  if #IncrFormID > 0
+      do Read-YearEnd-Control
+      do Update-YearEnd-Control
+      do Commit-Transaction
+
+      do Add-Missing-Xref
+      do Commit-Transaction
+  end-if
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Add-Missing-Xref
+! Description:
+!***********************************************************************
+begin-procedure Add-Missing-Xref
+
+begin-SELECT
+TW.EMPLID
+TW.COMPANY
+TW.COUNTRY
+TW.IRS_INCOME_CD_1042
+TW.TAX_RT
+TW.INCOME_CD_1042
+
+  let $EmplID        = RTRIM(&TW.EMPLID, ' ')
+  let $ProcCompany   = RTRIM(&TW.COMPANY, ' ')
+  let $EECountry     = RTRIM(&TW.COUNTRY, ' ')
+  let $IRSIncomeCd   = RTRIM(&TW.IRS_INCOME_CD_1042, ' ')
+  let #TaxRt         = &TW.TAX_RT
+  let $IncomeCd      = RTRIM(&TW.INCOME_CD_1042, ' ')
+  do Get-2char-Country-Code($EECountry, $CountryCd)
+
+  let #lastFormID = #lastFormID + 1
+  let #FormID = #lastFormID
+  do Insert-Xref-Rec
+
+FROM PS_R_TAX951LD TW
+WHERE TW.PY_NEW_FORM = 'Y'
+end-SELECT
+
+  let $err-statement1 = 'TAX951LD, Update Error - Add-Missing-Xref'
+  let $err-statement2 = 'Key Values: TABLE: PS_R_TAX951LD'
+
+begin-SQL
+UPDATE PS_R_TAX951LD
+SET PS_R_TAX951LD.PY_FORM_ID = (SELECT X2.PY_FORM_ID FROM PS_PY_1042S_XREF X2
+                                 WHERE X2.TAX_YEAR           = PS_R_TAX951LD.TAX_YEAR
+                                   AND X2.EMPLID             = PS_R_TAX951LD.EMPLID
+                                   AND X2.COMPANY            = PS_R_TAX951LD.COMPANY
+                                   AND X2.COUNTRY            = PS_R_TAX951LD.COUNTRY
+                                   AND X2.IRS_INCOME_CD_1042 = PS_R_TAX951LD.IRS_INCOME_CD_1042
+                                   AND X2.TAX_RT             = PS_R_TAX951LD.TAX_RT)
+WHERE PS_R_TAX951LD.PY_NEW_FORM = 'Y'
+end-SQL
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Remove-Transfer-In-XREF
+! Description:
+!***********************************************************************
+begin-procedure Remove-Transfer-In-XREF
+
+begin-SELECT
+TR.PY_FORM_ID
+
+  let #PYFormID              = &TR.PY_FORM_ID
+  do Delete-XREF
+
+FROM PS_PY_1042S_XREF TR [$FromClause3]
+WHERE TR.TAX_YEAR = #Parm_TaxYear
+  AND TR.COMPANY IN [$CompanyList]
+  AND NOT EXISTS (SELECT 'X' FROM PS_TAX1042_BALANCE TB2
+                   WHERE TB2.EMPLID         = TR.EMPLID
+                     AND TB2.COMPANY        = TR.COMPANY
+                     AND TB2.BALANCE_ID     = $Calendar_Year_Id
+                     AND TB2.BALANCE_YEAR   = TR.TAX_YEAR
+                     AND TB2.STATE          = '$U'
+                     AND TB2.COUNTRY        = TR.COUNTRY
+                     AND TB2.INCOME_CD_1042 = TR.INCOME_CD_1042)
+
+[$WhereClause3]
+end-SELECT
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Delete-XREF
+! Description:
+!***********************************************************************
+begin-procedure Delete-XREF
+
+  move #Parm_TaxYear    to $DispTaxYear 9999
+  move #PYFormID        to $DispFormID  9999999999
+
+  let $err-statement1 = 'TAX951LD, Delete Error - Delete-XREF'
+  let $err-statement2 = 'Key Values: TABLE: PS_PY_1042S_XREF'      ||
+                         ', TAX YEAR:'          || $DispTaxYear    ||
+                         ', PY_FORM_ID:'        || $DispFormID
+
+begin-SQL on-error=Error-Display
+
+DELETE PS_PY_1042S_XREF
+WHERE TAX_YEAR   = #Parm_TaxYear
+  AND PY_FORM_ID = #PYFormID
+end-SQL
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Get-2char-Country-Code
+! Description:
+!***********************************************************************
+begin-procedure Get-2char-Country-Code ($CntryCd_3char, :$CntryCd_2char)
+
+  let $CntryCd_2char = ' '
+
+begin-SELECT
+CNTY2.COUNTRY_CD_1042
+
+  let $CntryCd_2char = &CNTY2.COUNTRY_CD_1042
+
+FROM PS_CNTRY_1042_TBL CNTY2
+WHERE CNTY2.COUNTRY = $CntryCd_3char
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Process-1042S-Company
+! Description:
+!***********************************************************************
+begin-procedure Process-1042S-Company
+
+  if $Parm_ProcOptn = 'I'
+      let $ProcCompany = $Parm_Transmitter
+      do Get-Company-Data
+      do Get-Contact-Info
+      do Insert-YE-Transmitter
+  end-if
+
+let $lastEmplID = ''
+begin-SELECT
+WK1.EMPLID
+WK1.COMPANY
+
+  let $EmplID = &WK1.EMPLID
+  if $EmplID <> $lastEmplID
+      let $ProcCompany = &WK1.COMPANY
+      let #EmplWarnSeq = 0
+      do Get-Employee-Data
+      do Insert-YE-Employee
+      let $lastEmplID = $EmplID
+  end-if
+
+FROM PS_R_TAX951LD WK1
+WHERE NOT EXISTS (SELECT 'X' FROM PS_PY_1042S_YE_EE EE
+                  WHERE EE.TAX_YEAR = #Parm_TaxYear
+                    AND EE.EMPLID = WK1.EMPLID)
+ORDER BY WK1.EMPLID
+end-SELECT
+
+  if $Parm_ProcOptn = 'I' or $Parm_ProcOptn = 'C'
+      let #CompIdx = 0
+      while #CompIdx < #Comp_Cnt
+          Get $ProcCompany From Company_Total(#CompIdx) Company
+
+          if $ProcCompany = $Parm_Transmitter
+              if $Parm_ProcOptn = 'C'
+                  do Get-Company-Data
+                  do Get-Contact-Info
+                  do Insert-YE-Transmitter
+              end-if
+          else
+              do Get-Company-Data
+              do Get-Contact-Info
+              do Insert-YE-Company
+          end-if
+
+          let #Comp1042sTotal = 0
+          let #CompGrsInc     = 0
+          let #CompTaxes      = 0
+
+          do Process-1042S
+          Put $CompanyName #Comp1042sTotal #CompGrsInc #CompTaxes Into Company_Total(#CompIdx) CompanyName 1042sCount GrossIncome Taxes
+
+          add 1 to #CompIdx
+      end-while
+  else
+      let #CompIdx = 0
+      while #CompIdx < #Comp_Cnt
+          Get $ProcCompany From Company_Total(#CompIdx) Company
+
+          do Get-Company-Data
+
+          let #Comp1042sTotal = 0
+          let #CompGrsInc     = 0
+          let #CompTaxes      = 0
+
+          do Process-1042S
+          Put $CompanyName #Comp1042sTotal #CompGrsInc #CompTaxes Into Company_Total(#CompIdx) CompanyName 1042sCount GrossIncome Taxes
+
+          add 1 to #CompIdx
+      end-while
+  end-if
+
+  do Print-Summary
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Process-1042S
+! Description:
+!***********************************************************************
+begin-procedure Process-1042S
+
+  let $PrevEmplID = ' '
+
+begin-SELECT
+WK2.EMPLID
+WK2.COUNTRY
+WK2.INCOME_CD_1042
+WK2.TAX_RT
+WK2.PY_FORM_ID
+WK2.IRS_INCOME_CD_1042
+TXB.TXGRS_1042_YTD
+TXB.WH_ALLOW_YTD
+TXB.TAX_1042_YTD
+TXB.EXEMPT_CD_1042
+EC.IRS_EXEMPT_CD_1042
+TXB.TAX1042_REFUND
+
+  let $EmplID     = &WK2.EMPLID
+  if $PrevEmplID <> $EmplID
+
+      let $State          = ' '
+      let $EmplerID       = ' '
+      let #StateBalTax    = 0
+
+      do Check-For-Federal-Withholdings
+      if $W2_Produced = 'N'
+          do Get-State-Withholdings
+      end-if
+      do Get-State-NRAlien-Withholdings
+
+      if #StateBalTax    = 0
+          let #StateBalTax    = 0
+          let $State          = ' '
+          let $EmplerID       = ' '
+      end-if
+
+      let $PrevEmplID = $EmplID
+  end-if
+
+  let #TaxWarnSeq = 0
+  let $Country             = &WK2.COUNTRY
+  let $IncomeCd1042        = &WK2.INCOME_CD_1042
+  let $IRSIncomeCd1042     = &WK2.IRS_INCOME_CD_1042
+  let #TaxRt               = &WK2.TAX_RT
+  let #FormID              = &WK2.PY_FORM_ID
+  let #BalTxGrs            = &TXB.TXGRS_1042_YTD
+  let #BalWHAllow          = &TXB.WH_ALLOW_YTD
+  let #BalTax              = &TXB.TAX_1042_YTD
+  let $ExemptCd            = &TXB.EXEMPT_CD_1042
+  let $IRSExemptCd         = &EC.IRS_EXEMPT_CD_1042
+  let #BalRefund           = &TXB.TAX1042_REFUND
+
+  do Process-1042S-data
+
+  let #Comp1042sTotal = #Comp1042sTotal + 1
+  let #CompGrsInc     = #CompGrsInc + #BalTxGrs
+  let #CompTaxes      = #CompTaxes + #BalTax
+  do Insert-YE-Tax
+
+FROM PS_R_TAX951LD WK2, PS_TAX1042_BALANCE TXB, PS_EXM_CD_1042_TBL EC
+WHERE WK2.TAX_YEAR       = $Parm_TaxYear
+  AND WK2.COMPANY        = $ProcCompany
+  AND WK2.EMPLID         = TXB.EMPLID
+  AND WK2.COMPANY        = TXB.COMPANY
+  AND TXB.BALANCE_ID     = $Calendar_Year_Id
+  AND TXB.BALANCE_YEAR   = WK2.TAX_YEAR
+  AND TXB.STATE          = '$U'
+  AND TXB.COUNTRY        = WK2.COUNTRY
+  AND TXB.INCOME_CD_1042 = WK2.INCOME_CD_1042
+  AND TXB.TAX_RT         = WK2.TAX_RT
+  AND TXB.BALANCE_PERIOD = (SELECT MAX(TXB2.BALANCE_PERIOD) FROM PS_TAX1042_BALANCE TXB2
+                             WHERE TXB2.EMPLID         = TXB.EMPLID
+                               AND TXB2.COMPANY        = TXB.COMPANY
+                               AND TXB2.BALANCE_YEAR   = TXB.BALANCE_YEAR
+                               AND TXB2.BALANCE_ID     = TXB.BALANCE_ID
+                               AND TXB2.STATE          = TXB.STATE
+                               AND TXB2.COUNTRY        = TXB.COUNTRY
+                               AND TXB2.INCOME_CD_1042 = TXB.INCOME_CD_1042
+                               AND TXB2.TAX_RT         = TXB.TAX_RT)
+  AND EC.EXEMPT_CD_1042  = TXB.EXEMPT_CD_1042
+  AND EC.EFFDT           = (SELECT MAX(EC1.EFFDT) FROM PS_EXM_CD_1042_TBL EC1
+                             WHERE EC1.EXEMPT_CD_1042 = EC.EXEMPT_CD_1042
+                               AND EC1.EFFDT         <= $IRS_Date)
+ORDER BY WK2.EMPLID
+end-SELECT
+
+
+begin-SQL
+UPDATE PS_PY_1042S_YE_TAX
+SET PS_PY_1042S_YE_TAX.PY_REVIEW_MSG = 'Y'
+WHERE EXISTS (SELECT 'X' FROM PS_PY_1042S_MSG MSG
+               WHERE MSG.TAX_YEAR    = PS_PY_1042S_YE_TAX.TAX_YEAR
+                 AND MSG.PY_FORM_ID  = PS_PY_1042S_YE_TAX.PY_FORM_ID
+                 AND MSG.PY_AMEND_NO = PS_PY_1042S_YE_TAX.PY_AMEND_NO)
+end-SQL
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Process-1042S-Data
+! Description:
+!***********************************************************************
+begin-procedure Process-1042S-Data
+
+  let $CountryCd = ''
+  do Get-2char-Country-Code($Country, $CountryCd)
+  if isNull(ltrim(rtrim($CountryCd, ' '), ' '))
+      let #TaxWarnSeq = #TaxWarnSeq + 1
+      do Insert-WarnMsg-Rec (#Parm_TaxYear, #FormID, 'T', #TaxWarnSeq, 'W', 'INV COUNTRY', ' ', ' ')
+  end-if
+
+  if #BalTax = 0 and #BalTxGrs = 0 and #BalWHAllow = 0 and #BalRefund = 0
+      let #TaxWarnSeq = #TaxWarnSeq + 1
+      do Insert-WarnMsg-Rec (#Parm_TaxYear, #FormID, 'T',#TaxWarnSeq, 'W', 'ZERO BAL', ' ', ' ')
+  end-if
+
+  if #BalTxGrs < 0
+      let #TaxWarnSeq = #TaxWarnSeq + 1
+      do Insert-WarnMsg-Rec (#Parm_TaxYear, #FormID, 'T', #TaxWarnSeq, 'W', 'NEG TXGRS', ' ', ' ')
+      let #BalTxGrs = 0
+  end-if
+
+  if #BalWHAllow < 0
+      let #TaxWarnSeq = #TaxWarnSeq + 1
+      do Insert-WarnMsg-Rec (#Parm_TaxYear, #FormID, 'T', #TaxWarnSeq, 'W', 'NEG WHALW', ' ', ' ')
+      let #BalWHAllow = 0
+  end-if
+
+  if #BalTax < 0
+      let #TaxWarnSeq = #TaxWarnSeq + 1
+      do Insert-WarnMsg-Rec (#Parm_TaxYear, #FormID, 'T', #TaxWarnSeq, 'W', 'NEG TAX AMT', ' ', ' ')
+      let #BalTax = 0
+  end-if
+
+  if #BalRefund < 0
+      let #TaxWarnSeq = #TaxWarnSeq + 1
+      do Insert-WarnMsg-Rec (#Parm_TaxYear, #FormID, 'T', #TaxWarnSeq, 'W', 'NEG REFUND', ' ', ' ')
+      let #BalRefund = 0
+  end-if
+
+  if #StateBalTax < 0
+      let #TaxWarnSeq = #TaxWarnSeq + 1
+      do Insert-WarnMsg-Rec (#Parm_TaxYear, #FormID, 'T', #TaxWarnSeq, 'W', 'NEG STATE TAX', ' ', ' ')
+      let #StateBalTax = 0
+  end-if
+
+  if ($IRSIncomeCd1042 = '16' or $IRSIncomeCd1042 = '17') and #BalWHAllow > 0
+      if #BalWHAllow > #BalTxGrs
+          let #TaxWarnSeq = #TaxWarnSeq + 1
+          do Insert-WarnMsg-Rec (#Parm_TaxYear, #FormID, 'T', #TaxWarnSeq, 'W', 'NEG NETPAY', ' ', ' ')
+      end-if
+  end-if
+
+  if #TaxRt > 0 and $IRSExemptCd <> '00'
+      let #TaxWarnSeq = #TaxWarnSeq + 1
+      do Insert-WarnMsg-Rec (#Parm_TaxYear, #FormID, 'T', #TaxWarnSeq, 'W', 'DEF EXEMPT CD 00', ' ', ' ')
+  end-if
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Get-Company-Data
+! Description:
+!   This procedure looks up data from the COMPANY table, based upon
+!   the value found in $Company_Search
+!***********************************************************************
+begin-procedure Get-Company-Data
+
+begin-SELECT
+T.FEDERAL_EIN
+T.DESCR
+T.ADDRESS1
+T.ADDRESS2
+T.CITY
+T.STATE
+T.POSTAL
+T.COUNTRY
+
+  move &T.FEDERAL_EIN to #CompFedEIN
+  move &T.DESCR       to $CompanyName
+  move &T.ADDRESS1    to $CompAddr1
+  move &T.ADDRESS2    to $CompAddr2
+  move &T.CITY        to $CompCity
+  move &T.STATE       to $CompState
+  move &T.POSTAL      to $CompPostal
+  move &T.COUNTRY     to $CompCountry
+
+  let $CompanyName         = ltrim(rtrim($CompanyName, ' '),' ')
+  let $CompAddr1           = ltrim(rtrim($CompAddr1, ' '),' ')
+  let $CompAddr2           = ltrim(rtrim($CompAddr2, ' '),' ')
+  let $CompCity            = ltrim(rtrim($CompCity, ' '),' ')
+  let $CompState           = ltrim(rtrim($CompState, ' '),' ')
+  let $CompPostal          = ltrim(rtrim($CompPostal, ' '),' ')
+  let $CompCountry         = ltrim(rtrim($CompCountry,' '),' ')
+
+  if $CompanyName = ''
+      let $CompanyName = ' '
+  end-if
+  if $CompAddr1   = ''
+      let $CompAddr1 = ' '
+  end-if
+  if $CompAddr2   = ''
+      let $CompAddr2   = ' '
+  end-if
+  if $CompCity    = ''
+      let $CompCity    = ' '
+  end-if
+  if $CompState   = ''
+      let $CompState   = ' '
+  end-if
+  if $CompPostal  = ''
+      let $CompPostal  = ' '
+  end-if
+  if $CompCountry = ''
+      let $CompCountry = ' '
+  end-if
+
+  do Get-2char-Country-Code($CompCountry, $CompCountryCd)
+
+FROM PS_COMPANY_TBL T
+WHERE T.COMPANY = $ProcCompany
+  AND T.EFFDT = (SELECT MAX(T1.EFFDT) FROM PS_COMPANY_TBL T1
+                  WHERE T1.COMPANY = T.COMPANY
+                    AND T1.EFFDT <= $AsOfToday)
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-Contact-Info
+! Description:
+!   This procedure looks up data from the HP_1042S_PARAM table, based upon
+!   the value found in $Company_Search
+!***********************************************************************
+begin-procedure Get-Contact-Info
+
+begin-SELECT
+C.HP_CONTACT_NM_1042
+C.DEPT_TITLE
+C.CONTACT_PHONE
+C.CONTACT_PHONE_EXT
+C.HP_USE_WH_CONTACT
+C.HP_TRM_CONTACT_NM
+C.HP_TRM_CONTACT_PH
+C.HP_TRM_CONTACT_EXT
+C.HP_CH3_STATUS_CD
+
+  let $CompContactNM        = ltrim(rtrim(&C.HP_CONTACT_NM_1042,' '),' ')
+  let $CompDeptTitle        = ltrim(rtrim(&C.DEPT_TITLE,' '),' ')
+  if ltrim(rtrim(&C.CONTACT_PHONE_EXT, ' '),' ')  <> ''
+      let $CompContactPhone     = ltrim(rtrim(&C.CONTACT_PHONE, ' '),' ')  || ' ext ' || ltrim(rtrim(&C.CONTACT_PHONE_EXT, ' '),' ')
+  else
+      let $CompContactPhone     = ltrim(rtrim(&C.CONTACT_PHONE, ' '),' ')
+  end-if
+  let $Ch3StatusCd              = &C.HP_CH3_STATUS_CD
+
+  if $ProcCompany = $Parm_Transmitter
+      If &C.HP_USE_WH_CONTACT = 'Y'
+          let $TrmContactNM         = $CompContactNM
+          let $TrmContactPh         = $CompContactPhone
+      else
+          let $TrmContactNM         = ltrim(rtrim(&C.HP_TRM_CONTACT_NM,' '),' ')
+          if ltrim(rtrim(&C.HP_TRM_CONTACT_EXT, ' '),' ')  <> ''
+              let $TrmContactPh  = ltrim(rtrim(&C.HP_TRM_CONTACT_PH, ' '),' ') || ' ext ' || ltrim(rtrim(&C.HP_TRM_CONTACT_EXT, ' '),' ')
+          else
+              let $TrmContactPh  = ltrim(rtrim(&C.HP_TRM_CONTACT_PH, ' '),' ')
+          end-if
+      end-if
+  end-if
+
+  if $CompContactNM = ''
+      let $CompContactNM = ' '
+  end-if
+  if $CompDeptTitle= ''
+      let $CompDeptTitle = ' '
+  end-if
+  if $CompContactPhone = ''
+      let $CompContactPhone = ' '
+  end-if
+  if $TrmContactNM = ''
+      let $TrmContactNM = ' '
+  end-if
+  if $TrmContactPh = ''
+      let $TrmContactPh = ' '
+  end-if
+
+FROM PS_HP_1042S_PARAM C
+WHERE C.COMPANY = $ProcCompany
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-Employee-Data
+! Description:
+!   This procedure looks up data from PERSON_NAME, based upon procssing EMPLID.
+!   It also looks in FED_TAX_DATA (based on processing EMPLID and COMPANY)
+!   to see if the employee has a Taxpayer ID.  If so, this will be
+!   used as the Recipient TIN (Taxpayer Identification Number); otherwise,
+!   the SSN (National ID from PS_PERS_NID) is used.
+!***********************************************************************
+begin-procedure Get-Employee-Data
+
+begin-SELECT
+PER.NAME
+PND.NATIONAL_ID
+
+  let $EENameDisplay  = ltrim(rtrim(&PER.NAME,' '),' ')
+
+  Do Get-Empl-Address ($Emplid,'MAIL', $AddressFound)
+  if $AddressFound = 'N'
+      Do Get-Empl-Address ($Emplid,'HOME', $AddressFound)
+  end-if
+
+  let $EECountry  = $GETADDR_Country
+  let $EEAddr1    = $GETADDR_Address1
+  let $EEAddr2    = $GETADDR_Address2
+  let $EEAddr3    = $GETADDR_Address3
+  let $EEAddr4    = $GETADDR_Address4
+  let $EECity     = $GETADDR_CITY
+  let $EEState    = $GETADDR_STATE
+  let $EEPostal   = $GETADDR_POSTAL
+
+  let $EEAddr1    = ltrim(rtrim($EEAddr1, ' '), ' ')
+  let $EEAddr2    = ltrim(rtrim($EEAddr2, ' '), ' ')
+  let $EEAddr3    = ltrim(rtrim($EEAddr3, ' '), ' ')
+  let $EEAddr4    = ltrim(rtrim($EEAddr4, ' '), ' ')
+
+  if isNull($EEAddr1)
+      let $EEAddr1 = ' '
+  end-if
+  if isNull($EEAddr2)
+      let $EEAddr2 = ' '
+  end-if
+  if isNull($EEAddr3)
+      let $EEAddr3 = ' '
+  end-if
+  if isNull($EEAddr4)
+      let $EEAddr4 = ' '
+  end-if
+  if isNull($EECity)
+      let $EECity = ' '
+  end-if
+  if isNull($EEState)
+      let $EEState = ' '
+  end-if
+  if isNull($EEPostal)
+      let $EEPostal = ' '
+  end-if
+
+  do Get-2char-Country-Code($EECountry, $EECountryCD1042)
+
+FROM PS_NAMES PER, PS_PERS_NID PND
+WHERE PER.EMPLID           = $EmplID
+  AND PER.EMPLID           = PND.EMPLID
+  AND PER.NAME_TYPE        = 'PRI'
+  AND PER.EFFDT            = (SELECT MAX(PEX.EFFDT) FROM PS_NAMES PEX
+                               WHERE  PEX.EMPLID    = PER.EMPLID
+                                 AND  PEX.NAME_TYPE = PER.NAME_TYPE
+                                 AND  PEX.EFFDT    <= $AsOfToday)
+  AND PND.COUNTRY          = {NID_Country}
+  AND PND.NATIONAL_ID_TYPE = $Payroll_NID_Type
+end-SELECT
+
+begin-SELECT
+F.TAXPAYER_ID_NO
+FROM PS_FED_TAX_DATA F
+WHERE F.EMPLID  = $EmplID
+  AND F.COMPANY = $ProcCompany
+  AND F.EFFDT   = (SELECT MAX(F1.EFFDT) FROM PS_FED_TAX_DATA F1
+                    WHERE  F1.EMPLID  = F.EMPLID
+                      AND  F1.COMPANY = F.COMPANY
+                      AND  F1.EFFDT  <= $AsOfToday)
+end-SELECT
+
+  let $EENationalID = ltrim(rtrim(&PND.NATIONAL_ID,' '),' ')
+  let $EETaxPayerID = ltrim(rtrim(&F.TAXPAYER_ID_NO,' '),' ')
+
+  if isNull($EENationalID)
+      let $EENationalID = ' '
+      let #EmplWarnSeq = #EmplWarnSeq + 1
+      let $MsgTextID   = 'INV NATIONAL ID'
+      let $MsgEmplID   = $EmplID
+      let $MsgTxPayID  = ' '
+      do Generate-EE-WarnMsg
+  end-if
+
+  if isNull($EETaxPayerID)
+      let $EETaxPayerID = ' '
+      let #EmplWarnSeq = #EmplWarnSeq + 1
+      let $MsgTextID   = 'NO TIN'
+      let $MsgEmplID   = $EmplID
+      let $MsgTxPayID  = ' '
+      do Generate-EE-WarnMsg
+  else
+      let $valid_TaxPayerID = 'Y'
+      do Validate-TaxPayerID
+
+      if $valid_TaxPayerID = 'N'
+          let #EmplWarnSeq = #EmplWarnSeq + 1
+          let $MsgTextID   = 'INV TIN'
+          let $MsgEmplID   = $EmplID
+          let $MsgTxPayID  = $EETaxPayerID
+          do Generate-EE-WarnMsg
+      end-if
+  end-if
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Validate-TaxPayerID
+!***********************************************************************
+begin-procedure Validate-TaxPayerID
+
+  let #TIN_Length = length($EETaxPayerID)
+  let $Temp_TaxPayerID = ''
+  let #idx = 1
+  while #idx <= #TIN_Length and $valid_TaxPayerID = 'Y'
+      let $CheckChar = substr($EETaxPayerID, #idx, 1)
+      if $CheckChar <> '-'
+          if instr('0123456789',$CheckChar,1) = 0
+              let $valid_TaxPayerID = 'N'
+          else
+              let $Temp_TaxPayerID = $Temp_TaxPayerID || $CheckChar
+          end-if
+      end-if
+      add 1 to #idx
+  end-while
+
+  let $EETaxPayerID = $Temp_TaxPayerID
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Generate-EE-WarnMsg
+
+begin-SELECT
+EEWRK.PY_FORM_ID
+
+  let #FormID = &EEWRK.PY_FORM_ID
+  do Insert-WarnMsg-Rec (#Parm_TaxYear, #FormID, 'E', #EmplWarnSeq, 'W', $MsgTextID, $MsgEmplID, $MsgTxPayID)
+
+FROM PS_R_TAX951LD EEWRK
+WHERE EEWRK.EMPLID = $EmplID
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Check-For-Federal-Withholdings
+! Description:
+!   This procedure looks for the most recent record in TAX_BALANCES
+!   for the tax year being processed that specifies Federal withholdings.
+!   If this record is not found, or is found but has a YTD_TAX amount of
+!   zero or less, it means that a W2 will not be produced for that
+!   employee.
+!***********************************************************************
+begin-procedure Check-For-Federal-Withholdings
+
+let $W2_Produced = 'N'
+
+begin-SELECT
+FEDTAX.TAX_YTD
+
+  if &FEDTAX.TAX_YTD > 0
+    let $W2_Produced = 'Y'
+  end-if
+
+FROM PS_TAX_BALANCE FEDTAX
+WHERE FEDTAX.EMPLID         = $EmplID
+  AND FEDTAX.COMPANY        = $ProcCompany
+  AND FEDTAX.BALANCE_ID     = $Calendar_Year_Id
+  AND FEDTAX.BALANCE_YEAR   = #Parm_TaxYear
+  AND FEDTAX.STATE          = '$U'
+  AND FEDTAX.TAX_CLASS      = 'H'
+  AND FEDTAX.BALANCE_PERIOD = (SELECT MAX(FEDTAX1.BALANCE_PERIOD) FROM PS_TAX_BALANCE FEDTAX1
+                                WHERE FEDTAX1.EMPLID        = FEDTAX.EMPLID
+                                  AND FEDTAX1.COMPANY       = FEDTAX.COMPANY
+                                  AND FEDTAX1.BALANCE_ID    = FEDTAX.BALANCE_ID
+                                  AND FEDTAX1.BALANCE_YEAR  = FEDTAX.BALANCE_YEAR
+                                  AND FEDTAX1.STATE         = FEDTAX.STATE
+                                  AND FEDTAX1.LOCALITY      = FEDTAX.LOCALITY
+                                  AND FEDTAX1.TAX_CLASS     = FEDTAX.TAX_CLASS)
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-State-Withholdings
+! Description:
+!   This procedure checks in TAX_BALANCES to see if an employee has
+!   state withholdings for the tax year being processed.  If so, the
+!   state and withholdings amount are retrieved.
+!***********************************************************************
+begin-procedure Get-State-Withholdings
+
+begin-SELECT
+STTAX1.STATE
+STTAX1.TAX_YTD
+
+  let $State       = &STTAX1.STATE
+  let #StateBalTax = &STTAX1.TAX_YTD
+  do Get-State-Tax-Number
+
+FROM PS_TAX_BALANCE STTAX1
+WHERE STTAX1.EMPLID         = $EmplID
+  AND STTAX1.COMPANY        = $ProcCompany
+  AND STTAX1.BALANCE_ID     = $Calendar_Year_Id
+  AND STTAX1.BALANCE_YEAR   = #Parm_TaxYear
+  AND STTAX1.STATE NOT IN ('$U','$E','$UAS','$UGU','$UPR','$UVI')
+  AND STTAX1.LOCALITY  = ' '
+  AND STTAX1.TAX_CLASS = 'H'
+  AND STTAX1.BALANCE_PERIOD = (SELECT MAX(STTAX11.BALANCE_PERIOD) FROM PS_TAX_BALANCE STTAX11
+                                WHERE STTAX11.EMPLID        = STTAX1.EMPLID
+                                  AND STTAX11.COMPANY       = STTAX1.COMPANY
+                                  AND STTAX11.BALANCE_ID    = STTAX1.BALANCE_ID
+                                  AND STTAX11.BALANCE_YEAR  = STTAX1.BALANCE_YEAR
+                                  AND STTAX11.STATE         = STTAX1.STATE
+                                  AND STTAX11.LOCALITY      = STTAX1.LOCALITY
+                                  AND STTAX11.TAX_CLASS     = STTAX1.TAX_CLASS)
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-State-NRAlien-Withholdings
+! Description:
+!   This procedure checks in TAX_BALANCES to see if an employee has
+!   state NR Alien withholdings for the tax year being processed.  If
+!   so, the state and withholdings amount are retrieved and added to the
+!   state tax withholding amount.
+!***********************************************************************
+begin-procedure Get-State-NRAlien-Withholdings
+
+begin-SELECT
+STTAX2.STATE
+STTAX2.TAX_YTD
+
+  let $State           = &STTAX2.STATE
+  add &STTAX2.TAX_YTD to #StateBalTax
+  do Get-State-Tax-Number
+
+FROM PS_TAX_BALANCE STTAX2
+WHERE STTAX2.EMPLID         = $Emplid
+  AND STTAX2.COMPANY        = $ProcCompany
+  AND STTAX2.BALANCE_ID     = $Calendar_Year_Id
+  AND STTAX2.BALANCE_YEAR   = #Parm_TaxYear
+  AND STTAX2.STATE NOT IN ('$U','$E','$UAS','$UGU','$UPR','$UVI')
+  AND STTAX2.LOCALITY  = ' '
+  AND STTAX2.TAX_CLASS = 'A'
+  AND STTAX2.BALANCE_PERIOD = (SELECT MAX(STTAX21.BALANCE_PERIOD) FROM PS_TAX_BALANCE STTAX21
+                              WHERE STTAX21.EMPLID        = STTAX2.EMPLID
+                                AND STTAX21.COMPANY       = STTAX2.COMPANY
+                                AND STTAX21.BALANCE_ID    = STTAX2.BALANCE_ID
+                                AND STTAX21.BALANCE_YEAR  = STTAX2.BALANCE_YEAR
+                                AND STTAX21.STATE         = STTAX2.STATE
+                                AND STTAX21.LOCALITY      = STTAX2.LOCALITY
+                                AND STTAX21.TAX_CLASS     = STTAX2.TAX_CLASS)
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-State-Tax-Number
+! Description:
+!   This procedure gets the state tax number of the CO_STATETAX_TBL
+!   using the state found in Get-State-Withholdings
+!***********************************************************************
+begin-procedure Get-State-Tax-Number
+
+begin-SELECT
+CO.EMPLOYER_ID_SWT
+
+  let $EmplerID = &CO.EMPLOYER_ID_SWT
+
+FROM PS_CO_STATETAX_TBL CO
+WHERE CO.COMPANY = $ProcCompany
+  AND CO.STATE   = $State_For_Withholdings
+  AND CO.EFFDT   = (SELECT MAX(CO2.EFFDT) FROM PS_CO_STATETAX_TBL CO2
+                     WHERE CO2.COMPANY = CO.COMPANY
+                       AND CO2.STATE   = CO.STATE
+                       AND CO2.EFFDT  <= $AsOfToday)
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Print-Summary
+! Description:
+!   This procedure prints out control totals, which are used to fill
+!   out Form 1042.
+!***********************************************************************
+begin-procedure Print-Summary
+
+  display 'Control Totals for Loading Year End 1042-S'
+  display '------------------------------------------'
+  display ' '
+
+  evaluate $Parm_ProcOptn
+     when = 'I'
+          let $RunOptn = 'Initial Load / Reload All'
+          break
+     when = 'C'
+          let $RunOptn = 'Process Selected Companies'
+          break
+     when-other
+          let $RunOptn = 'Process Selected Employees'
+  end-evaluate
+
+  display $RunOptn
+
+  display ' '
+  display '                                             Total           Total            Total     '
+  display '  Company   Name                         1042-S Loaded    Gross Income    Taxes Withheld'
+  display '  -------   --------------------------   -------------   --------------   --------------'
+
+  let #CompIdx = 0
+  while #CompIdx < #Comp_Cnt
+
+       Get $ProcCompany
+           $CompanyName
+           #1042sCount
+           #GrossIncome
+           #Taxes
+       From Company_Total(#CompIdx)
+            Company
+            CompanyName
+            1042sCount
+            GrossIncome
+            Taxes
+
+        let $Disp_Total = '  '
+        let $ProcCompany = ltrim($ProcCompany,' ')
+        let $Disp_Total = $Disp_Total || substr($ProcCompany,1,3)
+        let $Disp_Total = rpad($Disp_Total,12,' ')
+
+        let $CompanyName = ltrim($CompanyName,' ')
+        let $Disp_Total = $Disp_Total || substr($CompanyName,1,26)
+        let $Disp_Total = rpad($Disp_Total,43,' ')
+
+        move #1042sCount  to $1042sCount 999,999,999
+        let #GrossIncome = round(#GrossIncome, 0)
+        move #GrossIncome to $GrossIncome 99,999,999,999
+        let #Taxes = round(#Taxes, 0)
+        move #Taxes       to $Taxes   99,999,999,999
+        let $Disp_Total = $Disp_Total || $1042sCount || '   ' || $GrossIncome || '   ' || $Taxes
+        display $Disp_Total
+
+        add 1 to #CompIdx
+  end-while
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Read-YearEnd-Control
+! Description:
+!   This procedure read Year End Control
+!***********************************************************************
+begin-procedure Read-YearEnd-Control
+
+begin-SELECT
+PY_LAST_FORM_ID
+
+  let #lastFormID = &PY_LAST_FORM_ID
+
+FROM PS_PY_1042S_YE_CTL
+WHERE TAX_YEAR = #Parm_TaxYear
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Update-YearEnd-Control
+! Description:
+!   This procedure update Year End Control
+!***********************************************************************
+begin-procedure Update-YearEnd-Control
+
+  move #Parm_TaxYear    to $DispTaxYear 9999
+  let  #updFormID = #lastFormID + #IncrFormID
+
+  let $err-statement1 = 'TAX951LD, Update Error - Update-YearEnd-Control'
+  let $err-statement2 = 'Bind Varables: TAX YEAR:'||$DispTaxYear
+
+begin-SQL on-error=Error-Display
+
+UPDATE PS_PY_1042S_YE_CTL SET PY_LAST_FORM_ID = #updFormID
+WHERE TAX_YEAR = #Parm_TaxYear
+end-SQL
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Insert-Xref-Rec
+! Description:
+!   This procedure insert Year End Cross Reference record
+!***********************************************************************
+begin-procedure Insert-Xref-Rec
+
+  move #Parm_TaxYear    to $DispTaxYear 9999
+  move #FormID          to $DispFormID  9999999999
+  move #TaxRt           to $DispTaxRt   9.999999
+
+  let $err-statement1 = 'TAX951LD, Insert Error - Insert-Xref-Rec'
+  let $err-statement2 = 'Key Values: TABLE: PS_PY_1042S_XREF'       ||
+                         ', TAX YEAR:'           || $DispTaxYear    ||
+                         ', PY_FORM_ID:'         || $DispFormID     ||
+                         ', EMPLID:'             || $EmplID         ||
+                         ', COMPANY:'            || $ProcCompany    ||
+                         ', COUNTRY:'            || $EECountry      ||
+                         ', IRS_INCOME_CD_1042:' || $IRSIncomeCd    ||
+                         ', TAX_RT:'             || $DispTaxRt
+
+begin-SQL on-error=Error-Display
+
+INSERT INTO PS_PY_1042S_XREF (TAX_YEAR,
+                              PY_FORM_ID,
+                              EMPLID,
+                              COMPANY,
+                              COUNTRY,
+                              IRS_INCOME_CD_1042,
+                              TAX_RT,
+                              INCOME_CD_1042,
+                              COUNTRY_CD_1042,
+                              PY_IN_PROGRESS)
+                      VALUES (#Parm_TaxYear,
+                              #FormID,
+                              $EmplID,
+                              $ProcCompany,
+                              $EECountry,
+                              $IRSIncomeCd,
+                              #TaxRt,
+                              $IncomeCd,
+                              $CountryCd,
+                              'Y')
+end-SQL
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Update-Xref-Rec-by-Comp
+! Description:
+!   This procedure update Year End Cross Reference Record
+!***********************************************************************
+begin-procedure Update-Xref-Rec-by-Comp (#inTaxYear, $UpdateValue, $UpdateWhere)
+
+  move #inTaxYear    to $DispTaxYear 9999
+
+  let $err-statement1 = 'TAX951LD, Update Error - Update-Xref-Rec-by-Comp'
+  let $err-statement2 = 'Bind Varables: TAX YEAR:'||$DispTaxYear ||
+                         ', WHERE CLAUSE:' || $UpdateWhere
+
+begin-SQL on-error=Error-Display
+
+UPDATE PS_PY_1042S_XREF SET PY_IN_PROGRESS = $UpdateValue
+WHERE TAX_YEAR = #inTaxYear
+[$UpdateWhere]
+end-SQL
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Update-Xref-Rec-by-EE
+! Description:
+!   This procedure update Year End Cross Reference Record
+!***********************************************************************
+begin-procedure Update-Xref-Rec-by-EE (#inTaxYear, $UpdateValue)
+
+  move #inTaxYear    to $DispTaxYear 9999
+
+  let $err-statement1 = 'TAX951LD, Update Error - Update-Xref-Rec-by-EE'
+  let $err-statement2 = 'Bind Varables: TAX YEAR:'||$DispTaxYear ||
+                         ', WHERE CLAUSE:' || $UpdateWhere
+
+begin-SQL on-error=Error-Display
+
+UPDATE PS_PY_1042S_XREF SET PY_IN_PROGRESS = $UpdateValue
+WHERE TAX_YEAR = #inTaxYear
+  AND EXISTS (SELECT 'X' FROM PS_R_TAX951LD TMP1
+              WHERE TMP1.TAX_YEAR   = PS_PY_1042S_XREF.TAX_YEAR
+                AND TMP1.PY_FORM_ID = PS_PY_1042S_XREF.PY_FORM_ID)
+end-SQL
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Insert-YE-Company
+! Description:
+!   This procedure insert Year End Company record
+!***********************************************************************
+begin-procedure Insert-YE-Company
+
+  move #Parm_TaxYear    to $DispTaxYear 9999
+  move #CompFedEIN      to $DispFedEIN  999999999
+
+  let $err-statement1 = 'TAX951LD, Insert Error - Insert-YE-Company'
+  let $err-statement2 = 'Key Values: TABLE: PS_PY_1042S_YE_COM'     ||
+                         ', TAX YEAR:'           || $DispTaxYear    ||
+                         ', COMPANY:'            || $ProcCompany
+
+begin-SQL on-error=Error-Display
+
+INSERT INTO PS_PY_1042S_YE_COM (TAX_YEAR,
+                                COMPANY,
+                                DESCR,
+                                FEDERAL_EIN,
+                                ADDRESS1,
+                                ADDRESS2,
+                                CITY,
+                                STATE,
+                                POSTAL,
+                                COUNTRY,
+                                COUNTRY_CD_1042,
+                                HP_CONTACT_NM_1042,
+                                DEPT_TITLE,
+                                PY_CONTACT_PHONE,
+                                HP_CH3_STATUS_CD,
+                                HP_TRM_CONTACT_NM,
+                                PY_TRM_CONTACT_PH,
+                                TRANSMIT_CNTRL_COD)
+                        VALUES (#Parm_TaxYear,
+                                $ProcCompany,
+                                $CompanyName,
+                                #CompFedEIN,
+                                $CompAddr1,
+                                $CompAddr2,
+                                $CompCity,
+                                $CompState,
+                                $CompPostal,
+                                $CompCountry,
+                                $CompCountryCd,
+                                $CompContactNM,
+                                $CompDeptTitle,
+                                $CompContactPhone,
+                                $Ch3StatusCd,
+                                ' ',
+                                ' ',
+                                ' ')
+end-SQL
+
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Insert-YE-Transmitter
+
+  move #Parm_TaxYear    to $DispTaxYear 9999
+  move #CompFedEIN      to $DispFedEIN  999999999
+
+  let $err-statement1 = 'TAX951LD, Insert Error - Insert-YE-Transmitter'
+  let $err-statement2 = 'Key Values: TABLE: PS_PY_1042S_YE_COM'     ||
+                         ', TAX YEAR:'           || $DispTaxYear    ||
+                         ', COMPANY:'            || $ProcCompany
+
+begin-SQL on-error=Error-Display
+
+INSERT INTO PS_PY_1042S_YE_COM (TAX_YEAR,
+                                COMPANY,
+                                DESCR,
+                                FEDERAL_EIN,
+                                ADDRESS1,
+                                ADDRESS2,
+                                CITY,
+                                STATE,
+                                POSTAL,
+                                COUNTRY,
+                                COUNTRY_CD_1042,
+                                HP_CONTACT_NM_1042,
+                                DEPT_TITLE,
+                                PY_CONTACT_PHONE,
+                                HP_CH3_STATUS_CD,
+                                HP_TRM_CONTACT_NM,
+                                PY_TRM_CONTACT_PH,
+                                TRANSMIT_CNTRL_COD)
+                        VALUES (#Parm_TaxYear,
+                                $ProcCompany,
+                                $CompanyName,
+                                #CompFedEIN,
+                                $CompAddr1,
+                                $CompAddr2,
+                                $CompCity,
+                                $CompState,
+                                $CompPostal,
+                                $CompCountry,
+                                $CompCountryCd,
+                                $CompContactNM,
+                                $CompDeptTitle,
+                                $CompContactPhone,
+                                $Ch3StatusCd,
+                                $TrmContactNM,
+                                $TrmContactPh,
+                                $TransmitterCntrlCd)
+end-SQL
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Insert-WarnMsg-Rec
+! Description:
+!   This procedure insert warning messages
+!***********************************************************************
+begin-procedure Insert-WarnMsg-Rec (#inTaxYear, #inFormID, $inMsgCat, #inMsgSeq, $inMsgType, $inMsgText, $inParm1, $inParm2)
+
+  move #inTaxYear    to $DispTaxYear 9999
+  move #inFormID     to $DispFormID  9999999999
+  move #inMsgSeq     to $DispMsgSeq  99999
+
+  let $err-statement1 = 'TAX951LD, Update Error - Insert-WarnMsg-Rec'
+  let $err-statement2 = 'Bind Varables: TAX YEAR:'|| $DispTaxYear ||
+                         ', PY_FORM_ID:'          || $DispFormID  ||
+                         ', PY_AMEND_NO:'         || '0'          ||
+                         ', PY_MSG_CATEGORY:'     || $inMsgType   ||
+                         ', PY_MSG_SEQNUM:'       || $DispMsgSeq
+
+begin-SQL on-error=Error-Display
+
+INSERT INTO PS_PY_1042S_MSG (TAX_YEAR,
+                             PY_FORM_ID,
+                             PY_AMEND_NO,
+                             PY_MSG_CATEGORY,
+                             PY_MSG_SEQNUM,
+                             PY_MSG_TYPE,
+                             TEXT_ID,
+                             PY_PARM1,
+                             PY_PARM2)
+                     VALUES (#inTaxYear,
+                             #inFormID,
+                             0,
+                             $inMsgCat,
+                             #inMsgSeq,
+                             $inMsgType,
+                             $inMsgText,
+                             $inParm1,
+                             $inParm2)
+end-SQL
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Insert-YE-Employee
+! Description:
+!   This procedure insert Year End Employee record
+!***********************************************************************
+begin-procedure Insert-YE-Employee
+
+  move #Parm_TaxYear    to $DispTaxYear 9999
+
+  let $err-statement1 = 'TAX951LD, Insert Error - Insert-YE-Employee'
+  let $err-statement2 = 'Key Values: TABLE: PS_PY_1042S_YE_EE'      ||
+                         ', TAX YEAR:'           || $DispTaxYear    ||
+                         ', EMPLID:'             || $EmplID         ||
+                         ', PY_EE_SEQ_NO:'       || '1'
+
+begin-SQL on-error=Error-Display
+
+INSERT INTO PS_PY_1042S_YE_EE (TAX_YEAR,
+                               EMPLID,
+                               PY_EE_SEQ_NO,
+                               NAME_DISPLAY,
+                               ADDRESS1,
+                               ADDRESS2,
+                               ADDRESS3,
+                               ADDRESS4,
+                               CITY,
+                               STATE,
+                               COUNTRY,
+                               COUNTRY_CD_1042,
+                               POSTAL,
+                               TAXPAYER_ID_NO,
+                               NATIONAL_ID,
+                               LAST_UPDT_OPRID,
+                               LAST_UPDATE_DTTM)
+                       VALUES (#Parm_TaxYear,
+                               $EmplID,
+                               1,
+                               $EENameDisplay,
+                               $EEAddr1,
+                               $EEAddr2,
+                               $EEAddr3,
+                               $EEAddr4,
+                               $EECity,
+                               $EEState,
+                               $EECountry,
+                               $EECountryCD1042,
+                               $EEPostal,
+                               $EETaxPayerID,
+                               $EENationalID,
+                               ' ',
+                               NULL)
+end-SQL
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Insert-YE-Tax
+! Description:
+!   This procedure insert Year End Tax record
+!***********************************************************************
+begin-procedure Insert-YE-Tax
+
+  move #Parm_TaxYear    to $DispTaxYear 9999
+  move #FormID          to $DispFormID  9999999999
+
+  let $err-statement1 = 'TAX951LD, Insert Error - Insert-YE-Tax'
+  let $err-statement2 = 'Key Values: TABLE: PS_PY_1042S_YE_TAX'     ||
+                         ', TAX YEAR:'           || $DispTaxYear    ||
+                         ', PY_FORM_ID:'         || $DispFormID     ||
+                         ', PY_AMEND_NO:'        || '0'
+
+begin-SQL on-error=Error-Display
+
+INSERT INTO PS_PY_1042S_YE_TAX (TAX_YEAR,
+                                PY_FORM_ID,
+                                PY_AMEND_NO,
+                                EMPLID,
+                                PY_EE_SEQ_NO,
+                                COMPANY,
+                                TRANSMITTER,
+                                TXGRS_1042_YTD,
+                                WH_ALLOW_YTD,
+                                EXEMPT_CD_1042,
+                                TAX_1042_YTD,
+                                TAX1042_REFUND,
+                                STATE,
+                                EMPLOYER_ID_SWT,
+                                TAX_YTD,
+                                IRS_EXEMPT_CD_1042,
+                                PY_FILE_NO,
+                                PY_REVIEW_MSG,
+                                PY_PROC_STATUS,
+                                LAST_UPDT_OPRID,
+                                LAST_UPDT_DTTM)
+                        VALUES (#Parm_TaxYear,
+                                #FormID,
+                                0,
+                                $EmplID,
+                                1,
+                                $ProcCompany,
+                                $Parm_Transmitter,
+                                #BalTxGrs,
+                                #BalWHAllow,
+                                $ExemptCd,
+                                #BalTax,
+                                #BalRefund,
+                                $State,
+                                $EmplerID,
+                                #StateBalTax,
+                                $IRSExemptCd,
+                                0,
+                                'N',
+                                'L',
+                                ' ',
+                                NULL)
+end-SQL
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Reset-YE-Records-by-Comp
+! Description:
+!   This procedure reset Year End records by Company
+!***********************************************************************
+begin-procedure Reset-YE-Records-by-Comp
+
+  move #Parm_TaxYear    to $DispTaxYear 9999
+
+  let $err-statement1 = 'TAX951LD, Delete Error - Reset-YE-Records-by-Comp'
+  let $err-statement2 = 'Key Values: TABLE: PS_PY_1042S_YE_COM'      ||
+                         ', TAX YEAR:'           || $DispTaxYear
+
+begin-SQL on-error=Error-Display
+
+DELETE PS_PY_1042S_YE_COM
+WHERE TAX_YEAR = #Parm_TaxYear
+  AND COMPANY IN [$CompanyList]
+end-SQL
+
+  do Reset-YE-Records-by-EE
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Reset-YE-Records-by-EE
+! Description:
+!   This procedure reset Year End records by Employee
+!***********************************************************************
+begin-procedure Reset-YE-Records-by-EE
+
+  let $err-statement1 = 'TAX951LD, Delete Error - Reset-YE-Records-by-EE'
+  let $err-statement2 = 'Key Values: TABLE: PS_PY_1042S_YE_EE'       ||
+                         ', TAX YEAR:'           || $DispTaxYear
+
+begin-SQL on-error=Error-Display
+
+DELETE FROM PS_PY_1042S_YE_EE
+WHERE TAX_YEAR = #Parm_TaxYear
+  AND EXISTS (SELECT 'X' FROM PS_R_TAX951LD TMP2
+               WHERE TMP2.TAX_YEAR = PS_PY_1042S_YE_EE.TAX_YEAR
+                 AND TMP2.EMPLID   = PS_PY_1042S_YE_EE.EMPLID)
+end-SQL
+
+  let $err-statement1 = 'TAX951LD, Delete Error - Reset-YE-Records-by-EE'
+  let $err-statement2 = 'Key Values: TABLE: PS_PY_1042S_YE_TAX'      ||
+                         ', TAX YEAR:'           || $DispTaxYear
+
+begin-SQL on-error=Error-Display
+
+DELETE FROM PS_PY_1042S_YE_TAX
+WHERE TAX_YEAR = #Parm_TaxYear
+  AND EXISTS (SELECT 'X' FROM PS_R_TAX951LD TMP3
+               WHERE TMP3.TAX_YEAR    = PS_PY_1042S_YE_TAX.TAX_YEAR
+                 AND TMP3.PY_FORM_ID  = PS_PY_1042S_YE_TAX.PY_FORM_ID)
+end-SQL
+
+  let $err-statement1 = 'TAX951LD, Delete Error - Reset-YE-Records-by-EE'
+  let $err-statement2 = 'Key Values: TABLE: PS_PY_1042S_MSG'         ||
+                         ', TAX YEAR:'           || $DispTaxYear
+
+begin-SQL on-error=Error-Display
+
+DELETE FROM PS_PY_1042S_MSG
+WHERE TAX_YEAR = #Parm_TaxYear
+  AND EXISTS (SELECT 'X' FROM PS_R_TAX951LD TMP4
+               WHERE TMP4.TAX_YEAR    = PS_PY_1042S_MSG.TAX_YEAR
+                 AND TMP4.PY_FORM_ID  = PS_PY_1042S_MSG.PY_FORM_ID)
+end-SQL
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Delete-Temp-Work-Records
+
+  let $err-statement1 = 'TAX951LD, Delete Error - Delete-Temp-Work-Records'
+  let $err-statement2 = 'Key Values: TABLE: PS_R_TAX951LD'
+
+begin-SQL
+DELETE FROM PS_R_TAX951LD
+end-SQL
+
+end-procedure
+
+begin-procedure Delete-Run-Control
+
+  let $err-statement1 = 'TAX951LD, Delete Error - Delete-Run-Control'
+  let $err-statement2 = 'Key Values: TABLE: PS_RC_LD_YE_1042'
+
+begin-SQL
+DELETE FROM PS_RC_LD_YE_1042
+WHERE OPRID       = $Prcs_OprID
+  AND RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-SQL
+
+  let $err-statement1 = 'TAX951LD, Delete Error - Delete-Run-Control'
+  let $err-statement2 = 'Key Values: TABLE: PS_RC_LD_YE_SEL'
+
+begin-SQL
+DELETE FROM PS_RC_LD_YE_SEL
+WHERE OPRID       = $Prcs_OprID
+  AND RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-SQL
+
+end-procedure
+
+!***********************************************************************
+#Include 'rotname1.sqc'  ! Rotate-Name procedure
+#Include 'readxlat.sqc'  ! Read-Translate-Table procedure
+#Include 'curdttim.sqc'  ! Get-Current-DateTime procedure
+#Include 'datetime.sqc'  ! Routines for date and time formatting
+#Include 'datemath.sqc'  ! Routine to perform date math
+#Include 'number.sqc'    ! Routines to format numbers
+#Include 'stdapi.sqc'    ! Update Process API
+#Include 'taxrctl1.sqc'  ! Retrieve run control parameters
+#Include 'getbalid.sqc'  ! Get-Calendar-Year-Id
+#Include 'getaddr.sqc'   ! Get Person Current Address
+#Include 'stderror.sqc'  ! Routine for error display

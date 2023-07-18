@@ -1,0 +1,2023 @@
+!***********************************************************************
+!  GPDEBV01:  Create Report Files for Diskette                         *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:03:35:36                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!                                                                      *
+!***********************************************************************
+!revised 14.1.2004 wd #1 extra null behandlung
+!revised 14.1.2004 wd #2 Formate für Zahlen um 1 verkleinert (B zaehlt mit ?)
+!revised 29.3.2004 wd 2004Bundle3 V6
+!revised 3.8.2004  wdu 04b4 (Bundle 4)
+! wdu05-891b1: codeline merge 2005-05-12 - unch881
+! wdu06-900b0 changed '00' to 0 for GPDE_BV_CLASS.
+! 
+#include 'setenv.sqc' !set environment
+#define col1 5
+begin-Program
+  ALTER-PRINTER
+  POINT-SIZE=11
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Report
+  do Process-Main
+
+  ALTER-PRINTER
+  POINT-SIZE=7.2
+
+  do Stdapi-Term
+end-Program
+
+#include 'setup31.sqc' !Printer and page-size initialization
+
+!*****************************************
+begin-procedure Init-Report
+
+  move 'GPDEBV01' to $ReportID
+  do Init_Report_Translation ($ReportID, $language_cd)
+  do Report-Translation
+  move $TITLE_STR to $ReportTitle
+  uppercase $ReportTitle
+  display ''
+  display 'Erstellung einer Diskette für BV'
+  display ''
+  display 'Dieses Program erstellt bei erfolgreichem Durchlauf'
+  display 'eine oder mehrere Dateien. Kopieren Sie diese Dateien'
+  display 'Dateien auf neu formatierte Disketten;'
+  display ''
+
+  do Stdapi-Init
+
+  if $prcs_process_instance = ''
+! -- remove commented lines with bundle 5
+! --    display '(1)  3,5 Zoll'
+! --    display '(2)  5,25 Zoll'
+! --
+! --   !ChangeFor2004: removed type checking in next statement: type = date
+! --    !ChangeFor2004: because it made problems at the customer.
+! --
+! --    input $Ctl_Curr_Pay_End_Dt  'Current Pay End Date'
+! --    input $Ctl_Diskette_Type    'Diskettentyp '
+
+! wdu 04b4: parameters, if not started from PS scheduler
+          input $PRCS_OPRID 'OPRID '
+          input $PRCS_RUN_CNTL_ID 'RUNCONTROL '
+          do Get-Report-Parameters
+          do Get-Values
+          ! always override language settings
+          let $LANGUAGE_CD = 'GER'
+          let $CURR_LANGUAGE_CD = 'GER'
+    else
+          do Get-Report-Parameters
+          do Get-Values
+  end-if
+
+  
+   
+  
+ move ' ' to $Sp
+
+ let #RecordLength = 128
+ move 0 to #Vol_Number
+
+ evaluate $Ctl_Diskette_Type
+   when = '1'                   !3,5" HD Diskette
+        let #MaxRecordsPerDiskette = round (.95 * (1400000) / #RecordLength, 0)
+        break
+   when = '2'                   !5,25" HD Diskette
+        let #MaxRecordsPerDiskette = round (.95 * (720000) / #RecordLength, 0)
+        break
+   when-other
+        let #MaxRecordsPerDiskette = 5000
+        break
+ end-evaluate
+
+
+ display ' '
+ display 'Schreiben von Dateien für Diskettentyp '      noline
+ display $Ctl_Diskette_Type                             noline
+ display ' mit '
+ let $MaxDataRecords = edit ((#MaxRecordsPerDiskette/2), '09999')
+ display $MaxDataRecords                                noline
+ display ' Zahlungsdatensätzen pro Diskette.'
+
+ let #File_Nbr = 1
+ let $make_new_file = 'Y'
+ let #info-output = 0
+ let #number = 0
+ let #LastRow = 0
+ let #NewFirstRow = 0
+ let #FirstRow = 0
+ let #Row_Count = 1
+end-procedure
+
+!************************************************
+begin-procedure Report-Translation
+end-procedure
+
+!************************************************
+begin-procedure Get-Values
+  let $Ctl_Language_Cd  = $PRCS_LANGUAGE_CD
+  let $Ctl_PayEntity    = RTRIM(&GPDE_RUN_CNTL.PAY_ENTITY,' ')
+      if $Ctl_PayEntity > ' '
+         let $Criteria =  ' AND PAY_ENTITY = ' || '''' || $Ctl_PayEntity || ''''
+      end-if
+  let $Ctl_Report       = RTRIM(&GPDE_RUN_CNTL.GPDE_RC_REPORTNAME,' ')
+  let $Ctl_Disk_Type    = RTRIM(&GPDE_RUN_CNTL.DISKETTE_TYPE, ' ')
+
+  #ifdef UNIX
+     let $delimit = '/'
+  #else
+     let $delimit = '\'
+  #endif
+
+  let $outputdi = $sqr-report
+  Let #acc = 1
+
+  while instr($outputdi,$delimit,#acc ) <> 0
+     let #acc = instr($outputdi,$delimit,#acc ) + 1
+  end-while
+
+  let #PointPos = - 3 + length($sqr-report)
+  let $FileExtension = substr($sqr-report, #PointPos,4)
+
+  if substr($FileExtension, 1,1) = '.'
+     let $outputdi = substr($outputdi, 1, #acc - 2)
+  else
+     let $outputdi = $sqr-report
+         let $FileExtension = '.PDF'
+  end-if
+
+  #ifdef UNIX
+!    let $FileDir = $outputdi || '/'
+    let $FileDir = '{FILEPREFIX}' 
+  #else
+!    let $FileDir = $outputdi || '\'
+    let $FileDir = '{FILEPREFIX}'  
+  #endif
+
+  display 'File Directory:' noline
+  display $FileDir
+end-procedure
+
+!************************************************
+begin-heading  2
+
+  print $ReportTitle                    (1,1) bold
+  print $ReportTitle2                   (2,1) bold
+
+end-heading
+
+
+
+
+
+begin-procedure Process-Main
+! ################# Preparation logic for temporary table #############
+! the table GPDE_BV_RP_1 is filled with:
+!    the data for the current calculation including all retros
+!    the data for the previous calculation of each retro row
+! #####################################################################
+let $FileIsOpen = 'N'
+
+do Prepare-BVV-Data
+
+let #Nbr_Of_DataSets = 0
+let #Nbr_Of_DataSets_PF = 0
+let #Nbr_Of_DataSets_RF = 0
+let #Counter = 0
+
+let #Sequence = 0
+let #i = 0
+
+let #Amount1 = 0
+let #Amount2 = 0
+let #Amount3 = 0
+let #Amount4 = 0
+let #Amount5 = 0
+let #Amount6 = 0
+let #Amount7 = 0
+
+
+!ChangedFor881B2 Jan2004: X10...X16 changed from 7 to 8
+!ChangedFor881B2 Jan2004: X20 changed from 7 to 1
+
+create-array name=F-Data size = 3000
+      field = X1:char:1                           !1     SA: Record Type
+      field = X2:char:4                           !4     FMA_ID: Provider Nbr
+      field = X3:char:6                           !6     ABRDJM: JJJJMM
+      field = X4:char:10                          !10    PERSNR: EE Membership Nbr
+      field = X5:char:5                           !5     TARIFBEZ: Tariff/Suppl. Insurance
+      field = X6:char:2                           !2     TALFDNR
+      field = X7:char:6                           !6     GUEDJM: JJJJMM
+      field = X8:char:1                           !1     UEB
+      field = X9:char:2                           !2     KLASSE: Class
+      field = X10:char:8                          !7+1     BETRAG
+      field = X11:char:8                          !7+1     AGSTFR
+      field = X12:char:8                          !7+1     AGST
+      field = X13:char:8                          !7+1     ANSTFR
+      field = X14:char:8                          !7+1     ANPAST
+      field = X15:char:8                          !7+1     ANSTFOE
+      field = X16:char:8                          !7+1     ANSTNFOE
+      field = X17:char:2                          !2     VMO
+      field = X18:char:3                          !3     WEAHRG
+      field = X19:char:7                          !7     VERSNR
+      field = X20:char:1                          !1     VERSNRPZ
+      field = X21:char:12                         !12    VSNR
+      field = X22:char:12                         !12    VSGATTE
+      field = X23:char:26                         !26    ZUNAME
+      field = X24:char:26                         !26    VORNAME
+      field = X25:char:15                         !15    AKADTI
+      field = X26:char:26                         !26    GEBNAME
+      field = X27:char:8                          !8     GEBDAT
+      field = X28:char:1                          !1     GESCHL
+      field = X29:char:1                          !1     FAMSTAN
+      field = X30:char:2                          !2     ANZKIND
+      field = X31:char:3                          !3     MGAUSL
+      field = X32:char:6                          !6     MGAPLZ
+      field = X33:char:40                         !40    ORT
+      field = X34:char:46                         !46    STR
+      field = X35:char:30                         !30    CO_INFO
+      field = X36:char:8                          !8     EINDAT
+      field = X37:char:8                          !8     UNVDAT
+      field = X38:char:8                          !8     AUSDAT
+      field = X39:char:2                          !2     VMA
+      field = X40:char:36                         !36    SORTABR1
+      field = X41:char:4                          !4     SORTABR2
+      field = X42:char:36                         !36    SORTVERS1
+      field = X43:char:4                          !4     SORTVERS2
+      field = X44:char:30                         !30    SVADRESS1
+      field = X45:char:30                         !30    SVADRESS2
+      field = X46:char:30                         !30    SVADRESS3
+      field = X47:char:30                         !30    SVADRESS4
+      field = X48:char:7                          !7     BEVOLLM
+      field = X49:char:1                          !1     BEVOLLPZ
+      field = X50:char:174                        !174   BEVOLLPZ
+
+
+
+begin-SELECT
+!CAL_RUN_ID
+EMPLID                               () on-break print=never procedure=New-Employee
+EMPL_RCD
+!GPDE_AL_CPAY_ENDDT
+!SEG_END_DT
+!2004Bundle3: we need PRD_END_DT to decide if retro
+PRD_END_DT
+PAY_ENTITY                           () on-break print=never procedure=New-Pay-Entity
+GPDE_BV_EE_NBR
+GPDE_BV_PRVDR_NBR                    () on-break print=never procedure=Need-New-File
+GPDE_BV_HIRE_DT
+GPDE_BV_TRMNTN_DT
+GPDE_BV_PRMNNT_CLM
+GPDE_BV_PRCS_TYP
+GPDE_BV_TARIFF
+CURRENCY_CD
+GPDE_BV_SEX
+GPDE_BV_MAR_STATUS
+GPDE_BV_CLASS
+GPDE_BV_SORT_KEY
+GPDE_BV_SORT_LEN
+GPDE_BV_SORTV_KEY
+GPDE_BV_SORTV_LEN
+GPDE_BV_SORTV_ROW1
+GPDE_BV_SORTV_ROW2
+GPDE_BV_SORTV_ROW3
+GPDE_BV_SORTV_ROW4
+SUM(GPDE_DD_BVV00_AMT)       &GPDE_DD_BVV00_AMT
+SUM(GPDE_DD_BVV10_AMT)       &GPDE_DD_BVV10_AMT
+SUM(GPDE_DD_BVV20_AMT)       &GPDE_DD_BVV20_AMT
+SUM(GPDE_DD_BVV30_AMT)       &GPDE_DD_BVV30_AMT
+SUM(GPDE_DD_BVV40_AMT)       &GPDE_DD_BVV40_AMT
+SUM(GPDE_DD_BVV50_AMT)       &GPDE_DD_BVV50_AMT
+SUM(GPDE_DD_BVV60_AMT)       &GPDE_DD_BVV60_AMT
+SUM(GPDE_DD_BVV70_AMT)       &GPDE_DD_BVV70_AMT
+SUM(GPDE_DD_BVV80_AMT)       &GPDE_DD_BVV80_AMT
+SUM(GPDE_DD_BVV90_AMT)       &GPDE_DD_BVV90_AMT
+SUM(GPDE_DD_BVV100_AMT)      &GPDE_DD_BVV100_AMT
+SUM(GPDE_DD_BVV110_AMT)      &GPDE_DD_BVV110_AMT
+SUM(GPDE_DD_BVV120_AMT)      &GPDE_DD_BVV120_AMT
+SUM(GPDE_DD_BVV130_AMT)      &GPDE_DD_BVV130_AMT
+SUM(GPDE_DD_BVV140_AMT)      &GPDE_DD_BVV140_AMT
+SUM(GPDE_DD_BVV150_AMT)      &GPDE_DD_BVV150_AMT
+SUM(GPDE_DD_NBV00_AMT)       &GPDE_DD_NBV00_AMT
+SUM(GPDE_DD_NBV10_AMT)       &GPDE_DD_NBV10_AMT
+SUM(GPDE_DD_NBV20_AMT)       &GPDE_DD_NBV20_AMT
+SUM(GPDE_VR_BVV12_AMT)       &GPDE_VR_BVV12_AMT
+                    !ChangeFor2004: added column
+SUM(GPDE_VR_BVV13_AMT)       &GPDE_VR_BVV13_AMT
+SUM(GPDE_VR_BVV21_AMT)       &GPDE_VR_BVV21_AMT
+SUM(GPDE_VR_BVV22_AMT)       &GPDE_VR_BVV22_AMT
+SUM(GPDE_VR_BVV28_AMT)       &GPDE_VR_BVV28_AMT
+SUM(GPDE_BV_EETXS_AMT)       &GPDE_BV_EETXS_AMT
+SUM(GPDE_BV_EETXNS_AMT)      &GPDE_BV_EETXNS_AMT
+! wdu 04b4: new fields
+! wdu05b7: removed this field for grouping issue:   GPDE_BV_TYPE_DZ              &GPDE_BV_TYPE_DZ
+SUM(GPDE_DD_BVV00_DZ)        &GPDE_DD_BVV00_DZ
+SUM(GPDE_DD_BVV10_DZ)        &GPDE_DD_BVV10_DZ
+SUM(GPDE_DD_BVV20_DZ)        &GPDE_DD_BVV20_DZ
+SUM(GPDE_BV_EETXNS_DZ)       &GPDE_BV_EETXNS_DZ
+SUM(GPDE_VR_BV12DZ_AMT)      &GPDE_VR_BV12DZ_AMT
+SUM(GPDE_VR_BV13DZ_AMT)      &GPDE_VR_BV13DZ_AMT
+SUM(GPDE_VR_BV21DZ_AMT)      &GPDE_VR_BV21DZ_AMT
+SUM(GPDE_VR_BV22DZ_AMT)      &GPDE_VR_BV22DZ_AMT
+SUM(GPDE_VR_BV28DZ_AMT)      &GPDE_VR_BV28DZ_AMT
+       ! prepare values we need later
+       ! --let $Cal_Run_Id     = &CAL_RUN_ID
+       let $Emplid         = &EMPLID
+       let #Empl_Rcd       = &EMPL_RCD
+       ! --let $CPay_EndDt     = &GPDE_AL_CPAY_ENDDT
+       !let $Seg_End_Dt     = &SEG_END_DT        !replaced by PRD_END_DT
+       let $Prd_End_Dt     = &PRD_END_DT
+       let $Pay_Entity     = &PAY_ENTITY
+       let $BV_EE_Nbr1     = substr(&GPDE_BV_EE_NBR,1,7)
+       let $BV_EE_Nbr2     = substr(&GPDE_BV_EE_NBR,8,1)
+       let #BV_Prvdr_Nbr   = edit(&GPDE_BV_PRVDR_NBR,'9999')
+
+       ! ######## process employee field formatting ########
+       do CX_Employee-BVV-Data
+       
+       #Debug Show ' '
+
+       ! new files are triggered with on-break, we need to explicitly open the first one
+       ! As we introduce the record optimizer, we only open when really required,
+       ! but this we only know shortly before the real write
+       ! For this reason the following logic is moved to: CX_Flush-F-Data-To-File
+       !
+       !if #Nbr_Of_DataSets = 0
+       !   do Open-File
+       !end-if
+
+       ! ####### convert pay related fields to numericals etc. ######
+       do CX_Convert-Pay-Related-Fields
+
+!       !2004Bundle3: changed Seg_End_Dt to Prd_End_Dt
+!       if $CPay_EndDt <> $Prd_End_Dt
+!          let $Retro = 'Y'
+!          ! when we have retro row here (!), then  
+!          do Retro
+!       end-if
+
+       !ChangeFor2004Bundle2: common expressions moved up before the evaluate, 
+       !ChangeFor2004Bundle2: all tariffs get the same calc method now!
+           let #Amount2 = #BV_BVV28_Amt
+           let #Amount3 = #BV_BVV21_Amt + #BV_BVV22_Amt
+           let #Amount4 = #BV_BVV12_Amt
+           let #Amount5 = #BV_BVV13_AMT
+           let #Amount6 = #BV_EETxS_Amt
+           let #Amount7 = #BV_EETxNS_Amt
+           let #Amount1 = #Amount2 + #Amount3 + #Amount4 + #Amount5 + #Amount6 + #Amount7
+       !ChangeFor2004Bundle2: (end)
+
+       if #BV_BVV00_Amt <> #Amount1
+           #debug show 'Sums dont match' 
+       end-if
+       
+! write-optimizer: (planned)
+! At this point we should decide, if we need to write a record.
+! If all amounts are zero then we do not need to write.
+! If the amount1 is zero, but the others not, then we need to check.
+!
+! if the row is for the current month, then we always need to write!
+
+        if #Amount1 = 0 and #Amount2 = 0 and #Amount3 = 0 and  #Amount4 = 0 and
+           #Amount5 = 0 and  #Amount6 = 0 and  #Amount7 = 0  
+           !
+           ! only print current periods in this case, no retro
+           if &PRD_END_DT = $Ctl_Curr_Pay_End_Dt
+               ! ######### write F-data-set depending on the Tariff ($BV_Tariff) #######
+               do CX_Write-Record-By-Tariff
+           end-if
+        else
+            ! ######### write F-data-set depending on the Tariff ($BV_Tariff) #######
+            do CX_Write-Record-By-Tariff
+        end-if
+
+        ! wdu05b7: moved 'do Put-Suppl-Insrnc' to here, because cases
+        ! exist, where no F-Data need to be written, but Suppl-Data (for tariff DZ)
+        if $BV_Tariff = 'DA' or $BV_Tariff = 'DN' 
+            do Put-Suppl-Insrnc
+        end-if
+        
+        
+FROM PS_GPDE_BV_RP_1
+WHERE 0 = 0                    ! dummy criterium because of optional criteria
+[$Criteria]
+GROUP BY
+!CAL_RUN_ID      !remove
+EMPLID
+,EMPL_RCD       !remove --no
+!,GPDE_AL_CPAY_ENDDT     !remove
+!,SEG_END_DT             !remove
+,PRD_END_DT
+,PAY_ENTITY
+,GPDE_BV_EE_NBR
+,GPDE_BV_PRVDR_NBR
+,GPDE_BV_HIRE_DT
+,GPDE_BV_TRMNTN_DT
+,GPDE_BV_PRMNNT_CLM
+,GPDE_BV_PRCS_TYP
+,GPDE_BV_TARIFF
+,CURRENCY_CD
+,GPDE_BV_SEX
+,GPDE_BV_MAR_STATUS
+,GPDE_BV_CLASS
+,GPDE_BV_SORT_KEY
+,GPDE_BV_SORT_LEN
+,GPDE_BV_SORTV_KEY
+,GPDE_BV_SORTV_LEN
+,GPDE_BV_SORTV_ROW1
+,GPDE_BV_SORTV_ROW2
+,GPDE_BV_SORTV_ROW3
+,GPDE_BV_SORTV_ROW4
+! wdu05b7: removed field for grouping issue: ,GPDE_BV_TYPE_DZ
+ORDER BY GPDE_BV_PRVDR_NBR,PAY_ENTITY,EMPLID
+,PRD_END_DT ASC
+!,GPDE_AL_CPAY_ENDDT
+,GPDE_BV_TARIFF
+
+end-SELECT
+
+! flush array to disk
+! the procedure opens the file also when it is not open (FileIsOpen='N')
+do CX_Flush-F-Data-To-File
+! replaces the following code:
+!while #i < #Counter
+!   do Write-F-Data-Record
+!   add 1 to #i
+!end-while
+
+do Write-P-Data-Record
+
+! we should explicitly close our file
+if $FileIsOpen = 'Y'
+   close 10
+end-if
+
+end-procedure
+
+
+!ChangedFor881B2 Jan2004: new procedure
+
+begin-procedure Get_BVV_Format(#Num_In,:$Num_Out)
+!format a number the way it is needed for BVV
+
+if #Num_In < 0 
+     let $TheSign = '-'
+     let #Num_in = 0 - #Num_in
+else
+     let $TheSign = '+'
+end-if
+if #Num_In = 0 
+     let $Num_Out = '    000+'
+     goto endp1 
+end-if
+
+do format-number(#Num_In,$Num_In,'B9999.99')
+
+let #Del_Loc  = instr($Num_In,$_SDecimal,1)
+let $Num1x = substr($Num_In,1,-1 + #Del_Loc)
+let $Num2x = substr($Num_In,1 + #Del_Loc,2)
+let $Num_Out = $Num1x || $Num2x || $TheSign
+endp1:
+end-procedure
+
+!ChangedFor881B2 Jan2004: new procedure
+
+
+
+
+begin-procedure Get_BVV_Format12(#Num_In,:$Num_Out)
+!format a number the way it is needed for BVV P-record
+
+if #Num_In < 0 
+     let $TheSign = '-'
+     let #Num_in = 0 - #Num_in
+else
+     let $TheSign = '+'
+end-if
+if #Num_In = 0 
+     let $Num_Out = '        000+'
+     goto endp2 
+end-if
+
+do format-number(#Num_In,$Num_In,'B99999999.99')
+
+let #Del_Loc  = instr($Num_In,$_SDecimal,1)
+let $Num1x = substr($Num_In,1,-1 + #Del_Loc)
+let $Num2x = substr($Num_In,1 + #Del_Loc,2)
+let $Num_Out = $Num1x || $Num2x || $TheSign
+endp2:
+end-procedure
+
+
+!**************************************************************
+begin-procedure Put-F-Data
+  put 'F' into F-Data(#Counter) X1
+      let $BV_Prvdr_Nbr = edit(#BV_Prvdr_Nbr, '9999')
+  put $BV_Prvdr_Nbr into F-Data(#Counter) X2
+
+  do Format-DateTime($Ctl_Curr_Pay_End_Dt , $YMDDate, {DEFCMP},'','')
+  if length(rtrim($YMDDate,' ')) > 0
+     do Get-DateComponents ($YMDDate,#outyr,#outmo,#outday)
+     move #outyr to $Year  9999
+     move #outmo to $Month 09
+     let $Date = rtrim($Year,' ') || rtrim($Month,' ')
+     put $Date into F-Data(#Counter) X3
+  else
+     put ' ' into F-Data(#Counter) X3
+  end-if
+
+  put $Emplid into F-Data(#Counter) X4
+  put $BV_Tariff into F-Data(#Counter) X5
+      if #Sequence < 10
+         move #Sequence to $Nbr 09
+      else
+         move #Sequence to $Nbr 99
+      end-if
+      !Changefor2004Bundle2: use ' ' instead of '00'
+      if #Sequence = 0
+         let $Nbr = '  '
+      end-if
+  put $Nbr into F-Data(#Counter) X6
+
+  !2004Bundle3: changed &SEG_END_DT to &PRD_END_DT
+  do Format-DateTime(&PRD_END_DT , $YMDDate, {DEFCMP},'','')
+  if length(rtrim($YMDDate,' ')) > 0
+      do Get-DateComponents ($YMDDate,#outyr,#outmo,#outday)
+      move #outyr to $Year  9999
+      move #outmo to $Month 09
+      let $Date = rtrim($Year,' ') || rtrim($Month,' ')
+      put $Date into F-Data(#Counter) X7
+  else
+      put $Date into F-Data(#Counter) X7
+  end-if
+
+!Field:UEB
+  put ' ' into F-Data(#Counter) X8
+
+  put $BV_Class into F-Data(#Counter) X9
+
+
+!ChangedFor881B2 Jan2004: format using a procedure
+
+      do Get_BVV_Format(#Amount1,$Amount1)
+  put $Amount1 into F-Data(#Counter) X10
+
+      do Get_BVV_Format(#Amount2,$Amount2)
+  put $Amount2 into F-Data(#Counter) X11
+
+      do Get_BVV_Format(#Amount3,$Amount3)
+  put $Amount3 into F-Data(#Counter) X12
+
+      do Get_BVV_Format(#Amount4,$Amount4)
+  put $Amount4 into F-Data(#Counter) X13
+
+      do Get_BVV_Format(#Amount5,$Amount5)
+  put $Amount5 into F-Data(#Counter) X14
+
+      do Get_BVV_Format(#Amount6,$Amount6)
+  put $Amount6 into F-Data(#Counter) X15
+
+      do Get_BVV_Format(#Amount7,$Amount7)
+  put $Amount7 into F-Data(#Counter) X16
+
+!ChangedFor881B2 Jan2004: format using a procedure (end)
+
+!2004Bundle3: BV_Class=0 is not a necessary criterium for VM0
+!  if $BV_Class = '00'
+     if #Amount1 = 0
+        evaluate $BV_Prcs_Typ
+        when = '01'
+        when = '02'
+        when = '03'
+        when = '04'
+        when = '05'
+        when = '06'
+        when = '07'
+        when = '08'
+           put $BV_Prcs_Typ into F-Data(#Counter) X17
+           break
+        when-other
+           put ' ' into F-Data(#Counter) X17
+           break
+        end-evaluate
+     end-if
+!  end-if
+
+  put $BV_Currency_Cd into F-Data(#Counter) X18
+  put $BV_EE_Nbr1 into F-Data(#Counter) X19
+  put $BV_EE_Nbr2 into F-Data(#Counter) X20
+  put $EE_Svnr into F-Data(#Counter) X21
+  put $Spouse_Svnr into F-Data(#Counter) X22
+!changefor2004bundle2: exchange lastname <-> firstname
+  put $PLast_Name into F-Data(#Counter) X23
+  put $PFirst_Name into F-Data(#Counter) X24
+  put $Name_Title into F-Data(#Counter) X25
+  put $Birth_Name into F-Data(#Counter) X26
+  put $Birthdate into F-Data(#Counter) X27
+  put $BV_Sex into F-Data(#Counter) X28
+  put $BV_Mar_Status into F-Data(#Counter) X29
+  put '00' into F-Data(#Counter) X30
+  put $EE_Address_Country into F-Data(#Counter) X31
+  put $EE_Address_Postal into F-Data(#Counter) X32
+  put $EE_Address_City into F-Data(#Counter) X33
+  put $EE_Address_Street into F-Data(#Counter) X34
+  put ' ' into F-Data(#Counter) X35
+  put $BV_Hire_Dt into F-Data(#Counter) X36
+  put $BV_Prmnnt_Clm into F-Data(#Counter) X37
+  put $BV_Trmntn_Dt into F-Data(#Counter) X38
+
+  if length(rtrim($BV_Trmntn_Dt,' ')) > 0
+     evaluate $BV_Prcs_Typ
+     when = '11'
+     when = '12'
+     when = '13'
+     when = '14'
+     when = '15'
+     when = '16'
+     when = '17'
+     when = '18'
+        put $BV_Prcs_Typ into F-Data(#Counter) X39
+        break
+     when-other
+        put ' ' into F-Data(#Counter) X39
+        break
+     end-evaluate
+  else
+     put ' ' into F-Data(#Counter) X39
+  end-if
+
+  put $BV_Sort_Key into F-Data(#Counter) X40
+  put $BV_Sort_Len into F-Data(#Counter) X41
+  put $BV_Sortv_Key into F-Data(#Counter) X42
+  put $BV_Sortv_Len into F-Data(#Counter) X43
+  put $BV_Sortv_Row1 into F-Data(#Counter) X44
+  put $BV_Sortv_Row2 into F-Data(#Counter) X45
+  put $BV_Sortv_Row3 into F-Data(#Counter) X46
+  put $BV_Sortv_Row4 into F-Data(#Counter) X47
+  put ' ' into F-Data(#Counter) X48
+  put ' ' into F-Data(#Counter) X49
+  put ' ' into F-Data(#Counter) X50
+
+  let #Counter = #Counter + 1
+
+end-procedure
+
+
+
+
+
+!**************************************************************
+begin-procedure Put-Suppl-Insrnc
+   let #Amount1 = 0
+   let #Amount2 = 0
+   let #Amount3 = 0
+   let #Amount4 = 0
+   let #Amount5 = 0
+   let #Amount6 = 0
+   let #Amount7 = 0
+
+   if  #BV_FWDA_Amt <> 0
+       let $BV_Tariff = 'FWDA'
+       let #Amount1 = #BV_FWDA_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+   if  #BV_RZV_Amt <> 0
+       let $BV_Tariff = 'RZV'
+       let #Amount1 = #BV_RZV_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+   if #BV_AZV_Amt <> 0
+       let $BV_Tariff = 'AZV'
+       let #Amount1 = #BV_AZV_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+   if #BV_DAT_Amt <> 0
+       let $BV_Tariff = 'DAT'
+       let #Amount1 = #BV_DAT_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+   if #BV_AR_AMT <> 0
+       let $BV_Tariff = 'AR'
+       let #Amount1 = #BV_AR_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+   if #BV_BR_AMT <> 0
+       let $BV_Tariff = 'BR'
+       let #Amount1 = #BV_BR_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+   if #BV_BRWZ_Amt <> 0
+       let $BV_Tariff = 'BRWZ'
+       let #Amount1 = #BV_BRWZ_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+   if #BV_WI_Amt <> 0
+       let $BV_Tariff = 'WI'
+       let #Amount1 = #BV_WI_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+   if #BV_WIFS_Amt <> 0
+       let $BV_Tariff = 'WIFS'
+       let #Amount1 = #BV_WIFS_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+   if #BV_WA_Amt <> 0
+       let $BV_Tariff = 'WA'
+       let #Amount1 = #BV_WA_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+   if #BV_ST_Amt <> 0
+       let $BV_Tariff = 'ST'
+       let #Amount1 = #BV_ST_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+   if #BV_N_Amt <> 0
+       let $BV_Tariff = 'N'
+       let #Amount1 = #BV_N_Amt
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+   end-if
+
+! wdu 04b4: new section for new tariff DZ   
+
+! wdu005b7: replaced "if &GPDE_BV_TYPE_DZ = 'DZ'" by new logic
+!
+! it is sufficient to check the amounts here, because the type GPDE_BV_TYPE_DZ 
+! is a grouping issue further up
+!
+   if  #DZ_BVV28_Amt <> 0
+   or  #DZ_BVV21_Amt <> 0
+   or  #DZ_BVV22_Amt <> 0
+   or  #DZ_BVV12_Amt <> 0
+   or  #DZ_BVV13_Amt <> 0
+   or  #DZ_EETxNS_Amt <> 0
+       let $BV_Tariff = 'DZ'
+       let #Amount2 = #DZ_BVV28_Amt
+       let #Amount3 = #DZ_BVV21_Amt + #DZ_BVV22_Amt
+       let #Amount4 = #DZ_BVV12_Amt
+       let #Amount5 = #DZ_BVV13_Amt
+       let #Amount6 = 0
+       let #Amount7 = #DZ_EETxNS_Amt
+       let #Amount1 = #Amount2 + #Amount3 + #Amount4 + #Amount5 + #Amount6 + #Amount7
+       
+       let #Sequence = #Sequence + 1
+       let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+       let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+       let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+       do Put-F-Data
+           
+   end-if
+   
+ 
+   
+end-procedure
+
+
+!**************************************************************
+begin-procedure Write-F-Data-Record
+   get $X1 from F-Data(#i) X1
+   get $X2 from F-Data(#i) X2
+   get $X3 from F-Data(#i) X3
+   get $X4 from F-Data(#i) X4
+   get $X5 from F-Data(#i) X5
+   get $X6 from F-Data(#i) X6
+   get $X7 from F-Data(#i) X7
+   get $X8 from F-Data(#i) X8
+   get $X9 from F-Data(#i) X9
+   get $X10 from F-Data(#i) X10
+   get $X11 from F-Data(#i) X11
+   get $X12 from F-Data(#i) X12
+   get $X13 from F-Data(#i) X13
+   get $X14 from F-Data(#i) X14
+   get $X15 from F-Data(#i) X15
+   get $X16 from F-Data(#i) X16
+   get $X17 from F-Data(#i) X17
+   get $X18 from F-Data(#i) X18
+   get $X19 from F-Data(#i) X19
+   get $X20 from F-Data(#i) X20
+   get $X21 from F-Data(#i) X21
+   get $X22 from F-Data(#i) X22
+   get $X23 from F-Data(#i) X23
+   get $X24 from F-Data(#i) X24
+   get $X25 from F-Data(#i) X25
+   get $X26 from F-Data(#i) X26
+   get $X27 from F-Data(#i) X27
+   get $X28 from F-Data(#i) X28
+   get $X29 from F-Data(#i) X29
+   get $X30 from F-Data(#i) X30
+   get $X31 from F-Data(#i) X31
+   get $X32 from F-Data(#i) X32
+   get $X33 from F-Data(#i) X33
+   get $X34 from F-Data(#i) X34
+   get $X35 from F-Data(#i) X35
+   get $X36 from F-Data(#i) X36
+   get $X37 from F-Data(#i) X37
+   get $X38 from F-Data(#i) X38
+   get $X39 from F-Data(#i) X39
+   get $X40 from F-Data(#i) X40
+   get $X41 from F-Data(#i) X41
+   get $X42 from F-Data(#i) X42
+   get $X43 from F-Data(#i) X43
+   get $X44 from F-Data(#i) X44
+   get $X45 from F-Data(#i) X45
+   get $X46 from F-Data(#i) X46
+   get $X47 from F-Data(#i) X47
+   get $X48 from F-Data(#i) X48
+   get $X49 from F-Data(#i) X49
+   get $X50 from F-Data(#i) X50
+
+   #Debug show 'SA:        X1       : '  $X1
+   #Debug show 'FMA_ID:    X2       : '  $X2
+   #Debug show 'ABRDJM:    X3       : '  $X3
+   #Debug show 'PERSNR:    X4       : '  $X4
+   #Debug show 'TARIFBEZ:  X5       : '  $X5
+   #Debug show 'TALFDNR:   X6       : '  $X6
+   #Debug show 'GUEDJM:    X7       : '  $X7
+   #Debug show 'UEB:       X8       : '  $X8
+   #Debug show 'KLASSE:    X9       : '  $X9
+   #Debug show 'BETRAG:    X10      : '  $X10
+   #Debug show 'AGSTFR:    X11      : '  $X11
+   #Debug show 'AGST:      X12      : '  $X12
+   #Debug show 'ANSTFR:    X13      : '  $X13
+   #Debug show 'ANPAST:    X14      : '  $X14
+   #Debug show 'ANSTFOE:   X15      : '  $X15
+   #Debug show 'ANSTNFOE:  X16      : '  $X16
+   #Debug show 'VM0:       X17      : '  $X17
+   #Debug show 'WAEHRG:    X18      : '  $X18
+   #Debug show 'VERSNR:    X19      : '  $X19
+   #Debug show 'VERSNRPZ:  X20      : '  $X20
+   #Debug show 'VSNR:      X21      : '  $X21
+   #Debug show 'VSGATTE:   X22      : '  $X22
+   #Debug show 'ZUNAME:    X23      : '  $X23
+   #Debug show 'VORNAME:   X24      : '  $X24
+   #Debug show 'AKADTI:    X25      : '  $X25
+   #Debug show 'GEBNAME:   X26      : '  $X26
+   #Debug show 'GEBDAT:    X27      : '  $X27
+   #Debug show 'GESCHL:    X28      : '  $X28
+   #Debug show 'FAMSTAN:   X29      : '  $X29
+   #Debug show 'ANSKIND:   X30      : '  $X30
+   #Debug show 'MGAUSL:    X31      : '  $X31
+   #Debug show 'MGAPLZ:    X32      : '  $X32
+   #Debug show 'ORT:       X33      : '  $X33
+   #Debug show 'STR:       X34      : '  $X34
+   #Debug show 'CO_INFO:   X35      : '  $X35
+   #Debug show 'EINDAT:    X36      : '  $X36
+   #Debug show 'UNVDAT:    X37      : '  $X37
+   #Debug show 'AUSDAT:    X38      : '  $X38
+   #Debug show 'VMA:       X39      : '  $X39
+   #Debug show 'SORTABR1:  X40      : '  $X40
+   #Debug show 'SORTABR2 : X41      : '  $X41
+   #Debug show 'SORTVERS1: X42      : '  $X42
+   #Debug show 'SORTVERS2: X43      : '  $X43
+   #Debug show 'SVADRESS1: X44      : '  $X44
+   #Debug show 'SVADRESS2: X45      : '  $X45
+   #Debug show 'SVADRESS3: X46      : '  $X46
+   #Debug show 'SVADRESS4: X47      : '  $X47
+   #Debug show 'BEVOLLM:   X48      : '  $X48
+   #Debug show 'BEVOLLPZ:  X49      : '  $X49
+   #Debug show 'RESERVE:   X50      : '  $X50
+
+!ChangedFor881B2 Jan2004: single write instead of 5 writes, removed dup. $X7:1
+  write 10 from $X1:1 $X2:4 $X3:6 $X4:10 $X5:5 $X6:2 $X7:6 $X8:1 $X9:2 $X10:8 $X11:8 $X12:8
+ $X13:8 $X14:8 $X15:8 $X16:8 $X17:2 $X18:3 $X19:7 $X20:1 $X21:12 $X22:12 $X23:26 $X24:26 $X25:15 
+ $X26:26 $X27:8 $X28:1 $X29:1 $X30:2 $X31:3 $X32:6 $X33:40 $X34:46 $X35:30 $X36:8 $X37:8 $X38:8
+ $X39:2 $X40:36 $X41:4 $X42:36 $X43:4 $X44:30 $X45:30 $X46:30 $X47:30 $X48:7 $X49:1 $X50:174
+
+
+  #Debug Show ' -------------------------------------------------------------- '
+  #Debug Show ' -------------------------------------------------------------- '
+
+end-procedure
+
+!**************************************************************
+begin-procedure Write-P-Data-Record
+
+  #Debug show  '#Nbr_Of_DataSets_PF = ' #Nbr_Of_DataSets_PF
+  #Debug show  '#Nbr_Of_DataSets_RF = ' #Nbr_Of_DataSets_RF
+  #Debug show  '#SumDataSets_PF     = ' #SumDataSets_PF
+  #Debug show  '#SumDataSets_RF     = ' #SumDataSets_RF
+
+  !ChangeFor2004: emergency exit when no records need to be written (file may not be open)
+  if (#Nbr_Of_DataSets_PF = 0) and (#Nbr_Of_DataSets_RF = 0) 
+          goto ende
+  end-if
+
+  let $X1  = 'P'                                                         !1     SA
+  let $X2  = edit(#BV_Prvdr_Nbr,'9999')                                  !4     FMA_ID
+      do Format-DateTime($Ctl_Curr_Pay_End_Dt , $YMDDate, {DEFCMP},'','')
+      do Get-DateComponents ($YMDDate,#outyr,#outmo,#outday)
+      move #outyr to $Year  9999
+      move #outmo to $Month 09
+  let $X3  = rtrim($Year,' ') || rtrim($Month,' ')                       !6     ABRDJM
+  let $X4  = ' '                                                         !23    DUMMY
+
+  let $X5  = edit(#Nbr_Of_DataSets_PF,'099999')                          !6     ANZHALU
+  let $X6  = edit(#Nbr_Of_DataSets_RF,'099999')                          !6     ANZHALU
+
+
+!ChangedFor881B2 Jan2004: Formatting with procedure, remove X8,X10
+  !SUBETRP
+  do Get_BVV_Format12(#SumDataSets_PF,$X7)
+
+!  if instr(to_char(#SumDataSets_PF),'.',1) = 0                           !11    SUBETRP
+!     let $X7 = to_char(#SumDataSets_PF) || '00'
+!  else
+!     let $X7 = edit(#SumDataSets_PF, '999999999.99')
+!     let $X7 = translate($X7,'.','')
+!  end-if
+!  if #SumDataSets_PF > 0
+!     let $X8  = '+'                                                      !1     Vorzeichen
+!  else
+!     let $X8  = '-'
+!  end-if
+
+
+!ChangedFor881B2 Jan2004: Formatting with procedure, remove X8,X10
+  !SUBBETRU
+  do Get_BVV_Format12(#SumDataSets_PF,$X7)
+!  if instr(to_char(#SumDataSets_RF),'.',1) = 0                           !11    SUBETRU
+!     let $X9 = to_char(#SumDataSets_RF) || '00'
+!  else
+!     let $X9 = edit(#SumDataSets_RF, '999999999.99')
+!     let $X9 = translate($X9,'.','')
+!  end-if
+!  if #SumDataSets_RF > 0
+!     let $X10  = '+'                                                     !1     Vorzeichen
+!  else
+!     let $X10  = '-'
+!  end-if
+
+  let $X11 = ' '                                                         !2     ERFPROG: Leerzeichen
+  let $X12 = ' '                                                         !696   FILLER
+
+
+!ChangedFor881B2 Jan2004: Formatting with procedure, remove X8,X10
+  write 10 from $X1:1 $X2:4 $X3:6 $X4:23 $X5:6 $X6:6 $X7:12  $X9:12  $X11:2 $X12:696
+
+
+
+
+  let #BZTABCOL = 66
+  let #BZTABCOL0 = 12
+  let $BZZ = ' '
+
+  print  'MAGNETBANDBEGLEITZETTEL' (+1,#BZTABCOL0)
+  print  'BELEGLOSER DATENTRAEGERAUSTAUCH' (+4,#BZTABCOL0)
+
+  print  'BVV-FIRMENNUMMER' (+2,#BZTABCOL0)
+  print  $X2 (,#BZTABCOL)
+
+  print  'BVV-DATENTRAEGER FUER DEN MONAT' (+2,#BZTABCOL0)
+  let $BZZ = substr($X3,5,2) || '/' || substr($X3,1,4)
+  print  $BZZ (,#BZTABCOL)
+
+  print  'ERSTELLDATUM' (+2,#BZTABCOL0)
+  do Format-DateTime($AsOfToday,$BZZ,{DEFDATE},'','')
+  print  $BZZ (,#BZTABCOL)
+
+
+  let $BZZ = to_char(#Nbr_Of_DataSets_PF+#Nbr_Of_DataSets_RF)
+  print  'ANZAHL DATENSAETZE' (+2,#BZTABCOL0)
+  print  $BZZ (,#BZTABCOL)
+
+
+  let #BZZ_amount = #SumDataSets_PF + #SumDataSets_RF
+
+  do Format-Number(#BZZ_amount,$BZZ,'999,999,999.99')
+  let $BZZ = LTRIM($BZZ,' ')
+
+  print  'SUMME EURO' (+2,#BZTABCOL0)
+  print  $BZZ (,#BZTABCOL)
+
+  let $BZZ='_____________________________________________________________'
+  print  $BZZ (+15,#BZTABCOL0)
+  let $BZZ='Ort, Datum                 Unterschrift'
+  print  $BZZ (+1,#BZTABCOL0)
+
+  new-page
+
+ende:
+
+end-procedure
+
+!**************************************************************
+begin-procedure Open-File
+
+  do Format-DateTime($Ctl_Curr_Pay_End_Dt , $YMDDate, {DEFCMP},'','')
+  do Get-DateComponents ($YMDDate,#outyr,#outmo,#outday)
+  move #outyr to $Year  9999
+  move #outmo to $Month 09
+  let $FileDate = rtrim($Month,' ') || '.' || rtrim($Year,' ')
+  let $FileDateHtm = rtrim($Month,' ') || '_' || rtrim($Year,' ')
+
+  #Debug Show ' -------------------------------------------------------------- '
+  #Debug Show ' -------------------------------------------------------------- '
+
+  let $FilePrvdr = edit(#BV_Prvdr_Nbr,'9999')
+  let $line = 'Erstellung der Datei ' || $FileNm1 || 'fuer die BVV-Firmennummer ' ||
+      $FilePrvdr || ' für den Abrechnungsmonat ' || $FileDate
+  show $line
+  let $line =' '
+
+  let $FileNm = $FileDir || 'FA' || $FilePrvdr || $FileDate
+  !
+  !
+  ! wdu 04b4: to make the file visible in report manager a helper htm-file is created.
+  ! Notice, that only one '.' is accepted in the filename, otherwise the file will
+  ! not show up in the report details page.
+  let $ParmDiskFileName = 'FA' || $FilePrvdr || $FileDate
+  let $ParmDiskFileNameHtm = 'FA' || $FilePrvdr || $FileDateHtm
+ 
+  do CreateDiskLinkPage
+  
+  open $FileNm as 10 for-writing record=768:FIXED_NOLF
+  let $FileIsOpen = 'Y'
+end-procedure
+
+!**********************************************************
+begin-procedure EE-NameHistory-Data($Emplid,$NameType,$Prd_End_Dt, :$First_Name, :$Last_Name, :$Name_Title)
+
+begin-SELECT
+A.FIRST_NAME
+A.LAST_NAME
+A.NAME_TITLE
+            let $First_Name = rtrim(&A.FIRST_NAME,' ')
+            do Spelling($First_Name,$First_Name)
+
+            let $Last_Name  = rtrim(&A.LAST_NAME,' ')
+            do Spelling($Last_Name,$Last_Name)
+
+            let $Name_Title = rtrim(&A.NAME_TITLE,' ')
+            do Spelling($Name_Title,$Name_Title)
+
+FROM PS_NAMES A
+WHERE A.EMPLID = $Emplid
+AND A.NAME_TYPE = $NameType
+AND A.EFFDT = (
+        SELECT MAX(A1.EFFDT)
+        FROM PS_NAMES A1
+        WHERE A1.EMPLID = A.EMPLID
+        AND A1.NAME_TYPE = A.NAME_TYPE
+        AND A1.EFFDT <= $Prd_End_Dt)
+end-SELECT
+
+end-procedure
+
+!**********************************************************
+begin-procedure EE-Birth-Data
+
+begin-SELECT
+BIRTHDATE
+            do Format-DateTime(&BIRTHDATE , $YMDDate, {DEFCMP},'','')
+            do Get-DateComponents ($YMDDate,#outyr,#outmo,#outday)
+            move #outyr  to $Year  9999
+            move #outmo  to $Month 09
+            move #outday to $Day   09
+            let $Birthdate = rtrim($Year,' ') || rtrim($Month,' ') || rtrim($Day,' ')
+FROM PS_PERSON
+WHERE EMPLID = $Emplid
+
+end-SELECT
+
+end-procedure
+
+!**********************************************************
+begin-procedure EE-SVNR-Data
+
+begin-SELECT
+NATIONAL_ID
+            let $EE_Svnr = &NATIONAL_ID
+FROM PS_PERS_NID
+WHERE EMPLID = $Emplid
+AND NATIONAL_ID_TYPE = 'VSNR'
+
+end-SELECT
+
+end-procedure
+
+!**********************************************************
+begin-procedure EE-Spouse-SVNR-Data
+
+begin-SELECT
+B.NATIONAL_ID
+            let $Spouse_Svnr    = &B.NATIONAL_ID
+FROM PS_DEPENDENT_BENEF A
+   , PS_DEP_BENEF_NID B
+WHERE A.EMPLID = $Emplid
+AND A.EMPLID = B.EMPLID
+AND A.DEPENDENT_BENEF = B.DEPENDENT_BENEF
+AND B.NATIONAL_ID_TYPE = 'VSNR'
+
+end-SELECT
+
+end-procedure
+
+!****************************************************
+begin-procedure EE-Address
+
+begin-SELECT
+A.COUNTRY
+A.POSTAL
+A.CITY
+A.ADDRESS1
+            if &A.COUNTRY = 'DEU'
+               let $EE_Address_Country = 'D'
+            else
+               let $EE_Address_Country = &A.COUNTRY
+            end-if
+            let $EE_Address_Postal = rtrim(&A.POSTAL,' ')
+            let $EE_Address_City = rtrim(&A.CITY,' ')
+            do Spelling($EE_Address_City,$EE_Address_City)
+
+            let $EE_Address_Street = rtrim(&A.ADDRESS1,' ')
+            do Spelling($EE_Address_Street,$EE_Address_Street)
+FROM PS_ADDRESSES A
+WHERE A.EMPLID = $Emplid
+AND A.ADDRESS_TYPE = 'HOME'
+AND A.EFFDT = (
+    SELECT MAX(A1.EFFDT)
+    FROM PS_ADDRESSES A1
+    WHERE A1.EMPLID = $Emplid
+      AND A1.ADDRESS_TYPE = A.ADDRESS_TYPE
+      AND A1.EFFDT <= $Ctl_Curr_Pay_End_Dt)
+end-SELECT
+
+end-procedure
+
+!**********************************************************
+begin-procedure Spelling ($in, :$out)
+
+move '' to $out
+move 1 to #pos
+
+while #pos <= length($in)
+ let $x = substr($in,#pos,1)
+
+ evaluate $x
+  when = 'è'
+    let $x = 'e'
+    break
+  when = 'é'
+    let $x = 'e'
+    break
+  when = 'ê'
+    let $x = 'e'
+    break
+  when = 'ë'
+    let $x = 'e'
+    break
+  when = 'É'
+    let $x = 'E'
+    break
+  when = 'à'
+    let $x = 'a'
+    break
+  when = 'â'
+    let $x = 'a'
+    break
+  when = 'å'
+    let $x = 'a'
+    break
+  when = 'Å'
+    let $x = 'A'
+    break
+  when = 'ï'
+    let $x ='i'
+    break
+  when = 'î'
+    let $x = 'i'
+    break
+  when = 'ì'
+    let $x = 'i'
+    break
+  when = 'í'
+    let $x = 'i'
+    break
+  when = 'ô'
+    let $x = 'o'
+    break
+  when = 'ò'
+    let $x = 'o'
+    break
+  when = 'ó'
+    let $x = 'o'
+    break
+  when = 'û'
+    let $x = 'u'
+    break
+  when = 'ú'
+    let $x = 'u'
+    break
+  when = 'ù'
+    let $x = 'u'
+    break
+  when = 'ñ'
+    let $x = 'n'
+    break
+  when = 'Ñ'
+    let $x = 'N'
+    break
+  when = 'Ç'
+    let $x = 'C'
+    break
+  when-other
+    let $x = substr($in,#pos,1)
+    break
+ end-evaluate
+ let $out = $out || $x
+ add 1 to #pos
+end-while
+
+end-procedure
+
+!****************************************************
+begin-procedure New-Employee
+ let #Sequence = 0
+end-procedure
+
+!****************************************************
+begin-procedure New-Pay-Entity
+! flush array to disk
+! the procedure opens the file also when it is not open (FileIsOpen='N')
+do CX_Flush-F-Data-To-File
+! replaces:
+!while #i < #Counter
+!   do Write-F-Data-Record
+!   add 1 to #i
+!end-while
+
+!#Debug show 'Anzahl Datensätze   : '  #Nbr_Of_DataSets
+!#Debug show 'Anzahl DA/DN        : '  #Nbr_Of_DataSets_PF
+!#Debug show 'Anzahl RA/RN        : '  #Nbr_Of_DataSets_RF
+
+do Write-P-Data-Record
+
+let #Nbr_Of_DataSets_PF = 0
+let #Nbr_Of_DataSets_RF = 0
+let #Counter = 0
+let #Sequence = 0
+let #i = 0
+
+end-procedure
+
+
+
+
+begin-procedure Need-New-File
+!****************************************************
+! (if necessary open the diskfile,)
+! flush records to disk and close the file
+!****************************************************
+
+! first flush array to file
+! the procedure opens the file also when it is not open (FileIsOpen='N')
+do CX_Flush-F-Data-To-File
+!replaces:
+!while #i < #Counter
+!   do Write-F-Data-Record
+!   add 1 to #i
+!end-while
+
+do Write-P-Data-Record
+
+close 10
+let $FileIsOpen = 'N'
+let #Nbr_Of_DataSets = 0
+let #Nbr_Of_DataSets_PF = 0
+let #Nbr_Of_DataSets_RF = 0
+let #Counter = 0
+let #Sequence = 0
+let #i = 0
+
+end-procedure
+
+!****************************************************
+!begin-procedure Retro-Old
+!end-procedure
+
+
+
+
+! ################################################################
+!
+! Component extraction CX_ to reduce code inside of SELECTs
+!
+! ################################################################
+begin-procedure CX_Employee-BVV-Data       
+! changedfor2004bundle2: use BV HIRE Date instead of BV seniority date
+       do Format-DateTime(&GPDE_BV_HIRE_DT , $YMDDate, {DEFCMP},'','')
+       if length(rtrim($YMDDate,' ')) > 0
+          do Get-DateComponents ($YMDDate,#outyr,#outmo,#outday)
+          move #outyr to $Year  9999
+          move #outmo to $Month 09
+          move #outday to $Day 09
+          let $BV_Hire_Dt = rtrim($Year,' ') || rtrim($Month,' ') || rtrim($Day,' ')
+       end-if
+
+       do Format-DateTime(&GPDE_BV_TRMNTN_DT , $YMDDate, {DEFCMP},'','')
+       if length(rtrim($YMDDate,' ')) > 0
+          do Get-DateComponents ($YMDDate,#outyr,#outmo,#outday)
+          move #outyr to $Year  9999
+          move #outmo to $Month 09
+          move #outday to $Day 09
+          let $BV_Trmntn_Dt = rtrim($Year,' ') || rtrim($Month,' ') || rtrim($Day,' ')
+       end-if
+
+       do Format-DateTime(&GPDE_BV_PRMNNT_CLM , $YMDDate, {DEFCMP},'','')
+       if length(rtrim($YMDDate,' ')) > 0
+          do Get-DateComponents ($YMDDate,#outyr,#outmo,#outday)
+          move #outyr to $Year  9999
+          move #outmo to $Month 09
+          move #outday to $Day 09
+          let $BV_Prmnnt_Clm = rtrim($Year,' ') || rtrim($Month,' ') || rtrim($Day,' ')
+       end-if
+
+       let $BV_Prcs_Typ    = &GPDE_BV_PRCS_TYP
+       let $BV_Currency_Cd = &CURRENCY_CD
+       let $BV_Sex         = &GPDE_BV_SEX
+       let $BV_Mar_Status  = &GPDE_BV_MAR_STATUS
+       let #BV_Class       = &GPDE_BV_CLASS
+       let $BV_Class       = edit(#BV_Class,'09')
+
+       let $BV_Sort_Key    = &GPDE_BV_SORT_KEY
+       let $BV_Sort_Len    = &GPDE_BV_SORT_LEN
+       let $BV_Sortv_Key   = &GPDE_BV_SORTV_KEY
+       let $BV_Sortv_Len   = &GPDE_BV_SORTV_LEN
+       let $BV_Sortv_Row1  = &GPDE_BV_SORTV_ROW1
+       let $BV_Sortv_Row2  = &GPDE_BV_SORTV_ROW2
+       let $BV_Sortv_Row3  = &GPDE_BV_SORTV_ROW3
+       let $BV_Sortv_Row4  = &GPDE_BV_SORTV_ROW4
+
+       let $NameType = 'PRI'
+       do EE-NameHistory-Data($Emplid,$NameType,$Prd_End_Dt,$PFirst_Name,$PLast_Name,$Name_Title)
+
+       do EE-Birth-Data
+
+       do EE-Spouse-SVNR-Data
+
+       do EE-SVNR-Data
+
+       do EE-Address
+
+       let $NameType = 'MDN'
+
+!changedfor2004bundle2: only last maiden name should be transfered
+       let $MFirst_Name = ' '
+       let $MLast_Name = ' '
+       let $Name_Title = ' '   
+
+       #debug show '$Date ' $Date
+
+       ! GPDE Bundle3/2003
+       ! changed $Date to $Prd_End_Dt
+
+       do EE-NameHistory-Data($Emplid,$NameType,$Prd_End_Dt,$MFirst_Name,$MLast_Name,$Name_Title)
+!changedfor2004bundle2: only last maiden name should be transfered
+       if $MLast_Name > ' '
+          let $Birth_Name = rtrim($MLast_Name,' ') 
+       else
+          let $Birth_Name = ' '
+       end-if
+end-procedure
+
+
+
+
+begin-procedure CX_Convert-Pay-Related-Fields
+       let $BV_Tariff      = &GPDE_BV_TARIFF
+      
+       let #BV_BVV00_Amt   = &GPDE_DD_BVV00_AMT
+       let #BV_BVV10_Amt   = &GPDE_DD_BVV10_AMT
+       let #BV_BVV20_Amt   = &GPDE_DD_BVV20_AMT
+
+       let #BV_NBVV00_Amt  = &GPDE_DD_NBV00_AMT
+       let #BV_NBVV10_Amt  = &GPDE_DD_NBV10_AMT
+       let #BV_NBVV20_Amt  = &GPDE_DD_NBV20_AMT
+
+       !ChangeFor2004: added missing amount
+       let #BV_BVV12_Amt =   &GPDE_VR_BVV12_AMT
+
+       let #BV_BVV13_Amt   = &GPDE_VR_BVV13_AMT
+       let #BV_BVV21_Amt   = &GPDE_VR_BVV21_AMT
+       let #BV_BVV22_Amt   = &GPDE_VR_BVV22_AMT
+       let #BV_BVV28_Amt   = &GPDE_VR_BVV28_AMT
+
+       let #BV_EETxS_Amt   = &GPDE_BV_EETXS_AMT
+       let #BV_EETxNS_Amt  = &GPDE_BV_EETXNS_AMT
+
+       let #BV_FWDA_Amt    = &GPDE_DD_BVV30_AMT
+       let #BV_RZV_Amt     = &GPDE_DD_BVV40_AMT
+       let #BV_AZV_Amt     = &GPDE_DD_BVV50_AMT
+       let #BV_DAT_Amt     = &GPDE_DD_BVV60_AMT
+       let #BV_AR_Amt      = &GPDE_DD_BVV80_AMT
+       let #BV_BR_Amt      = &GPDE_DD_BVV90_AMT
+       let #BV_BRWZ_Amt    = &GPDE_DD_BVV100_AMT
+       let #BV_WI_Amt      = &GPDE_DD_BVV110_AMT
+       let #BV_WIFS_Amt    = &GPDE_DD_BVV120_AMT
+       let #BV_WA_Amt      = &GPDE_DD_BVV130_AMT
+       let #BV_ST_Amt      = &GPDE_DD_BVV140_AMT
+       let #BV_N_Amt       = &GPDE_DD_BVV150_AMT
+
+       
+! --       let #NBV_FWDA_Amt   = &GPDE_DD_NBV30_AMT
+! --       let #NBV_RZV_Amt    = &GPDE_DD_NBV40_AMT
+! --       let #NBV_AZV_Amt    = &GPDE_DD_NBV50_AMT
+! --       let #NBV_DAT_Amt    = &GPDE_DD_NBV60_AMT
+! --       let #NBV_AR_Amt     = &GPDE_DD_NBV80_AMT
+! --       let #NBV_BR_Amt     = &GPDE_DD_NBV90_AMT
+! --       let #NBV_BRWZ_Amt   = &GPDE_DD_NBV100_AMT
+! --       let #NBV_WI_Amt     = &GPDE_DD_NBV110_AMT
+! --       let #NBV_WIFS_Amt   = &GPDE_DD_NBV120_AMT
+! --       let #NBV_WA_Amt     = &GPDE_DD_NBV130_AMT
+! --       let #NBV_ST_Amt     = &GPDE_DD_NBV140_AMT
+! --       let #NBV_N_Amt      = &GPDE_DD_NBV150_AMT
+
+! wdu 04b4: new fields
+       let #DZ_BVV00_Amt   = &GPDE_DD_BVV00_DZ
+       let #DZ_BVV10_Amt   = &GPDE_DD_BVV10_DZ
+       let #DZ_BVV20_Amt   = &GPDE_DD_BVV20_DZ
+       let #DZ_BVV12_Amt =   &GPDE_VR_BV12DZ_AMT
+       let #DZ_BVV13_Amt   = &GPDE_VR_BV13DZ_AMT
+       let #DZ_BVV21_Amt   = &GPDE_VR_BV21DZ_AMT
+       let #DZ_BVV22_Amt   = &GPDE_VR_BV22DZ_AMT
+       let #DZ_BVV28_Amt   = &GPDE_VR_BV28DZ_AMT
+       let #DZ_EETxNS_Amt  = &GPDE_BV_EETXNS_DZ
+end-procedure
+
+
+
+
+begin-procedure CX_Write-Record-By-Tariff
+       evaluate $BV_Tariff
+       when = 'DA'
+           let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+           let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+           let #Sequence = 0
+
+           !ChangeFor2004Bundle2: common expressions moved up before the evaluate, 
+
+           let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+           do Put-F-Data
+           ! wdu05b7: moved 'do Put-Suppl-Insrnc' to the main select, because cases
+           ! exist, where no F-Data need to be written, but Suppl-Data (for tariff DZ)
+           break
+       when = 'DN'
+           let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+           let #Nbr_Of_DataSets_PF = #Nbr_Of_DataSets_PF + 1
+           let #Sequence = 0
+
+           !ChangeFor2004Bundle2: common expressions moved up before the evaluate, 
+
+           let #SumDataSets_PF = #SumDataSets_PF + #Amount1
+           do Put-F-Data
+           ! wdu05b7: moved 'do Put-Suppl-Insrnc' to the main select, because cases
+           ! exist, where no F-Data need to be written, but Suppl-Data (for tariff DZ)
+           break
+       when = 'RA'
+           let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+           let #Nbr_Of_DataSets_RF = #Nbr_Of_DataSets_RF + 1
+           let #Sequence = 0
+
+           !ChangeFor2004Bundle2: common expressions moved up before the evaluate, 
+
+           let #SumDataSets_RF = #SumDataSets_RF + #Amount1
+           do Put-F-Data
+           break
+       when = 'RN'
+           let #Nbr_Of_DataSets =  #Nbr_Of_DataSets + 1
+           let #Nbr_Of_DataSets_RF = #Nbr_Of_DataSets_RF + 1
+           let #Sequence = 0
+
+           !ChangeFor2004Bundle2: common expressions moved up before the evaluate, 
+
+           let #SumDataSets_RF = #SumDataSets_RF + #Amount1
+           do Put-F-Data
+           break
+       when-other
+           break
+       end-evaluate
+end-procedure
+
+
+
+
+
+begin-procedure CX_Flush-F-Data-To-File
+! #####################################################################
+! write array data to the file.
+! if the file is not open, then open it
+! #####################################################################
+! if the file is not open, then open it
+if $FileIsOpen ='N'
+   let $FileIsOpen = 'Y'
+   do Open-File
+end-if
+
+!write records
+while #i < #Counter
+   do Write-F-Data-Record
+   add 1 to #i
+end-while
+end-procedure
+
+
+
+
+
+
+begin-procedure Prepare-BVV-Data
+! ################# Preparation logic for temporary table #############
+! the table is filled with:
+!    the data for the current calculation including all retros
+!    the data for the previous calculation of each retro row
+! #####################################################################
+
+begin-sql
+DELETE FROM PS_GPDE_BV_RP_1;
+end-sql
+
+! ## insert the data for the current calculation including all retros
+begin-sql
+INSERT INTO PS_GPDE_BV_RP_1 
+(EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,SEG_END_DT
+,   GPDE_AL_LINE_ID
+,PAY_ENTITY
+,PRD_END_DT
+,GPDE_AL_CPAY_ENDDT
+,GPDE_BV_EE_NBR
+,GPDE_BV_PRVDR_NBR
+,GPDE_BV_HIRE_DT
+,GPDE_BV_SNRTY_DT
+,GPDE_BV_TRMNTN_DT
+,GPDE_BV_PRMNNT_CLM
+,GPDE_BV_PRCS_TYP
+,GPDE_BV_TARIFF
+,GPDE_BV_TYPE
+,CURRENCY_CD
+,CUR_RT_TYPE
+,GPDE_ASOF_DT_EX_RT
+,GPDE_BV_SEX
+,GPDE_BV_MAR_STATUS
+,GPDE_BV_CLASS
+,GPDE_BV_INSTYPE_00
+,GPDE_BV_INSTYPE_30
+,GPDE_BV_INSTYPE_40
+,GPDE_BV_INSTYPE_50
+,GPDE_BV_INSTYPE_60
+,GPDE_BV_SORT_KEY
+,GPDE_BV_SORT_LEN
+,GPDE_BV_SORTV_KEY
+,GPDE_BV_SORTV_LEN
+,GPDE_BV_SORTV_ROW1
+,GPDE_BV_SORTV_ROW2
+,GPDE_BV_SORTV_ROW3
+,GPDE_BV_SORTV_ROW4
+,GPDE_DD_BVV00_AMT
+,GPDE_DD_BVV10_AMT
+,GPDE_DD_BVV20_AMT
+,GPDE_DD_BVV30_AMT
+,GPDE_DD_BVV40_AMT
+,GPDE_DD_BVV50_AMT
+,GPDE_DD_BVV60_AMT
+,GPDE_DD_BVV70_AMT
+,GPDE_DD_BVV80_AMT
+,GPDE_DD_BVV90_AMT
+,GPDE_DD_BVV100_AMT
+,GPDE_DD_BVV110_AMT
+,GPDE_DD_BVV120_AMT
+,GPDE_DD_BVV130_AMT
+,GPDE_DD_BVV140_AMT
+,GPDE_DD_BVV150_AMT
+,GPDE_DD_NBV00_AMT
+,GPDE_DD_NBV10_AMT
+,GPDE_DD_NBV20_AMT
+,GPDE_VR_BVV12_AMT
+,GPDE_VR_BVV13_AMT
+,GPDE_VR_BVV21_AMT
+,GPDE_VR_BVV22_AMT
+,GPDE_VR_BVV28_AMT
+,GPDE_BV_EETXS_AMT
+,GPDE_BV_EETXNS_AMT
+,GPDE_BV_TYPE_DZ
+,GPDE_DD_BVV00_DZ
+,GPDE_DD_BVV10_DZ
+,GPDE_DD_BVV20_DZ
+,GPDE_BV_EETXNS_DZ
+,GPDE_VR_BV12DZ_AMT
+,GPDE_VR_BV13DZ_AMT
+,GPDE_VR_BV21DZ_AMT
+,GPDE_VR_BV22DZ_AMT
+,GPDE_VR_BV28DZ_AMT
+)
+SELECT
+EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,SEG_END_DT
+,'OR'
+,PAY_ENTITY
+,PRD_END_DT
+,GPDE_AL_CPAY_ENDDT
+,GPDE_BV_EE_NBR
+,GPDE_BV_PRVDR_NBR
+,GPDE_BV_HIRE_DT
+,GPDE_BV_SNRTY_DT
+,GPDE_BV_TRMNTN_DT
+,GPDE_BV_PRMNNT_CLM
+,GPDE_BV_PRCS_TYP
+,GPDE_BV_TARIFF
+,GPDE_BV_TYPE
+,CURRENCY_CD
+,CUR_RT_TYPE
+,GPDE_ASOF_DT_EX_RT
+,GPDE_BV_SEX
+,GPDE_BV_MAR_STATUS
+,GPDE_BV_CLASS
+,GPDE_BV_INSTYPE_00
+,GPDE_BV_INSTYPE_30
+,GPDE_BV_INSTYPE_40
+,GPDE_BV_INSTYPE_50
+,GPDE_BV_INSTYPE_60
+,GPDE_BV_SORT_KEY
+,GPDE_BV_SORT_LEN
+,GPDE_BV_SORTV_KEY
+,GPDE_BV_SORTV_LEN
+,GPDE_BV_SORTV_ROW1
+,GPDE_BV_SORTV_ROW2
+,GPDE_BV_SORTV_ROW3
+,GPDE_BV_SORTV_ROW4
+,GPDE_DD_BVV00_AMT
+,GPDE_DD_BVV10_AMT
+,GPDE_DD_BVV20_AMT
+,GPDE_DD_BVV30_AMT
+,GPDE_DD_BVV40_AMT
+,GPDE_DD_BVV50_AMT
+,GPDE_DD_BVV60_AMT
+,GPDE_DD_BVV70_AMT
+,GPDE_DD_BVV80_AMT
+,GPDE_DD_BVV90_AMT
+,GPDE_DD_BVV100_AMT
+,GPDE_DD_BVV110_AMT
+,GPDE_DD_BVV120_AMT
+,GPDE_DD_BVV130_AMT
+,GPDE_DD_BVV140_AMT
+,GPDE_DD_BVV150_AMT
+,GPDE_DD_NBV00_AMT
+,GPDE_DD_NBV10_AMT
+,GPDE_DD_NBV20_AMT
+,GPDE_VR_BVV12_AMT
+,GPDE_VR_BVV13_AMT
+,GPDE_VR_BVV21_AMT
+,GPDE_VR_BVV22_AMT
+,GPDE_VR_BVV28_AMT
+,GPDE_BV_EETXS_AMT
+,GPDE_BV_EETXNS_AMT
+,GPDE_BV_TYPE_DZ
+,GPDE_DD_BVV00_DZ
+,GPDE_DD_BVV10_DZ
+,GPDE_DD_BVV20_DZ
+,GPDE_BV_EETXNS_DZ
+,GPDE_VR_BV12DZ_AMT
+,GPDE_VR_BV13DZ_AMT
+,GPDE_VR_BV21DZ_AMT
+,GPDE_VR_BV22DZ_AMT
+,GPDE_VR_BV28DZ_AMT
+FROM PS_GPDE_BV_RP
+WHERE GPDE_AL_CPAY_ENDDT =  $Ctl_Curr_Pay_End_Dt
+end-sql
+
+
+! ### Storno: the data for the previous calculation of each retro row
+begin-sql
+INSERT INTO PS_GPDE_BV_RP_1 
+(EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,SEG_END_DT
+,   GPDE_AL_LINE_ID
+,PAY_ENTITY
+,PRD_END_DT
+,GPDE_AL_CPAY_ENDDT
+,GPDE_BV_EE_NBR
+,GPDE_BV_PRVDR_NBR
+,GPDE_BV_HIRE_DT
+,GPDE_BV_SNRTY_DT
+,GPDE_BV_TRMNTN_DT
+,GPDE_BV_PRMNNT_CLM
+,GPDE_BV_PRCS_TYP
+,GPDE_BV_TARIFF
+,GPDE_BV_TYPE
+,CURRENCY_CD
+,CUR_RT_TYPE
+,GPDE_ASOF_DT_EX_RT
+,GPDE_BV_SEX
+,GPDE_BV_MAR_STATUS
+,GPDE_BV_CLASS
+,GPDE_BV_INSTYPE_00
+,GPDE_BV_INSTYPE_30
+,GPDE_BV_INSTYPE_40
+,GPDE_BV_INSTYPE_50
+,GPDE_BV_INSTYPE_60
+,GPDE_BV_SORT_KEY
+,GPDE_BV_SORT_LEN
+,GPDE_BV_SORTV_KEY
+,GPDE_BV_SORTV_LEN
+,GPDE_BV_SORTV_ROW1
+,GPDE_BV_SORTV_ROW2
+,GPDE_BV_SORTV_ROW3
+,GPDE_BV_SORTV_ROW4
+,GPDE_DD_BVV00_AMT
+,GPDE_DD_BVV10_AMT
+,GPDE_DD_BVV20_AMT
+,GPDE_DD_BVV30_AMT
+,GPDE_DD_BVV40_AMT
+,GPDE_DD_BVV50_AMT
+,GPDE_DD_BVV60_AMT
+,GPDE_DD_BVV70_AMT
+,GPDE_DD_BVV80_AMT
+,GPDE_DD_BVV90_AMT
+,GPDE_DD_BVV100_AMT
+,GPDE_DD_BVV110_AMT
+,GPDE_DD_BVV120_AMT
+,GPDE_DD_BVV130_AMT
+,GPDE_DD_BVV140_AMT
+,GPDE_DD_BVV150_AMT
+,GPDE_DD_NBV00_AMT
+,GPDE_DD_NBV10_AMT
+,GPDE_DD_NBV20_AMT
+,GPDE_VR_BVV12_AMT
+,GPDE_VR_BVV13_AMT
+,GPDE_VR_BVV21_AMT
+,GPDE_VR_BVV22_AMT
+,GPDE_VR_BVV28_AMT
+,GPDE_BV_EETXS_AMT
+,GPDE_BV_EETXNS_AMT
+,GPDE_BV_TYPE_DZ
+,GPDE_DD_BVV00_DZ
+,GPDE_DD_BVV10_DZ
+,GPDE_DD_BVV20_DZ
+,GPDE_BV_EETXNS_DZ
+,GPDE_VR_BV12DZ_AMT
+,GPDE_VR_BV13DZ_AMT
+,GPDE_VR_BV21DZ_AMT
+,GPDE_VR_BV22DZ_AMT
+,GPDE_VR_BV28DZ_AMT
+)
+SELECT
+EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,SEG_END_DT
+,'ST'
+,PAY_ENTITY
+,PRD_END_DT
+,GPDE_AL_CPAY_ENDDT
+,GPDE_BV_EE_NBR
+,GPDE_BV_PRVDR_NBR
+,GPDE_BV_HIRE_DT
+,GPDE_BV_SNRTY_DT
+,GPDE_BV_TRMNTN_DT
+,GPDE_BV_PRMNNT_CLM
+,GPDE_BV_PRCS_TYP
+,GPDE_BV_TARIFF
+,GPDE_BV_TYPE
+,CURRENCY_CD
+,CUR_RT_TYPE
+,GPDE_ASOF_DT_EX_RT
+,GPDE_BV_SEX
+,GPDE_BV_MAR_STATUS
+,GPDE_BV_CLASS
+,GPDE_BV_INSTYPE_00
+,GPDE_BV_INSTYPE_30
+,GPDE_BV_INSTYPE_40
+,GPDE_BV_INSTYPE_50
+,GPDE_BV_INSTYPE_60
+,GPDE_BV_SORT_KEY
+,GPDE_BV_SORT_LEN
+,GPDE_BV_SORTV_KEY
+,GPDE_BV_SORTV_LEN
+,GPDE_BV_SORTV_ROW1
+,GPDE_BV_SORTV_ROW2
+,GPDE_BV_SORTV_ROW3
+,GPDE_BV_SORTV_ROW4
+,GPDE_DD_BVV00_AMT * (-1)
+,GPDE_DD_BVV10_AMT * (-1)
+,GPDE_DD_BVV20_AMT * (-1)
+,GPDE_DD_BVV30_AMT * (-1)
+,GPDE_DD_BVV40_AMT * (-1)
+,GPDE_DD_BVV50_AMT * (-1)
+,GPDE_DD_BVV60_AMT * (-1)
+,GPDE_DD_BVV70_AMT * (-1)
+,GPDE_DD_BVV80_AMT * (-1)
+,GPDE_DD_BVV90_AMT * (-1)
+,GPDE_DD_BVV100_AMT * (-1)
+,GPDE_DD_BVV110_AMT * (-1)
+,GPDE_DD_BVV120_AMT * (-1)
+,GPDE_DD_BVV130_AMT * (-1)
+,GPDE_DD_BVV140_AMT * (-1)
+,GPDE_DD_BVV150_AMT * (-1)
+,GPDE_DD_NBV00_AMT * (-1)
+,GPDE_DD_NBV10_AMT * (-1)
+,GPDE_DD_NBV20_AMT * (-1)
+,GPDE_VR_BVV12_AMT * (-1)
+,GPDE_VR_BVV13_AMT * (-1)
+,GPDE_VR_BVV21_AMT * (-1)
+,GPDE_VR_BVV22_AMT * (-1)
+,GPDE_VR_BVV28_AMT * (-1)
+,GPDE_BV_EETXS_AMT * (-1)
+,GPDE_BV_EETXNS_AMT * (-1)
+,GPDE_BV_TYPE_DZ 
+,GPDE_DD_BVV00_DZ * (-1)
+,GPDE_DD_BVV10_DZ * (-1)
+,GPDE_DD_BVV20_DZ * (-1)
+,GPDE_BV_EETXNS_DZ * (-1)
+,GPDE_VR_BV12DZ_AMT * (-1)
+,GPDE_VR_BV13DZ_AMT * (-1)
+,GPDE_VR_BV21DZ_AMT * (-1)
+,GPDE_VR_BV22DZ_AMT * (-1)
+,GPDE_VR_BV28DZ_AMT * (-1)
+FROM PS_GPDE_BV_RP BVR0
+WHERE GPDE_AL_CPAY_ENDDT = (SELECT MAX(GPDE_AL_CPAY_ENDDT)
+    FROM PS_GPDE_BV_RP BVR1
+    WHERE GPDE_AL_CPAY_ENDDT < $Ctl_Curr_Pay_End_Dt
+    AND BVR1.EMPLID=BVR0.EMPLID
+    AND BVR1.EMPL_RCD=BVR0.EMPL_RCD
+    AND BVR1.GP_PAYGROUP=BVR0.GP_PAYGROUP
+    AND BVR1.CAL_ID=BVR0.CAL_ID
+    ! the following 4 items may not be joined
+    ! --AND BVR1.CAL_RUN_ID=BVR0.CAL_RUN_ID
+    ! --AND BVR1.ORIG_CAL_RUN_ID=BVR0.ORIG_CAL_RUN_ID
+    ! --AND BVR1.RSLT_SEG_NUM=BVR0.RSLT_SEG_NUM
+    ! --AND BVR1.SEG_END_DT=BVR0.SEG_END_DT
+)
+! wdu05b7: now using RP_0001 for lookup, because BVV row may not exist
+! after emplid does not have BVV any more
+AND EXISTS ( SELECT 'X' from PS_GPDE_RP_0001 BVR2
+    WHERE BVR2.EMPLID=BVR0.EMPLID
+    ! we do not have CAL_RUN_ID, use GPDE_AL_CPAY_ENDDT instead 
+    ! AND BVR2.CAL_RUN_ID = 'MAERZ04'
+    AND BVR2.EMPL_RCD=BVR0.EMPL_RCD
+    AND BVR2.GP_PAYGROUP=BVR0.GP_PAYGROUP
+    AND BVR2.CAL_ID=BVR0.CAL_ID
+    AND BVR2.GPDE_AL_CPAY_ENDDT = $Ctl_Curr_Pay_End_Dt
+)
+end-sql
+
+! wdu 04b4 migration statements
+! avoid grouping issue 
+begin-sql
+UPDATE PS_GPDE_BV_RP_1
+SET GPDE_BV_TYPE_DZ = '00'   
+WHERE GPDE_BV_TYPE_DZ <> 'DZ'  
+end-sql
+
+! wdu06-900b0 changed '00' to 0 for GPDE_BV_CLASS
+begin-sql
+UPDATE PS_GPDE_BV_RP_1
+SET GPDE_BV_CLASS = 0   
+WHERE GPDE_BV_TYPE_DZ = 'DZ'
+AND   GPDE_BV_TARIFF  IN ( 'DN' , 'RN')
+end-sql
+
+end-procedure
+
+
+
+
+
+begin-procedure CreateDiskLinkPage
+! wdu 04b4 : Create a dummy htm page to enable the access to the disk file via psreports (like DEUEV)
+!
+! input param: $ParmDiskFileName
+ 
+  Let $FileNmDisk = rtrim($FileDir,' ') || rtrim($ParmDiskFileNameHtm,' ') || '.htm' 
+  open $FileNmDisk as 11 for-writing record=128:FIXED_NOLF
+
+  let $temp_str = '<HTML><HEAD><TITLE>' || $ParmDiskFileName || '</TITLE></HEAD><BODY>' ||
+             ' <A HREF=' || $ParmDiskFileName ||
+                                '>' || $ParmDiskFileName || '</A>' || ' </BODY></HTML>'
+  write 11 from $temp_str
+  CLOSE 11
+end-procedure
+
+
+
+
+!****************************************************
+#include 'gpdeut04.sqc'
+#include 'gpdeut06.sqc'
+#include 'datetime.sqc'  !routines for date and time formatting
+#include 'curdttim.sqc'  !get-current-datetime procedure
+#include 'validdt.sqc'   !validate date routine
+#include 'readxlat.sqc'  !read-translate-table procedure
+#include 'number.sqc'    !routines to format numbers
+#include 'stdapi.sqc'    !update process api
+#include 'tranctrl.sqc'  !commits the update transactions
+#include 'sqrtrans.sqc'  !sqr strings table procedures
+#include 'datemath.sqc'
+
+

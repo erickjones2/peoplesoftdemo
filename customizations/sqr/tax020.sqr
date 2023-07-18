@@ -1,0 +1,511 @@
+!***********************************************************************
+!  TAX020:  Qtrly FUTA Credit Reduction Tax Verification by State      *
+!                                                                      *
+!             NOTE: "#IFDEF TAXTEST" in main SELECT is used for        *
+!                   testing this report against DEMO database          *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2017, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  25921085                                            !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc'    !Set environment
+#include 'setup32.sqc'   !printer and page-size initialization
+#Include 'usarpt.sqc'    !Get USA variables
+
+begin-report
+  do Init-Report
+  do Process-Main
+  move 'Y' to $LastPage
+  do Print-GrandTotals
+  do NTR-Check
+  do Stdapi-Term
+end-report
+
+begin-procedure Init-Report
+  move 'TAX020' to $ReportID
+  move 'FUTA Credit Reduction Tax Verification' to $ReportTitle
+  display ' '
+  display $ReportTitle
+  display ' '
+
+  do Init-DateTime
+  do Get-Current-DateTime
+  move $AsOfToday to $AsOfDate  !for included procedures
+
+  do Get-Tax-Reporting-Run-Controls
+
+  do Get-Calendar-Year-Id
+  do Stdapi-Init
+
+  do Initialize
+end-procedure
+
+begin-procedure Initialize
+  if $PRCS_Process_Instance = ''
+     do Prompts
+     do Evaluate-File-Type
+  else
+     do Select-Parameters
+     do Convert-Parameters
+  end-if
+
+  if $PgmMode = 'U'
+    move 'Report and Update Tax Balance' to $RunType
+  else
+    move 'Report Only' to $RunType
+  end-if
+  move 'N' to $EmpFound
+  move '6' to $TaxClass
+  move &TX.Balance_Year to $CalYear 9999
+end-procedure
+
+begin-heading 8
+  #include 'stdhdg01.sqc'
+  print $heading_dt                   (-1,,) center
+
+  print $RunType                                         (+1) center
+  if $LastPage = 'Y'
+    print ' '                                            (+1, 1)
+  else
+    print 'Company'                                      (+1, 1)
+    print $Company                                       (, 12)
+  end-if
+  let $TaxYear = 'Tax Year ' || $CalYear
+  print $TaxYear                 (,)    center
+  if $EmpFound = 'Y'
+    if $LastPage = 'Y'
+      print ' '                                         (+1, 1)
+    else
+      move #Rate1 to $Rate1
+      let $StateNamePrint = $StateName || ' Credit Reduction Rate ' || $Rate1
+      print $StateNamePrint                             (+1, 1)
+    end-if
+  end-if
+  if $LastPage = 'Y'
+    print ' '                                            (+2, 1)
+  else
+    print 'Employee ID'                                  (+2, 1)
+    print 'Name'                                         (, 21)
+    print 'Tax Class'                                    (, 46)
+  end-if
+  print 'YTD TxGrs'                                      (, 67)
+  print 'YTD Tax'                                        (, 88)
+  print 'QTD Tax'                                        (,109)
+  print 'MTD Tax'                                        (,127)
+  print 'Adj Amount'                                     (,148)
+
+end-heading
+
+begin-procedure Process-Main
+
+begin-SELECT
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+end-SELECT
+begin-SELECT
+C.COMPANY () on-break print=never level=1 before=Company-Change
+C.STATE   () on-break print=never level=2 before=State-Change
+                                          AFTER=Page-or-Not
+C.TAX_CLASS
+C.EMPLID
+C.BALANCE_QTR
+C.BALANCE_PERIOD
+C.LOCALITY
+C.TXGRS_YTD
+C.TXGRS_QTD
+C.TAX_YTD
+C.TAX_QTD
+C.TAX_MTD
+
+D1.NATIONAL_ID () on-break print=never level=3 save=$SSN
+PN.NAME        () on-break print=never level=3 save=$Name
+
+  move &C.Balance_Qtr    to #QtrCd
+  move &C.Balance_Period to #MonthCd
+  move &C.Company        to $Company
+  move &C.Tax_YTD        to #TaxYTD
+  move &C.Tax_QTD        to #TaxQTD
+  move &C.Tax_MTD        to #TaxMTD
+  move &C.TxGrs_YTD      to #CurTxGrs_YTD
+  let $TaxClass = RTRIM(&C.TAX_CLASS, ' ')
+
+  do Process-Tax-Balance
+
+  do Emplid-Print
+
+FROM  PS_TAX_BALANCE C, PS_PERSON_NAME PN,  PS_PERS_NID D1, PS_COMPANY_TBL CP
+WHERE PN.EMPLID       = C.EMPLID
+  AND C.COMPANY       = CP.COMPANY
+  AND CP.TAX_REPORT_TYPE IN ('2', 'P')
+  AND CP.EFF_STATUS = 'A'
+  AND CP.EFFDT =
+      (SELECT MAX(CP1.EFFDT)
+       FROM   PS_COMPANY_TBL CP1
+       WHERE  CP1.COMPANY = CP.COMPANY
+        AND  CP1.EFFDT  <= $AsOfDate)
+  AND C.STATE         NOT IN ('$U','$UPR','$UAS','$UGU','$UVI')
+  AND C.LOCALITY      = ' '
+  AND C.TAX_CLASS     = '6'
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = (SELECT MAX(C2.BALANCE_QTR)
+       FROM   PS_TAX_BALANCE C2
+       WHERE  C2.EMPLID        = C.EMPLID
+         AND  C2.COMPANY       = C.COMPANY
+         AND C2.BALANCE_ID    = C.BALANCE_ID
+         AND C2.BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  C2.STATE         = C.STATE
+         AND  C2.LOCALITY      = C.LOCALITY
+         AND  C2.TAX_CLASS     = C.TAX_CLASS)
+  AND C.BALANCE_PERIOD =
+      (SELECT MAX(C1.BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE C1
+       WHERE  C1.EMPLID        = C.EMPLID
+         AND  C1.COMPANY       = C.COMPANY
+         AND C1.BALANCE_ID    = C.BALANCE_ID
+         AND C1.BALANCE_YEAR  = C.BALANCE_YEAR
+         AND C1.BALANCE_QTR   = C.BALANCE_QTR
+         AND  C1.STATE         = C.STATE
+         AND  C1.LOCALITY      = C.LOCALITY
+         AND  C1.TAX_CLASS     = C.TAX_CLASS)
+  AND C.TXGRS_YTD > 0
+  AND D1.EMPLID       = C.EMPLID
+  AND D1.COUNTRY      = {NID_country}
+  AND D1.NATIONAL_ID_TYPE = $PAYROLL_NID_TYPE
+
+ORDER BY C.COMPANY, C.STATE, C.LOCALITY,  C.TAX_CLASS DESC, C.EMPLID
+end-SELECT
+end-procedure
+
+begin-procedure Process-Tax-Balance
+  do Format-Number(&C.TxGrs_QTD, $TxGrs_QTD, '99999999999.99')
+  do Format-Number(&C.TxGrs_YTD, $TxGrs_YTD, '99999999999.99')
+  move &C.EmplID to $EmplID
+end-procedure
+
+begin-procedure EmplID-Print
+
+  do Calculate-Tax
+  if $TaxDiff = 'Y'
+    move 'N' to $TaxDiff
+    move 'Y' to $DoPage
+    move 'Y' to $EmpFound
+    next-listing need=7
+
+    print '*'                     (+2,88,20) fill
+    print ' Current '             (0,108)
+    print '*'                     (0,117,20) fill
+
+    print $EmplID                 (+1,1)
+    print $Name                   (0,21,20)
+    print $TaxClass               (0,50,1)
+    print #CurTxGrs_YTD           (0,57)    edit 99,999,999,999.99mi
+    print #TaxYTD                 (0,78)    edit 99,999,999,999.99mi
+    print #TaxQTD                 (0,99)    edit 99,999,999,999.99mi
+    print #TaxMTD                 (0,120)   edit 99,999,999,999.99mi
+    print #AdjTax                 (0,141)   edit 99,999,999,999.99mi
+
+    print '*'                     (+2,88,19) fill
+    print ' Adjusted '            (0,107)
+    print '*'                     (0,117,20) fill
+    add #TaxYTD      to  #New_YTD
+    add #AdjTax      to  #New_YTD
+    print #New_YTD                (+1,78)   edit 99,999,999,999.99mi
+    add #TaxQTD      to  #New_QTD
+    add #AdjTax      to  #New_QTD
+    print #New_QTD                (0,99)    edit 99,999,999,999.99mi
+    add #TaxMTD      to  #New_MTD
+    add #AdjTax      to  #New_MTD
+    print #New_MTD                (0,120)   edit 99,999,999,999.99mi
+
+    do Accumulate-Totals
+
+    if $PgmMode = 'U'
+      do Update-Balance
+    end-if
+
+    move 0           to  #New_MTD
+    move 0           to  #New_QTD
+    move 0           to  #New_YTD
+  end-if
+
+end-procedure
+
+begin-procedure Accumulate-Totals
+  add #CurTxGrs_YTD to #total_#CurTxGrs_YTD
+  add #TaxYTD  to #total_TaxYTD
+  add #TaxQTD  to #total_TaxQTD
+  add #TaxMTD  to #total_TaxMTD
+  add #AdjTax  to #total_AdjTax
+  add #New_YTD to #total_New_YTD
+  add #New_QTD to #total_New_QTD
+  add #New_MTD to #total_New_MTD
+
+  add #CurTxGrs_YTD to #grand_#CurTxGrs_YTD
+  add #TaxYTD  to #grand_TaxYTD
+  add #TaxQTD  to #grand_TaxQTD
+  add #TaxMTD  to #grand_TaxMTD
+  add #AdjTax  to #grand_AdjTax
+  add #New_YTD to #grand_New_YTD
+  add #New_QTD to #grand_New_QTD
+  add #New_MTD to #grand_New_MTD
+
+  move 'Y' to $PrintTotals
+end-procedure
+
+begin-procedure Calculate-Tax
+
+  let #WorkGross = #CurTxGrs_YTD
+  if #MaxGross > 0
+     if #WorkGross > #MaxGross
+        let #WorkGross = #MaxGross
+     end-if
+  end-if
+
+  if $FUTA-CR-Flag = 'Y'
+    let #CalcdTax = round (#WorkGross * #Rate1 / 1,2)
+
+    if #CalcdTax <> #TaxYTD
+       let #AdjTax = #CalcdTax - #TaxYTD
+    else
+       move 0 to #AdjTax
+    end-if
+  else
+    move 0 to #AdjTax
+  end-if
+
+  move 0             to #CalcdTax
+
+  if abs(#AdjTax) > .02
+    move 'Y' to $TaxDiff
+  else
+    move 'N' to $TaxDiff
+  end-if
+
+end-Procedure
+
+begin-procedure Company-Change
+  if $Company <> ''
+    do Page-or-Not
+  end-if
+  move &C.Company to $Company
+  do Get-Company-Data
+end-procedure
+
+
+begin-procedure State-Change
+  let $State = rtrim(&C.State, ' ')
+  do Get-State-Tax-Data                       !Employer ID
+
+  do Get-ST-FUTA-Rates
+
+  let #MaxGross = 0
+
+begin-SELECT
+OT.MAX_GROSS
+
+  let #MaxGross = &OT.MAX_GROSS
+
+FROM  PS_ST_OTH_TAX_TBL OT
+WHERE OT.STATE = '$U'
+  AND OT.TAX_CLASS = 'U'
+  AND OT.EFFDT     =
+      (SELECT MAX(EFFDT)
+       FROM   PS_ST_OTH_TAX_TBL
+       WHERE  STATE   = OT.STATE
+         AND  EFFDT  <= $AsOfDate)
+end-SELECT
+end-procedure
+
+
+begin-procedure Print-SubTotals
+  if $EmpFound = 'Y' and
+    $PrintTotals = 'Y'
+    print '*'                     (+4,88,20) fill
+    print ' Current '             (0,108)
+    print '*'                     (0,117,20) fill
+    print 'Totals     Company: '  (+1,1)
+    print $Company                (0,21,3)
+    print '     State: '          (0,24)
+    print $State                  (0,36,2)
+    print #total_#CurTxGrs_YTD    (0,54)    edit 9,999,999,999,999.99mi
+    print #total_TaxYTD           (0,75)    edit 9,999,999,999,999.99mi
+    print #total_TaxQTD           (0,96)    edit 9,999,999,999,999.99mi
+    print #total_TaxMTD           (0,117)    edit 9,999,999,999,999.99mi
+    print #total_AdjTax           (0,138)   edit 9,999,999,999,999.99mi
+    print '*'                     (+2,88,19) fill
+    print ' Adjusted '            (0,107)
+    print '*'                     (0,117,20) fill
+    print #total_New_YTD          (+1,75)   edit 9,999,999,999,999.99mi
+    print #total_New_QTD          (0,96)    edit 9,999,999,999,999.99mi
+    print #total_New_MTD          (0,117)    edit 9,999,999,999,999.99mi
+    move 0 to #total_#CurTxGrs_YTD
+    move 0 to #total_TaxYTD
+    move 0 to #total_TaxQTD
+    move 0 to #total_TaxMTD
+    move 0 to #total_AdjTax
+    move 0 to #total_New_YTD
+    move 0 to #total_New_QTD
+    move 0 to #total_New_MTD
+    move 'N' to $PrintTotals
+  end-if
+end-procedure
+
+
+begin-procedure Print-GrandTotals
+  if $EmpFound = 'Y'
+    print '*'                     (+4,88,20) fill
+    print ' Current '             (0,108)
+    print '*'                     (0,117,20) fill
+    print 'Report Totals'         (+1,1)
+    print #grand_#CurTxGrs_YTD    (0,54)    edit 9,999,999,999,999.99mi
+    print #grand_TaxYTD           (0,75)    edit 9,999,999,999,999.99mi
+    print #grand_TaxQTD           (0,96)    edit 9,999,999,999,999.99mi
+    print #grand_TaxMTD           (0,117)    edit 9,999,999,999,999.99mi
+    print #grand_AdjTax           (0,138)   edit 9,999,999,999,999.99mi
+    print '*'                     (+2,88,19) fill
+    print ' Adjusted '            (0,107)
+    print '*'                     (0,117,20) fill
+    print #grand_New_YTD          (+1,75)   edit 9,999,999,999,999.99mi
+    print #grand_New_QTD          (0,96)    edit 9,999,999,999,999.99mi
+    print #grand_New_MTD          (0,117)    edit 9,999,999,999,999.99mi
+  end-if
+end-procedure
+
+
+begin-procedure Page-or-Not
+  if $EmpFound = 'Y'
+    if $State <> ''
+      if $DoPage = 'Y'
+        do Print-SubTotals
+        new-page
+        move 'N' to $DoPage
+      end-if
+    end-if
+  end-if
+end-procedure
+
+begin-procedure NTR-Check
+  if $EmpFound = 'N'
+    display ' '
+    display '****** No Employee Records Selected ******'
+    display ' '
+    print '********************************'  (+3,1)
+    print '  No Employee Records Selected  '  (+1,1)
+    print '********************************'  (+1,1)
+    date-time () hh:mi:ss &t2
+    display &t2
+  end-if
+end-procedure
+
+begin-procedure Prompts
+
+  while $PgmMode = ''
+    input $PgmMode 'Report only or update mode? (R, U or Q to quit)'
+    uppercase $PgmMode
+    if INSTR('RUQ',$PgmMode,1) = 0
+      display ' '
+      display '***** Enter R, U, or Q *****'
+      display ' '
+      move '' to $PgmMode
+    end-if
+  end-while
+end-procedure
+
+begin-procedure Convert-Parameters
+
+  move $RC_QTR_UI.Program_Mode to $PgmMode
+end-procedure
+
+begin-procedure Evaluate-File-Type
+
+  evaluate $PgmMode
+    when = 'Q'
+      stop quiet
+
+  end-evaluate
+end-procedure
+
+begin-procedure Get-ST-FUTA-Rates
+
+move 0 to #Rate1
+
+begin-SELECT
+B.TAX_RT
+B.STATE
+B.EFFDT
+B.FUTA_CR_REDUCTION
+
+  move &B.TAX_RT to #Rate1
+  move &B.FUTA_CR_REDUCTION TO $FUTA-CR-Flag
+
+FROM PS_STT_FUTA_CR_RT B
+WHERE B.STATE =$State
+AND B.TAX_YEAR = (SELECT MAX(B1.TAX_YEAR)
+                  FROM   PS_STT_FUTA_CR_RT B1
+                  WHERE  B1.FUTA_CR_ID = B.FUTA_CR_ID
+                  AND    B1.TAX_YEAR  <= &TX.Balance_Year)
+AND B.EFFDT = (SELECT MAX(B2.EFFDT)
+       FROM   PS_STT_FUTA_CR_RT B2
+       WHERE  B2.FUTA_CR_ID = B.FUTA_CR_ID
+         AND  B2.TAX_YEAR   = B.TAX_YEAR
+         AND  B2.EFFDT     <= $AsOfDate)
+ORDER BY
+  B.EFFDT ASC
+end-SELECT
+end-procedure
+
+begin-procedure Update-Balance
+begin-SQL
+UPDATE PS_TAX_BALANCE
+   SET TAX_YTD = #New_YTD
+      ,TAX_QTD = #New_QTD
+      ,TAX_MTD = #New_MTD
+ WHERE EMPLID         = $EmplID
+   AND COMPANY        = $Company
+   AND  BALANCE_ID    = $Calendar_Year_Id
+   AND  BALANCE_YEAR  = &TX.Balance_Year
+   AND  BALANCE_QTR   = #QtrCd
+   AND STATE          = $State
+   AND LOCALITY       = ' '
+   AND TAX_CLASS      = $TaxClass
+   AND BALANCE_PERIOD = #MonthCd
+end-SQL
+end-procedure
+
+begin-procedure Ignore
+end-procedure
+
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'getstdta.sqc'  !Get-State-Tax-Data procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'txrnctl1.sqc'  !Get-Run-Control procedure
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id

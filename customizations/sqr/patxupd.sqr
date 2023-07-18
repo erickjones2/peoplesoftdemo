@@ -1,0 +1,616 @@
+!***********************************************************************
+!  PATXUPD:  LOCAL_TAX_TBL Conversion to 7.5                           *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!   This software and related documentation are provided under a       *
+!   license agreement containing restrictions on use and               *
+!   disclosure and are protected by intellectual property              *
+!   laws. Except as expressly permitted in your license agreement      *
+!   or allowed by law, you may not use, copy, reproduce,               *
+!   translate, broadcast, modify, license, transmit, distribute,       *
+!   exhibit, perform, publish or display any part, in any form or      *
+!   by any means. Reverse engineering, disassembly, or                 *
+!   decompilation of this software, unless required by law for         *
+!   interoperability, is prohibited.                                   *
+!   The information contained herein is subject to change without      *
+!   notice and is not warranted to be error-free. If you find any      *
+!   errors, please report them to us in writing.                       *
+!                                                                      *
+!   Copyright (C) 1988, 2013, Oracle and/or its affiliates.            *
+!   All Rights Reserved.                                               *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/17:15:00:45                                 
+!       $Release:  HR92                                                
+!      $Revision:  101                                                 
+!                                                                      *
+!***********************************************************************
+! The Conversion Process includes:                                     *
+!                                                                      *
+!     (1) This process runs in 2 modes controlled by the input         *
+!         parameter flag. 'N' - Prints a report of the table values    *
+!                               to be converted.                       *
+!                         'Y' - Executes the table updates(reported    *
+!                               for 'N').                              *
+!                                                                      *
+!     (2) Populate an intermediate work table with all rows generated  *
+!         by the processing register.                                  *
+!                                                                      *
+!     (3) Compare work table entries to LOCAL_TAX_TBL entries. If      *
+!         different, insert new effective dated row into LOCAL_TAX_TBL *
+!         from work table.                                             *
+!                                                                      *
+!     (4) When a new row is inserted, the data in the prior row must be*
+!         updated to the new row for the following fields:             *
+!         LOCALITY_ABBREV                                              *
+!         OTH_LOCALITY_ABBRV                                           *
+!         LOW_GROSS                                                    *
+!         MINIMUM_TAX                                                  *
+!         MAXUMUM_TAX                                                  *
+!         EXEMPTION_AMT                                                *
+!                                                                      *
+!     (5) The differences detected between old and new are reported for*
+!         the following fields:                                        *
+!         LOCALITY_ABBREV                                              *
+!         OTH_LOCALITY_ABBRV                                           *
+!                                                                      *
+!***********************************************************************
+!
+! 1/4/2005 PY ADDED COLUMN NAMES TO INSERT STATEMENTS
+!
+
+#include 'setenv.sqc'     !Set environment
+#include 'setup31.sqc'    ! Printer and page-size initialization
+
+BEGIN-REPORT
+
+  do Init-DateTime
+  do Get-Current-DateTime
+  move '' to $WorkDate
+  move 'PATXUPD' to $ReportID
+  move 'Conversion of PA Resister to LOCAL TAX TBL' to $ReportTitle
+  display $ReportTitle
+
+  do Initialization
+  do Process-Main
+  do Delete-Temp-Table
+  do Reset
+
+END-REPORT
+
+
+begin-procedure Initialization
+
+  do Prompts
+  do Delete-Temp-Table
+
+  if $UpDt_Flag = 'Y'
+    let $RunMode = 'Update Mode'
+  else
+      let $RunMode = 'Report Mode'
+  end-if
+
+  #include 'stdhdg01.sqc'
+  print $RunMode             (+1,1)
+  print 'LOCALITY'           (+1,1)
+  print 'LOCALITY NAME'      (0,15)
+!  print 'LOCALITY ABBREV'    (0,55)
+  print 'OTHER LOCAL ABBR'   (0,55)
+  print 'RES TAX RATE'       (0,72)
+  print 'NON-RES TAX RT'     (0,85)
+
+end-procedure
+
+
+begin-procedure Process-Main
+
+  Display 'Started Processing PA Register'
+  let $PartIndNum = ' '
+  open 'C:\TEMP\PAYROLL.TXT' as 1 for-reading record=900
+  while 1 = 1
+    read 1 into $PARegRecord:148
+    if #end-file = 1
+      break  !exit the "while"
+    end-if
+
+    do Build-Constants
+    do Build-EIT-Constants
+
+    do Build-EIT-Municipality
+    do Insert-Temp-Table
+
+    do Build-EIT-School-Dist
+    do Insert-Temp-Table
+
+    do Build-EIT-Combined
+    do Insert-Temp-Table
+
+    do Build-OPT-Constants
+
+    do Build-OPT-Municipality
+    do Insert-Temp-Table
+
+    do Build-OPT-School-Dist
+    do Insert-Temp-Table
+
+    do Build-OPT-Combined
+    do Insert-Temp-Table
+
+  end-while
+  close  1
+  do Process-Local-Tax-Tbl
+  Display 'Finished Processing PA Register'
+end-procedure
+
+
+begin-procedure Build-Constants
+   let $State = 'PA'
+   let $Effdt = $WorkDate
+   let $Eff_Status = 'A'
+   let $Maint_Resp = 'P'
+   let $Withhold_Wrk_Only = 'N'
+   extract $CountyName  from $PARegRecord  2 14 !County Name
+   extract $MuniCode    from $PARegRecord 16  6 !Municipality Code
+   extract $OthLocality from $PARegRecord 55  6 !School District Code
+   extract $PartialInd  from $PARegRecord 54  1 !Partial Indicator
+
+   if $MuniCode <> $SaveMuniCode
+     let $PartInd = 'N'
+     let #PartInd = 0
+     let $PartIndNum = ' '
+     let $SaveMuniCode = $MuniCode
+   end-if
+
+   if $PartialInd = 'P'
+     let $PartInd = 'Y'
+     let #PartInd = #PartInd + 1
+     move #PartInd to $PartIndNum 9
+   end-if
+
+end-procedure
+
+begin-procedure Build-EIT-Constants
+  let $LocTaxTyp = 'G'
+  let $TaxClass  = 'H'
+  let $OthLocalName = ' '
+end-procedure
+
+begin-procedure Build-OPT-Constants
+  let $LocTaxTyp = 'Y'
+  let $TaxClass  = 'P'
+  let $OthLocalName = ' '
+end-procedure
+
+
+begin-procedure Build-EIT-Municipality
+  let $LocJuris  = 'M'
+  extract $LocalName   from $PARegRecord 22 32 !Municipality Name
+  extract $ResTaxRt    from $PARegRecord 85  7 !Res Tax Rate
+  extract $NonResTaxRt from $PARegRecord 92  7 !Non-Res Tax Rate
+
+  move $ResTaxRt to #ResTaxRt
+  let #ResTaxRt = #ResTaxRt / 1000000
+  move $NonResTaxRt to #NonResTaxRt
+  let #NonResTaxRt = #NonResTaxRt / 1000000
+
+  let $Locality = 'I' || $MuniCode || $LocJuris || $PartIndNum
+end-procedure
+
+begin-procedure Build-EIT-School-Dist
+  let $LocJuris  = 'S'
+  extract $LocalName   from $PARegRecord 61 24 !School District Name
+  extract $ResTaxRt    from $PARegRecord 135 7 !Res Tax Rate
+  let #NonResTaxRt = 0                         !Non-Res Tax Rate
+
+  move $ResTaxRt to #ResTaxRt
+  let #ResTaxRt = #ResTaxRt / 1000000
+
+  let $Locality = 'I' || $MuniCode || $LocJuris || $PartIndNum
+end-procedure
+
+begin-procedure Build-EIT-Combined
+  let $LocJuris  = 'C'
+  extract $LocalName    from $PARegRecord 22 32 !Municipality Name
+  let $LocalName = $LocalName || '(M + SD)'
+  extract $OthLocalName from $PARegRecord 61 24 !School District Name
+  extract $ResTaxRt1    from $PARegRecord 85  7 !MU Res Tax Rate
+  extract $ResTaxRt2    from $PARegRecord 135 7 !SD Res Tax Rate
+  extract $NonResTaxRt  from $PARegRecord 92  7 !Non-Res Tax Rate
+
+  move $ResTaxRt1 to #ResTaxRt1
+  move $ResTaxRt2 to #ResTaxRt2
+  let #ResTaxRt1 = #ResTaxRt1 / 1000000
+  let #ResTaxRt2 = #ResTaxRt2 / 1000000
+  let #ResTaxRt = #ResTaxRt1 + #ResTaxRt2
+
+  move $NonResTaxRt to #NonResTaxRt
+  let #NonResTaxRt = #NonResTaxRt / 1000000
+
+  let $Locality = 'I' || $MuniCode || $LocJuris || $PartIndNum
+end-procedure
+
+
+begin-procedure Build-OPT-Municipality
+  let $LocJuris  = 'M'
+  extract $LocalName   from $PARegRecord 22 32 !Municipality Name
+  extract $ResTaxRt    from $PARegRecord 99  5 !Res Tax Rate
+
+  move $ResTaxRt    to #ResTaxRt
+  let #ResTaxRt = #ResTaxRt / 100
+  let #NonResTaxRt = #ResTaxRt
+
+  let $Locality = 'O' || $MuniCode || $LocJuris || $PartIndNum
+end-procedure
+
+begin-procedure Build-OPT-School-Dist
+  let $LocJuris  = 'S'
+  extract $LocalName   from $PARegRecord 61 24 !School District Name
+  extract $ResTaxRt    from $PARegRecord 142 5 !Res Tax Rate
+
+  move $ResTaxRt    to #ResTaxRt
+  let #ResTaxRt = #ResTaxRt / 100
+  let #NonResTaxRt = #ResTaxRt                  !Non-Res Tax Rate
+
+  let $Locality = 'O' || $MuniCode || $LocJuris || $PartIndNum
+end-procedure
+
+begin-procedure Build-OPT-Combined
+  let $LocJuris  = 'C'
+  extract $LocalName    from $PARegRecord 22 32 !Municipality Name
+  let $LocalName = $LocalName || '(M + SD)'
+  extract $OthLocalName from $PARegRecord 61 24 !School District Name
+  extract $ResTaxRt1    from $PARegRecord 99  5 !MU Res Tax Rate
+  extract $ResTaxRt2    from $PARegRecord 142 5 !SD Res Tax Rate
+
+  move $ResTaxRt1    to #ResTaxRt1
+  move $ResTaxRt2    to #ResTaxRt2
+  let  #ResTaxRt1 = #ResTaxRt1 / 100
+  let  #ResTaxRt2 = #ResTaxRt2 / 100
+  let  #ResTaxRt = #ResTaxRt1 + #ResTaxRt2
+
+  let #NonResTaxRt = #ResTaxRt
+
+  let $Locality = 'O' || $MuniCode || $LocJuris || $PartIndNum
+end-procedure
+
+
+begin-procedure Process-Local-Tax-Tbl
+begin-SELECT
+A.STATE
+A.EFFDT
+A.EFF_STATUS
+A.COUNTY
+A.OTH_LOCALITY
+A.OTH_LOCALITY_NAME
+A.MAINT_RESPONSBLTY
+A.LOC_TAX_TYPE
+A.LOC_JURISDCTN
+A.PARTIAL_IND
+A.GRADUATED_TBL_CD
+A.EXEMPTION_AMT
+A.TAX_CLASS
+A.LOCALITY
+A.LOCALITY_NAME
+A.OTH_LOCALITY_ABBRV
+A.RESIDENT_TAX_RT
+A.NONRESIDENT_TAX_RT
+A.LOW_GROSS
+A.MINIMUM_TAX
+A.MAXIMUM_TAX
+B.LOCALITY
+B.LOCALITY_NAME
+B.RESIDENT_TAX_RT
+B.NONRESIDENT_TAX_RT
+
+  if &A.LOCALITY_NAME <> &B.LOCALITY_NAME
+  or &A.RESIDENT_TAX_RT <> &B.RESIDENT_TAX_RT
+  or &A.NONRESIDENT_TAX_RT <> &B.NONRESIDENT_TAX_RT
+    print 'Update Locality'     (+1,2)
+    print &A.LOCALITY           (+1,1)
+    print &A.LOCALITY_NAME      (0,15)
+    print &A.OTH_LOCALITY_ABBRV (0,55)
+    print &A.RESIDENT_TAX_RT    (0,72)
+    print &A.NONRESIDENT_TAX_RT (0,85)
+    print '(OLD)'               (0,93)
+    print &B.LOCALITY           (+1,1)
+    print &B.LOCALITY_NAME      (0,15)
+    print &B.RESIDENT_TAX_RT    (0,72)
+    print &B.NONRESIDENT_TAX_RT (0,85)
+    print '(NEW)'               (0,93)
+    if $UpDt_Flag = 'Y'
+      do Update-Local-Tax-Record
+    end-if
+  end-if
+
+FROM PS_LOCAL_TAX_TBL A, PS_R_PATXUPD B
+WHERE A.STATE     = B.STATE
+AND   A.LOCALITY  = B.LOCALITY
+AND   A.EFFDT    <= B.EFFDT
+AND   A.EFFDT =
+      (SELECT MAX(EFFDT)
+          FROM  PS_LOCAL_TAX_TBL A1
+          WHERE A.STATE = A1.STATE
+          AND   A.LOCALITY = A1.LOCALITY
+          AND   A.EFFDT  <= $WorkDate)
+End-SELECT
+! When all updates are made to current rows, proceed to insert
+! all remaining rows on Temp Table PS_R_PATXUPD
+begin-SELECT DISTINCT
+B1.STATE
+B1.EFFDT
+B1.EFF_STATUS
+B1.COUNTY
+B1.OTH_LOCALITY
+B1.OTH_LOCALITY_NAME
+B1.LOC_TAX_TYPE
+B1.LOC_JURISDCTN
+B1.PARTIAL_IND
+B1.TAX_CLASS
+B1.LOCALITY
+B1.LOCALITY_NAME
+B1.RESIDENT_TAX_RT
+B1.NONRESIDENT_TAX_RT
+
+  print 'Insert New Locality'  (+1,2)
+  print &B1.LOCALITY           (+1,1)
+  print &B1.LOCALITY_NAME      (0,15)
+  print &B1.RESIDENT_TAX_RT    (0,72)
+  print &B1.NONRESIDENT_TAX_RT (0,85)
+
+  if $UpDt_Flag = 'Y'
+    do Insert-Local-Tax-Record
+  end-if
+
+FROM PS_LOCAL_TAX_TBL A1, PS_R_PATXUPD B1
+WHERE A1.STATE     = B1.STATE
+AND NOT EXISTS (SELECT 'X'
+          FROM PS_LOCAL_TAX_TBL R
+          WHERE R.STATE = B1.STATE
+          AND R.LOCALITY = B1.LOCALITY)
+End-SELECT
+end-procedure
+
+
+begin-procedure Update-Local-Tax-Record
+begin-SQL on-error=Update-Error
+  INSERT INTO PS_LOCAL_TAX_TBL        (STATE,
+                                       LOCALITY,
+                                       EFFDT,
+                                       EFF_STATUS,
+                                       LOCALITY_NAME,
+                                       COUNTY,
+                                       OTH_LOCALITY,
+                                       OTH_LOCALITY_NAME,
+                                       OTH_LOCALITY_ABBRV,
+                                       MAINT_RESPONSBLTY,
+                                       LOC_TAX_TYPE,
+                                       WITHHOLD_WRK_ONLY,
+                                       LOC_JURISDCTN,
+                                       PARTIAL_IND,
+                                       GRADUATED_TBL_CD,
+                                       RESIDENT_TAX_RT,
+                                       NONRESIDENT_TAX_RT,
+                                       LOW_GROSS,
+                                       MINIMUM_TAX,
+                                       MAXIMUM_TAX,
+                                       EXEMPTION_AMT,
+                                       TAX_CLASS)
+                               VALUES (&A.STATE,
+                                       &A.LOCALITY,
+                                       $EFFDT,
+                                       &A.EFF_STATUS,
+                                       &B.LOCALITY_NAME,
+                                       &A.COUNTY,
+                                       &A.OTH_LOCALITY,
+                                       &A.OTH_LOCALITY_NAME,
+                                       &A.OTH_LOCALITY_ABBRV,
+                                       &A.MAINT_RESPONSBLTY,
+                                       &A.LOC_TAX_TYPE,
+                                       'N',
+                                       &A.LOC_JURISDCTN,
+                                       &A.PARTIAL_IND,
+                                       &A.GRADUATED_TBL_CD,
+                                       &B.RESIDENT_TAX_RT,
+                                       &B.NONRESIDENT_TAX_RT,
+                                       &A.LOW_GROSS,
+                                       &A.MINIMUM_TAX,
+                                       &A.MAXIMUM_TAX,
+                                       &A.EXEMPTION_AMT,
+                                       &A.TAX_CLASS)
+
+End-SQL
+end-procedure
+
+begin-procedure Insert-Local-Tax-Record
+begin-SQL on-error=Add-Error
+  INSERT INTO PS_LOCAL_TAX_TBL        (STATE,
+                                       LOCALITY,
+                                       EFFDT,
+                                       EFF_STATUS,
+                                       LOCALITY_NAME,
+                                       COUNTY,
+                                       OTH_LOCALITY,
+                                       OTH_LOCALITY_NAME,
+                                       OTH_LOCALITY_ABBRV,
+                                       MAINT_RESPONSBLTY,
+                                       LOC_TAX_TYPE,
+                                       WITHHOLD_WRK_ONLY,
+                                       LOC_JURISDCTN,
+                                       PARTIAL_IND,
+                                       GRADUATED_TBL_CD,
+                                       RESIDENT_TAX_RT,
+                                       NONRESIDENT_TAX_RT,
+                                       LOW_GROSS,
+                                       MINIMUM_TAX,
+                                       MAXIMUM_TAX,
+                                       EXEMPTION_AMT,
+                                       TAX_CLASS)
+                               VALUES (&B1.STATE,
+                                       &B1.LOCALITY,
+                                       &B1.EFFDT,
+                                       &B1.EFF_STATUS,
+                                       &B1.LOCALITY_NAME,
+                                       &B1.COUNTY,
+                                       &B1.OTH_LOCALITY,
+                                       &B1.OTH_LOCALITY_NAME,
+                                       ' ',
+                                       'P',
+                                       &B1.LOC_TAX_TYPE,
+                                       'N',
+                                       &B1.LOC_JURISDCTN,
+                                       &B1.PARTIAL_IND,
+                                       '  ',
+                                       &B1.RESIDENT_TAX_RT,
+                                       &B1.NONRESIDENT_TAX_RT,
+                                       0,
+                                       0,
+                                       0,
+                                       0,
+                                       &B1.TAX_CLASS)
+end-SQL
+end-procedure
+
+
+begin-procedure Prompts
+
+
+  display 'This program produces a report and performs Updates'
+  display 'You have the option of omitting the Updates'
+  input $UpDt_Flag maxlen=1 'Perform Updates (Y/N)' type=char
+  UPPERCASE $UpDt_Flag
+
+  while $WorkDate = ''
+    input $WorkDate 'As of Eff Date(YYYY-MM-DD)'
+  end-while
+
+  input $StartProc maxlen=1 'Hit any key to proceed or Q to Quit' type=char
+  UPPERCASE $StartProc
+  if INSTR('Q',$StartProc,1) > 0
+    Stop
+  end-if
+
+  display 'Date Entered: ' noline
+  display $WorkDate
+
+end-procedure
+
+begin-procedure Insert-Temp-Table
+begin-SQL on-error=Insert-Error
+  INSERT INTO PS_R_PATXUPD          (STATE,
+                                     LOCALITY,
+                                     EFFDT,
+                                     EFF_STATUS,
+                                     LOCALITY_NAME,
+                                     COUNTY,
+                                     OTH_LOCALITY,
+                                     OTH_LOCALITY_NAME,
+                                     MAINT_RESPONSBLTY,
+                                     LOC_TAX_TYPE,
+                                     WITHHOLD_WRK_ONLY,
+                                     LOC_JURISDCTN,
+                                     PARTIAL_IND,
+                                     RESIDENT_TAX_RT,
+                                     NONRESIDENT_TAX_RT,
+                                     TAX_CLASS)
+                            VALUES ($State,
+                                    $Locality,
+                                    $Effdt,
+                                    $Eff_Status,
+                                    $LocalName,
+                                    $CountyName,
+                                    $OthLocality,
+                                    $OthLocalName,
+                                    $Maint_Resp,
+                                    $LocTaxTyp,
+                                    $Withhold_Wrk_Only,
+                                    $LocJuris,
+                                    $PartInd,
+                                    #ResTaxRt,
+                                    #NonResTaxRt,
+                                    $TaxClass)
+end-SQL
+end-procedure
+
+begin-procedure Ignore
+! dummy procedure to avoid SQL error message on delete of empty table
+end-procedure
+
+begin-procedure Delete-Temp-Table
+begin-SQL on-error=Ignore
+  DELETE FROM PS_R_PATXUPD
+end-SQL
+end-procedure
+
+begin-procedure Insert-Error
+  display 'Error on insert of Locality ' noline
+  display $Locality
+  display $State
+  display                           $Effdt
+  display                           $Eff_Status
+  display                           $LocalName
+  display                           $CountyName
+  display                           $OthLocality
+  display                           $OthLocalName
+  display                           $Maint_Resp
+  display                           $LocTaxTyp
+  display                           $Withhold_Wrk_Only
+  display                           $LocJuris
+  display                           $PartInd
+  display                           #ResTaxRt
+  display                           #NonResTaxRt
+  display                           $TaxClass
+  display 'Possible duplicate Locality'
+end-procedure
+
+begin-procedure Update-Error
+  display 'Error on Update of Locality ' noline
+  display &A.STATE
+  display                            &A.LOCALITY
+  display                            $EFFDT
+  display                            &A.EFF_STATUS
+  display                            &B.LOCALITY_NAME
+  display                            &A.COUNTY
+  display                            &A.OTH_LOCALITY
+  display                            &A.OTH_LOCALITY_NAME
+  display                            &A.OTH_LOCALITY_ABBRV
+  display                            &A.MAINT_RESPONSBLTY
+  display                            &A.LOC_TAX_TYPE
+  display                            &A.LOC_JURISDCTN
+  display                            &A.PARTIAL_IND
+  display                            &A.GRADUATED_TBL_CD
+  display                            &B.RESIDENT_TAX_RT
+  display                            &B.NONRESIDENT_TAX_RT
+  display                            &A.LOW_GROSS
+  display                            &A.MINIMUM_TAX
+  display                            &A.MAXIMUM_TAX
+  display                            &A.EXEMPTION_AMT
+  display                            &A.TAX_CLASS
+  display 'Possible duplicate Locality'
+end-procedure
+
+begin-procedure Add-Error
+  display 'Error on Add of Locality ' noline
+  display                              &B1.STATE
+  display                              &B1.LOCALITY
+  display                              &B1.EFFDT
+  display                              &B1.EFF_STATUS
+  display                              &B1.LOCALITY_NAME
+  display                              &B1.COUNTY
+  display                              &B1.OTH_LOCALITY
+  display                              &B1.OTH_LOCALITY_NAME
+  display                              &B1.LOC_TAX_TYPE
+  display                              &B1.LOC_JURISDCTN
+  display                              &B1.PARTIAL_IND
+  display                              &B1.RESIDENT_TAX_RT
+  display                              &B1.NONRESIDENT_TAX_RT
+  display                              &B1.TAX_CLASS
+  display 'Possible duplicate Locality'
+end-procedure
+
+#Include 'reset.sqc'     !Reset printer procedure
+#include 'prcsapi.sqc'   !Update Process API
+#include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting

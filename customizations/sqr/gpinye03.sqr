@@ -1,0 +1,1154 @@
+!***********************************************************************
+! GPINYE03: Form 12BA                                                  *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2014, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2014/04/22:01:32:39                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  105                                                 !
+!                                                                      *
+! 13/04/2004    684747000   The SQR has been updated to include the    *
+!                           legislative changes                        *
+!                                                                      *
+! 19-Jul-2006   1476196000  SQR modified to select employees as        *
+!                           specified in the RC page. Format changes   *
+!                           to print all perqs irrespective of their   *
+!                           values.                                    *
+!                                                                      *
+! 06/May/2008   1705540002  The SQR has been modified to print the     *
+!                           establishment name from GPIN_REG_NAME      *
+!                           from the ESTAB_TBL_GPIN record.            *
+!                                                                      *
+!***********************************************************************
+
+#define Col_1           7
+#define col_5           5
+#define col_7           7
+#define Col_10          10
+#define Col_12          12
+#define Col_15          15
+#define Col_20          20
+#define col_53          53
+#define col_58          58
+#define col_60          58
+#define Col_75          75
+#define Col_100         100
+#define Col_120         120
+#include 'setenv.sqc'           !Set environment
+
+
+!************************************************************************
+Begin-report
+!************************************************************************
+  Do Init-Processing
+  Do Reset
+  Do stdapi-term
+  Do Clear-Temp-Tables
+End-report
+
+!************************************************************************
+Begin-setup
+
+#Include 'ptset01.sqc'
+
+declare-layout form_12BA_layout
+   paper-size  = (a4)
+end-declare
+
+declare-report form_12BA_report
+   layout = form_12BA_layout
+end-declare
+
+End-setup
+
+
+!************************************************************************
+Begin-Procedure Rep-Header
+!************************************************************************
+    alter-printer  point-size=9 font=5
+    Print $Title_lbl    (1,63)    bold
+    Print $Title_lbl2   (+1,62)
+    Print $Title_lbl3   (+1,41)   bold
+    Print $Title_lbl4   (+1,47)   bold
+End-Procedure !Rep-Header
+
+!************************************************************************
+Begin-Procedure Init-Processing
+!************************************************************************
+        Do Init-Datetime                ! called from datetime.sqc
+        Do Get-Current-Datetime         ! called from prcsapi.sqc (curdttim.sqc)
+        Do Stdapi-Init
+        Do Init-Report
+        Do Init-Number                  ! called from number.sqc
+        Do Get_Run_Cntrl_Dtls
+        Do Get-Tax-Year ($Cal_Period, #Tax_Year_Derived)
+    Do Process-Main
+        Do Get-Language-Codes           ! called from prcslng.sqc
+End-Procedure !Init-Processing
+
+!************************************************************************
+Begin-Procedure Get_Run_Cntrl_Dtls
+!************************************************************************
+    let $Order_Clause = ''
+    let $Creation_dt  = ''
+    let $Cal_Period   = ''
+    let $EstabID      = ''
+
+Begin-Select
+RNCT.GPIN_REPORT_ID
+RNCT.ESTABID
+RNCT.CAL_PRD_ID
+RNCT.BGN_DT
+RNCT.END_DT
+RNCT.GP_GENRPT_SORT_OPT
+RNCT.CREATION_DT
+
+        Let $BGN_DT = &RNCT.BGN_DT
+        Let $END_DT = &RNCT.END_DT
+
+     move &RNCT.CAL_PRD_ID to $Cal_Period
+     let $Cal_Period = ltrim(rtrim($Cal_Period ,' '),' ')
+
+     move &RNCT.GP_GENRPT_SORT_OPT to #fieldval
+     if #fieldval = 10
+         let $Order_Clause = 'A.EMPLID, '
+     else
+         let $Order_Clause = 'NAMES2.FIRST_NAME,A.EMPLID, '
+     end-if
+
+     move &RNCT.ESTABID TO $EstabID
+     let $EstabID = ltrim(rtrim($EstabID,' '),' ')
+
+     move &RNCT.CREATION_DT to $Creation_dt 'DD/MM/YYYY'
+
+FROM PS_GPIN_PR_RC  RNCT
+WHERE  RNCT.OPRID = $prcs_oprid
+AND RNCT.RUN_CNTL_ID = $prcs_run_cntl_id
+End-Select
+End-Procedure !Get_Run_Cntrl_Dtls
+
+
+Begin-Procedure Process-Main
+!************************************************************************
+   let $Current_Year = ''
+   if ltrim(rtrim($EstabID, ' '),' ') <> ''
+        let $Estab_Where_Clause = 'AND A.GP_GENRPT_BREAK1 = '''|| $EstabID ||''''
+    else
+        let $Estab_Where_Clause = ''
+   end-if
+
+Begin-Select
+A.JOBINSTANCE
+A.EMPLID
+NAMES2.FIRST_NAME
+NAMES2.MIDDLE_NAME
+NAMES2.LAST_NAME
+A.CAL_RUN_ID
+A.EMPL_RCD
+A.GP_GENRPT_BREAK1
+A.PRD_END_DT
+A.PRD_BGN_DT
+
+    let #Total_Amt       = 0
+    let #Total_AmtPD     = 0
+    let #Total_AmtTX     = 0
+    let $Dir_YN          = ''
+    let $tax_ded_us_192  = ''
+    let $tax_paid_us_192 = ''
+    let $tot_tax_paid    = ''
+
+    move &NAMES2.FIRST_NAME   to $Name
+    let $Name = ltrim(rtrim($Name,' '),' ') ||' '|| ltrim(rtrim(&NAMES2.MIDDLE_NAME,' '),' ')
+    let $Name = ltrim(rtrim($Name,' '),' ') ||' '|| ltrim(rtrim(&NAMES2.LAST_NAME,' '),' ')
+    let $Name = ltrim(rtrim($Name,' '),' ')
+
+    move &A.GP_GENRPT_BREAK1 to $EstabID
+    move &A.EMPLID      to $Emplid
+
+    Do Get-Employer-Det
+    Do Get-Employee-Details
+    Do Get-Financial-Year
+        Do Get-Salaries
+        Do Print-Headers
+        Do Print-Details
+        Do Print-Details-tax
+        Do Print-Trailer
+
+FROM PS_GPIN_PR_TMP A, PS_NAMES NAMES2
+WHERE A.JOBINSTANCE = #prcs_job_instance
+AND A.EMPLID = NAMES2.EMPLID
+AND NAMES2.EFFDT = (SELECT MAX(NAMES1.EFFDT)
+                    FROM PS_NAMES NAMES1
+                     WHERE NAMES1.EMPLID = NAMES2.EMPLID
+                     AND NAMES1.EFFDT <= &RNCT.END_DT)
+AND A.PRD_END_DT = (SELECT MAX(PRD_END_DT)
+                    FROM PS_GPIN_PR_TMP A1
+                      WHERE A.JOBINSTANCE = A1.JOBINSTANCE
+                      AND A.EMPLID = A1.EMPLID)
+AND A.LAST_SEG_IND = 'Y'
+[$Estab_Where_Clause]
+ORDER BY [$Order_Clause]A.EMPL_RCD
+End-Select
+End-Procedure !Process-Main
+
+
+!*****************************************************************************
+!    Procedure:   Get-Employer-Det
+!    Description: To retieve employer TAN details
+!******************************************************************************
+Begin-Procedure  Get-Employer-Det
+
+    let $ESTPAN =''
+    let $ESTTAN =''
+    let $ESTTDS =''
+    let $DESCR =''
+    let $Address1 =''
+    let $Address2 =''
+    let $Address3 =''
+    let $Address4 =''
+    let $City =''
+    let $State =''
+
+Begin-Select
+ESTBL.GPIN_IT_PAN_NBR
+ESTBL.GPIN_IT_TAN_NBR
+ESTBL.GPIN_IT_TDS_CIRCLE
+ESTBL.GPIN_REG_NAME
+EST.ADDRESS1
+EST.ADDRESS2
+EST.ADDRESS3
+EST.ADDRESS4
+EST.CITY
+EST.STATE
+
+    Move &estbl.gpin_it_pan_nbr To $ESTPAN
+    Move &estbl.gpin_it_tan_nbr To $ESTTAN
+    Move &estbl.gpin_it_tds_circle To $ESTTDS
+    Move &estbl.gpin_reg_name To $DESCR
+
+    if rtrim(&EST.address1,' ')<>''
+       move &EST.address1 to $Address1
+    else
+       move '' to $Address1
+    end-if
+
+    if rtrim(&EST.address2,' ')<>''
+       move &EST.address2 to $Address2
+    else
+       move '' to $Address2
+    end-if
+
+    if rtrim(&EST.address3,' ')<>''
+       move &EST.address3 to $Address3
+    else
+       move '' to $Address3
+    end-if
+
+    if rtrim(&EST.address4,' ')<>''
+       move &EST.address4 to $Address4
+    else
+       move '' to $Address4
+    end-if
+
+    if rtrim(&EST.city,' ')<>''
+          move &EST.city to $City
+    else
+          move '' to $City
+    end-if
+
+    if rtrim(&EST.state,' ')<>''
+          move &EST.state to $State
+    else
+          move '' to $State
+    end-if
+
+FROM PS_ESTAB_TBL EST, PS_ESTAB_TBL_GPIN ESTBL
+WHERE EST.ESTABID = $EstabID
+AND   ESTBL.ESTABID = EST.ESTABID
+AND EST.EFFDT = (SELECT MAX(EFFDT) FROM PS_ESTAB_TBL
+                        WHERE ESTABID = EST.ESTABID
+                        AND   EFFDT <= &RNCT.END_DT)
+AND ESTBL.EFFDT = (SELECT MAX(EFFDT) FROM PS_ESTAB_TBL_GPIN
+                        WHERE ESTABID = EST.ESTABID
+                        AND   EFFDT <= &RNCT.END_DT)
+End-Select
+End-Procedure   !Get-Employer-det
+
+
+!******************************************************************************
+!   Procedure:   Get-Employee-Details
+!   Description: To retrieve employees' name,PAN and job description
+!*******************************************************************************
+
+Begin-Procedure Get-Employee-Details
+
+    let $DESCR1 = ''
+    let $EMPPAN = ''
+
+    if ltrim(rtrim($EstabID, ' '),' ') <> ''
+        let $Estab_Where_Clause = 'AND JOB.ESTABID = '''|| $EstabID ||''''
+    else
+        let $Estab_Where_Clause = ''
+    end-if
+
+! To obtain employee's PAN
+Begin-Select
+PNID.NATIONAL_ID
+    Move &PNID.NATIONAL_ID To $EMPPAN
+FROM PS_PERS_NID PNID
+WHERE PNID.COUNTRY = 'IND'
+AND PNID.NATIONAL_ID_TYPE = 'PAN'
+AND PNID.EMPLID = $EMPLID
+End-Select
+
+
+! To obtain employee's Job Description
+Begin-Select
+JOBCD.DESCR
+JOB.ESTABID
+
+    move &JOBCD.DESCR TO $DESCR1
+
+FROM PS_JOB JOB, PS_JOBCODE_TBL JOBCD
+WHERE JOB.JOBCODE=JOBCD.JOBCODE AND
+      JOB.EMPLID = $EMPLID AND
+      JOB.EMPL_RCD = 0 AND
+      JOB.EFFDT<=(SELECT MAX(EFFDT) FROM PS_JOB WHERE
+                EMPLID=JOB.EMPLID AND
+                EFFDT <= &RNCT.END_DT) AND
+        JOB.EFFSEQ <= (SELECT MAX(EFFSEQ) FROM PS_JOB  WHERE
+                EMPLID=JOB.EMPLID AND
+                EMPL_RCD=JOB.EMPL_RCD AND
+                EFFDT = JOB.EFFDT)
+AND    JOBCD.EFFDT = (SELECT MAX(EFFDT) FROM PS_JOBCODE_TBL
+                       WHERE JOBCODE  = JOBCD.JOBCODE
+                       AND   EFFDT <= &RNCT.END_DT)
+[$Estab_Where_Clause]
+ORDER BY JOB.EMPLID
+End-Select
+
+begin-select
+GEN.GPIN_IS_DIR
+
+    move &GEN.GPIN_IS_DIR  to $Dir_YN
+    let $Dir_YN = rtrim($Dir_YN,' ')
+
+FROM PS_GPIN_TDS_GEN GEN
+WHERE EMPLID = $Emplid
+AND EFFDT = (SELECT MAX(EFFDT) FROM PS_GPIN_TDS_GEN GEN1
+                       WHERE GEN.EMPLID  = GEN1.EMPLID
+                       AND   GEN1.EFFDT <= &RNCT.END_DT)
+end-select
+
+End-Procedure !Get-Employee-Details
+
+
+!************************************************************************
+!     Procedure:Get-Salaries
+!     Description: To obtain Income other than from Perquisites
+!************************************************************************
+
+Begin-Procedure Get-Salaries
+    let #Sal_val      = 0
+    let #TDS_val      = 0
+    let #Tax_val      = 0
+    let #tot_tax_paid = 0
+Begin-Select
+MP3.GPIN_FLD_NAME
+MP3.CALC_RSLT_VAL
+MP2.GP_CALC_TS
+
+    let #repval = 0
+
+    Move &mp3.CALC_RSLT_VAL To #repval
+    move &MP3.GPIN_FLD_NAME to $rptfldname
+
+    let $rptfldname = ltrim(rtrim($rptfldname,' '),' ')
+
+    Evaluate $rptfldname
+        when = 'F12BA_SALARIES'
+            move #repval to #Sal_val
+        break
+        when = 'F12BA TDS'
+           move #repval to #TDS_val
+           add #TDS_val to #tot_tax_paid
+        break
+        when = 'F12BA_TAX_ER'
+           move #repval to #Tax_val
+           add #Tax_val to #tot_tax_paid
+        break
+    End-Evaluate
+
+FROM PS_GPIN_PR_TMP3 MP3 ,PS_GPIN_PR_TMP MP, PS_GP_PYE_SEG_STAT MP2
+WHERE  MP3.JOBINSTANCE = MP.JOBINSTANCE
+AND MP3.EMPLID = MP.EMPLID
+AND MP.EMPLID = MP2.EMPLID
+AND MP3.CAL_RUN_ID =  MP.CAL_RUN_ID
+AND MP.CAL_RUN_ID = MP2.CAL_RUN_ID
+AND MP3.EMPL_RCD = MP.EMPL_RCD
+AND MP.EMPL_RCD = MP2.EMPL_RCD
+AND MP3.GP_PAYGROUP = MP.GP_PAYGROUP
+AND MP.GP_PAYGROUP = MP2.GP_PAYGROUP
+AND MP3.CAL_ID = MP.CAL_ID
+AND MP.CAL_ID = MP2.CAL_ID
+AND MP3.ORIG_CAL_RUN_ID = MP.ORIG_CAL_RUN_ID !KEY MAP
+AND MP.ORIG_CAL_RUN_ID = MP2.ORIG_CAL_RUN_ID !KEY MAP
+AND MP3.RSLT_SEG_NUM = MP.RSLT_SEG_NUM
+AND MP.RSLT_SEG_NUM  = MP2.RSLT_SEG_NUM
+AND MP3.RSLT_VER_NUM = MP.RSLT_VER_NUM
+AND MP.RSLT_VER_NUM  = MP2.RSLT_VER_NUM
+AND MP3.RSLT_REV_NUM = MP.RSLT_REV_NUM
+AND MP.RSLT_REV_NUM  = MP2.RSLT_REV_NUM
+AND MP3.EMPLID = $emplid
+AND MP.PRD_END_DT  = (Select MAX(PRD_END_DT) FROM PS_GPIN_PR_TMP
+                      WHERE JOBINSTANCE = #prcs_job_instance
+                      and GP_GENRPT_BREAK1=$EstabId
+                      AND EMPLID = $emplid)
+AND MP3.JOBINSTANCE = #prcs_job_instance
+ORDER BY MP3.GPIN_FLD_NAME, MP2.GP_CALC_TS ASC
+End-Select
+End-procedure !Get-Salaries
+
+
+!***************************************************************************
+!     Procedure: Get-Tax-Year
+!     Description: Procedure to get Tax Year from Period Begin Date & End Date
+!*****************************************************************************
+Begin-Procedure Get-Tax-Year ($Period_Id, :#Tax_Year_Derived)
+
+LET #Tax_Year_Derived = 0
+
+BEGIN-SELECT
+TAX.PRD_BGN_DT
+TAX.PRD_END_DT
+
+     let #Tax_Begin_Date = edit(&TAX.PRD_BGN_DT, 'DD')
+     let #Tax_Begin_Month = edit(&TAX.PRD_BGN_DT, 'MM')
+     let #Tax_Begin_Year = edit(&TAX.PRD_BGN_DT, 'YYYY')
+
+     let #Tax_End_Date = edit(&TAX.PRD_BGN_DT, 'DD')
+     let #Tax_End_Month = edit(&TAX.PRD_BGN_DT, 'MM')
+     let #Tax_End_Year = edit(&TAX.PRD_BGN_DT, 'YYYY')
+
+
+     IF #Tax_Begin_Date = 1 AND #Tax_Begin_Month = 4 and #Tax_End_Date = 31 and #Tax_End_Month = 3 and #Tax_End_Year = #Tax_Begin_Year+1 
+      move #Tax_End_Year to #Tax_Year_Derived
+     else
+      Show 'Invalid Period. Kindly enter a period with a valid Tax Start Date & End Date'
+     END-IF
+FROM PS_GP_CAL_PRD TAX
+WHERE TAX.CAL_PRD_ID = $Period_Id
+END-SELECT
+   
+End-Procedure
+
+!***************************************************************************
+!     Procedure: Get-Perq_Details
+!     Description: Procedure to get employee's perquisite details
+!*****************************************************************************
+Begin-Procedure Get-Perq_Details ($Val-Pin_Code, $Val-EmplID, #Tax_Year_Derived, :#RetVal-Amount, :#RetVal-AmountPD, :#RetVal-AmountTX)
+
+       let $Val-Pin_Code = rtrim(ltrim($Val-Pin_Code, ' '), ' ')
+       let $Val-EmplID   = rtrim(ltrim($Val-EmplID  , ' '), ' ')
+       !let $Val-CalPrdID = rtrim(ltrim($Val-CalPrdID, ' '), ' ')
+       let #RetVal-Amount   = 0
+       let #RetVal-AmountPD = 0
+       let #RetVal-AmountTX = 0
+
+BEGIN-SELECT DISTINCT
+A.AMOUNT
+A.GPIN_F12BA_AMTPD
+A.GPIN_F12BA_TAXPERQ
+
+    Move &A.AMOUNT To #RetVal-Amount
+    Move &A.GPIN_F12BA_AMTPD To #RetVal-AmountPD
+    Move &A.GPIN_F12BA_TAXPERQ To #RetVal-AmountTX
+
+FROM PS_GPIN_YE_F12BA A, PS_GP_PIN M
+WHERE M.PIN_CODE=$Val-Pin_Code
+AND A.EMPLID = $Val-EmplID
+AND A.PIN_NUM = M.PIN_NUM
+AND A.GPIN_TAX_YEAR = #Tax_Year_Derived
+END-SELECT
+
+
+End-Procedure !Get-Perq_Details
+
+!************************************************************************
+Begin-Procedure Get-Employer-Name-Address
+!************************************************************************
+Begin-Select
+COMP.DESCR
+COMP.ADDRESS1
+COMP.ADDRESS2
+COMP.ADDRESS3
+COMP.ADDRESS4
+        Move &COMP.DESCR TO $DESCR
+        Move &COMP.ADDRESS1 TO $ADDRESS1
+        Move &COMP.ADDRESS2 TO $ADDRESS2
+        Move &COMP.ADDRESS3 TO $ADDRESS3
+        Move &COMP.ADDRESS4 TO $ADDRESS4
+FROM PS_COMPANY_TBL COMP
+WHERE COMP.COMPANY = $Job_Company
+AND COMP.EFF_STATUS = 'A'
+AND   COMP.EFFDT = (SELECT MAX(EFFDT) FROM PS_COMPANY_TBL
+                        WHERE COMPANY = COMP.COMPANY
+                        AND   EFFDT <= $END_DT)
+End-Select
+End-Procedure !Get-Employer-Name-Address
+
+
+!************************************************************************
+!    Procedure: Get-Financial-Year
+!    Description: Procedure to obtain the financial year
+!************************************************************************
+Begin-Procedure Get-Financial-Year
+
+    let $CURRENT_YR  = edit (&RNCT.BGN_DT,'dd-mm-yyyy')
+    extract $CURRENT_YEAR from $CURRENT_YR 6 4
+        Let $NEXT_YEAR = TO_CHAR(TO_NUMBER($CURRENT_YEAR) + 1)
+    Let $Financial_Year = $CURRENT_YEAR || ' - ' || $NEXT_YEAR
+
+End-Procedure !Get-Financial-Year
+
+
+Begin-Procedure Print-Headers
+!************************************************************************
+
+       Do Rep-Header  ! To print the title of the report
+       alter-printer  point-size=8 font=5
+       Print $NAME_ADDRESS_lbl                 (+2,{Col_1})
+       Print $DESCR                            (,{col_60})
+       Print $ADDRESS1                         (+1,{col_60})
+       Print $ADDRESS2                         (+1,{col_60})
+       Print $ADDRESS3                         (+1,{col_60})
+       Print $ADDRESS4                         (+1,{col_60})
+       Print $City                             (+1,{col_60})
+       Print $State                            (+1,{col_60})
+
+       print $TAN_lbl                          (+2,{Col_1})
+       print $ESTTAN                           (,{col_60})
+       print $TDS_lbl                          (+2,{Col_1})
+       print $ESTTDS                           (,{col_60})
+
+       print $NAME_DESIG_lbl                   (+2,{Col_1} )
+       print $NAME                             (,  {Col_60})
+       print $DESCR1                           (+1,{Col_60})
+       print $EMPPAN                           (+1,{Col_60})
+
+       print $Is_Emp_Dir1                      (+1,{Col_1})
+       print $Is_Emp_Dir2                      (+1,10)
+       print $Is_Emp_Dir3                      (+1,10)
+       print $Dir_YN                           (,{col_60})
+       print $Inc_Sal1                         (+2,{Col_1})
+       print $Inc_Sal2                         (+1,10)
+       print #Sal_Val                          (,{Col_60})  edit 99,99,999.99
+       print $Financial_lbl                    (+2,{Col_1})
+       print $Financial_Year                   (,{Col_60})
+       print $PERQ_LBL                         (+2,{Col_1}
+End-Procedure !Print-Headers
+
+!************************************************************************
+Begin-Procedure Print-Details
+!************************************************************************
+       Let #Line = 38
+       Let #end-line=63
+       Let #counter=0
+
+       Graphic                    (+1,12,115)    box   25
+       Graphic                    (30,18,27)     vert-line
+       Graphic                    (30,57,27)     vert-line
+       Graphic                    (30,82,27)     vert-line
+       Graphic                    (30,107,27)    vert-line
+
+       Print $HEADING_lbl         (31,13)
+       Print $HEADING1_lbl        (  ,24)
+       Print $HEADING3_lbl        (31,62)
+       Print $HEADING5_lbl        (  ,88)
+       Print $HEADING6_lbl        (  ,108)
+
+       Print $HEADING7_lbl        (+1,65)
+       Print $HEADING8_lbl        (  ,88)
+       Print $HEADING9_lbl        (  ,110)
+
+       Print $HEADING8A_lbl       (+1,89)
+       Print $HEADING10_lbl       (  ,110)
+
+       Print $Rs_lbl              (+1,68)
+       Print $Rs_lbl              (  ,93)
+       Print $Rs_lbl              (  ,116)
+       Graphic                    (,12,115)    horz-line
+
+       print '(1)'                (+1,14)
+       print '(2)'                (  ,36)
+       print '(3)'                (  ,69)
+       print '(4)'                (  ,93)
+       print '(5)'                (  ,116)
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ HOUSE IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '1.'                 (,14)
+       print $ACCOMODATION_lbl    (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ CAR IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '2.'                 (,14)
+       print $CARS_lbl            (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   2
+       let $Val-Pin_Code = 'PERQ SWEEPER IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '3.'                 (,14)
+       print $SWEEPER_lbl         (,20)
+       print $SWEEPER1_lbl        (+1,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ AMENITY IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '4.'                 (,14)
+       print $GAS_lbl             (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ LOANS IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '5.'                 (,14)
+       print $INTEREST_lbl        (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ HOLIDAY IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '6.'                 (,14)
+       print $HOLIDAY_lbl         (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ TRAVEL IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '7.'                 (,14)
+       print $FREE1_lbl           (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ MEALS IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '8.'                 (,14)
+       print $FREE2_lbl           (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ EDUC IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '9.'                 (,14)
+       print $EDUCATION_lbl       (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ VOUCH IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '10.'                (,14)
+       print $GIFTS_lbl           (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ CREDIT IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '11.'                (,14)
+       print $CREDIT_CARD_lbl     (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ CLUB IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '12.'                (,14)
+       print $CLUB_lbl            (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ MOVABLE IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '13.'                (,14)
+       print $M_ASSETS_lbl        (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ TRANS IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '14.'                (,14)
+       print $T_ASSETS_lbl        (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   2
+       let $Val-Pin_Code = 'PERQ BENEFIT IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '15.'                (,14)
+       print $OTHER1_lbl          (,20)
+       print $OTHER2_lbl          (+1,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ STOCK IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '16.'                (,14)
+       print $STOCK_lbl           (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       let $Val-Pin_Code = 'PERQ OTHER IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '17.'                (,14)
+       print $OTHER_lbl           (,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+       add #RetVal-Amount to #Total_Amt
+       add #RetVal-AmountPD to #Total_AmtPD
+       add #RetVal-AmountTX to #Total_AmtTX
+
+       Graphic                    (+1,12,115)   box   1
+       print '18.'                (,14)
+       print $TOTAL1_lbl          (,20)
+       print #Total_Amt           (,70)    edit 99,99,999.99
+       print #Total_AmtPD         (,95)    edit 99,99,999.99
+       print #Total_AmtTX         (,116)   edit 99,99,999.99
+
+       Graphic                    (+1,12,115)   box   2
+       let $Val-Pin_Code = 'PROFIT LIEU IND'
+       let $Val-Pin_Code = ltrim(rtrim($Val-Pin_Code,' '),' ')
+       Do Get-Perq_Details ($Val-Pin_Code, $EmplID, #Tax_Year_Derived, #RetVal-Amount, #RetVal-AmountPD, #RetVal-AmountTX)
+       print '19.'                (,14)
+       print $TOTAL2_lbl          (,20)
+       print $TOTAL3_lbl          (+1,20)
+       print #RetVal-Amount       (,70)    edit 99,99,999.99
+       print #RetVal-AmountPD     (,95)    edit 99,99,999.99
+       print #RetVal-AmountTX     (,116)   edit 99,99,999.99
+
+End-Procedure ! Print-Details
+
+
+!************************************************************************
+!    Procedure:   Print-Details-tax
+!    Description: Procedure to print 'Details of Tax' section
+!************************************************************************
+Begin-procedure Print-Details-tax
+
+    let $tax_ded_us_192  = #TDS_val
+    let $tax_paid_us_192 = #Tax_val
+    let $tot_tax_paid    = #tot_tax_paid
+
+    print $Details_of_Tax     (+2,{Col_1})
+    print $Detail_Tax_A_lbl   (+1,12)
+    print $tax_ded_us_192     (  ,116)  edit 99,99,999.99
+    print $Detail_Tax_B_lbl   (+1,12)
+    print $tax_paid_us_192    (  ,116)  edit 99,99,999.99
+    print $Detail_Tax_C_lbl   (+1,12)
+    print $tot_tax_paid       (  ,116)  edit 99,99,999.99
+    print $Detail_Tax_D_lbl   (+1,12)
+    print $Date_paid          (  ,114)
+
+End-Procedure !Print-Details-tax
+
+
+!************************************************************************
+!   Procedure: Print-Trailer
+!   Description: Procedure to print the Declaration By Employer section
+!************************************************************************
+Begin-Procedure Print-Trailer
+
+    do Get-Authority-Info
+
+    if $AuthName = ''
+        let $AuthName = '..........................,'
+    end-if
+
+    if $AuthFatherName = ''
+        let $AuthFatherName = '..........................'
+    end-if
+
+    if $AuthDesig = ''
+        let $AuthDesig = '..........................'
+        end-if
+
+    let $temp = ltrim(rtrim($I_lbl,' '),' ') ||' '|| $AuthName ||', '|| ltrim(rtrim($son_of_lbl,' '),' ') ||' '|| $AuthFatherName
+    let $temp = ltrim(rtrim($temp,' '),' ') ||' '|| $working_as_lbl ||' '|| $AuthDesig ||' '|| ltrim(rtrim($designation_lbl,' '),' ')
+    let $temp = ltrim(rtrim($temp,' '),' ') ||' '|| ltrim(rtrim($DESCR,' '),' ') ||' '|| ltrim(rtrim($name_of_empr_lbl,' '),' ')
+    let $temp = ltrim(rtrim($temp,' '),' ') ||' '|| ltrim(rtrim($name_of_empr2_lbl,' '),' ') ||' '|| ltrim(rtrim($name_of_empr3_lbl,' '),' ')
+    let $temp = ltrim(rtrim($temp,' '),' ') ||' '|| ltrim(rtrim($name_of_empr4_lbl,' '),' ')
+
+    let $full_name_lbl1    = ltrim(rtrim($full_name_lbl,' '),' ') ||':'||'   '||$AuthName
+    let $designation2_lbl1 = ltrim(rtrim($designation2_lbl,' '),' ') ||':'||' '||$AuthDesig
+    let $place_lbl1        = ltrim(rtrim($place_lbl,' '),' ') ||':'||' '||$City
+    let $date_lbl1         = ltrim(rtrim($date_lbl,' '),' ') ||':'||'  '||$Creation_dt
+
+    Print $Declaration_lbl             (+2,58)  bold
+    print $temp                        (+2,8)   wrap 161 4
+    print $signature_lbl               (+3,80)
+    Print $place_lbl1                  (+1,8)
+    Print $full_name_lbl1              (,80)
+    Print $date_lbl1                   (+1,8)
+    Print $designation2_lbl1           (,80)
+        new-page
+End-Procedure !Print-Trailer
+
+
+!***********************************************************************
+!     Procedure:   Get-Authority-Info
+!     Description: Procedure to get details of the person responsible
+!                  for deduction of tax.
+!***********************************************************************
+begin-procedure Get-Authority-Info
+
+BEGIN-SELECT DISTINCT
+NAMES.FIRST_NAME
+NAMES.MIDDLE_NAME
+NAMES.LAST_NAME
+JOBCODE.DESCR
+
+    move &NAMES.FIRST_NAME   to $AuthName
+    let $AuthName = ltrim(rtrim($AuthName,' '),' ') ||' '|| ltrim(rtrim(&NAMES.MIDDLE_NAME,' '),' ')
+    let $AuthName = ltrim(rtrim($AuthName,' '),' ') ||' '|| ltrim(rtrim(&NAMES.LAST_NAME,' '),' ')
+
+    move &JOBCODE.DESCR to $AuthDesig
+    let $AuthName  = rtrim($AuthName, ' ')
+    let $AuthDesig = rtrim($AuthDesig, ' ')
+
+FROM PS_ESTAB_TBL_GPIN E, PS_NAMES NAMES, PS_JOB JOB, PS_JOBCODE_TBL JOBCODE
+WHERE E.EMPLID = NAMES.EMPLID
+AND E.ESTABID = $EstabID
+AND E.EMPLID = JOB.EMPLID
+AND E.EFFDT = (SELECT MAX(EFFDT) FROM PS_ESTAB_TBL_GPIN
+               WHERE ESTABID = E.ESTABID
+               AND EFFDT <= $END_DT)
+AND JOB.EMPL_RCD = 0
+AND JOB.JOBCODE = JOBCODE.JOBCODE
+AND JOB.EMPLID = NAMES.EMPLID
+AND NAMES.NAME_TYPE = 'PRI'
+AND JOBCODE.EFFDT = (SELECT MAX(EFFDT) FROM PS_JOBCODE_TBL
+               WHERE SETID = JOBCODE.SETID
+               AND JOBCODE = JOBCODE.JOBCODE
+               AND EFFDT <= $END_DT)
+AND NAMES.EFFDT = (SELECT MAX(EFFDT) FROM PS_NAMES
+               WHERE EMPLID = NAMES.EMPLID
+               AND NAME_TYPE = NAMES.NAME_TYPE
+               AND EFFDT <= $END_DT)
+AND JOB.EFFDT = (SELECT MAX(EFFDT) FROM PS_JOB
+               WHERE EMPLID = E.EMPLID
+               AND EMPL_RCD = 0
+               AND EFFDT <= $END_DT)
+AND JOB.EFFSEQ = (SELECT MAX(EFFSEQ) FROM PS_JOB
+                WHERE EMPLID = E.EMPLID
+                AND EMPL_RCD = 0
+                AND EFFDT = JOB.EFFDT)
+END-SELECT
+
+BEGIN-SELECT DISTINCT
+D.FIRST_NAME
+D.MIDDLE_NAME
+D.LAST_NAME
+
+     move &D.FIRST_NAME TO $AuthFatherName
+
+     let $AuthFatherName = ltrim(rtrim($AuthFatherName,' '),' ') ||' '|| ltrim(rtrim(&D.MIDDLE_NAME,' '),' ')
+     let $AuthFatherName = ltrim(rtrim($AuthFatherName,' '),' ') ||' '|| ltrim(rtrim(&D.LAST_NAME,' '),' ')
+
+     let $AuthFatherName = ltrim(RTRIM($AuthFatherName, ' '),' ')
+
+
+FROM PS_ESTAB_TBL_GPIN E, PS_DEP_BEN_NAME D, PS_DEP_BEN_EFF C, PS_DEP_BEN B
+WHERE E.ESTABID = $EstabID
+AND E.EMPLID = D.EMPLID
+AND E.EMPLID = C.EMPLID
+AND E.EMPLID = B.EMPLID
+AND D.EMPLID = C.EMPLID
+AND D.EMPLID = B.EMPLID
+AND C.EMPLID = B.EMPLID
+AND D.DEPENDENT_BENEF = C.DEPENDENT_BENEF
+AND D.DEPENDENT_BENEF = B.DEPENDENT_BENEF
+AND C.DEPENDENT_BENEF = B.DEPENDENT_BENEF
+AND C.RELATIONSHIP = 'P'
+AND E.EFFDT = (SELECT MAX(EFFDT) FROM PS_ESTAB_TBL_GPIN
+               WHERE ESTABID = E.ESTABID
+               AND EFFDT <= $END_DT)
+AND D.EFFDT = (SELECT MAX(D1.EFFDT) FROM PS_DEP_BEN_NAME D1 WHERE
+D1.EMPLID = D.EMPLID AND D1.DEPENDENT_BENEF = D.DEPENDENT_BENEF AND D1.EFFDT <= $END_DT)
+
+AND C.EFFDT = (SELECT MAX(C1.EFFDT) FROM PS_DEP_BEN_EFF C1
+          WHERE C1.EMPLID = C.EMPLID 
+          AND C1.DEPENDENT_BENEF = C.DEPENDENT_BENEF
+          AND C1.RELATIONSHIP = 'P'
+          AND C1.EFFDT <= $END_DT)
+END-SELECT
+
+End-Procedure !Get-Authority-Info
+
+!************************************************************************
+Begin-Procedure Init-Report
+!************************************************************************
+
+    let    $place_lbl        = ''
+    let    $full_name_lbl    = ''
+    let    $date_lbl         = ''
+    let    $designation2_lbl = ''
+
+    Do Get-Strings-Table
+
+    Let $ReportID       = 'FORM12BA '
+    Let $ReportTitle    = $REC_RPT
+
+    If $Language_Code   = 'ENG'
+        Let $ReportDateType   = '0'             ! resolved in datetime.sqc
+    else
+        Let $ReportDateType   = '1'
+    End-If
+
+    If $Language_Code = 'ENG' or $Language_Code = 'INE'
+        Let $ReportSDecimal   = '.'
+        Let $ReportSThousand  = ','
+    else
+        Let $ReportSDecimal   = ','             ! resolved in number.sqc
+        Let $ReportSThousand  = '.'             ! resolved in number.sqc
+    End-If
+
+    Let $Date_Init = '1900-01-01 00:00:00.000'
+    #Ifdef ORACLE
+        Let $Date_Init = '01-NOV-1999'
+    #End-If
+    Do Format-DateTime($Date_Init, $out999, {DEFDATE}, '', '')
+End-Procedure !Init-Report
+
+
+!***********************************************************************
+!    Procedure: Get-Strings-Table
+!    Description: Procedure to initilize the string variables from
+!                 strings table.
+!***********************************************************************
+Begin-Procedure Get-Strings-Table
+
+   Do Init_Report_Translation ($ReportID,$Language_Code)
+   Do Append_Report_Translation ('GPINYE03 ')
+
+   Do get_field_information ('GPINYE03', 'NAME_DESIGNATION',    $NAME_DESIG_LBL,        #DW)
+    Do Get_Field_Information ('GPINYE03 ','ASSESSMENT',          $Financial_lbl,         #DW)
+   Do Get_Field_Information ('GPINYE03 ','HEADING',             $HEADING_lbl,           #DW)
+   Do Get_Field_Information ('GPINYE03 ','HEADING1',            $HEADING1_lbl,          #DW)
+    Do Get_Field_Information ('GPINYE03 ','HEADING10',           $HEADING10_lbl,         #DW)
+   Do Get_Field_Information ('GPINYE03 ','HEADING3',            $HEADING3_lbl,          #DW)
+    Do Get_Field_Information ('GPINYE03 ','HEADING4',            $Rs_lbl,                #DW)
+   Do Get_Field_Information ('GPINYE03 ','HEADING5',            $HEADING5_lbl,          #DW)
+   Do Get_Field_Information ('GPINYE03 ','HEADING6',            $HEADING6_lbl,          #DW)
+   Do Get_Field_Information ('GPINYE03 ','M_ASSETS',            $M_ASSETS_lbl,          #DW)
+   Do Get_Field_Information ('GPINYE03 ','NAME_ADDRESS',        $NAME_ADDRESS_lbl,      #DW)
+   Do Get_Field_Information ('GPINYE03 ','TOTAL1',              $TOTAL1_lbl,            #DW)
+   Do Get_Field_Information ('GPINYE03 ','TOTAL2',              $TOTAL2_lbl,            #DW)
+    Do Get_Field_Information ('GPINYE03 ','TOTAL3',              $TOTAL3_lbl,            #DW)
+   Do Get_Field_Information ('GPINYE03 ','T_ASSETS',            $T_ASSETS_lbl,          #DW)
+   Do Get_Field_Information ('GPINYE03 ','HEADING7',            $HEADING7_lbl,          #DW)
+   Do Get_Field_Information ('GPINYE03 ','HEADING8',            $HEADING8_lbl,          #DW)
+    Do Get_Field_Information ('GPINYE03 ','HEADING8A',           $HEADING8A_lbl,         #DW)
+   Do Get_Field_Information ('GPINYE03 ','HEADING9',            $HEADING9_lbl,          #DW)
+   Do Get_Field_Information ('GPINYE03 ','ACCO',                $ACCOMODATION_lbl,      #DW)
+   Do Get_Field_Information ('GPINYE03 ','CARS',                $CARS_lbl,              #DW)
+   Do Get_Field_Information ('GPINYE03 ','SWEEPER',             $SWEEPER_lbl,           #DW)
+    Do Get_Field_Information ('GPINYE03 ','SWEEPER1',            $SWEEPER1_lbl,          #DW)
+   Do Get_Field_Information ('GPINYE03 ','GAS',                 $GAS_lbl,               #DW)
+   Do Get_Field_Information ('GPINYE03 ','INTEREST',            $INTEREST_lbl,          #DW)
+   Do Get_Field_Information ('GPINYE03 ','HOLIDAY',             $HOLIDAY_lbl,           #DW)
+   Do Get_Field_Information ('GPINYE03 ','FREE1',               $FREE1_lbl,             #DW)
+   Do Get_Field_Information ('GPINYE03 ','FREE2',               $FREE2_lbl,             #DW)
+   Do Get_Field_Information ('GPINYE03 ','EDUCATION',           $EDUCATION_lbl,         #DW)
+   Do Get_Field_Information ('GPINYE03 ','GIFTS',               $GIFTS_lbl,             #DW)
+   Do Get_Field_Information ('GPINYE03 ','CREDIT_CARD',         $CREDIT_CARD_lbl,       #DW)
+   Do Get_Field_Information ('GPINYE03 ','CLUB',                $CLUB_lbl,              #DW)
+   Do Get_Field_Information ('GPINYE03 ','M_ASSETS',            $M_ASSETS_lbl,          #DW)
+   Do Get_Field_Information ('GPINYE03 ','T_ASSETS',            $T_ASSETS_lbl,          #DW)
+   Do Get_Field_Information ('GPINYE03 ','STOCK',               $STOCK_lbl,             #DW)
+   Do Get_Field_Information ('GPINYE03 ','OTHER',               $OTHER_lbl,             #DW)
+   Do Get_Field_Information ('GPINYE03 ','OTHER1',              $OTHER1_lbl,            #DW)
+    Do Get_Field_Information ('GPINYE03 ','OTHER2',              $OTHER2_lbl,            #DW)
+   Do Get_Field_Information ('GPINYE03 ','REPORT_TITLE',        $Title_lbl,             #DW)
+    Do Get_Field_Information ('GPINYE03 ','REPORT_TITLE2',       $Title_lbl2,            #DW)
+    Do Get_Field_Information ('GPINYE03 ','REPORT_TITLE3',       $Title_lbl3,            #DW)
+    Do Get_Field_Information ('GPINYE03 ','REPORT_TITLE4',       $Title_lbl4,            #DW)
+   Do Get_Field_Information ('GPINYE03 ','TAN',                 $TAN_lbl,               #DW)
+   Do Get_Field_Information ('GPINYE03 ','TDS',                 $TDS_lbl,               #DW)
+   Do Get_Field_Information ('GPINYE03 ','PERQ',                $PERQ_lbl,              #DW)
+    Do Get_Field_Information ('GPINYE03 ','IS_EMP_DIR1',         $Is_Emp_Dir1,           #DW)
+    Do Get_Field_Information ('GPINYE03 ','IS_EMP_DIR2',         $Is_Emp_Dir2,           #DW)
+    Do Get_Field_Information ('GPINYE03 ','IS_EMP_DIR3',         $Is_Emp_Dir3,           #DW)
+    Do Get_Field_Information ('GPINYE03 ','INC_SAL1',            $Inc_Sal1,              #DW)
+    Do Get_Field_Information ('GPINYE03 ','INC_SAL2',            $Inc_Sal2,              #DW)
+    Do Get_Field_Information ('GPINYE03 ','DETAILS_OF_TAX',      $Details_of_Tax,        #DW)
+    Do Get_Field_Information ('GPINYE03 ','DETAIL_TAX_A',        $Detail_Tax_A_lbl,      #DW)
+    Do Get_Field_Information ('GPINYE03 ','DETAIL_TAX_B',        $Detail_Tax_B_lbl,      #DW)
+    Do Get_Field_Information ('GPINYE03 ','DETAIL_TAX_C',        $Detail_Tax_C_lbl,      #DW)
+    Do Get_Field_Information ('GPINYE03 ','DETAIL_TAX_D',        $Detail_Tax_D_lbl,      #DW)
+    Do Get_Field_Information ('GPINYE03 ','DECL_EMPLR',          $Declaration_lbl,       #DW)
+    Do Get_Field_Information ('GPINYE03 ','I',                   $I_lbl,                 #DW)
+    Do Get_Field_Information ('GPINYE03 ','SON_OF',              $son_of_lbl,            #DW)
+    Do Get_Field_Information ('GPINYE03 ','WORKING_AS',          $working_as_lbl,        #DW)
+    Do Get_Field_Information ('GPINYE03 ','DESIGNATION',         $designation_lbl,       #DW)
+    Do Get_Field_Information ('GPINYE03 ','NAME_OF_EMPR',        $name_of_empr_lbl,      #DW)
+    Do Get_Field_Information ('GPINYE03 ','NAME_OF_EMPR2',       $name_of_empr2_lbl,     #DW)
+    Do Get_Field_Information ('GPINYE03 ','NAME_OF_EMPR3',       $name_of_empr3_lbl,     #DW)
+    Do Get_Field_Information ('GPINYE03 ','NAME_OF_EMPR4',       $name_of_empr4_lbl,     #DW)
+    Do Get_Field_Information ('GPINYE03 ','PLACE',               $place_lbl,             #DW)
+    Do Get_Field_Information ('GPINYE03 ','DATE',                $date_lbl,              #DW)
+    Do Get_Field_Information ('GPINYE03 ','FULL_NAME',           $full_name_lbl,         #DW)
+    Do Get_Field_Information ('GPINYE03 ','DESIGNATION2',        $designation2_lbl,      #DW)
+    Do Get_Field_Information ('GPINYE03 ','DATE_PAID',           $DATE_PAID_lbl,         #DW)
+    Do Get_Field_Information ('GPINYE03 ','SIGNATURE',           $signature_lbl,         #DW)
+    Do Get_Field_Information ('GPINYE03 ','DATE_PAID',           $Date_paid,             #DW)
+
+End-Procedure
+!***********************************************************************
+Begin-Procedure  Clear-Temp-Tables
+!Show 'inside Clear tables'
+
+Begin-SQL
+DELETE FROM PS_GPIN_PR_TMP WHERE JOBINSTANCE= #prcs_job_instance;
+
+DELETE FROM PS_GPIN_PR_TMP2 WHERE JOBINSTANCE=#prcs_job_instance;
+
+DELETE FROM PS_GPIN_PR_TMP3  WHERE JOBINSTANCE=#prcs_job_instance
+End-Sql
+End-Procedure !Clear-Temp-Tables
+
+
+!***********************************************************************
+! Additional SQCs included in the report                                                                                                                *
+!***********************************************************************
+
+#include 'datetime.sqc'         !Routines for date and time formatting
+#include 'datemath.sqc'         !Date conversion Procedures
+#include 'sqrtrans.sqc'         !Translate SQR strings to given language
+#include 'prcsapi.sqc'          !Replaces stdapi.sqc
+#include 'prcslng.sqc'          !Replaces getrplng.sqc
+#include 'readxlat.sqc'         !Procedure to read values from xlattable
+#include 'reset.sqc'            !Reset Printer Procedure
+#include 'number.sqc'           !Routines to format numbers
+#include 'stdapi.sqc'           !Routines to update run status

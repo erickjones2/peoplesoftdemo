@@ -1,0 +1,293 @@
+!-----------------------------------------------------------------------
+! Module Name: STESComn.sqc - Common Stock Purchase Procedures 
+!-----------------------------------------------------------------------
+!
+!
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!-----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:02:51:28                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!
+!-----------------------------------------------------------------------
+! Program Descr: Select Run Control Parameters for SQR's
+!-----------------------------------------------------------------------
+! Because the Purchase Table is used as a run control, we need to get
+! the additional report criteria from the Purchase Table.
+!-----------------------------------------------------------------------
+
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Purchase-ID
+!-----------------------------------------------------------------------
+Begin-Select
+
+PURID.STOCK_ID
+PURID.STOCK_PLAN_TYPE
+PURID.STOCK_PLAN
+PURID.OFFERING_ID
+PURID.PERIOD_END_DT
+
+  let $PUR_StockId    = rtrim(&PURID.STOCK_ID, ' ')
+  let $PUR_StPlanType = rtrim(&PURID.STOCK_PLAN_TYPE, ' ')
+  let $PUR_StPlan     = rtrim(&PURID.STOCK_PLAN, ' ')
+  let $PUR_Offering   = rtrim(&PURID.OFFERING_ID, ' ')
+  let $PUR_PurchDt    = rtrim(&PURID.PERIOD_END_DT, ' ')
+
+FROM PS_ST_PURCHASE_TBL PURID
+WHERE PURID.PURCHASE_ID = $RC_Purchase_ID
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+Begin-Procedure Get-ESPP-Plan
+!-----------------------------------------------------------------------
+Begin-Select
+ESPP.PLAN_TYPE
+ESPP.BENEFIT_PLAN
+
+  let $PlanType = rtrim(&ESPP.PLAN_TYPE, ' ')
+  let $BenPlan  = rtrim(&ESPP.BENEFIT_PLAN, ' ')
+
+FROM PS_ST_ESPP_PLAN ESPP
+WHERE ESPP.STOCK_ID        = $PUR_StockId
+  AND ESPP.STOCK_PLAN_TYPE = $PUR_StPlanType
+  AND ESPP.STOCK_PLAN      = $PUR_StPlan
+  AND ESPP.EFFDT = (SELECT MAX(ESP2.EFFDT)
+                    FROM PS_ST_ESPP_PLAN ESP2
+                    WHERE ESP2.STOCK_ID = ESPP.STOCK_ID
+                      AND ESP2.STOCK_PLAN_TYPE = ESPP.STOCK_PLAN_TYPE
+                      AND ESP2.STOCK_PLAN = ESPP.STOCK_PLAN
+                      AND ESP2.EFFDT <= $PUR_PurchDt)
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Offering-Pd
+!-----------------------------------------------------------------------
+Begin-Select
+
+OFFR.PERIOD_BEGIN_DT
+OFFR.PERIOD_END_DT
+
+  let $OfferBegin = rtrim(&OFFR.PERIOD_BEGIN_DT, ' ')
+  let $OfferEnd   = rtrim(&OFFR.PERIOD_END_DT, ' ')
+
+FROM PS_ST_OFFERING_PD OFFR
+WHERE OFFR.STOCK_ID        = $StockId
+  AND OFFR.STOCK_PLAN_TYPE = $PUR_StPlanType
+  AND OFFR.STOCK_PLAN      = $PUR_StPlan
+  AND OFFR.OFFERING_ID     = $PUR_Offering
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+Begin-Procedure Build-Where-Clause
+!-----------------------------------------------------------------------
+  let $SQLQuote      = ''''
+  let $WhereEmplid   = ''
+  let $WherePrcsGrp = ''
+  let $WhereCurr1 = ''
+  let $WhereCurr2 = ''
+
+  let $RC_EMPLID = rtrim($RC_EMPLID,' ')
+  let $RC_PrcsGrp = rtrim($RC_PrcsGrp, ' ')
+ 
+  if $RC_PrcsGrp <> ''
+    if $RC_SORT = 'P'
+       let $WherePrcsGrp   = ' AND V1.PROCESS_GROUP  = ' || $SQLQuote || $RC_PrcsGrp || $SQLQuote
+    else
+       let $WherePrcsGrp   = ' AND V2.PROCESS_GROUP  = ' || $SQLQuote || $RC_PrcsGrp || $SQLQuote
+    end-if
+  else
+    let $WherePrcsGrp   = ''
+  end-if
+ 
+  if $RC_EMPLID <> ''
+    if $RC_SORT = 'P'
+       let $WhereEmplid   = ' AND V1.EMPLID  = ' || $SQLQuote || $RC_EMPLID || $SQLQuote
+    else
+       let $WhereEmplid   = ' AND V2.EMPLID  = ' || $SQLQuote || $RC_EMPLID || $SQLQuote
+    end-if
+  else
+    let $WhereEmplid   = ''
+  end-if
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+Begin-Procedure  Populate-Contrib-Temp-Table
+!-----------------------------------------------------------------------
+Begin-SQL
+  DELETE FROM PS_R_CONTRIB_PART
+  WHERE PS_R_CONTRIB_PART.REPORT_ID = $ReportID   
+End-SQL
+
+  let $WhereContrib = 'AND SCA.ESPP_CONTRIB_SRC = ' || $SQLQuote || 'CF' || $SQLQuote
+  let $Contrib = 'CF'
+  do Select-Contributions
+  let $Contrib = 'NCF'
+  let $WhereContrib = 'AND SCA.ESPP_CONTRIB_SRC <> ' || $SQLQuote || 'CF' || $SQLQuote
+  do Select-Contributions
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+Begin-Procedure Select-Contributions
+!-----------------------------------------------------------------------
+Begin-Select
+
+SCA.STOCK_ID
+SCA.STOCK_PLAN_TYPE
+SCA.STOCK_PLAN
+SCA.OFFERING_ID
+SCA.PERIOD_END_DT
+SCA.PROCESS_GROUP
+SCA.COMPANY
+SCA.PAYGROUP
+SCA.ESPP_CONTRIB_SRC
+SCB.NAME
+SCA.EMPLID
+SUM(SCA.ESPP_CONTRIB_AMT)    &Sum_ESPP_CONTRIB_AMT
+SCA.FROM_CUR
+SCA.RATE_MULT
+SCA.RATE_DIV
+SCA.EXCHANGE_DT
+SUM(SCA.ESPP_STOCK_CONTRIB)  &Sum_ESPP_STOCK_CONTRIB
+SCA.TO_CUR
+
+ let #Exchange_Rt = &SCA.RATE_MULT/&SCA.RATE_DIV
+ if $Contrib = 'CF'
+    do Insert-Contributions1
+ else
+    do Insert-Contributions2
+ end-if
+
+FROM PS_ST_CONTRIB_PART SCA,
+     PS_PERSON_NAME     SCB
+WHERE SCA.EMPLID = SCB.EMPLID
+[$WhereContrib]
+[$WhereCurr1]
+[$WhereCurr2]
+  AND SCA.STOCK_ID        = $PUR_StockId
+  AND SCA.STOCK_PLAN_TYPE = 'E'
+  AND SCA.STOCK_PLAN      = $PUR_StPlan
+  AND SCA.OFFERING_ID     = $PUR_Offering
+  AND SCA.PERIOD_END_DT   = $PUR_PurchDt
+  AND SCA.ESPP_CONTRIB_STS <> 'R'
+GROUP BY SCA.STOCK_ID, SCA.STOCK_PLAN_TYPE, SCA.STOCK_PLAN, SCA.OFFERING_ID, SCA.PERIOD_END_DT,  
+SCA.PROCESS_GROUP, SCA.COMPANY, SCA.PAYGROUP, SCA.ESPP_CONTRIB_SRC, SCB.NAME, SCA.EMPLID, SCA.FROM_CUR, 
+SCA.RATE_MULT, SCA.RATE_DIV, SCA.EXCHANGE_DT, SCA.TO_CUR
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+Begin-Procedure Insert-Contributions1
+!-----------------------------------------------------------------------
+ !----------------------------------------------------------------------------------------------------------------------
+ !  Adding a temporary variable due to some unknown problem with SQR in SQLServer and UNION ALL
+ !  Trying to re-use the same date in both resulted in an error (Syntax error converting datetime from character string.)
+ !----------------------------------------------------------------------------------------------------------------------
+ let  $PUR_PurchDt2 = $PUR_PurchDt
+
+ Begin-SQL
+  INSERT INTO PS_R_CONTRIB_PART (REPORT_ID, STOCK_ID, STOCK_PLAN_TYPE, STOCK_PLAN, OFFERING_ID, PERIOD_END_DT,
+  PROCESS_GROUP, COMPANY, PAYGROUP, ESPP_CONTRIB_SRC, NAME, EMPLID, CARRYOVER_AMT, ESPP_CONTRIB_AMT, FROM_CUR,
+  CUR_EXCHNG_RT, RATE_MULT, RATE_DIV, EXCHANGE_DT, CNVRTED_CARRY_FRWD, ESPP_STOCK_CONTRIB, TO_CUR)
+  VALUES 
+($ReportID
+,&SCA.STOCK_ID
+,&SCA.STOCK_PLAN_TYPE
+,&SCA.STOCK_PLAN 
+,&SCA.OFFERING_ID 
+,&SCA.PERIOD_END_DT 
+,&SCA.PROCESS_GROUP 
+,&SCA.COMPANY 
+,&SCA.PAYGROUP 
+,&SCA.ESPP_CONTRIB_SRC
+,&SCB.NAME 
+,&SCA.EMPLID 
+,&Sum_ESPP_CONTRIB_AMT 
+,0 
+,&SCA.FROM_CUR 
+,#Exhange_Rt
+,&SCA.RATE_MULT
+,&SCA.RATE_DIV 
+,&SCA.EXCHANGE_DT  
+,&Sum_ESPP_STOCK_CONTRIB 
+,0 
+,&SCA.TO_CUR)
+End-SQL
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+Begin-Procedure Insert-Contributions2
+!-----------------------------------------------------------------------
+Begin-SQL
+ INSERT INTO PS_R_CONTRIB_PART (REPORT_ID, STOCK_ID, STOCK_PLAN_TYPE, STOCK_PLAN, OFFERING_ID, PERIOD_END_DT,
+  PROCESS_GROUP, COMPANY, PAYGROUP, ESPP_CONTRIB_SRC, NAME, EMPLID, CARRYOVER_AMT, ESPP_CONTRIB_AMT, FROM_CUR,
+  CUR_EXCHNG_RT, RATE_MULT, RATE_DIV, EXCHANGE_DT, CNVRTED_CARRY_FRWD, ESPP_STOCK_CONTRIB, TO_CUR)
+VALUES 
+($ReportID
+,&SCA.STOCK_ID 
+,&SCA.STOCK_PLAN_TYPE 
+,&SCA.STOCK_PLAN 
+,&SCA.OFFERING_ID 
+,&SCA.PERIOD_END_DT 
+,&SCA.PROCESS_GROUP 
+,&SCA.COMPANY 
+,&SCA.PAYGROUP 
+,&SCA.ESPP_CONTRIB_SRC
+,&SCB.NAME 
+,&SCA.EMPLID 
+,0 
+,&Sum_ESPP_CONTRIB_AMT
+,&SCA.FROM_CUR 
+,#Exchange_Rt
+,&SCA.RATE_MULT
+,&SCA.RATE_DIV 
+,&SCA.EXCHANGE_DT 
+,0 
+,&Sum_ESPP_STOCK_CONTRIB 
+,&SCA.TO_CUR)
+End-SQL
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+Begin-Procedure Delete-Contrib-Temp-Table
+!-----------------------------------------------------------------------
+
+Begin-SQL
+   DELETE FROM PS_R_CONTRIB_PART
+   WHERE REPORT_ID = $ReportID
+End-SQL
+
+End-Procedure

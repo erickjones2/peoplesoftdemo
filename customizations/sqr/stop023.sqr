@@ -1,0 +1,1030 @@
+!-----------------------------------------------------------------------
+! Report Name: STOP023.SQR - ISO Disposition Statement
+!-----------------------------------------------------------------------
+!
+!
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:02:55:03                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!
+!-----------------------------------------------------------------------
+! Program Descr: Prints ISO disposition receipt for an employee.  Seperates
+!                Exercise Dipositions and Release Dispositions into two 
+!                seperate sections.  Reprint prints statements where receipt
+!                has already been populated.  New report prints statements
+!                where receipt date is null.
+!-----------------------------------------------------------------------
+! Prompts:       Reprint Prompt,Stock ID, Stock Plan, Process Group, Emplid,
+!                From Date, Thru Date, Dispoition Number
+! Options:       None
+! Tables:        ST_GRANT
+!                ST_GRANT_EXER   
+!                ST_EXER_DISPOSN 
+!                JOB             
+!                ST_OPTION_PLAN   
+!                PERS_NID         
+!                R_PRCS_GRP_DTL   
+!                TAX_LOCATION1    
+!                STOCK_TBL        
+! Sorts:         Emplid, Disposition Type, Exercise or Release Date
+!-----------------------------------------------------------------------
+
+#include 'setenv.sqc'
+
+!-----------------------------------------------------------------------
+Begin-Setup
+!-----------------------------------------------------------------------
+
+ #include 'ptpsp125.sqc'               ! Portrait 125 Columns
+
+End-Setup
+
+!-----------------------------------------------------------------------
+! Procedure: Begin-Program
+! Descr:     Main Report procedure.
+!-----------------------------------------------------------------------
+Begin-Program
+
+  do Init-Report
+  do Build-Where-Clause
+  do Expand-Process-Group
+  do Main-Process
+  do Reset
+  do Successful-EOJ
+
+  let $CurrentTime = datenow()
+  show 'Process ended at:   ' $SysDateTime      !standard output info to sqr.log
+
+End-Program
+
+!-----------------------------------------------------------------------
+! Procedure: Init-Report
+! Descr:     Report initialization procedure.  Set titles, parameters.
+!            This is called from the Begin-Program procedure.  Asks for input
+!            parameters if report is run from outside Peoplesoft.
+!-----------------------------------------------------------------------
+Begin-Procedure Init-Report
+
+  let $ReportID    = 'STOP023'
+  let $ReportTitle = $ReportTitle
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Define-Prcs-Vars
+  do Get-Run-Control-Parms
+
+  do Get-Report-Language    ! Procedure that decides the report language
+                            ! and then calls 'Report-Translation' procedure
+                            ! that reads the language dep. text.
+  let $AsOfDate = $AsOfToday
+
+  if $prcs_process_instance = ''
+    input $RC_Reprint_Prompt MAXLEN=1  'Reprint Prior Receipts Y/N?'                  Type=Char
+    uppercase $RC_Reprint_Prompt
+    !-------------------------------------------------!
+    !Keep asking for input if value is not 'Y' or 'N' !
+    !-------------------------------------------------!
+    while $RC_Reprint_Prompt <> 'Y' and $RC_Reprint_Prompt <> 'N' 
+       input $RC_Reprint_Prompt MAXLEN=1  'Reprint Prior Receipts Y/N?'    Type=Char
+    end-while
+    input $RC_Stock_ID       MAXLEN=10 'Enter Stock ID or press enter for all'        Type=Char
+    input $RC_Stock_Plan     MAXLEN=10 'Enter Stock Plan ID or press enter for all'   Type=Char
+    input $RC_RunType        MAXLEN=1  'Run by Process Group ''P'' or Employee ''E''' Type=Char
+    uppercase $RC_RunType
+    while $RC_RunType <> 'P' and $RC_RunType <> 'E' 
+       input $RC_RunType     MAXLEN=1  'Run by Process Group ''P'' or Employee ''E''' Type=Char
+       uppercase $RC_RunType
+    end-while
+    if $RC_RunType = 'E'
+       input $RC_Emplid      MAXLEN=11 'Enter Emplid or press enter for all'          Type=Char
+       input $RC_RelNbr      MAXLEN=8  'Enter Release Number or press enter to skip'  Type=Char
+       input $RC_ExertNbr    MAXLEN=8  'Enter Exercise Number or press enter to skip; if you entered a Release number you must enter a grant number'    Type=Char
+       input $RC_GrantNbr    MAXLEN=10 'Enter Grant Number or press enter to skip; if you entered a Release number you must enter a grant number'    Type=Char
+    end-if
+    if $RC_RunType = 'P'
+       input $RC_PrcsGrp     MAXLEN=10 'Enter Procees Group or press enter for all'   Type=Char
+    end-if
+    uppercase $RC_Stock_ID
+    uppercase $RC_Stock_Plan
+    uppercase $RC_Emplid
+    uppercase $RC_PrcsGrp
+    uppercase $RC_GrantNbr
+    do Ask-from-Thru-Date
+    let $RC_FromDate = $FromDate
+    let $RC_ThruDate = $ThruDate
+  else
+    do Get-SQR-Parms                   ! Get Run Control Values
+    show 'From Date:    ' $RC_FromDate
+    show 'Thru Date:    ' $RC_ThruDate
+  end-if
+
+  let $RC_Stock_ID   = rtrim($RC_Stock_ID,' ')
+  let $RC_Stock_Plan = rtrim($RC_Stock_Plan,' ')
+  let $RC_Emplid     = rtrim($RC_Emplid,' ')
+  let $RC_Reprint    = rtrim($RC_Reprint_Prompt,' ')
+  let $RC_RunType    = rtrim($RC_RunType,' ')
+  let $RC_GrantNbr   = rtrim($RC_GrantNbr,' ')
+  let $RC_FromDate   = rtrim($RC_FromDate,' ')
+  let $RC_ThruDate   = rtrim($RC_ThruDate,' ')
+  let $RC_PrcsGrp    = rtrim($RC_PrcsGrp,' ')
+
+  do Format-DateTime ($RC_FromDate, $FromDate, {DEFDATE}, '', '')
+  do Format-DateTime ($RC_ThruDate, $ThruDate, {DEFDATE}, '', '')
+  if $RC_FromDate <> ''
+    let $FromThruLbl = $FromLbl || ': ' || $FromDate || '  ' || $ThruLbl || ': ' || $ThruDate
+  end-if
+
+  show 'Reprint:      ' $RC_Reprint_Prompt
+  show 'Stock ID:     ' $RC_Stock_ID
+
+  if $RC_Stock_Plan <> ''
+    show 'Stock Plan:   ' $RC_Stock_Plan
+  end-if
+
+  if $RC_PrcsGrp <> ''
+    show 'Prcs Group:   ' $RC_PrcsGrp
+  end-if
+
+  if $RC_Emplid <> ''
+    show 'Emplid:       ' $RC_Emplid
+  end-if
+
+  if $RC_GrantNbr <> ''
+    show 'Grant Nbr:    ' $RC_GrantNbr
+  end-if
+
+  if #RC_ExerNbr <> 0
+    show 'Exercise Nbr: ' #RC_ExerNbr
+  end-if
+
+  if #RC_RelNbr <> 0
+    show 'Release Nbr: '  #RC_RelNbr
+  end-if
+
+  show ' '
+  let $CurrentTime = datenow()
+  show 'Process started at: ' $SysDateTime      !standard output info to sqr.log
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Report-Translation
+! Descr:     This procedure is used to read language-dependent text from
+!            the database.
+!-----------------------------------------------------------------------
+Begin-Procedure Report-Translation
+
+  do Init_Report_Translation ('STOCK',$language_cd)
+  do Append_Report_Translation ($ReportId)
+
+  do Get_Field_Information ('STOCK',  'FROM',               $FromLbl,        #DW)
+  do Get_Field_Information ('STOCK',  'THRU',               $ThruLbl,        #DW)
+  do Get_Field_Information ('STOCK',  'TOTAL',              $TotalLbl,       #DW)
+  do Get_Field_Information ('STOCK',  'NID',                $NidLbl,         #DW)
+  do Get_Field_Information ('STOCK',  'EMPLID',             $EmpIdLbl,       #DW)
+  do Get_Field_Information ('STOCK',  'EXERCISE',           $ExerciseLbl,    #DW)
+  do Get_Field_Information ('STOCK',  'GRANT_PRICE',        $GrantPriceLbl,  #DW)
+  do Get_Field_Information ('STOCK',  'EXERCISE_FMV',       $ExerFmvLbl,     #DW)
+  do Get_Field_Information ('STOCK',  'DISPOSITION',        $DispLbl,        #DW)
+  do Get_Field_Information ('STOCK',  'DATE',               $DateLbl,        #DW)
+  do Get_Field_Information ('STOCK',  'ST_ORD_INCOME',      $OrdIncomeLbl,   #DW)
+  do Get_Field_Information ('STOCK',  'SHARES_DISPOSED',    $SharesDispLbl,  #DW)
+  do Get_Field_Information ('STOCK',  'RELEASE',            $ReleaseLbl,     #DW)
+  do Get_Field_Information ('STOCK',  'RELEASE_FMV',        $RelFmvLbl,      #DW)
+  do Get_Field_Information ('STOCK',  'GRANT',              $GrantLbl,       #DW)
+  do Get_Field_Information ('STOCK',  'NUMBER',             $NumberLbl,      #DW)
+  do Get_Field_Information ('STOCK',  'COST_BASIS1',        $CostBasis1Lbl,  #DW)
+  do Get_Field_Information ('STOCK',  'EMPL_RCD',           $EmplRcdLbl,     #DW)
+
+  do Get_Field_Information ('STOP023','STOP023',            $ReportTitle,    #DW)
+  do Get_Field_Information ('STOP023','DD_EXERCISE',        $ExerTitleLbl,   #DW)
+  do Get_Field_Information ('STOP023','DD_RELEASE',         $RelTitleLbl,    #DW)
+  do Get_Field_Information ('STOP023','OPTIONEE_INFO',      $OptioneeLbl,    #DW)
+  do Get_Field_Information ('STOP023','FEDERAL_EIN',        $FedEinLbl,      #DW)
+  do Get_Field_Information ('STOP023','TYPE',               $TypeLbl,        #DW)
+  do Get_Field_Information ('STOP023','PRICE',              $PriceLbl,       #DW)
+  do Get_Field_Information ('STOP023','OPTION',             $OptionLbl,      #DW)
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Build-Where-Clause
+! Descr:   Construct portions of where clause, to be used in the main select,
+!          based on report parameters choosen.
+!-----------------------------------------------------------------------
+Begin-Procedure Build-Where-Clause
+
+  let $SQLQuote          = ''''
+
+  if $RC_Stock_Plan <> ''
+    let $WhereStockPlan  = ' and A.STOCK_PLAN  = '   || $SQLQuote || $RC_Stock_Plan || $SQLQuote
+  else
+    let $WhereStockPlan  = ''
+  end-if
+
+  if $RC_FromDate <> ''
+    let $WhereFromDate   = ' and C.DISPOSITION_DT   >= ' || $SQLQuote || $RC_FromDate || $SQLQuote
+  else
+    let $WhereFromDate   = ''
+  end-if
+  if $RC_ThruDate <> ''
+    let $WhereThruDate   = ' and C.DISPOSITION_DT   <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote
+  else
+    let $WhereThruDate   = ''
+  end-if
+
+  if $RC_GrantNbr <> ''
+    let $WhereGrantNbr   = ' and A.GRANT_NBR = '    || $SQLQuote || $RC_GrantNbr   || $SQLQuote
+  end-if
+  if #RC_ExerNbr <> 0
+    let $RC_ExerNbr      = to_char(#RC_ExerNbr)
+    let $WhereExerNbr    = ' and B.EXERCISE_NBR = ' ||$RC_ExerNbr
+  end-if
+  if #RC_RelNbr <> 0
+    let $RC_RelNbr       = to_char(#RC_RelNbr)
+    let $WhereRelNbr     = ' and C.RELEASE_NBR = ' ||$RC_RelNbr
+  end-if
+  if #RC_DisposnNbr <> 0
+    let $RC_DisposnNbr   = to_char(#RC_DisposnNbr)
+    let $WhereDispNbr    = ' and C.DISPOSITION_NBR = ' ||$RC_DisposnNbr
+  end-if
+
+  if $RC_PrcsGrp <> '' 
+    let $WherePrcsGrp    = ' and F.PROCESS_GROUP  = '  || $SQLQuote || $RC_PrcsGrp    || $SQLQuote
+  else
+    let $WherePrcsGrp    = ''
+  end-if
+
+  evaluate $RC_DispType
+    when = 'E'
+      if $RC_Emplid <> ''
+        let $WhereEmplid  = ' and A.EMPLID = '       || $SQLQuote || $RC_Emplid   || $SQLQuote
+        let $WhereEmplid2 = ' and A.EMPLID = ''''' 
+      else
+        let $WhereEmplid  = ''
+        let $WhereEmplid2 = ' and A.EMPLID = ''''' 
+      end-if
+      break
+    when = 'R'
+      if $RC_Emplid <> ''
+        let $WhereEmplid  = ' and A.EMPLID = '''''
+        let $WhereEmplid2 = ' and A.EMPLID = '       || $SQLQuote || $RC_Emplid   || $SQLQuote
+      else
+        let $WhereEmplid  = ' and A.EMPLID = ''''' 
+        let $WhereEmplid2 = '' 
+      end-if
+      break
+    when-other
+      if $RC_Emplid <> ''
+        let $WhereEmplid  = ' and A.EMPLID = '       || $SQLQuote || $RC_Emplid   || $SQLQuote
+        let $WhereEmplid2 = ' and A.EMPLID = '       || $SQLQuote || $RC_Emplid   || $SQLQuote
+      else
+        let $WhereEmplid  = ''
+        let $WhereEmplid2 = ''
+      end-if
+      break
+  end-evaluate
+
+  if $RC_Reprint = 'Y'
+    let $WhereReprint       = ' and C.DISPOSN_RECEIPT_DT IS NOT NULL'
+  else 
+    let $WhereReprint       = ' and C.DISPOSN_RECEIPT_DT IS NULL'
+  end-if
+
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Main-Process
+! Descr:   Main report logic for new report. Selects confirmed exercise and 
+!          release dispositions. Union is used to retrieve both exercise and 
+!          release rows for a given emplid.  Report breaks on emplid and 
+!          disposition type.  One page for each employee.  Dispositions are
+!          printed in two seperate sections on the page.
+!-----------------------------------------------------------------------
+Begin-Procedure Main-Process
+
+  let $AsOfDate  = $AsOfToday
+  do Define-PrimJob-Clause('D',$AsOfToday, $PRIM_JOB_CLAUSE)
+
+
+Begin-Select
+A.EMPLID                                                    () on-break print=never level=1 after=Do-Totals
+'E'                                                         &Type
+A.GRANT_PRICE
+A.GRANT_NBR
+A.ST_OPTION_TYPE
+B.EXERCISE_DT
+B.EXERCISE_FMV
+B.EXERCISE_METHOD
+B.EXERCISE_COST
+B.SWAP_VALUE
+C.GRANT_NBR
+A.EMPL_RCD
+C.EXERCISE_NBR
+0               &RelNbr
+C.ST_ORD_INCOME
+C.DISPOSITION_DT
+C.SHARES_DISPOSED
+C.DISPOSITION_PRICE
+C.DISPOSITION_NBR
+C.DISPOSITION_TYPE
+C.DISQUAL_DISPOSN
+D.COMPANY
+D.TAX_LOCATION_CD
+E.NAME
+G.NATIONAL_ID
+H.COUNTRY
+
+  let $Print            = 'Y'
+  let $Trans            = &Type
+  let $Emplid           = rtrim(&a.emplid, ' ')
+  let #GrantPrice       = &a.grant_price
+  let $OptionType       = rtrim(&a.st_option_type, ' ')
+  let $ExerciseDt       = rtrim(&b.exercise_dt, ' ')
+  let #ExerciseFmv      = &b.exercise_fmv
+  let $GrantNbr         = rtrim(&c.grant_nbr, ' ')
+  let #Emplrcd          = &a.empl_rcd
+  let #ExerciseNbr      = &c.exercise_nbr
+  let #OrdIncome        = round(&c.st_ord_income,2)
+  let $DispositionDt    = rtrim(&c.disposition_dt, ' ')
+  let #SharesDisposed   = &c.shares_disposed
+  let #DispositionPrice = &c.disposition_price
+  let #DispositionNbr   = &c.disposition_nbr
+  let #SwapValue        = round(&b.swap_value,2)
+  let $ExerciseMethod   = rtrim(&b.exercise_method,' ')
+  let #ExerciseCost     = round(&b.exercise_cost,2)
+  let $DisqualDisp      = &c.disqual_disposn
+
+  let $DispType         = ''
+  let $FieldName        = 'DISPOSITION_TYPE'
+  let $FieldValue       = &c.disposition_type
+  do Read-Translate-Table
+  let $DispType         = $XlatShortName
+
+  do Get-Stock-Company
+  let $JobCompany       = rtrim(&d.company,' ')
+  let $NationalId       = rtrim(&g.national_id, ' ')
+  let $Name             = rtrim(&e.name, ' ')
+  let $TaxCountry       = rtrim(&h.country,' ')
+
+  let $AddressType = 'MAIL'
+  do Get-Empl-Address
+  if $AddressFound = 'N'
+    let $AddressType = 'HOME'
+    do Get-Empl-Address
+  end-if
+
+  do Get-Other-Addr
+
+  let $EAddress1        = rtrim(&ADDRESS1_OTHER, ' ')
+  let $EAddress2        = rtrim(&ADDRESS2_OTHER, ' ')
+  let $EAddress3        = rtrim(&ADDRESS3_OTHER, ' ')
+  let $ECity            = rtrim(&CITY_OTHER, ' ')
+  let $EState           = rtrim(&STATE_OTHER, ' ')
+  let $EPostal          = rtrim(&POSTAL_OTHER, ' ')
+  let $ECountry         = rtrim(&COUNTRY_OTHER, ' ')
+
+  if $EAddress1 = ''
+     let $EAddress1    = rtrim(&person_address.address1, ' ')
+     let $EAddress2    = rtrim(&person_address.address2, ' ')
+     let $EAddress3    = rtrim(&person_address.address3, ' ')
+     let $ECity        = rtrim(&person_address.city, ' ')
+     let $EState       = rtrim(&person_address.state, ' ')
+     let $EPostal      = rtrim(&person_address.postal, ' ')
+     let $ECountry     = rtrim(&person_address.country, ' ')
+  end-if
+
+  if $JobCompany = $StockCompany
+    let $Company         = $JobCompany
+    do Get-Company-Info
+    let $CorporationName = $CDescr
+    let $CompanyName     = $CDescr
+  else
+    let $Company = $JobCompany
+    do Get-Company-Info
+    let $CompanyName     = $CDescr
+    let $Company = $StockCompany
+    do Get-Company-Info
+    let $CorporationName = $CDescr
+  end-if
+
+  do Print-Report
+  let $EmplidOld = $EmplId
+  let $TransOld  = $Trans
+
+ from PS_ST_GRANT         A,
+      PS_ST_GRANT_EXER    B,
+      PS_ST_EXER_DISPOSN  C,
+      PS_JOB              D,
+      PS_PERSON_NAME      E,
+      PS_R_PRCS_GRP_DTL   F,
+      PS_PERS_NID         G,
+      PS_TAX_LOCATION1    H
+
+where A.STOCK_ID           = $RC_Stock_Id
+  and A.STOCK_ID           = B.STOCK_ID
+  and A.EMPLID             = B.EMPLID
+  and A.GRANT_NBR          = B.GRANT_NBR
+  and B.EMPLID             = C.EMPLID
+  and B.STOCK_ID           = C.STOCK_ID
+  and B.GRANT_NBR          = C.GRANT_NBR
+  and B.EXERCISE_NBR       = C.EXERCISE_NBR
+  and C.DISPOSITION_STATUS = 'C'
+  and D.EMPLID             = A.EMPLID
+  and D.EFFDT              = (select MAX(EFFDT)
+                                from PS_JOB
+                               where EMPLID    = D.EMPLID
+                                 and EMPL_RCD  = D.EMPL_RCD
+                                 and EFFDT    <= C.DISPOSITION_DT)
+  and D.EMPL_RCD           = [$PRIM_JOB_CLAUSE]
+  and D.EFFSEQ             = (select MAX(EFFSEQ)
+                                from PS_JOB
+                               where EMPLID    = D.EMPLID
+                                 and EMPL_RCD  = D.EMPL_RCD
+                                 and EFFDT     = D.EFFDT)
+  and E.EMPLID             = A.EMPLID
+  and F.REPORT_ID          = $ReportID
+  and F.COMPANY            = D.COMPANY
+  and F.PAYGROUP           = D.PAYGROUP
+  and G.EMPLID             = A.EMPLID
+  and G.COUNTRY            = H.COUNTRY
+  and G.NATIONAL_ID_TYPE   = 'PR'
+  and H.TAX_LOCATION_CD    = D.TAX_LOCATION_CD
+  [$WhereStockPlan]
+  [$WhereFromDate]
+  [$WhereThruDate]
+  [$WherePrcsGrp]
+  [$WhereEmplid]
+  [$WhereGrantNbr]
+  [$WhereExerNbr]
+  [$WhereDispNbr]
+  [$WhereReprint]
+
+ union
+ select
+  A.EMPLID
+ ,'R'
+ ,A.GRANT_PRICE
+ ,A.GRANT_NBR
+ ,A.ST_OPTION_TYPE
+ ,B.RELEASE_DT
+ ,B.RELEASE_FMV
+ ,B.RELEASE_METHOD
+ ,B.RELEASE_VALUE
+ ,B.SWAP_FMV
+ ,C.GRANT_NBR
+ ,A.EMPL_RCD
+ ,C.EXERCISE_NBR
+ ,C.RELEASE_NBR
+ ,C.ST_ORD_INCOME
+ ,C.DISPOSITION_DT
+ ,C.SHARES_DISPOSED
+ ,C.DISPOSITION_PRICE
+ ,C.DISPOSITION_NBR
+ ,C.DISPOSITION_TYPE
+ ,C.DISQUAL_DISPOSN
+ ,D.COMPANY
+ ,D.TAX_LOCATION_CD
+ ,E.NAME
+ ,G.NATIONAL_ID
+ ,H.COUNTRY
+ from PS_ST_GRANT         A,
+      PS_ST_EXER_RELEASE  B,
+      PS_ST_REL_DISPOSN   C,
+      PS_JOB              D,
+      PS_PERSON_NAME      E,
+      PS_R_PRCS_GRP_DTL   F,
+      PS_PERS_NID         G,
+      PS_TAX_LOCATION1    H
+where A.STOCK_ID           = $RC_Stock_Id
+  and A.STOCK_ID           = B.STOCK_ID
+  and A.EMPLID             = B.EMPLID
+  and A.GRANT_NBR          = B.GRANT_NBR
+  and B.EMPLID             = C.EMPLID
+  and B.STOCK_ID           = C.STOCK_ID
+  and B.GRANT_NBR          = C.GRANT_NBR
+  and B.EXERCISE_NBR       = C.EXERCISE_NBR
+  and B.RELEASE_NBR        = C.RELEASE_NBR
+  and C.DISPOSITION_STATUS = 'C'
+  and D.EMPLID             = A.EMPLID
+  and D.EFFDT              = (select MAX(EFFDT)
+                               from PS_JOB
+                              where EMPLID    = D.EMPLID
+                                and EMPL_RCD  = D.EMPL_RCD
+                                and EFFDT    <= C.DISPOSITION_DT)
+  and D.EMPL_RCD           = [$PRIM_JOB_CLAUSE]
+  and D.EFFSEQ             = (select MAX(EFFSEQ)
+                               from PS_JOB
+                              where EMPLID    = D.EMPLID
+                                and EMPL_RCD  = D.EMPL_RCD
+                                and EFFDT     = D.EFFDT)
+  and E.EMPLID             = A.EMPLID
+  and F.REPORT_ID          = $ReportID
+  and F.COMPANY            = D.COMPANY
+  and F.PAYGROUP           = D.PAYGROUP
+  and G.EMPLID             = A.EMPLID
+  and G.COUNTRY            = H.COUNTRY
+  and G.NATIONAL_ID_TYPE   = 'PR'
+  and H.TAX_LOCATION_CD    = D.TAX_LOCATION_CD
+  [$WhereStockPlan]
+  [$WhereFromDate]
+  [$WhereThruDate]
+  [$WherePrcsGrp]
+  [$WhereEmplid2]
+  [$WhereGrantNbr]
+  [$WhereExerNbr]
+  [$WhereRelNbr]
+  [$WhereDispNbr]
+  [$WhereReprint]
+order by 1,2,15
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Stock-Company
+! Descr:   
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Stock-Company
+
+  let $StockCompany = ''
+
+Begin-Select
+
+STOCK_TBL.COMPANY
+
+  let $StockCompany = rtrim(&stock_tbl.company,' ')
+
+ from PS_STOCK_TBL STOCK_TBL
+where STOCK_TBL.STOCK_ID = $RC_Stock_Id
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Empl-Address
+! Descr:   Retrieves the Employee's Address
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Empl-Address
+
+  let $AddressFound = 'N'
+
+Begin-Select
+
+PERSON_ADDRESS.ADDRESS1
+PERSON_ADDRESS.ADDRESS2
+PERSON_ADDRESS.ADDRESS3
+PERSON_ADDRESS.CITY
+PERSON_ADDRESS.STATE
+PERSON_ADDRESS.POSTAL
+PERSON_ADDRESS.COUNTRY
+
+  let $AddressFound = 'Y'
+  let $EAddress1    = rtrim(&person_address.address1, ' ')
+  let $EAddress2    = rtrim(&person_address.address2, ' ')
+  let $EAddress3    = rtrim(&person_address.address3, ' ')
+  let $ECity        = rtrim(&person_address.city, ' ')
+  let $EState       = rtrim(&person_address.state, ' ')
+  let $EPostal      = rtrim(&person_address.postal, ' ')
+  let $ECountry     = rtrim(&person_address.country, ' ')
+
+from PS_PERSON_ADDRESS PERSON_ADDRESS
+where PERSON_ADDRESS.EMPLID       = $Emplid
+  and PERSON_ADDRESS.ADDRESS_TYPE = $AddressType
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Print-Report
+! Descr:     Prints at the beginning of each page
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Report
+
+  if $EmplidOld <> $Emplid
+    date-time () 'Day, Mon DD, YYYY  HH:MI PM' &PrintDate
+    print &PrintDate                                       ( 1,000,   ) center bold
+    print $ReportTitle                                     (+1,001,   ) center bold
+    print $FromThruLbl                                     (+1,001,   ) center
+
+    print $RC_Stock_ID                                     (+1,001,010)
+    print $CorporationName                                 (+1,001,030)
+    print $CAddress1                                       (+1,001,035)
+    if $CAddress2 <> ''
+      print $CAddress2                                     (+1,001,035)
+    end-if
+    if $CAddress3 <> ''
+      print $CAddress3                                     (+1,001,035)
+    end-if
+    if $CAddress1 <> ''
+      let $CityStZip = $CCity || ', ' || $CState || ' '
+      let #Length = Length($CPostal)
+      if $CCountry = 'USA'
+        if #Length = 5
+          let $Postal = edit($CPostal, 'XXXXX')
+        else
+          let $Postal = edit($CPostal, 'XXXXX-XXXX')
+        end-if
+      end-if
+      let $CityStZip = $CityStZip || $Postal
+      print $CityStZip                                     (+1,001,051)
+    end-if
+    let $CityStZip = ''
+    let $Postal    = ''
+    print $CCountry                                        (+1,001,003)
+    print $FedEinLbl                                       (+1,001,011)
+    print ':'                                              (  ,   ,001)
+    print &j.federal_ein                                   (  , +1,010) edit XX-XXXXXXX
+
+    !--------------------------------------
+    ! Optionee Info
+    !--------------------------------------
+    print $OptioneeLbl                                     (14,001,   ) underline
+    print $EmpIdLbl                                        (+1,001,006)
+    print ':'                                              (  ,   ,001)
+    print $Emplid                                          (  ,014,011)
+    print $NidLbl                                          (+1,001,003)
+    print ':'                                              (  ,   ,001)
+
+    evaluate $TaxCountry
+      when = 'USA'
+        print $NationalId                                  (  ,014,011) edit XXX-XX-XXXX
+        break
+      when = 'CAN'
+        print $NationalId                                  (  ,014,013) edit XXX-XXX-XXXXX
+        break
+      when-other
+        print $NationalId                                  (  ,014,020)
+        break
+    end-evaluate
+
+    do Rotate-Name
+    print $Name                                            (-1,075,045)
+    print $EAddress1                                       (+1,075,035)
+    if $EAddress2 <> ''
+      print $EAddress2                                     (+1,075,035)
+    end-if
+    if $EAddress3 <> ''
+      print $EAddress3                                     (+1,075,035)
+    end-if
+    if  rtrim($EAddress1,' ') <> ''
+      let $CityStZip = rtrim($ECity,' ') || ', ' || rtrim($EState,' ') || ' '
+      let #Length = Length($EPostal)
+      if $ECountry = 'USA'
+        if #Length = 5
+          let $EPostal = edit($EPostal, 'XXXXX')
+        else
+          let $EPostal = edit($EPostal, 'XXXXX-XXXX')
+        end-if
+      end-if
+      let $CityStZip = $CityStZip || $EPostal
+      print $CityStZip                                     (+1,075,050)
+    end-if
+    if $ECountry <> ''
+      print $ECountry                                      (+1,075,003)
+    end-if
+    if $Trans = 'E'
+      do Print-Exer-Header
+    else
+      do Print-Rel-Header
+    end-if
+    let $CityStZip = ''
+    let $EPostal  = ''
+    let $ECountry = ''
+  else
+    if $TransOld <> $Trans
+      if $Trans = 'E'
+        do Print-Exer-Header
+      else
+        do Print-Rel-Header
+      end-if
+    end-if
+  end-if
+
+  if $Trans = 'E'
+    do Update-ExerDisposn
+  else
+    do Update-RelDisposn
+  end-if
+
+  do Print-Detail
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Company-Info
+! Descr:   Retrieve the Company Name and Address
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Company-Info
+
+Begin-Select
+
+J.DESCR
+J.ADDRESS1
+J.ADDRESS2
+J.ADDRESS3
+J.ADDRESS4
+J.CITY
+J.STATE
+J.POSTAL
+J.COUNTRY
+J.FEDERAL_EIN
+
+  let $CDescr      = rtrim(&j.descr, ' ')
+  let $CAddress1   = rtrim(&j.address1, ' ')
+  let $CAddress2   = rtrim(&j.address2, ' ')
+  let $CAddress3   = rtrim(&j.address3, ' ')
+  let $CAddress4   = rtrim(&j.address4, ' ')
+  let $CCity       = rtrim(&j.city, ' ')
+  let $CState      = rtrim(&j.state, ' ')
+  let $CPostal     = rtrim(&j.postal, ' ')
+  let $CCountry    = rtrim(&j.country, ' ')
+
+ from PS_COMPANY_TBL J
+where J.COMPANY    = $Company
+  and J.EFFDT      = (SELECT MAX(EFFDT)
+                        from PS_COMPANY_TBL JJ
+                       where JJ.COMPANY = J.COMPANY
+                         and JJ.EFFDT  <= $AsOfToday)
+  and J.EFF_STATUS = 'A'
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Exer-Header
+!-----------------------------------------------------------------------
+
+  print $ExerTitleLbl                                      (+3,001,   ) underline
+  print $GrantLbl                                          (+2,001,005)
+  print $EmplRcdLbl                                        (  ,012,009)
+  print $OptionLbl                                         (  ,022,006)
+  print $GrantPriceLbl                                     (  ,030,011)
+  print $ExerciseLbl                                       (  ,043,008)
+  print $DispLbl                                           (  ,069,011)
+  print $DispLbl                                           (  ,104,011)
+  print $NumberLbl                                         (+1,001,006)
+
+  print $TypeLbl                                           (  ,022,004)
+
+  if $ExerciseMethod = 'SWAP'
+      print $CostBasis1Lbl                                 (  ,030,010)
+  End-if
+
+  print $DateLbl                                           (  ,043,004)
+  print $ExerFmvLbl                                        (  ,055,012)
+  print $DateLbl                                           (  ,069,004)
+  print $SharesDispLbl                                     (  ,087,015)
+  print $PriceLbl                                          (  ,110,005)
+  print $OrdIncomeLbl                                      (  ,120,015)
+  print '-'                                                (+1,001,134) fill
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Rel-Header
+!-----------------------------------------------------------------------
+
+  print $RelTitleLbl                                       (+3,001,   ) underline
+  print $GrantLbl                                          (+2,001,005)
+  print $OptionLbl                                         (  ,022,006)
+  print $ReleaseLbl                                        (  ,043,007)
+  print $DispLbl                                           (  ,069,011)
+  print $DispLbl                                           (  ,104,011)
+  print $NumberLbl                                         (+1,001,006)
+  print $EmplRcdLbl                                        (  ,012,009)
+  print $TypeLbl                                           (  ,022,004)
+  print $GrantPriceLbl                                     (  ,030,011)
+  print $DateLbl                                           (  ,043,004)
+  print $RelFmvLbl                                         (  ,056,011)
+  print $DateLbl                                           (  ,069,004)
+  print $SharesDispLbl                                     (  ,087,015)
+  print $PriceLbl                                          (  ,110,005)
+  print $OrdIncomeLbl                                      (  ,120,015)
+  print '-'                                                (+1,001,134) fill
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Print-Detail
+! Descr:   Prints the bulk of the Statement
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Detail
+
+  print $GrantNbr                                          (+1,001,010)
+  print #Emplrcd                                           (  ,019,002) edit 99
+  print $OptionType                                        (  ,022,004)
+  print #GrantPrice                                        (  ,030,011) edit $999.999999
+  do Format-DateTime ($ExerciseDt, $Date, {DEFDATE}, '', '')
+  print $Date                                              (  ,043,010)
+  print #ExerciseFmv                                       (  ,056,011) edit $999.999999
+  do Format-DateTime ($DispositionDt, $Date, {DEFDATE}, '', '')
+  print $Date                                              (  ,069,010)
+  print #SharesDisposed                                    (  ,082,020) edit 9,999,999,999.999999
+  print #DispositionPrice                                  (  ,104,011) edit $999.999999
+
+  let #CostBasis = 0
+  if $ExerciseMethod = 'SWAP'
+     do Get-Shares-Issued
+     do Get-Taxes
+     if $OptionType = 'ISO' or $OptionType = 'ISAR'
+         let #CostBasis = (#ExerciseCost - #SwapValue) / #TotalSharesIssued
+     else
+        if $OptionType = 'NQ' or $OptionType = 'NSAR'
+            let #CostBasis = #ExerciseFmv
+        end-if
+     end-if
+  end-if
+
+  if $ExerciseMethod = 'SWAP'
+     if (($OptionType = 'ISO' or $OptionType = 'ISAR') and
+          $DisqualDisp = 'Y')
+         let #OrdIncome = (#ExerciseFmv - #CostBasis) * #SharesDisposed
+         let #OrdIncome = round(#OrdIncome,2)
+     end-if
+  end-if
+
+  print #OrdIncome                                         (  ,117,018) edit $$9,999,999,999.99
+
+  if $ExerciseMethod = 'SWAP'
+     if $OptionType = 'ISO' or $OptionType = 'ISAR' or $OptionType = 'NQ' or $OptionType = 'NSAR'
+         let #CostBasis = round(#CostBasis,6)
+         print #CostBasis                                  (+1,030,011) edit $999.999999
+     end-if
+  end-if
+
+  let #TotalDisp = #TotalDisp + #SharesDisposed
+  let #TotalInc  = #TotalInc  + #OrdIncome
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Do-Totals
+! Descr:
+!-----------------------------------------------------------------------
+Begin-Procedure Do-Totals
+
+  if #TotalDisp > 0
+    print $TotalLbl                                        (+2,074,005)
+    print ':'                                              (  ,   ,001)
+    print #TotalDisp                                       (  ,082,020) edit 9,999,999,999.999999
+    print #TotalInc                                        (  ,117,018) edit $$9,999,999,999.99
+  end-if
+
+  let #TotalDisp = 0
+  let #TotalInc  = 0
+  new-page
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Shares-Issued
+! Descr:   Add all shares issued for a given exercise number
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Shares-Issued
+
+  let #TotalSharesIssued = 0
+
+Begin-Select
+
+HH.SHARES_ISSUED
+
+  let #TotalSharesIssued = #TotalSharesIssued + &hh.shares_issued
+
+from PS_ST_EXER_ISSUE HH
+where HH.EMPLID          = $Emplid
+  and HH.STOCK_ID        = $RC_Stock_Id
+  and HH.GRANT_NBR       = $GrantNbr
+  and HH.EXERCISE_NBR    = #ExerciseNbr
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Get-Taxes
+! Descr:     Retrieve tax data for a given exercise.
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Taxes
+
+  let #TotalTax = 0
+
+Begin-Select
+T.TAX_CUR
+T.STATE
+T.LOCALITY
+T.ST_STOCK_TAX_TYPE
+
+  let $TaxState      = rtrim(&t.state,' ')
+  let $TaxLocality   = rtrim(&t.locality,' ')
+  let #TaxCur        = &t.tax_cur
+  add &t.tax_cur to #TotalTax
+
+from PS_ST_EXER_TAXES    T,
+     PS_ST_TAX_TYPE_TBL  T1
+where T.EMPLID             = $Emplid
+  and T.STOCK_ID           = $RC_Stock_Id
+  and T.GRANT_NBR          = $GrantNbr
+  and T.EXERCISE_NBR       = #ExerciseNbr
+  and T.COUNTRY            = $TaxCountry
+  and T1.COUNTRY           = T.COUNTRY
+  and T1.ST_STOCK_TAX_TYPE = T.ST_STOCK_TAX_TYPE
+order by T.STATE,
+         T.ST_STOCK_TAX_TYPE,
+         T.LOCALITY
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Update-ExerDisposn
+! Descr:   Updates the disposition receipt date to the date the report is run
+!-----------------------------------------------------------------------
+Begin-Procedure Update-ExerDisposn
+
+ let $Procedure = 'Update-ExerDisposn'
+ let $SQL-Statement = 'Procedure: ' || $Procedure
+
+begin-sql                           on-error = SQL-Error
+update PS_ST_EXER_DISPOSN
+   set DISPOSN_RECEIPT_DT = $AsOfToday
+ where EMPLID          = $Emplid
+   and STOCK_ID        = $RC_Stock_Id
+   and GRANT_NBR       = $GrantNbr
+   and EXERCISE_NBR    = &c.exercise_nbr
+   and DISPOSITION_NBR = &c.disposition_nbr
+end-sql
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Update-RelDisposn
+! Descr:   Updates the disposition receipt date to the date the report is run
+!-----------------------------------------------------------------------
+Begin-Procedure Update-RelDisposn
+
+ let $Procedure = 'Update-RelDisposn'
+ let $SQL-Statement = 'Procedure: ' || $Procedure
+
+begin-sql                           on-error = SQL-Error
+update PS_ST_REL_DISPOSN
+   set DISPOSN_RECEIPT_DT = $AsOfToday
+ where EMPLID          = $Emplid
+   and STOCK_ID        = $RC_Stock_Id
+   and GRANT_NBR       = $GrantNbr
+   and EXERCISE_NBR    = &c.exercise_nbr
+   and RELEASE_NBR     = &RelNbr
+   and DISPOSITION_NBR = &c.disposition_nbr
+ end-sql
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! SQC Includes
+!-----------------------------------------------------------------------
+#include 'curdttim.sqc'                !Procedures: Get-Current-DateTime
+#include 'datetime.sqc'                !Procedures: Init-Datetime
+#include 'eoj.sqc'                     !End of Report Format
+#include 'number.sqc'                  !Procedures: Init-Number
+#include 'prcsapi.sqc'                 !Process Scheduler API
+#include 'prcsdef.sqc'                 !Update Process Open_Trans variable declaration
+#include 'reset.sqc'                   !Reset printer procedure
+#include 'strunctl.sqc'                !Stock Admin's Run Control Record
+#include 'getrplng.sqc'                !Gets the report language
+#include 'sqlerr.sqc'                  !SQL error processing
+#include 'getprimj.sqc'                !Get primary job
+#include 'askftd.sqc'                  !Prompt for from thru date range
+#include 'stprcgrp.sqc'                !Creates temp table with all combos for process groups
+#include 'sqrtrans.sqc'
+#include 'datemath.sqc'
+#include 'rotname1.sqc'                ! First Name, Last Name
+#include 'readxlat.sqc'                ! Reads Translate values
+#include 'getothad.sqc'                ! Gets Other Address

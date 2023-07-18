@@ -1,0 +1,520 @@
+!***********************************************************************
+!       PSGPCP02 : CPF Monthly Contributions List                      *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2015, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2015/07/08:03:56:14                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  106                                                 !
+!                                                                      *
+!***********************************************************************
+!
+!***********************************************************************
+!                                                                      *
+! Global Payroll       Release 8.4                                     *
+!***********************************************************************
+
+!***********************************************************************
+!                                                                      *
+!  This SQR list the Contributions for all of the funds on a single    *
+!  report.                                                             *
+!                                                                      *
+!  The user has the option of generating a summary or detail report.   *
+!                                                                      *
+!***********************************************************************
+! Modification History                                                 *
+! Dated      Author  ICE       Changes                                 *
+! 28/11/02   KWH    550129000  Format Termination Date before printing *
+! 28/11/02   KWH    543370000  Informix requires Order By fields to be *
+!                              selected                                *
+! 17/12/03          673002000  SQR has been modify to replace MBMF     *
+!                              deduction into two new deduction YMF    *
+!                              and MBF.                                *
+! 31/3/2008         1679092002 Modified the SQR so that the termination*
+!                              date is printed correctly in the report *
+! 30/03/2010        1971470001 Conditions added to make this consistent*
+!                              with GPSGCP01                           *
+! 25/03/2012        13421523   Increasing font size of the report      *   
+!***********************************************************************
+
+#include 'setenv.sqc'   !Set environment
+!#include 'setup32.sqc'  !page layout and printer definition
+#include 'number.sqc'   !Routines to format numbers
+#include 'datetime.sqc' !Routines for date and time formatting
+#include 'prcsapi.sqc'  !Replaces stdapi.sqc
+
+begin-setup
+
+#Include 'setupdb.sqc'
+
+
+Declare-Layout This_Report
+      PAPER-SIZE    = (22 , 20)
+      orientation   = landscape
+      top-margin    = 0.30
+      left-margin   = 0.1
+      Line-Height   = 23 !11.3
+End-Declare
+
+DECLARE-PRINTER This_Report
+      type          = HPLASERJET
+      font          = 5
+      point-size    =  7
+End-Declare
+
+  Declare-Report This_Report
+       Printer-Type=HPLASERJET
+       LayOut=This_Report
+  End-Declare
+end-setup
+
+
+#define ColR  155
+
+!***********************************************************************
+! Begin-Report                                                         *
+!***********************************************************************
+begin-report
+
+   do Init-Processing
+   do Stdapi-Init
+   do Get-Parameters
+   do Process-Main
+   do Reset
+   do Stdapi-Term
+
+end-report
+
+
+!***********************************************************************
+! Procedure: Init-Processing                                           *
+!***********************************************************************
+begin-procedure Init-Processing
+
+        do Init-Datetime
+        do Get-Current-Datetime
+        do Define-Prcs-Vars
+
+end-procedure
+
+
+!***********************************************************************
+! Begin-Print-Heading                                             *
+!***********************************************************************
+Begin-Heading 8
+
+!#Include 'stdhdg01.sqc'  
+
+
+  alter-printer  point-size = 15 
+
+  print '            '    (1,1)
+  print 'PeopleSoft'      ()          center
+  print 'Report ID:  '    (+1,1)
+  print $ReportID         (,+2) ! () 
+  uppercase $ReportTitle
+  print $ReportTitle      ()          center
+  let #RptCol = {ColR} + 9 
+  page-number             (0,#RptCol)  'Page No.  '
+  print 'Run Date '       (+1,#RptCol)
+  print $ReportDate       (,+3) 
+  print 'Run Time '       (+1,#RptCol)
+  print $ReportTime       (,+3) 
+
+
+  print 'CPF Emplr Ref.No./CPF Submission No.:'   (+1,1)
+  print $RC_Emplr_Ref             (0,+11)
+
+
+  If $Print_Summ_Only <> 'Y'
+     print 'EmplID     Name'         (+1,1,40)
+     print 'CPF Account'             (0,+2,15)
+     print 'Term Dt'                 (0,+2,10)
+     print 'Ord Wages'               (0,+3,10)
+     print 'Add Wages'               (0,+4,10)
+     print 'CPF'                     (0,+8,10) 
+     print 'MBF'                     (0,+2,10) 
+     print 'YMF'                     (0,+2,10)
+     print 'SDL'                     (0,+2,10)
+     print 'FWL'                     (0,+2,10)
+     print 'SINDA'                   (0,+1,10)
+     print 'CDAC'                    (0,+3,10)
+     print 'ECF'                     (0,+3,10)
+     print 'SHARE'                   (0,+3,10)
+
+  end-if
+
+End-Heading
+
+
+!***********************************************************************
+! Procedure: Get-Parameters                                            *
+!***********************************************************************
+begin-procedure Get-Parameters
+
+Begin-SELECT
+RC.GPSG_CPF_EMPLR_REF
+RC.GPSG_YEAR
+RC.MONTHCD
+RC.GPSG_SUMMARY_ONLY
+RC.END_DT
+
+    let $RC_Emplr_Ref       = &RC.GPSG_CPF_EMPLR_REF
+    let $RC_Year            = &RC.GPSG_YEAR
+    let $RC_MonthCd         = &RC.MONTHCD
+    let $Print_Summ_Only    = &RC.GPSG_SUMMARY_ONLY
+
+    do Get_Emplr_Descr
+
+FROM PS_GPSG_CPF_RUNCTL RC
+WHERE RC.OPRID       = $PRCS_OPRID
+  AND RC.RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+End-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure: Get_Emplr_Descr                                           *
+!***********************************************************************
+begin-procedure Get_Emplr_Descr
+
+Begin-SELECT
+ER.GPSG_EMPLR_DESCR
+
+    let $ER_Descr = &ER.GPSG_EMPLR_DESCR
+
+FROM PS_GPSG_ER_CPF_REF ER
+WHERE ER.GPSG_CPF_EMPLR_REF = $RC_Emplr_Ref
+End-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure: Process-Main                                              *
+!***********************************************************************
+begin-procedure Process-Main
+
+    do Get-Month-Name($RC_MonthCd, $MonthName)
+    move 'GPSGCP02' to $ReportID
+
+    move 'CPF Contributions for ' to $xxx
+    let $ReportTitle = $xxx || $MonthName || ' ' || $RC_Year
+    UpperCase $ReportTitle
+    display $ReportTitle
+
+    let #Tot_CPF   = 0
+    let #Tot_MBF   = 0
+    let #Tot_YMF   = 0
+    let #Tot_SDL   = 0
+    let #Tot_FWL   = 0
+    let #Tot_SINDA = 0
+    let #Tot_CDAC  = 0
+    let #Tot_ECF   = 0
+    let #Tot_SHARE = 0
+    let #Tot_Amt   = 0
+
+    let #Cnt_CPF   = 0
+    let #Cnt_MBF   = 0
+    let #Cnt_YMF   = 0
+    let #Cnt_SDL   = 0
+    let #Cnt_FWL   = 0
+    let #Cnt_SINDA = 0
+    let #Cnt_CDAC  = 0
+    let #Cnt_ECF   = 0
+    let #Cnt_SHARE = 0
+ alter-printer  point-size = 15 
+
+Begin-SELECT
+A.EMPLID
+A.GPSG_EE_CPF_ACCT
+!A.TERMINATION_DT
+A.GPSG_ORD_WAGES
+A.GPSG_ADD_WAGES
+A.GPSG_ER_ORD_CPF
+A.GPSG_EE_ORD_CPF
+A.GPSG_ER_ADD_CPF
+A.GPSG_EE_ADD_CPF
+A.GPSG_ER_VOL_CPF
+A.GPSG_EE_VOL_CPF
+A.GPSG_MBF
+A.GPSG_YMF
+A.GPSG_SDL
+A.GPSG_FWL
+A.GPSG_SINDA
+A.GPSG_CDAC
+A.GPSG_ECF
+A.GPSG_SHARE
+N.NAME
+Z.CITIZENSHIP_STATUS
+A.GPSG_NEW_EMPLOYEE
+
+    Let $Emplid   = &A.EMPLID
+    Let $Name     = &N.NAME
+   ! Let $TermDate = &A.TERMINATION_DT
+    Let $Employee_CPF_Ref = &A.GPSG_EE_CPF_ACCT
+    do Translate-CPF-No
+    let #Additional   = &A.GPSG_ADD_WAGES
+    let #Ordinary     = &A.GPSG_ORD_WAGES
+    let #Wages        = #Additional + #Ordinary
+    let #CPF          = &A.GPSG_ER_ORD_CPF + &A.GPSG_EE_ORD_CPF
+                                           + &A.GPSG_ER_ADD_CPF
+                                           + &A.GPSG_EE_ADD_CPF
+                                           + &A.GPSG_ER_VOL_CPF
+                                           + &A.GPSG_EE_VOL_CPF
+    let #MBF          = &A.GPSG_MBF
+    let #YMF          = &A.GPSG_YMF
+    let #SDL          = &A.GPSG_SDL
+    let #FWL          = &A.GPSG_FWL
+    let #SINDA        = &A.GPSG_SINDA
+    let #CDAC         = &A.GPSG_CDAC
+    let #ECF          = &A.GPSG_ECF
+    let #SHARE        = &A.GPSG_SHARE
+
+    if $Print_Summ_Only <> 'Y'
+       AND ((&Z.CITIZENSHIP_STATUS <> '4'
+         AND &Z.CITIZENSHIP_STATUS <> '6'
+         AND &Z.CITIZENSHIP_STATUS <> '8')
+         OR #CPF     <> 0
+         OR #MBF     <> 0
+         OR #YMF     <> 0
+         OR #SINDA   <> 0
+         OR #CDAC    <> 0
+         OR #ECF     <> 0
+         OR #SHARE   <> 0
+         OR #FWL     <> 0
+         OR #SDL     <> 0)
+
+       print $Emplid                 (+1,1,10)
+       print $Name                  (0,+3,29)  wrap 20 2   !  (0,+1,29)  wrap 20 2  
+       print $Translated_CPFNO       (0,+2,15)
+       do Fetch-Termination-Dt
+
+       print #Ordinary     (0,72,10)  edit b999999.99
+       print #Additional   (0,+2,10)  edit b999999.99
+       print #CPF          (0,+4,10)  edit b999999.99 
+       print #MBF          (0,+2,10)  edit b999999.99
+       print #YMF          (0,+2,10)  edit b999999.99
+       print #SDL          (0,+2,10)  edit b999999.99
+       print #FWL          (0,+2,10)  edit b999999.99
+       print #SINDA        (0,+2,10)  edit b999999.99
+       print #CDAC         (0,+2,10)  edit b999999.99
+       print #ECF          (0,+4,10)  edit b999999.99 
+       print #SHARE        (0,+6,10)  edit b999999.99 
+
+
+    end-if
+
+    let #Employee_count           = #Employee_count + 1
+    let #Group_A_Contribution     = #Group_A_Contribution + #CPF_Contribution
+
+    let #Tot_CPF   = #Tot_CPF + #CPF
+    let #Tot_MBF   = #Tot_MBF + #MBF
+    let #Tot_YMF   = #Tot_YMF + #YMF
+    let #Tot_SDL   = #Tot_SDL + #SDL
+    let #Tot_FWL   = #Tot_FWL + #FWL
+    let #Tot_SINDA = #Tot_SINDA + #SINDA
+    let #Tot_CDAC  = #Tot_CDAC + #CDAC
+    let #Tot_ECF   = #Tot_ECF + #ECF
+    let #Tot_SHARE = #Tot_SHARE + #SHARE
+    let #Tot_Amt   = #Tot_Amt + #CPF + #MBF + #YMF + #SDL + #FWL + #SINDA
+                                                    + #CDAC + #ECF + #SHARE
+
+    if #CPF > 0
+       let #Cnt_CPF   = #Cnt_CPF + 1
+    end-if
+
+    if #MBF > 0
+       let #Cnt_MBF  = #Cnt_MBF + 1
+    end-if
+
+    if #YMF > 0
+       let #Cnt_YMF  = #Cnt_YMF + 1
+    end-if
+
+    if #SDL > 0
+       let #Cnt_SDL   = #Cnt_SDL + 1
+    end-if
+
+    if #FWL > 0
+       let #Cnt_FWL   = #Cnt_FWL + 1
+    end-if
+
+    if #SINDA > 0
+       let #Cnt_SINDA = #Cnt_SINDA + 1
+    end-if
+
+    if #CDAC > 0
+       let #Cnt_CDAC  = #Cnt_CDAC + 1
+    end-if
+
+    if #ECF > 0
+       let #Cnt_ECF   = #Cnt_ECF + 1
+    end-if
+
+    if #SHARE > 0
+       let #Cnt_SHARE   = #Cnt_SHARE + 1
+    end-if
+
+
+FROM PS_GPSG_CPF_RPTG A,
+     PS_NAMES N,
+     PS_CITIZENSHIP Z
+WHERE A.GPSG_CPF_EMPLR_REF = $RC_Emplr_Ref
+  AND A.GPSG_YEAR = $RC_Year
+  AND A.MONTHCD = $RC_MonthCd
+  AND (A.GPSG_ER_ORD_CPF <> 0
+  OR   A.GPSG_EE_ORD_CPF <> 0
+  OR   A.GPSG_ER_ADD_CPF <> 0
+  OR   A.GPSG_EE_ADD_CPF <> 0
+  OR   A.GPSG_ER_VOL_CPF <> 0
+  OR   A.GPSG_EE_VOL_CPF <> 0
+  OR   A.GPSG_MBF        <> 0
+  OR   A.GPSG_YMF        <> 0
+  OR   A.GPSG_CDAC       <> 0
+  OR   A.GPSG_SINDA      <> 0
+  OR   A.GPSG_ECF        <> 0
+  OR   A.GPSG_SHARE      <> 0
+  OR   A.GPSG_FWL        <> 0
+  OR   A.GPSG_SDL        <> 0
+  OR   Z.CITIZENSHIP_STATUS NOT IN ('4', '6', '8'))
+  AND Z.EMPLID = A.EMPLID
+  AND (Z.DEPENDENT_ID = '00' OR Z.DEPENDENT_ID = ' ')
+  AND Z.COUNTRY = 'SGP'
+  AND N.EMPLID = A.EMPLID
+  AND N.NAME_TYPE = 'PRI'
+  AND N.EFFDT = (SELECT MAX(EFFDT)
+                 FROM PS_NAMES
+                 WHERE EMPLID = N.EMPLID
+                 AND NAME_TYPE = N.NAME_TYPE
+                 AND EFFDT <= &RC.END_DT)
+ORDER BY A.GPSG_NEW_EMPLOYEE, N.NAME
+End-SELECT
+
+
+    if $Print_Summ_Only <> 'Y'
+       new-page
+    end-if
+
+    print 'No. of Employees'         (+2,70,16)
+    print '----------------'         (+1,70,16)
+    print 'Total CPF'                (+2,10,12)
+    print #Tot_CPF                   (0,38,10)   edit b999999.99
+    print #Cnt_CPF                   (0,70,10)   edit b999999999
+    print 'Total MBF'               (+1,10,12)
+    print #Tot_MBF                   (0,38,10)   edit b999999.99
+    print #Cnt_MBF                   (0,70,10)   edit b999999999
+    print 'Total YMF'               (+1,10,12)
+    print #Tot_YMF                  (0,38,10)   edit b999999.99
+    print #Cnt_YMF                  (0,70,10)   edit b999999999
+    print 'Total SDL'                (+1,10,12)
+    print #Tot_SDL                   (0,38,10)   edit b999999.99
+    print #Cnt_SDL                   (0,70,10)   edit b999999999
+    print 'Total FWL'                (+1,10,12)
+    print #Tot_FWL                   (0,38,10)   edit b999999.99
+    print #Cnt_FWL                   (0,70,10)   edit b999999999
+    print 'Total SINDA'              (+1,10,12)
+    print #Tot_SINDA                 (0,38,10)   edit b999999.99
+    print #Cnt_SINDA                 (0,70,10)   edit b999999999
+    print 'Total CDAC'               (+1,10,12)
+    print #Tot_CDAC                  (0,38,10)   edit b999999.99
+    print #Cnt_CDAC                  (0,70,10)   edit b999999999
+    print 'Total ECF'                (+1,10,12)
+    print #Tot_ECF                   (0,38,10)   edit b999999.99
+    print #Cnt_ECF                   (0,70,10)   edit b999999999
+    print 'Total SHARE'              (+1,10,12)
+    print #Tot_SHARE                 (0,38,10)   edit b999999.99
+    print #Cnt_SHARE                 (0,70,10)   edit b999999999
+
+
+
+    print '----------'               (+1,38,10)
+    print 'Total'                    (+1,10,12)
+    print #Tot_Amt                   (0,38,10)   edit b999999.99
+    print '----------'               (+1,38,10)
+
+end-procedure
+!***********************************************************************
+! Procedure: Fetch-Termination-Dt
+!***********************************************************************
+Begin-Procedure Fetch-Termination-Dt
+ alter-printer  point-size = 15 
+
+Begin-SELECT
+T.TERMINATION_DT
+T.EMPLID
+
+    Let $TermDate = &T.TERMINATION_DT
+    if rtrim($TermDate, ' ') <> ' '
+          Move $TermDate to $TermDate
+          print $TermDate  (0,+2,10) edit 'DD/MM/YYYY'
+   End-If
+
+FROM PS_GPSG_CPF_RPTG T,
+     PS_CITIZENSHIP C
+  WHERE T.GPSG_CPF_EMPLR_REF = $RC_Emplr_Ref
+    AND T.GPSG_YEAR = $RC_Year
+    AND C.COUNTRY   = 'SGP'
+    AND T.EMPLID    = $Emplid
+    AND T.EMPLID    = C.EMPLID
+    AND (C.DEPENDENT_ID = '00' OR C.DEPENDENT_ID = ' ')
+    AND T.TERMINATION_DT IS NOT NULL
+    AND T.GPSG_NEW_EMPLOYEE <> 'Y'
+end-SELECT
+
+End-Procedure
+
+
+!***********************************************************************
+! Procedure: Translate-CPF-No                                          *
+!***********************************************************************
+Begin-Procedure Translate-CPF-No
+
+    Let $CPF_Account_No = substr($Employee_CPF_Ref,1,8)
+    Let $Official_Ref   = substr($Employee_CPF_Ref,9,1)
+
+!   Translate Official Reference from alpha code to numeric code
+!   ------------------------------------------------------------
+    Let $Translated_Ref_No =
+          translate($Official_Ref ,'ABCDEFGHIJZ','1234567890-')
+
+    if $Translated_Ref_No = ' ' or $Translated_Ref_No = ''
+       let $Translated_CPFNO = $CPF_Account_No
+    else
+       let $Translated_CPFNO = $CPF_Account_No || '/' || $Translated_Ref_No
+    end-if
+
+end-procedure
+
+!***********************************************************************
+
+#include 'datemath.sqc'     ! Date conversion procedures
+#include 'sqrtrans.sqc'     ! Translate SQR strings to given language
+#include 'prcslng.sqc'      ! Replaces getrplng.sqc
+#include 'readxlat.sqc'     ! Procedure to read values from xlattable
+#include 'reset.sqc'        ! Reset printer procedure
+#Include 'getmonnm.sqc'     !Routine to Get Name of the month
+#include 'stdapi.sqc'       ! routines for process scheduler manipulation.
+

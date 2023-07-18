@@ -1,0 +1,2106 @@
+!***********************************************************************
+!  TAX950: Produce 1042-S Forms (paper or electronic file)
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  30185800                                            !
+!                                                                      *
+!***********************************************************************
+! This program is specific to HRMS for Public Sector.                  *
+!***********************************************************************
+
+#include 'setenv.sqc'   ! set environment
+#include 'usarpt.sqc'   ! NID_COUNTRY defined
+
+begin-setup
+
+#define Layout-LSR01
+
+#ifdef Layout-LSR01
+  #ifndef OneLyotDefnd
+    #define OneLyotDefnd
+    declare-layout default
+      paper-size=(8.5,11.5)
+      orientation=PORTRAIT
+      left-margin=0
+      right-margin=0
+      top-margin=0
+      bottom-margin=0
+      line-height=8
+      char-width=4.32
+    end-declare
+  #else
+    #define MoreLyotDefnd
+  #endif
+
+ Declare-Report Form-LSR01
+  Printer-Type = HPLASERJET
+  LayOut = default
+ End-Declare
+
+ Declare-Printer HP-definition
+  Type = HPLASERJET
+  symbol-set=0U
+  point-size=12
+  pitch=12
+  font=3
+ End-Declare
+#endif
+
+#include 'setupdb.sqc'  ! Database specific setup
+
+end-setup
+
+!***********************************************************************
+begin-report
+  do Init-Report
+
+  if $Parm_AlignOnly = 'Y'
+      if #Parm_AlignCount = 0
+          let #Parm_AlignCount = 1
+      end-if
+
+      do Printer-Alignment
+  else
+      if #Parm_AlignCount <> 0
+          do Printer-Alignment
+      end-if
+
+      do Process-1042S-Company
+      do Reset
+  end-if
+
+  do Delete-Temp-Work-Records
+  do Delete-Run-Control
+
+  do Stdapi-Term
+end-report
+
+
+!***********************************************************************
+begin-procedure Init-Report
+  move 'TAX950' to $ReportID
+  move '1042-S Print and Magnetic Media File' to $ReportTitle
+  display ' '
+  display $ReportTitle
+  display ' '
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Stdapi-Init
+
+  let $Filler = ' '
+  let $Default_Amend_Rtn_Ind = 'G'
+  let $DefCh4TaxRate         = '0000'
+  let $DefCh4ExemptCd        = '15'
+
+  do Get-Parameters
+  let $Parm_FormID    = 'L'
+
+  ! define a "carriage return" character
+  let $CR = chr(13)
+  ! define a "line feed" character
+  let $LF = chr(10)
+
+  let $CRLF = $CR || $LF
+  let $CRLF = ' '
+
+  ! #Q_ counts are the count of Q records written to the file (Reconciliation Record (C)), Or
+  ! the count of the number of 1042-S forms printed.  These figures are used on the control report
+  let #Q_Count = 0
+  let #Q_Gross = 0
+  let #Q_Tax   = 0
+
+  ! #W_ count is the count of W records written to the file (End of Transmission Record (F))
+  let #W_Count = 0
+
+  do Change-Pitch (9,16,3)
+  do Setup-LSR01-Column
+
+  Create-array name=Company_Total  Size = 100
+        field=Company:Char
+        field=CompanyName:Char
+        field=FormCount:Number
+        field=GrossIncome:Number
+        field=Taxes:Number
+
+  Clear-Array name=Company_Total
+
+  if $Parm_FinalRun = 'F'
+      do Read-YearEnd-Control
+      do Update-YearEnd-Control
+      do Commit-Transaction
+  end-if
+
+  let $ValidCharacters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 &-,''/#.%'
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-Parameters
+! Description:
+!   This routine gets the run control parameters and formats them
+!   as required.
+!***********************************************************************
+begin-procedure Get-Parameters
+
+  do Select-Parameters
+
+  move #Parm_TaxYear    to $DispParmTaxYear 9999
+  move #Parm_TaxYear    to $Tax_Year 9999
+  move #Parm_TaxYear    to $IRS_Year 9999
+  let $IRS_Date = $IRS_Year || '0101'
+  do Format-DateTime($IRS_Date, $IRS_Date, {DEFCMP}, '', 'native')
+
+  let $FromClause = ''
+  let $WhereProcStatus = ''
+  let $WhereFile = ''
+  let $WhereBalance = ''
+  let $WhereEmplee = ''
+
+  move #Parm_FileNo to $DispFileNo 999
+
+  If ($Parm_FinalRun = 'T' or $Parm_FinalRun = 'I') and $Parm_ProcOptn = 'S'
+      let $FromClause  = ', PS_RC_PROC_1042_EE SE'
+      let $WhereEmplee = 'AND SE.OPRID = ' || '''' || $Prcs_OprID || '''' || ' ' ||
+                         'AND SE.RUN_CNTL_ID = ' || '''' || $Prcs_Run_Cntl_ID || '''' || ' ' ||
+                         'AND SE.EMPLID = TB.EMPLID'
+  end-if
+
+  If $Parm_FinalRun = 'R'
+      let $WhereProcStatus = 'AND TB.PY_PROC_STATUS = ' || '''' || 'C' || ''''
+      let $WhereFile       = 'AND TB.PY_FILE_NO = ' || $DispFileNo
+  end-if
+
+  If $Parm_FinalRun = 'I'
+      let $WhereProcStatus = 'AND TB.PY_PROC_STATUS = ' || '''' || 'C' || ''''
+  end-if
+
+  If $Parm_FinalRun = 'F' or $Parm_FinalRun = 'T'
+      let $WhereProcStatus = 'AND TB.PY_PROC_STATUS IN (' || '''' || 'I' || '''' || ', ' ||
+                                                             '''' || 'L' || '''' || ', ' ||
+                                                             '''' || 'O' || '''' || ', ' ||
+                                                             '''' || 'R' || '''' || ', ' ||
+                                                             '''' || 'U' || '''' || ')'
+      let $WhereBalance = 'AND ((TB.PY_AMEND_NO = 0 AND (TB.TXGRS_1042_YTD <> 0 OR TB.WH_ALLOW_YTD <> 0 OR TB.TAX_1042_YTD <> 0 OR TB.TAX1042_REFUND <> 0)) OR TB.PY_AMEND_NO > 0)'
+  end-if
+
+  If $Parm_Amend = 'Y'
+      let $Media_Rtn_Mode = '1'
+      let $Amend_Rtn_Ind  = $Default_Amend_Rtn_Ind
+  Else
+      let $Media_Rtn_Mode = '0'
+      let $Amend_Rtn_Ind  = ' '
+  end-if
+
+  if $Parm_AlignOnly = ' '
+      let $Parm_AlignOnly = 'N'
+  end-if
+
+  evaluate $Parm_FinalRun
+      when = 'R'
+      when = 'F'
+           let $Media_Final_Run = '0'
+           let $Media_Test_Run = '    '
+           break
+      when-other
+           let $Media_Final_Run = '0'
+           let $Media_Test_Run = 'TEST'
+  end-evaluate
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Select-Parameters
+! Description:
+!***********************************************************************
+begin-procedure Select-Parameters
+
+begin-SELECT
+
+RC_PROC_1042.TAX_YEAR
+RC_PROC_1042.TRANSMITTER
+RC_PROC_1042.PY_1042S_AMEND
+RC_PROC_1042.HP_1042_FINAL_RUN
+RC_PROC_1042.MEDIA_1042
+RC_PROC_1042.HP_1042S_FORM_ID
+RC_PROC_1042.PY_FILE_NO
+RC_PROC_1042.ALIGN_COUNT
+RC_PROC_1042.ALIGN_ONLY
+RC_PROC_1042.REG_SELECT_PROC
+
+FROM PS_RC_PROC_1042 RC_PROC_1042
+WHERE RC_PROC_1042.OPRID       = $Prcs_OprID
+  AND RC_PROC_1042.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-SELECT
+
+  let #Parm_TaxYear       = &RC_PROC_1042.TAX_YEAR
+  let $Parm_Transmitter   = ltrim(rtrim(&RC_PROC_1042.TRANSMITTER, ' '), ' ')
+  let $Parm_Amend         = ltrim(rtrim(&RC_PROC_1042.PY_1042S_AMEND, ' '), ' ')
+  let $Parm_FinalRun      = ltrim(rtrim(&RC_PROC_1042.HP_1042_FINAL_RUN, ' '), ' ')
+  let $Parm_Media         = ltrim(rtrim(&RC_PROC_1042.MEDIA_1042, ' '), ' ')
+  let $Parm_PrtFormID     = ltrim(rtrim(&RC_PROC_1042.HP_1042S_FORM_ID, ' '), ' ')
+  let #Parm_FileNo        = &RC_PROC_1042.PY_FILE_NO
+  let #Parm_AlignCount    = &RC_PROC_1042.ALIGN_COUNT
+  let $Parm_AlignOnly     = ltrim(rtrim(&RC_PROC_1042.ALIGN_ONLY, ' '), ' ')
+  let $Parm_ProcOptn      = ltrim(rtrim(&RC_PROC_1042.REG_SELECT_PROC, ' '), ' ')
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Printer-Alignment
+! Description:
+!***********************************************************************
+begin-procedure Printer-Alignment
+
+  let $Align_FormID = 'X X X X X X X X X X'
+  let $Align_Amt1   = '999,999,999'
+  let $Align_Amt2   = '999,999'
+  let $Align_Name1  = 'XXXXXXXXXXXXXXXXXXXX'
+  let $Align_Name2  = 'XXXXXXXXXXXXXXXXXXXXXXXXX'
+  let $Align_Char   = 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+  let #AlignPageCnt = 0
+  do Printer-Alignment-LSR01
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Printer-Alignment-LSR01
+! Description:
+!***********************************************************************
+begin-procedure Printer-Alignment-LSR01
+
+  while #AlignPageCnt < #Parm_AlignCount
+
+      let #Line1 = 11
+      do Printer-Align-Page-LSR01
+
+      new-page
+      add 1   to #AlignPageCnt
+  end-while
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Printer-Align-Page-LSR01
+! Description:
+!***********************************************************************
+begin-procedure Printer-Align-Page-LSR01
+
+  do Setup-LSR01-Lines
+  do Print-Align-Page
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Print-Align-Page
+! Description:
+!***********************************************************************
+begin-procedure Print-Align-Page
+
+  print $Align_FormID (#LineAmended, #ColFormID)      !Unique Form ID
+  print 'X'           (#LineAmended, #ColAmended)     !Amend
+  print '9'           (#LineAmended, #ColAmendNo)     !Amendment No
+  print 'X'           (#LineBox3   , #ColBox3)        !box 3
+  print $Align_Amt2   (#LineBox5   , #ColBox5)        !box 5
+  print 'XX'          (#LineBox3a  , #ColBox3a)       !box 3a
+  print 'XX'          (#LineBox4a  , #ColBox4a)       !box 4a
+  print $Align_Amt2   (#LineBox6   , #ColBox6)        !box 6
+  print 'XX'          (#LineBox1   , #ColBox1)        !box 1
+  print $Align_Amt2   (#LineBox2   , #ColBox2)        !box 2
+  print '99 99'       (#LineBox3b  , #ColBox3b)       !box 3b
+  print $Align_Amt2   (#LineBox7a  , #ColBox7a)       !box 7a
+  print $Align_Amt2   (#LineBox10  , #ColBox10)       !box 10
+  print $Align_Amt2   (#LineBox9   , #ColBox9)        !box 9
+  print 'XXXXXXXXX'   (#LineBox12a , #ColBox12a)      !box 12a
+  print 'XX'          (#LineBox12b , #ColBox12b)      !box 12b
+  print $Align_Name2  (#LineBox12d , #ColBox12d)      !box 12d
+  print $Align_Char   (#LineBox12h1, #ColBox12h)      !box 12h
+  print $Align_Char   (#LineBox12h2, #ColBox12h)      !box 12h
+  print $Align_Char   (#LineBox12i , #ColBox12i)      !box 12i
+  print 'XXXXXXXXX'   (#LineBox13e , #ColBox13e)      !box 13e
+  print 'XX'          (#LineBox13f , #ColBox13f)      !box 13f
+  print $Align_Name2  (#LineBox13a , #ColBox13a)      !box 13a
+  print 'XXX'         (#LineBox13b , #ColBox13b)      !box 13b
+  print $Align_Char   (#LineBox13c1, #ColBox13c)      !box 13c
+  print $Align_Char   (#LineBox13c2, #ColBox13c)      !box 13c
+  print $Align_Char   (#LineBox13d , #ColBox13d)      !box 13d
+  print $Align_Amt2   (#LineBox17a , #ColBox17a)      !box 17a
+  print 'XXXXXXXXXX'  (#LineBox17b , #ColBox17b)      !box 17b
+  print 'XXXXXXX'     (#LineBox17c , #ColBox17c)      !box 17c
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Setup-LSR01-Lines
+! Description:
+!***********************************************************************
+begin-procedure Setup-LSR01-Lines
+
+  let #LineAmended   = #Line1 + 1
+  let #LineBox1      = #Line1 + 5
+  let #LineBox2      = #Line1 + 5
+  let #LineBox3      = #Line1 + 2
+  let #LineBox3a     = #Line1 + 4
+  let #LineBox3b     = #Line1 + 5
+  let #LineBox4a     = #Line1 + 4
+  let #LineBox5      = #Line1 + 7
+  let #LineBox6      = #Line1 + 8
+  let #LineBox7a     = #Line1 + 10
+  let #LineBox10     = #Line1 + 23
+  let #LineBox9      = #Line1 + 20
+  let #LineBox12a    = #Line1 + 29
+  let #LineBox12b    = #Line1 + 29
+  let #LineBox12d    = #Line1 + 32
+  let #LineBox12h1   = #Line1 + 41
+  let #LineBox12h2   = #Line1 + 42
+  let #LineBox12i    = #Line1 + 44
+  let #LineBox13e    = #Line1 + 4
+  let #LineBox13f    = #Line1 + 2
+  let #LineBox13a    = #Line1 + 47
+  let #LineBox13b    = #Line1 + 47
+  let #LineBox13c1   = #Line1 + 50
+  let #LineBox13c2   = #Line1 + 51
+  let #LineBox13d    = #Line1 + 53
+  let #LineBox17a    = #Line1 + 47
+  let #LineBox17b    = #Line1 + 47
+  let #LineBox17c    = #Line1 + 47
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Setup-LSR01-Column
+! Description:
+!***********************************************************************
+begin-procedure Setup-LSR01-Column
+
+  let #ColFormID     = 28
+  let #ColAmended    = 72
+  let #ColAmendNo    = 84
+  let #ColBox1       = 9
+  let #ColBox2       = 16
+  let #ColBox3       = 60
+  let #ColBox3a      = 44
+  let #ColBox3b      = 41
+  let #ColBox4a      = 63
+  let #ColBox5       = 30
+  let #ColBox6       = 30
+  let #ColBox7a      = 30
+  let #ColBox10      = 30
+  let #ColBox9       = 30
+  let #ColBox12a     = 14
+  let #ColBox12b     = 43
+  let #ColBox12d     = 10
+  let #ColBox12h     = 8
+  let #ColBox12i     = 8
+  let #ColBox13e     = 70
+  let #ColBox13f     = 117
+  let #ColBox13a     = 8
+  let #ColBox13b     = 50
+  let #ColBox13c     = 8
+  let #ColBox13d     = 8
+  let #ColBox17a     = 75
+  let #ColBox17b     = 93
+  let #ColBox17c     = 114
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Process-1042S-Company
+! Description:
+!***********************************************************************
+begin-procedure Process-1042S-Company
+
+  let $Data_to_Report = 'N'
+  do Insert-Temp-Work-Records
+  do Commit-Transaction
+
+  do Find-Elig-Records
+  if $Data_to_Report = 'Y'
+
+      if $Parm_Media = 'E' or $Parm_Media = 'B'
+          do Get-Transmitter-Data
+          do Write-T-Record
+      end-if
+
+      let $First_Company = 'Y'
+      let #Comp_Cnt = 0
+
+      do Process-1042S
+
+      if $Parm_Media = 'E' or $Parm_Media = 'B'
+          do Write-F-Record
+      end-if
+  end-if
+
+  do Print-Control-Report  ! this will be printed on a new page
+
+  if $Parm_FinalRun = 'F' and $Data_to_Report = 'Y'
+      do Mark-Processed-EE
+      do Insert-File-Ctl-Record
+  end-if
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Process-1042S
+! Description:
+!***********************************************************************
+begin-procedure Process-1042S
+
+begin-SELECT DISTINCT
+TC.COMPANY
+
+  if $First_Company = 'Y'
+      let $First_Company = 'N'
+  else
+      if $Parm_Media = 'E' or $Parm_Media = 'B'
+          do Write-C-Record
+      end-if
+
+      Put $ProcCompany
+          $Company_Name
+          #Q_Count
+          #Q_Gross
+          #Q_Tax
+      Into Company_Total(#Comp_Cnt)
+           Company
+           CompanyName
+           FormCount
+           GrossIncome
+           Taxes
+
+      add 1 to #Comp_Cnt
+  end-if
+
+  let $ProcCompany = ltrim(rtrim(&TC.COMPANY, ' '), ' ')
+  do Get-Company-Data
+
+  if $Parm_Media = 'E' or $Parm_Media = 'B'
+      do Write-W-Record
+  end-if
+
+  ! reset totals
+  let #Q_Count = 0
+  let #Q_Gross = 0
+  let #Q_Tax   = 0
+
+  do Process-1042S-Employee
+
+FROM PS_R_TAX950 TC
+WHERE TC.TAX_YEAR = #Parm_TaxYear
+ORDER BY TC.COMPANY
+end-SELECT
+
+  if $Parm_Media = 'E' or $Parm_Media = 'B'
+      do Write-C-Record
+  end-if
+
+  Put $ProcCompany
+      $Company_Name
+      #Q_Count
+      #Q_Gross
+      #Q_Tax
+  Into Company_Total(#Comp_Cnt)
+       Company
+       CompanyName
+       FormCount
+       GrossIncome
+       Taxes
+  add 1 to #Comp_Cnt
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Process-1042S-Employee
+! Description:
+!***********************************************************************
+begin-procedure Process-1042S-Employee
+
+begin-SELECT DISTINCT
+EMP.EMPLID
+EMP.PY_EE_SEQ_NO
+
+   let $Proc_EmplID  = ltrim(rtrim(&EMP.EMPLID, ' '), ' ')
+   let #Proc_EESeqNo = &EMP.PY_EE_SEQ_NO
+   do Get-Employee-Data
+
+   do Process-1042S-Data
+
+FROM PS_R_TAX950 EMP
+WHERE EMP.TAX_YEAR = #Parm_TaxYear
+ORDER BY EMP.EMPLID, EMP.PY_EE_SEQ_NO
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Process-1042S-Data
+! Description:
+!***********************************************************************
+begin-procedure Process-1042S-Data
+
+   let $Save_Country      = ' '
+
+begin-SELECT
+TX.PY_FORM_ID
+TX.PY_AMEND_NO
+XREF.COUNTRY
+XREF.IRS_INCOME_CD_1042
+XREF.TAX_RT
+XREF.INCOME_CD_1042
+XREF.COUNTRY_CD_1042
+TX.TXGRS_1042_YTD
+TX.WH_ALLOW_YTD
+TX.EXEMPT_CD_1042
+TX.TAX_1042_YTD
+TX.TAX1042_REFUND
+TX.STATE
+TX.EMPLOYER_ID_SWT
+TX.TAX_YTD
+TX.IRS_EXEMPT_CD_1042
+
+   let #UniqueFormID          = &TX.PY_FORM_ID
+   let #AmendmentNo           = &TX.PY_AMEND_NO
+   let $Save_Country          = &XREF.COUNTRY
+   let $Exempt_CountryCd      = &XREF.COUNTRY_CD_1042
+   let $Save_Income_Cd_1042   = &XREF.IRS_INCOME_CD_1042
+   let #Save_Tax_Rt           = &XREF.TAX_RT
+   let #TxGrs_1042_YTD        = &TX.TXGRS_1042_YTD
+   let #WH_Allow_YTD          = &TX.WH_ALLOW_YTD
+   let #Tax_1042_YTD          = &TX.TAX_1042_YTD
+   let $Save_Exempt_Cd_1042   = &TX.IRS_EXEMPT_CD_1042
+   let #Tax1042_Refund        = &TX.TAX1042_REFUND
+   let #State_Tax_Withholding = &TX.TAX_YTD
+   let $State_Tax_Number      = &TX.EMPLOYER_ID_SWT
+   let $State_For_Withholding = &TX.STATE
+
+   do Format-Data
+
+   if $Parm_Media = 'P' or $Parm_Media = 'B'
+       do Print-Form
+   end-if
+
+   if $Parm_Media = 'E' or $Parm_Media = 'B'
+       do Write-Q-Record
+   end-if
+
+  ! totals for control report
+  add 1 to #Q_Count
+  let #Gross_Income    = round(#TxGrs_1042_YTD,0)
+  let #Tax_Amt         = round(#Tax_1042_YTD,0)
+  if #Gross_Income > 0
+     add #Gross_Income to #Q_Gross
+  end-if
+  if #Tax_Amt > 0
+     add #Tax_Amt      to #Q_Tax
+  end-if
+
+FROM PS_R_TAX950 TW, PS_PY_1042S_YE_TAX TX, PS_PY_1042S_XREF XREF
+WHERE TW.TAX_YEAR     = #Parm_TaxYear
+  AND TW.COMPANY      = $ProcCompany
+  AND TW.EMPLID       = $Proc_EmplID
+  AND TW.PY_EE_SEQ_NO = #Proc_EESeqNo
+  AND TW.TAX_YEAR     = TX.TAX_YEAR
+  AND TW.PY_FORM_ID   = TX.PY_FORM_ID
+  AND TW.PY_AMEND_NO  = TX.PY_AMEND_NO
+  AND TX.TAX_YEAR     = XREF.TAX_YEAR
+  AND TX.PY_FORM_ID   = XREF.PY_FORM_ID
+ORDER BY XREF.COUNTRY,
+         XREF.IRS_INCOME_CD_1042,
+         XREF.TAX_RT
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Print-Form
+! Description:
+!   This procedure prints out all data onto the form.
+!***********************************************************************
+begin-procedure Print-Form
+
+  move #UniqueFormID             to $UniqueFormID  0999999999
+  let $Prt_FormID = ''
+  let #i = 1
+  while #i < 10
+      let $Prt_FormID = $Prt_FormID || substr($UniqueFormID, #i, 1) || ' '
+      let #i = #i + 1
+  end-while
+  let $Prt_FormID = $Prt_FormID || substr($UniqueFormID, 10, 1)
+
+  move #AmendmentNo              to $Prt_AmendNo 9
+
+  let $Prt_Income_Code           = $Save_Income_Cd_1042
+  let $Prt_Exempt_Code           = $Exempt_Cd_1042
+  let #Prt_Gross_Income          = round(#TxGrs_1042_YTD,0)
+  let #Prt_Withholding_Allowance = round(#WH_Allow_YTD,0)
+  let #Prt_Net_Income            = round(#Net_Income,0)
+  let #Prt_Tax_Amount            = round(#Tax_1042_YTD,0)
+  let #Prt_Refund_Amount         = round(#Tax1042_Refund,0)
+  let #Prt_State_Income_Tax      = round(#State_Tax_Withholding,0)
+  let $Prt_Federal_EIN           = $Federal_EIN
+  let $Prt_Company_Name          = $Company_Name
+  let $Prt_Company_Addr1         = $Company_Address1
+  let $Prt_Company_Addr2         = $Company_Address2
+  let $Prt_R_TIN                 = $R_TIN
+  let $Prt_R_Exempt_Country_Code = $Exempt_CountryCd
+  let $Prt_R_Addr1               = $R_Address1
+  let $Prt_R_Addr2               = $R_Address2
+  let $Prt_State_Tax_Number      = $State_Tax_Number
+  let $Prt_State_Name            = $State_For_Withholding
+
+  if #Prt_Gross_Income < 0
+      let #Prt_Gross_Income = 0
+  end-if
+  if #Prt_Withholding_Allowance < 0
+      let #Prt_Withholding_Allowance = 0
+  end-if
+  if #Prt_Net_Income < 0
+      let #Prt_Net_Income = 0
+  end-if
+  if #Prt_Tax_Amount < 0
+      let #Prt_Tax_Amount = 0
+  end-if
+  if #Prt_Refund_Amount < 0
+      let #Prt_Refund_Amount = 0
+  end-if
+  if #Prt_State_Income_Tax < 0
+      let #Prt_State_Income_Tax = 0
+  end-if
+
+  !set box 10 (total withholding credit) to be the same as box 7a (Fed tax withheld)
+  let #Prt_Total_Tax_Credit = #Prt_Tax_Amount
+
+  let $Prt_Company_CityState = ''
+  if $Company_City <> ''
+      let $Prt_Company_CityState = $Company_City || ','
+  end-if
+  if $Company_State <> ''
+      let $Prt_Company_CityState = $Prt_Company_CityState || $Company_State || ','
+  end-if
+  let #Len = length($Prt_Company_CityState)
+  if #Len > 0
+      let $Prt_Company_CityState = substr($Prt_Company_CityState, 1, #Len - 1)
+  end-if
+
+  if $Company_Postal <> ''
+     let $Prt_Company_CityState_Postal = $Prt_Company_CityState || ' ' || $Company_Postal
+  else
+     let $Prt_Company_CityState_Postal = $Prt_Company_CityState
+  end-if
+
+  let $Prt_R_CityStateCountry = ''
+  if $R_City <> ''
+      let $Prt_R_CityStateCountry = $R_City || ','
+  end-if
+  if $R_State <> ''
+      let $Prt_R_CityStateCountry = $Prt_R_CityStateCountry || $R_State || ','
+  end-if
+  if $R_Country <> ''
+      let $Prt_R_CityStateCountry = $Prt_R_CityStateCountry || $R_Country || ','
+  end-if
+  let #Len = length($Prt_R_CityStateCountry)
+  if #Len > 0
+      let $Prt_R_CityStateCountry = substr($Prt_R_CityStateCountry, 1, #Len - 1)
+  end-if
+
+  if $R_PostalCode <> ''
+     let $Prt_R_CityStateCountry_Postal = $Prt_R_CityStateCountry || ' ' || $R_PostalCode
+  else
+     let $Prt_R_CityStateCountry_Postal = $Prt_R_CityStateCountry
+  end-if
+
+  let #Prt_Tax_Rate = #Save_Tax_Rt * 100
+  let $Prt_R_Name  = substr($R_Name,1,30)  !maximum space for recipient name
+
+  let #Line1 = 11
+  do Setup-LSR01-Lines
+  do Print-Form-1042s
+
+  new-page
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Print-Form-1042s
+!***********************************************************************
+begin-procedure Print-Form-1042s
+
+  if #Prt_Tax_Rate = 0
+      let $Prt_Tax_Rate = '00 00'
+  else
+      move #Prt_Tax_Rate to $Prt_Tax_Rate   09.99
+      let $Prt_Tax_Rate = Replace($Prt_Tax_Rate, '.', ' ')
+  end-if
+
+  print $Prt_FormID                    (#LineAmended, #ColFormID)                   !Unique Form ID
+  If $Parm_Amend = 'Y'
+      print 'X'                        (#LineAmended, #ColAmended)                  !box Amended
+  end-if
+  if #AmendmentNo > 0
+      print $Prt_AmendNo               (#LineAmended, #ColAmendNo)                  !Amendment No
+  end-if
+
+  print $Prt_Income_Code               (#LineBox1   , #ColBox1)                     !box 1
+  print #Prt_Gross_Income              (#LineBox2   , #ColBox2) edit 999,999        !box 2
+  print '3'                            (#LineBox3   , #ColBox3)                     !box 3
+  print $Prt_Exempt_Code               (#LineBox3a  , #ColBox3a)                    !box 3a
+  print $Prt_Tax_Rate                  (#LineBox3b  , #ColBox3b)                    !box 3b
+  print $DefCh4ExemptCd                (#LineBox4a  , #ColBox4a)                    !box 4a
+
+  if #Prt_Withholding_Allowance <> 0
+      print #Prt_Withholding_Allowance (#LineBox5   , #ColBox5) edit 999,999        !box 5
+  end-if
+  if #Prt_Net_Income <> 0
+      print #Prt_Net_Income            (#LineBox6   , #ColBox6) edit 999,999        !box 6
+  end-if
+  print #Prt_Tax_Amount                (#LineBox7a  , #ColBox7a) edit 999,999       !box 7a
+  print #Prt_Total_Tax_Credit          (#LineBox10  , #ColBox10) edit 999,999       !box 10
+  if #Prt_Refund_Amount <> 0
+      print #Prt_Refund_Amount         (#LineBox9   , #ColBox9)   edit 999,999      !box 9
+  end-if
+  print $Prt_Federal_EIN               (#LineBox12a , #ColBox12a)                   !box 12a
+  print $Ch3_StatusCd                  (#LineBox12b , #ColBox12b)                   !box 12b
+  print $Prt_Company_Name              (#LineBox12d , #ColBox12d)                   !box 12d
+  print $Prt_Company_Addr1             (#LineBox12h1, #ColBox12h)                   !box 12h
+  print $Prt_Company_Addr2             (#LineBox12h2, #ColBox12h)                   !box 12h
+  print $Prt_Company_CityState_Postal  (#LineBox12i , #ColBox12i)                   !box 12i
+  print $Prt_R_TIN                     (#LineBox13e , #ColBox13e)                   !box 13e
+  print '16'                           (#LineBox13f , #ColBox13f)                   !box 13f
+  print $Prt_R_Name                    (#LineBox13a , #ColBox13a)                   !box 13a
+  print $Prt_R_Exempt_Country_Code     (#LineBox13b , #ColBox13b)                   !box 13b
+  print $Prt_R_Addr1                   (#LineBox13c1, #ColBox13c)                   !box 13c
+  print $Prt_R_Addr2                   (#LineBox13c2, #ColBox13c)                   !box 13c
+  print $Prt_R_CityStateCountry_Postal (#LineBox13d , #ColBox13d)                   !box 13d
+  if #Prt_State_Income_Tax > 0
+      print #Prt_State_Income_Tax      (#LineBox17a , #ColBox17a) edit 999,999,999  !box 17a
+      print $Prt_State_Tax_Number      (#LineBox17b , #ColBox17b)                   !box 17b
+      print $Prt_State_Name            (#LineBox17c , #ColBox17c)                   !box 17c
+  end-if
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Write-T-Record
+! Description:
+!   This procedure writes a "T" record to the electronic file.  The "T"
+!   record is the beginning-of-file record and is only written once
+!   per file.
+!***********************************************************************
+begin-procedure Write-T-Record
+
+  let #File_Number  = 0
+  let #Record_Count = 0
+
+  do Open-File
+
+  let #Record_Seq   = 1
+  move #Record_Seq   to   $Record_Seq   09999999
+
+  move $Contact_Name to $RecT_Contact_Name
+  let $OutString = ''
+  do Validate-String ($ValidCharacters, $RecT_Contact_Name, $OutString)
+  let $RecT_Contact_Name = $OutString
+
+  move $Company_Name to $RecT_Company_Name
+  let $OutString = ''
+  do Validate-String ($ValidCharacters, $RecT_Company_Name, $OutString)
+  let $RecT_Company_Name = $OutString
+
+  move $Company_Address1 to $RecT_Company_Address1
+  let $OutString = ''
+  do Validate-String ($ValidCharacters, $RecT_Company_Address1, $OutString)
+  let $RecT_Company_Address1 = $OutString
+
+  write 1 from
+                               !  position    length
+    'T':1                      !    1-   1        1
+    $Tax_Year:4                !    2-   5        4
+    $Federal_EIN:9             !    6-  14        9
+    $RecT_Company_Name:40      !   15-  54       40
+    $RecT_Company_Address1:40  !   55-  94       40
+    $Company_City:20           !   95- 114       20
+    $Company_Media_State:2     !  115- 116        2
+    $Company_Media_Prov:2      !  117- 118        2
+    $Company_Media_Country:2   !  119- 120        2
+    $Company_Media_Postal:9    !  121- 129        9
+    $RecT_Contact_Name:40      !  130- 169       40
+    $Contact_Phone:20          !  170- 189       20
+    $Parm_TTC:5                !  190- 194        5
+    $Media_Test_Run:4          !  195- 198        4
+    $Filler:1                  !  199- 199        1   <--- Prior Year Indicator
+    $Filler:811                !  200-1010      811   <--- Reserved
+    $Record_Seq:8              ! 1011-1018        8
+    $CRLF:2                    ! 1019-1020        2
+
+  ! total for file size
+  add 1 to #Record_Count
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Write-W-Record
+! Description:
+!   This procedure writes a "W" record to the electronic file.  A "W"
+!   record is a withholder agent (company) record, written once
+!   per company.
+!
+!***********************************************************************
+begin-procedure Write-W-Record
+
+  let #Record_Seq   = #Record_Seq + 1
+  move #Record_Seq   to   $Record_Seq   09999999
+
+  move $Contact_Name to $RecW_Contact_Name
+  let $OutString = ''
+  do Validate-String ($ValidCharacters, $RecW_Contact_Name, $OutString)
+  let $RecW_Contact_Name = $OutString
+
+  move $Dept_Title to $RecW_Dept_Title
+  let $OutString = ''
+  do Validate-String ($ValidCharacters, $RecW_Dept_Title, $OutString)
+  let $RecW_Dept_Title = $OutString
+
+  move $Company_Name to $RecW_Company_Name
+  let $OutString = ''
+  do Validate-String ($ValidCharacters, $RecW_Company_Name, $OutString)
+  let $RecW_Company_Name = $OutString
+
+  move $Company_Address1 to $RecW_Company_Address1
+  let $OutString = ''
+  do Validate-String ($ValidCharacters, $RecW_Company_Address1, $OutString)
+  let $RecW_Company_Address1 = $OutString
+
+  move $Company_Address2 to $RecW_Company_Address2
+  let $OutString = ''
+  do Validate-String ($ValidCharacters, $RecW_Company_Address2, $OutString)
+  let $RecW_Company_Address2 = $OutString
+
+  write 1 from
+                               !  position  length
+    'W':1                      !    1-   1      1
+    $Media_Rtn_Mode            !    2-   2      1
+    '0':1                      !    3-   3      1   <--- Pro Rata Basis Reporting
+    $Federal_EIN:9             !    4-  12      9
+    '0':1                      !   13-  13      1   <--- WithHolding Agent's EIN Indicator
+    $RecW_Company_Name:40      !   14-  53     40
+    $Filler:40                 !   54-  93     40   <--- WithHolding Agent's Name Line 2
+    $Filler:40                 !   94- 133     40   <--- WithHolding Agent's Name Line 3
+    $RecW_Company_Address1:40  !  134- 173     40
+    $RecW_Company_Address2:40  !  174- 213     40
+    $Company_City:40           !  214- 253     40
+    $Company_Media_State:2     !  254- 255      2
+    $Company_Media_Prov:2      !  256- 257      2
+    $Company_Media_Country:2   !  258- 259      2
+    $Company_Media_Postal:9    !  260- 268      9
+    $Tax_Year:4                !  269- 272      4
+    $RecW_Contact_Name:45      !  273- 317     45
+    $RecW_Dept_Title:45        !  318- 362     45
+    $Contact_Phone:20          !  363- 382     20
+    $Media_Final_Run:1         !  383- 383      1
+    '3':1                      !  384- 384      1   <--- Withholding Indicator (3 = report under Ch 3)
+    $Filler:19                 !  385- 403     19   <--- Withholding Agent's GIIN
+    $Filler:129                !  404- 532    129   <--- Reserved
+    $Ch3_StatusCd:2            !  533- 534      2   <--- Chapter 3 Status Code
+    $Ch3_StatusCd:2            !  535- 536      2   <--- Chapter 4 Status Code
+    $Filler:273                !  537- 809    273   <--- Reserved
+    $Amend_Rtn_Ind:1           !  810- 810      1
+    $Filler:22                 !  811- 832     22   <--- Withholding Agent's Foreign Tax Identification No
+    $Filler:178                !  833-1010    178   <--- Reserved
+    $Record_Seq:8              ! 1011-1018      8
+    $CRLF:2                    ! 1019-1020      2
+
+  ! total for file size
+  add 1 to #Record_Count
+
+  ! total for F record
+  add 1 to #W_Count
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Write-C-Record
+! Description:
+!   This procedure writes a "C" record to the electronic file.  The
+!   "C" record is the Reconciliation summary record of each withholding agent.
+!***********************************************************************
+begin-procedure Write-C-Record
+
+  let #Record_Seq   = #Record_Seq + 1
+  move #Record_Seq   to   $Record_Seq   09999999
+
+  let #Q_Media_Gross = round(#Q_Gross,0)
+  let #Q_Media_Tax   = round(#Q_Tax,0)
+
+  move #Q_Count        to $Q_Count        09999999
+  move #Q_Media_Gross  to $Q_Media_Gross  099999999999999
+  move #Q_Media_Tax    to $Q_Media_Tax    099999999999999
+
+  write 1 from
+                               !  position   length
+    'C':1                      !    1-   1       1
+    $Q_Count:8                 !    2-   9       8
+    $Filler:6                  !   10-  15       6   <--- Reserved
+    $Q_Media_Gross:15          !   16-  30      15
+    $Q_Media_Tax:15            !   31-  45      15
+    $Filler:965                !   46-1010     965   <--- Reserved
+    $Record_Seq:8              ! 1011-1018       8
+    $CRLF:2                    ! 1019-1020       2
+
+  ! total for file size
+  add 1 to #Record_Count
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Write-F-Record
+! Description:
+!   This procedure writes a "F" record to the electronic file.  The
+!   "F" record is an end-of-file record, written only once per file.
+!***********************************************************************
+begin-procedure Write-F-Record
+
+  move #W_Count to $W_Count 099
+  move #File_Number to $File_Number 099
+
+  let #Record_Seq   = #Record_Seq + 1
+  move #Record_Seq   to   $Record_Seq   09999999
+
+  write 1 from
+                               !  position   length
+    'F':1                      !    1-   1       1
+    $W_Count:3                 !    2-   4       3
+    $Filler:1006               !    5-1010    1006   <--- Reserved
+    $Record_Seq:8              ! 1011-1018       8
+    $CRLF:2                    ! 1019-1020       2
+
+    close 1
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Write-Q-Record
+! Description:
+!   This procedure writes a single "Q" record to the electronic file.
+!   Note that some of the numbers are formatted here, as the file
+!   has specific formatting requirements that are different from
+!   the hard-copy form.
+!***********************************************************************
+begin-procedure Write-Q-Record
+
+  move #UniqueFormID             to $Unique_Form_Iden  0999999999
+
+  if #AmendmentNo > 0
+      move #AmendmentNo          to $Amendment_Number  9
+  else
+      move ' '                   to $Amendment_Number
+  end-if
+
+  ! format the dollar amounts and tax rate for output to the file
+
+  let #Gross_Income    = round(#TxGrs_1042_YTD,0)
+  let #Tax_Amt         = round(#Tax_1042_YTD,0)
+
+  if #Gross_Income < 0
+      let #Gross_Income = 0
+  end-if
+  if #Tax_Amt < 0
+      let #Tax_Amt = 0
+  end-if
+
+  move #Gross_Income to $Gross_Income 099999999999
+  move #Tax_Amt      to $Tax_Amt 099999999999
+
+  let #Withholding_Amt = round(#WH_Allow_YTD,0)
+  let #Net_Income = round(#Net_Income,0)
+
+  if #Net_Income < 0
+      let #Net_Income = 0
+  end-if
+
+  if #Withholding_Amt > 0
+      move #Withholding_Amt to $Withholding_Amt 099999999999
+      move #Net_Income      to $Net_Income 099999999999
+  else
+      move 0 to $Withholding_Amt 099999999999
+      move 0 to $Net_Income 099999999999
+  end-if
+
+  let #Tax1042Refund = round(#Tax1042_Refund,0)
+  if #Tax1042Refund > 0
+      move #Tax1042Refund to $Reimbursed_Amt 099999999999
+  else
+      let $Reimbursed_Amt = '000000000000'
+  end-if
+
+  let #Tax_Rt = trunc(#Save_Tax_Rt * 10000,0)
+  move #Tax_Rt to $Tax_Rt 0999
+
+  ! zero fill if no entry
+  let #State_Tax_Amt = round(#State_Tax_Withholding,0)
+  if #State_Tax_Amt < 0
+      let #State_Tax_Amt = 0
+  end-if
+  move #State_Tax_Amt to $State_Tax_Withholding 099999999999
+
+
+  !Populate US Tax Withheld Indicator
+
+  evaluate $Save_Income_Cd_1042
+    when = '16'
+    when = '17'
+    when = '18'
+    when = '19'
+    when = '20'
+           let #Cal_TaxableGross = #TxGrs_1042_YTD - #WH_Allow_YTD
+           break
+    when-other
+           let #Cal_TaxableGross = #TxGrs_1042_YTD
+  end-evaluate
+
+  let #Cal_Tax = round(#Cal_TaxableGross * #Save_Tax_Rt, 0)
+  if #Cal_Tax < 0
+      let #Cal_Tax = 0
+  end-if
+
+  let $Withholdg_Other_Agent = '000000000000'
+  move $Tax_Amt    to  $Ttl_Withholding_Credit
+  let $R_Foreign_Tax_ID_Nbr = '                      '
+
+  let #Record_Seq   = #Record_Seq + 1
+  move #Record_Seq   to   $Record_Seq   09999999
+
+  move $R_Media_Name to $RecQ_Media_Name
+  let $OutString = ''
+  do Validate-String ($ValidCharacters, $RecQ_Media_Name, $OutString)
+  let $RecQ_Media_Name = $OutString
+
+  move $R_Address1 to $RecQ_Address1
+  let $OutString = ''
+  do Validate-String ($ValidCharacters, $RecQ_Address1, $OutString)
+  let $RecQ_Address1 = $OutString
+
+  move $R_Address2 to $RecQ_Address2
+  let $OutString = ''
+  do Validate-String ($ValidCharacters, $RecQ_Address2, $OutString)
+  let $RecQ_Address2 = $OutString
+
+  ! write the Q record
+
+  write 1 from
+                               !  position   length
+    'Q':1                      !    1-   1       1
+    $Media_Rtn_Mode            !    2-   2       1
+    '0':1                      !    3-   3       1   <--- Pro Rata Basis Reporting
+    $Save_Income_Cd_1042:2     !    4-   5       2
+    $Gross_Income:12           !    6-  17      12
+    $Withholding_Amt:12        !   18-  29      12
+    $Net_Income:12             !   30-  41      12
+    $Tax_Rt:4                  !   42-  45       4
+    $Exempt_Cd_1042:2          !   46-  47       2
+    $Exempt_CountryCd:2        !   48-  49       2   <--- Recipient's country of residence code for tax purposes
+    $DefCh4TaxRate:4           !   50-  53       4   <--- Chapter 4 Tax Rate
+    $DefCh4ExemptCd:2          !   54-  55       2   <--- Chapter 4 Exemption Code
+    $Filler:2                  !   56-  57       2   <--- Limitation on Benefits (LOB) Code
+    $Filler:2                  !   58-  59       2   <--- Reserved
+    $Reimbursed_Amt:12         !   60-  71      12   <--- Amount Repaid
+    $Filler:20                 !   72-  91      20   <--- Recipient's Account Number
+    $Filler:2                  !   92-  93       2   <--- Reserved
+    $RecQ_Media_Name:40        !   94- 133      40   <--- Recipient's Name
+    $Filler:40                 !  134- 173      40   <--- Recipient's Name Line 2
+    $Filler:40                 !  174- 213      40   <--- Recipient's Name Line 3
+    $RecQ_Address1:40          !  214- 253      40
+    $RecQ_Address2:40          !  254- 293      40
+    $R_City:40                 !  294- 333      40
+    $R_Media_State:2           !  334- 335       2
+    $R_Media_Prov:2            !  336- 337       2
+    $R_Media_Country:2         !  338- 339       2
+    $R_FrmtPostalCode:9        !  340- 348       9
+    $R_Media_TIN:9             !  349- 357       9
+    ' ':1                      !  358- 358       1   <--- Reserved
+    $Tax_Amt:12                !  359- 370      12   <--- US Tax Withheld
+    $Withholdg_Other_Agent:12  !  371- 382      12   <--- Withholding by Ohter Agent
+    $Ttl_Withholding_Credit:12 !  383- 394      12   <--- Total Withholding Credit
+    $Filler:6                  !  395- 400       6   <--- Reserved
+    $Filler:40                 !  401- 440      40   <--- NQI/Flw-Thr Name Line 1
+    $Filler:40                 !  441- 480      40   <--- NQI/Flw-Thr Name Line 2
+    $Filler:40                 !  481- 520      40   <--- NQI/Flw-Thr Name Line 3
+    $Filler:2                  !  521- 522       2   <--- Reserved
+    $Filler:40                 !  523- 562      40   <--- NQI/Flw-Thr Street Line 1
+    $Filler:40                 !  563- 602      40   <--- NQI/Flw-Thr Street Line 2
+    $Filler:40                 !  603- 642      40   <--- NQI/Flw-Thr City
+    $Filler:2                  !  643- 644       2   <--- NQI/Flw-Thr State Code
+    $Filler:2                  !  645- 646       2   <--- NQI/Flw-Thr Province
+    $Filler:2                  !  647- 648       2   <--- NQI/Flw-Thr Country Code
+    $Filler:9                  !  649- 657       9   <--- NQI/Flw-Thr Postal Code
+    $Filler:9                  !  658- 666       9   <--- NQI/Flw-Thr TIN
+    $Filler:40                 !  667- 706      40   <--- Payer's Name
+    $Filler:9                  !  707- 715       9   <--- Payer's TIN
+    $State_Tax_Withholding:12  !  716- 727      12
+    $State_Tax_Number:10       !  728- 737      10
+    $State_For_Withholding:2   !  738- 739       2
+    $Filler:21                 !  740- 760      21   <--- Special Data Entries
+    ' ':1                      !  761- 761       1   <--- Reserved
+    $R_Foreign_Tax_ID_Nbr:22   !  762- 783      22   <--- Recipient's Foreign Tax ID Number
+    '3':1                      !  784- 784       1   <--- Chapter 3 Withholding Indicator
+    ' ':1                      !  785- 785       1   <--- Chapter 4 Withholding Indicator
+    '16':2                     !  786- 787       2   <--- Recipient's Chapter 3 Status Code
+    '  ':2                     !  788- 789       2   <--- Recipient's Chapter 4 Status Code
+    ' ':1                      !  790- 790       1   <--- Tax Not Deposited with IRS Pursuant to Escrow Procedure Ind
+    $Filler:19                 !  791- 809      19   <--- Recipient's GIIN
+    $Amend_Rtn_Ind:1           !  810- 810       1
+    $Filler:8                  !  811- 818       8   <--- Recipent's Date of Birth
+    '000000000000':12          !  819- 830      12   <--- Tax Paid by Withholding Agent
+    $Filler:19                 !  831- 849      19   <--- Intermediary or FTE GIIN
+    $Filler:2                  !  850- 851       2   <--- Intermediary's or FTE's Chapter 3 Status Code
+    $Filler:2                  !  852- 853       2   <--- Intermediary's or FTE's Chapter 4 Status Code
+    $Filler:22                 !  854- 875      22   <--- Intermediary's or FTE's Foreign Tax ID Number
+    $Filler:19                 !  876- 894      19   <--- Payer's GIIN
+    $Filler:40                 !  895- 934      40   <--- Primary Withholding Agent's Name Line 1
+    $Filler:40                 !  935- 974      40   <--- Primary Withholding Agent's Name Line 2
+    $Filler:9                  !  975- 983       9   <--- Primary Withholding Agent's EIN
+    $Filler:2                  !  984- 985       2   <--- Payer's Chapter 3 Status Code
+    $Filler:2                  !  986- 987       2   <--- Payer's Chapter 4 Status Code
+    $Unique_Form_Iden:10       !  988-997       10   <--- Unique Form Identifier
+    $Amendment_Number:1        !  998-998        1   <--- Amendment Number
+    ' ':1                      !  999-999        1   <--- Withholding Occurred in a Subsequent Year with Respect to a Partnership Interest Ind
+    $Filler:11                 ! 1000-1010      11   <--- Reserved
+    $Record_Seq:8              ! 1011-1018       8
+    $CRLF:2                    ! 1019-1020       2
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-Transmitter-Data
+!***********************************************************************
+begin-procedure Get-Transmitter-Data
+
+begin-SELECT
+TRM.DESCR
+TRM.FEDERAL_EIN
+TRM.ADDRESS1
+TRM.ADDRESS2
+TRM.CITY
+TRM.STATE
+TRM.POSTAL
+TRM.COUNTRY
+TRM.COUNTRY_CD_1042
+TRM.HP_TRM_CONTACT_NM
+TRM.PY_TRM_CONTACT_PH
+TRM.TRANSMIT_CNTRL_COD
+
+  move &TRM.FEDERAL_EIN      to $Federal_EIN 099999999
+  let $Company_State         = ltrim(rtrim(&TRM.STATE, ' '), ' ')
+  let $Company_Postal        = ltrim(rtrim(&TRM.POSTAL, ' '), ' ')
+  let $Company_Country       = ltrim(rtrim(&TRM.COUNTRY, ' '), ' ')
+  let $Company_CountryCd1042 = ltrim(rtrim(&TRM.COUNTRY_CD_1042, ' '), ' ')
+
+  if $CompanyCountryCd1042 = ''
+      let $CompanyCountryCd1042 = 'OC'
+  end-if
+
+  let $Company_Name          = ltrim(rtrim(&TRM.DESCR, ' '), ' ')
+  let $Company_Address1      = ltrim(rtrim(&TRM.ADDRESS1, ' '), ' ')
+  let $Company_City          = ltrim(rtrim(&TRM.CITY, ' '), ' ')
+  let $Contact_Name          = ltrim(rtrim(&TRM.HP_TRM_CONTACT_NM, ' '), ' ')
+  let $Contact_Phone         = ltrim(rtrim(&TRM.PY_TRM_CONTACT_PH, ' '), ' ')
+  let $Parm_TTC              = ltrim(rtrim(&TRM.TRANSMIT_CNTRL_COD, ' '), ' ')
+
+  let $FormatPhone = ''
+  let #len = length($Contact_Phone)
+  let #i = 0
+  while #i < #len
+      let #i = #i + 1
+      let $PhoneDigit = substr($Contact_Phone, #i, 1)
+      if instr('0123456789', $PhoneDigit, 1) > 0
+          let $FormatPhone = $FormatPhone || $PhoneDigit
+      end-if
+  end-while
+  let $Contact_Phone = $FormatPhone
+
+  if $Company_Country = 'USA'
+      move $Company_Postal to $Temp_Postal
+      do Format-US-ZIP
+      let $Company_Media_Postal  = $Formatted_Postal
+      let $Company_Media_Country = ' '
+      let $Company_Media_State   = $Company_State
+  else
+      let $Company_Media_Postal  = '000000000'
+      let $Company_Media_State   = ' '
+      let $Company_Media_Country = $Company_CountryCd1042
+  end-if
+
+  if $Company_Country = 'CAN'
+      let $Search_Prov = $Company_State
+      do Get-CANADA-Province
+      let $Company_Media_Prov = $CANADA_Prov
+  else
+      let $Company_Media_Prov = ' '
+  end-if
+
+FROM PS_PY_1042S_YE_COM TRM
+WHERE TRM.TAX_YEAR = #Parm_TaxYear
+  AND TRM.COMPANY  = $Parm_Transmitter
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-Company-Data
+! Description:
+!   This procedure looks up data from the COMPANY table, based upon
+!   the value found in $Company_Search
+!***********************************************************************
+begin-procedure Get-Company-Data
+
+begin-SELECT
+CMP.DESCR
+CMP.FEDERAL_EIN
+CMP.ADDRESS1
+CMP.ADDRESS2
+CMP.CITY
+CMP.STATE
+CMP.POSTAL
+CMP.COUNTRY
+CMP.COUNTRY_CD_1042
+CMP.HP_CONTACT_NM_1042
+CMP.DEPT_TITLE
+CMP.PY_CONTACT_PHONE
+CMP.HP_CH3_STATUS_CD
+
+  move &CMP.FEDERAL_EIN     to $Federal_EIN 099999999
+  move &CMP.DESCR           to $Company_Name
+  move &CMP.ADDRESS1        to $Company_Address1
+  move &CMP.ADDRESS2        to $Company_Address2
+  move &CMP.CITY            to $Company_City
+  move &CMP.STATE           to $Company_State
+  move &CMP.POSTAL          to $Company_Postal
+  move &CMP.COUNTRY         to $Company_Country
+  move &CMP.COUNTRY_CD_1042 to $Company_CountryCd1042
+
+  let $Company_Name           = ltrim(rtrim($Company_Name, ' '),' ')
+  let $Company_Address1       = ltrim(rtrim($Company_Address1, ' '),' ')
+  let $Company_Address2       = ltrim(rtrim($Company_Address2, ' '),' ')
+  let $Company_City           = ltrim(rtrim($Company_City, ' '),' ')
+  let $Company_State          = ltrim(rtrim($Company_State, ' '),' ')
+  let $Company_Postal         = ltrim(rtrim($Company_Postal, ' '),' ')
+  let $Company_Country        = ltrim(rtrim($Company_Country, ' '),' ')
+  let $Company_CountryCd1042  = ltrim(rtrim($Company_CountryCd1042, ' '), ' ')
+  let $Contact_Name           = ltrim(rtrim(&CMP.HP_CONTACT_NM_1042, ' '),' ')
+  let $Dept_Title             = ltrim(rtrim(&CMP.DEPT_TITLE, ' '),' ')
+  let $Contact_Phone          = ltrim(rtrim(&CMP.PY_CONTACT_PHONE, ' '),' ')
+  let $Ch3_StatusCd           = ltrim(rtrim(&CMP.HP_CH3_STATUS_CD, ' '),' ')
+
+  let $FormatPhone = ''
+  let #len = length($Contact_Phone)
+  let #i = 0
+  while #i < #len
+      let #i = #i + 1
+      let $PhoneDigit = substr($Contact_Phone, #i, 1)
+      if instr('0123456789', $PhoneDigit, 1) > 0
+          let $FormatPhone = $FormatPhone || $PhoneDigit
+      end-if
+  end-while
+  let $Contact_Phone = $FormatPhone
+
+  if $CompanyCountryCd1042 = ''
+      let $CompanyCountryCd1042 = 'OC'
+  end-if
+
+  if $Company_Country = 'USA'
+      move $Company_Postal to $Temp_Postal
+      do Format-US-ZIP
+      let $Company_Media_Postal  = $Formatted_Postal
+
+      move $Company_Postal  to $TempZipExtsn ~~~~~~xxxx
+      if instr($Company_Postal,'-',6) = 0
+        and $TempZipExtsn <> '    '
+          let $Company_Postal = substr($Company_Postal,1,5) || '-' || substr($Company_Postal,6,4)
+      end-if
+
+      let $Company_Media_Country = ' '
+      let $Company_Media_State   = $Company_State
+  else
+      let $Company_Media_Postal  = '000000000'
+      let $Company_Media_State   = ' '
+      let $Company_Media_Country =  $Company_CountryCd1042
+  end-if
+
+  if $Company_Country = 'CAN'
+      let $Search_Prov = $Company_State
+      do Get-CANADA-Province
+      let $Company_Media_Prov = $CANADA_Prov
+  else
+      let $Company_Media_Prov = ' '
+  end-if
+
+FROM PS_PY_1042S_YE_COM CMP
+WHERE CMP.TAX_YEAR = #Parm_TaxYear
+  AND CMP.COMPANY  = $ProcCompany
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-Employee-Data
+! Description:
+!***********************************************************************
+begin-procedure Get-Employee-Data
+
+  let $R_Address1 = ''
+  let $R_Address2 = ''
+
+begin-SELECT
+PER.NAME_DISPLAY
+PER.ADDRESS1
+PER.ADDRESS2
+PER.ADDRESS3
+PER.ADDRESS4
+PER.CITY
+PER.STATE
+PER.COUNTRY
+PER.COUNTRY_CD_1042
+PER.POSTAL
+PER.TAXPAYER_ID_NO
+PER.NATIONAL_ID
+
+  let $Name          = ltrim(rtrim(&PER.NAME_DISPLAY, ' '), ' ')
+  let $Address1      = ltrim(rtrim(&PER.ADDRESS1, ' '), ' ')
+  let $Address2      = ltrim(rtrim(&PER.ADDRESS2, ' '), ' ')
+  let $Address3      = ltrim(rtrim(&PER.ADDRESS3, ' '), ' ')
+  let $Address4      = ltrim(rtrim(&PER.ADDRESS4, ' '), ' ')
+  let $City          = ltrim(rtrim(&PER.CITY, ' '), ' ')
+  let $State         = ltrim(rtrim(&PER.STATE, ' '), ' ')
+  let $Country       = ltrim(rtrim(&PER.COUNTRY, ' '), ' ')
+  let $CountryCd1042 = ltrim(rtrim(&PER.COUNTRY_CD_1042, ' '), ' ')
+  let $Postal        = ltrim(rtrim(&PER.POSTAL, ' '), ' ')
+  let $TaxPayerID    = ltrim(rtrim(&PER.TAXPAYER_ID_NO,' '),' ')
+  let $NationalID    = ltrim(rtrim(&PER.NATIONAL_ID,' '),' ')
+
+  if $Parm_Media = 'E' or $Parm_Media = 'B'
+     let $R_Media_Name = substr($Name,1,40)
+  end-if
+
+  do Rotate-Name
+  let $R_Name       = $Name
+
+  let #idx = 1
+  while #idx <= 4 and $R_Address1 = ''
+     evaluate #idx
+        when = 1
+           let $R_Address1 = $Address1
+           break
+        when = 2
+           let $R_Address1 = $Address2
+           break
+        when = 3
+           let $R_Address1 = $Address3
+           break
+        when = 4
+           let $R_Address1 = $Address4
+     end-evaluate
+     add 1 to #idx
+  end-while
+
+  if $R_Address1 <> ''
+     while #idx <= 4 and $R_Address2 = ''
+        evaluate #idx
+           when = 2
+              let $R_Address2 = $Address2
+              break
+           when = 3
+              let $R_Address2 = $Address3
+              break
+           when = 4
+              let $R_Address2 = $Address4
+        end-evaluate
+        add 1 to #idx
+     end-while
+  end-if
+
+  let $R_City    = $City
+  let $R_State   = $State
+  let $R_Country = $Country
+
+  if $Country = 'USA'
+      let $R_Media_Country = ' '
+      let $R_Rpt_Country_Name  = 'USA'
+
+      let $R_Media_State = $State
+      let $R_Media_Prov = ' '
+
+      let $Temp_Postal = $POSTAL
+      do Format-US-ZIP
+      let $R_FrmtPostalCode = $Formatted_Postal
+
+      let $R_PostalCode = $POSTAL
+      move $R_PostalCode  to $R.ZipExtsn ~~~~~~xxxx
+      if instr($R_PostalCode,'-',6) = 0
+        and $R.ZipExtsn <> '    '
+          let $R_PostalCode = substr($R_PostalCode,1,5) || '-' || substr($R_PostalCode,6,4)
+      end-if
+  else
+      let $R_Media_State = ' '
+
+      if $Country = 'CAN'
+          let $Search_Prov = $State
+          do Get-CANADA-Province
+          let $R_Media_Prov = $CANADA_Prov
+      else
+          let $R_Media_Prov = ' '
+      end-if
+
+      let $Search_Country  = $Country
+      do Get-Country-Data
+      let $R_Rpt_Country_Name  = $Country_Name
+      let $R_Media_Country     = $CountryCd1042
+
+      let $Search_Country = $Country
+      do Get-State-Name
+
+      let $R_PostalCode = $Postal
+      let $Temp_Postal  = $Postal
+      do Format-Postal
+      let $R_FrmtPostalCode = $Formatted_Postal
+  end-if
+
+  let $valid_TaxPayerID = 'Y'
+  do Validate-TaxPayerID
+
+  if length($Formatted_TaxPayerID) = 0
+      let $R_TIN       = $NationalID
+      let $R_Media_TIN = $NationalID
+  else
+      if $valid_TaxPayerID = 'Y'
+          let $R_TIN       = $TaxPayerID
+          let $R_Media_TIN = $Formatted_TaxPayerID
+      else
+          let $Invalid_TIN_Msg = 'Invalid Tax Payer ID - Employee ID = ' || $Proc_EmplID ||
+                                 ' Tax Payer ID = ' || $TaxPayerID
+          let $R_TIN       = $NationalID
+          let $R_Media_TIN = $NationalID
+      end-if
+  end-if
+
+  if $CountryCd1042 = ''
+      let $R_Country_Code = 'OC'
+  else
+      let $R_Country_Code = $CountryCd1042
+  end-if
+
+FROM PS_PY_1042S_YE_EE PER
+WHERE PER.TAX_YEAR       = #Parm_TaxYear
+  AND PER.EMPLID         = $Proc_EmplID
+  AND PER.PY_EE_SEQ_NO   = #Proc_EESeqNo
+
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Find-Elig-Records
+!***********************************************************************
+begin-procedure Find-Elig-Records
+
+begin-SELECT
+COUNT(*) &EligCount
+FROM PS_R_TAX950
+end-SELECT
+
+  if &EligCount > 0
+      let $Data_to_Report = 'Y'
+  end-if
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Validate-TaxPayerID
+!***********************************************************************
+begin-procedure Validate-TaxPayerID
+
+  let #TIN_Length = length($TaxPayerID)
+  let $Temp_TaxPayerID = ''
+  let #idx = 1
+  while #idx <= #TIN_Length and $valid_TaxPayerID = 'Y'
+      let $CheckChar = substr($TaxPayerID, #idx, 1)
+      if $CheckChar <> '-'
+          if instr('0123456789',$CheckChar,1) = 0
+              let $valid_TaxPayerID = 'N'
+          else
+              let $Temp_TaxPayerID = $Temp_TaxPayerID || $CheckChar
+          end-if
+      end-if
+      add 1 to #idx
+  end-while
+
+  let $Formatted_TaxPayerID = $Temp_TaxPayerID
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Format-Data
+! Description:
+!   This procedure formats data that is common both to the electronic
+!   file and the hard-copy form.
+!***********************************************************************
+begin-procedure Format-Data
+
+  if #Save_Tax_Rt = 0
+      let $Exempt_Cd_1042   = $Save_Exempt_Cd_1042
+  else
+      let $Exempt_Cd_1042 = '00'
+  end-if
+
+  if ($Save_Income_Cd_1042 = '16' or $Save_Income_Cd_1042 = '17') and #WH_Allow_YTD > 0
+    let #Withholding_Amt = #WH_Allow_YTD
+    let #Net_Income = #TxGrs_1042_YTD - #WH_Allow_YTD
+  else
+    let #Withholding_Amt = 0
+    let #Net_Income      = 0
+  end-if
+
+  let $Search_Country = $Save_Country
+  do Get-Country-Data
+  let $R_Country_Name = $Country_Name
+
+  if ltrim(rtrim($Exempt_CountryCd, ' '), ' ') = ''
+      let $Exempt_CountryCd = 'OC'
+  end-if
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-Country-Data
+! Description:
+!   This procedure gets the country name from the COUNTRY_TBL, based
+!   upon the value of $Search_Country.
+!***********************************************************************
+begin-procedure Get-Country-Data
+
+  let $Country_Name      = ' '
+
+begin-SELECT
+CNTY.DESCR
+
+  let $Country_Name = ltrim(rtrim(&CNTY.DESCR, ' '), ' ')
+
+FROM PS_COUNTRY_TBL CNTY
+WHERE CNTY.COUNTRY = $Search_Country
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Get-CANADA-Province
+! Description:
+!   This procedure formats the Canadian province code according to IRS
+!   standard.
+!***********************************************************************
+begin-procedure Get-CANADA-Province
+
+    evaluate $Search_Prov
+        when = 'AB'
+        when = 'BC'
+        when = 'MB'
+        when = 'NB'
+        when = 'NL'
+        when = 'NS'
+        when = 'NT'
+        when = 'ON'
+        when = 'PE'
+        when = 'SK'
+        when = 'QC'
+        when = 'NU'
+        when = 'YT'
+             let $CANADA_Prov = $Search_Prov
+             break
+        when-other
+             let $CANADA_Prov = ' '
+    end-evaluate
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Get-State-Name
+! Description:
+!   This procedure gets the state (or province) name from the
+!   STATE_NAMES_TBL.
+!***********************************************************************
+begin-procedure Get-State-Name
+
+let $StateName = $State
+
+begin-SELECT
+ST.DESCR
+  move &ST.DESCR to $StateName
+FROM PS_STATE_NAMES_TBL ST
+WHERE ST.COUNTRY = $Search_Country
+AND   ST.STATE   = $State
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Format-US-ZIP
+! Description:
+!   This procedure takes a US ZIP code and formats it as follows:
+!     If 'aaaaa', then 'aaaaa    '
+!     If 'aaaaa-bbbb', then 'aaaaabbbb'
+!     If 'aaaaabbbb', then 'aaaaabbbb' (unchanged)
+!***********************************************************************
+begin-procedure Format-US-ZIP
+
+  let $Temp_Postal = rtrim($Temp_Postal,' ')
+  let #Len = length($Temp_Postal)
+  let #Dash = instr($Temp_Postal,'-',1)
+  if #Dash > 0
+    let $Part1 = substr($Temp_Postal,1,5)
+    let $Part2 = substr($Temp_Postal,7,4)
+  else
+    if #Len = 5
+      let $Part1 = $Temp_Postal
+      let $Part2 = '    '
+    else
+      let $Part1 = substr($Temp_Postal,1,5)
+      let $Part2 = substr($Temp_Postal,6,4)
+    end-if
+  end-if
+  let $Formatted_Postal = $Part1 || $Part2
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Format-Postal
+!***********************************************************************
+begin-procedure Format-Postal
+
+  let $Temp_Postal = rtrim($Temp_Postal,' ')
+  let #Len = length($Temp_Postal)
+  let #Idx = 1
+
+  While #Idx = 1
+
+      let #Dash = instr($Temp_Postal,'-',1)
+      let #Len = length($Temp_Postal)
+      if #Dash > 0
+          let $Part1 = substr($Temp_Postal,1,(#Dash - 1))
+          let $Part2 = substr($Temp_Postal,(#Dash + 1),(#Len - #Dash))
+          let $Temp_Postal = $Part1 || $Part2
+      end-if
+
+      let #Space = instr($Temp_Postal,' ',1)
+      let #Len = length($Temp_Postal)
+      if #Space > 0
+          let $Part1 = substr($Temp_Postal,1,(#Space - 1))
+          let $Part2 = substr($Temp_Postal,(#Space + 1),(#Len - #Space))
+          let $Temp_Postal = $Part1 || $Part2
+      end-if
+
+      if #Dash = 0 and #Space = 0
+          let #Idx = #Idx + 1
+      end-if
+  End-While
+
+  let $Formatted_Postal = $Temp_Postal
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Open-File
+! Description:
+!   This procedure opens a new file for electronic output.  If
+!   the number of records written to the currently open file
+!   exceeds the maximum number that will fit (based upon the
+!   size of the diskette), the current file will be closed and
+!   a new file created, incrementing the file number by one.
+!   The file number is used as the file extension.
+!***********************************************************************
+begin-procedure Open-File
+
+  move 0 to #Record_Count
+
+  add 1 to #File_Number
+  move #File_Number to $File_Number 099
+
+  #ifdef MVS
+     let $FileID = '{IMPORTPREFIX}' || 'TAX1042'
+  #else
+     let $FileID = '{IMPORTPREFIX}' || '1042TAX'
+  #end-if
+
+  open $FileID as 1 for-writing record=1020:fixed
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Print-Control-File
+! Description:
+!   This procedure prints out control totals, which are used to fill
+!   out Form 1042.
+!***********************************************************************
+begin-procedure Print-Control-Report
+
+  move #Parm_FileNo to $DispFileNo 099
+  move #CurrFileNo  to $CurrFileNo 099
+
+  display 'Control Totals for Form 1042-S'
+  display '------------------------------'
+  display ' '
+
+  let $RunOptn = '('
+
+  if $Parm_ProcOptn = 'R'
+      let $RunOptn = $RunOptn || 'Process All Employees, '
+  else
+      let $RunOptn = $RunOptn || 'Process Selected Employees, '
+  end-if
+
+  evaluate $Parm_FinalRun
+      when = 'F'
+           let $RunOptn = $RunOptn || 'Final Run, Create Electronic file # ' || $CurrFileNo || ', '
+           break
+      when = 'I'
+           let $RunOptn = $RunOptn || 'Reissue 1042-S Form, '
+           break
+      when = 'R'
+           let $RunOptn = $RunOptn || 'Recreate 1042-S Electronic file, '
+           let $RunOptn = $RunOptn || 'File Number - ' || $DispFileNo || ', '
+           break
+      when-other
+           let $RunOptn = $RunOptn || 'Preliminary Run, '
+  end-evaluate
+
+  evaluate $Parm_Media
+      when = 'P'
+           let $RunOptn = $RunOptn || 'Filed on 1042-S Form LSR01.'
+           break
+      when = 'E'
+           let $RunOptn = $RunOptn || 'Filed Electronically.'
+           break
+      when = 'B'
+           let $RunOptn = $RunOptn || 'Filed Electronically & 1042-S Form LSR01.'
+  end-evaluate
+
+  let $RunOptn = $RunOptn || ')'
+
+  display $RunOptn
+
+  display ' '
+  display '                                            Total           Total            Total     '
+  display '  Company   Name                         1042-S Filed    Gross Income    Taxes Withheld'
+  display '  -------   --------------------------   ------------   --------------   --------------'
+
+  if $Data_to_Report = 'N'
+      display ' '
+      display '     ** No Record to Report **'
+      display ' '
+
+  else
+      let #CompIdx = 0
+      while #CompIdx < #Comp_Cnt
+
+           Get $Proc_Company
+               $Company_Name
+               #Q_Count
+               #Q_Gross
+               #Q_Tax
+           From Company_Total(#CompIdx)
+                Company
+                CompanyName
+                FormCount
+                GrossIncome
+                Taxes
+
+            let $Disp_Total = '  '
+            let $Proc_Company = ltrim($Proc_Company,' ')
+            let $Disp_Total = $Disp_Total || substr($Proc_Company,1,3)
+            let $Disp_Total = rpad($Disp_Total,12,' ')
+
+            let $Company_Name = ltrim($Company_Name,' ')
+            let $Disp_Total = $Disp_Total || substr($Company_Name,1,26)
+            let $Disp_Total = rpad($Disp_Total,42,' ')
+
+            move #Q_Count to $Q_Count 999,999,999
+            move #Q_Gross to $Q_Gross 99,999,999,999
+            move #Q_Tax   to $Q_Tax   99,999,999,999
+            let $Disp_Total = $Disp_Total || $Q_Count || '   ' || $Q_Gross || '   ' || $Q_Tax
+            display $Disp_Total
+
+            add 1 to #CompIdx
+      end-while
+  end-if
+
+end-procedure
+
+!***********************************************************************
+! Procedure:  Change-Pitch
+! Description:
+!***********************************************************************
+begin-procedure Change-Pitch (#PointSize, #PitchSize, #FontSize)
+
+  alter-printer
+    symbol-set=0U
+    point-size=#PointSize
+    pitch=#PitchSize
+    font=#FontSize
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Insert-Temp-Work-Records
+! Description:
+!***********************************************************************
+begin-procedure Insert-Temp-Work-Records
+
+  do Delete-Temp-Work-Records
+
+  let $err-statement1 = 'TAX950, Insert Error - Insert-Temp-Work-Records'
+  let $err-statement2 = 'Key Values: TABLE: PS_R_TAX950'
+
+begin-SQL
+INSERT INTO PS_R_TAX950 (TAX_YEAR,
+                         COMPANY,
+                         PY_FORM_ID,
+                         PY_AMEND_NO,
+                         EMPLID,
+                         PY_EE_SEQ_NO)
+SELECT TB.TAX_YEAR,
+       TB.COMPANY,
+       TB.PY_FORM_ID,
+       TB.PY_AMEND_NO,
+       TB.EMPLID,
+       TB.PY_EE_SEQ_NO
+FROM PS_PY_1042S_YE_TAX TB [$FromClause]
+WHERE TB.TAX_YEAR = #Parm_TaxYear
+  AND TB.TRANSMITTER = $Parm_Transmitter
+[$WhereProcStatus]
+[$WhereFile]
+[$WhereBalance]
+[$WhereEmplee]
+  AND TB.PY_AMEND_NO = (SELECT MAX(TB1.PY_AMEND_NO) FROM PS_PY_1042S_YE_TAX TB1
+                         WHERE TB1.TAX_YEAR    = TB.TAX_YEAR
+                           AND TB1.COMPANY     = TB.COMPANY
+                           AND TB1.PY_FORM_ID  = TB.PY_FORM_ID)
+end-SQL
+
+end-procedure
+
+
+
+!***********************************************************************
+! Procedure:  Read-YearEnd-Control
+! Description:
+!   This procedure read Year End Control
+!***********************************************************************
+begin-procedure Read-YearEnd-Control
+
+begin-SELECT
+PY_LAST_FILE_NO
+
+  let #lastFileNo = &PY_LAST_FILE_NO
+
+FROM PS_PY_1042S_YE_CTL
+WHERE TAX_YEAR = #Parm_TaxYear
+end-SELECT
+
+  let #CurrFileNo = #LastFileNo + 1
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Update-YearEnd-Control
+! Description:
+!   This procedure update Year End Control
+!***********************************************************************
+begin-procedure Update-YearEnd-Control
+
+  move #Parm_TaxYear    to $DispTaxYear 9999
+
+  let $err-statement1 = 'TAX950, Update Error - Update-YearEnd-Control'
+  let $err-statement2 = 'Bind Varables: TAX YEAR:'||$DispTaxYear
+
+begin-SQL on-error=Error-Display
+
+UPDATE PS_PY_1042S_YE_CTL SET PY_LAST_FILE_NO = #CurrFileNo
+WHERE TAX_YEAR = #Parm_TaxYear
+end-SQL
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Mark-Processed-EE
+! Description:
+!***********************************************************************
+begin-procedure Mark-Processed-EE
+
+  move #Parm_TaxYear    to $DispTaxYear 9999
+
+  let $err-statement1 = 'TAX950, Update Error - Mark-Processed-EE'
+  let $err-statement2 = 'Bind Varables: TAX YEAR:'||$DispTaxYear
+
+begin-SQL on-error=Error-Display
+
+UPDATE PS_PY_1042S_YE_TAX SET PY_FILE_NO = #CurrFileNo, PY_PROC_STATUS = 'C'
+WHERE TAX_YEAR = #Parm_TaxYear
+  AND EXISTS (SELECT 'X' FROM PS_R_TAX950 TMP1
+              WHERE TMP1.TAX_YEAR    = PS_PY_1042S_YE_TAX.TAX_YEAR
+                AND TMP1.PY_FORM_ID  = PS_PY_1042S_YE_TAX.PY_FORM_ID
+                AND TMP1.PY_AMEND_NO = PS_PY_1042S_YE_TAX.PY_AMEND_NO)
+end-SQL
+end-procedure
+
+
+!***********************************************************************
+! Procedure:  Insert-File-Ctl-Record
+! Description:
+!***********************************************************************
+begin-procedure Insert-File-Ctl-Record
+
+  move #Parm_TaxYear    to $DispTaxYear 9999
+  move #CurrFileNo      to $DispFileNo  999
+
+  let $err-statement1 = 'TAX950, Insert Error - Insert-File-Ctl-Record'
+  let $err-statement2 = 'Key Values: TABLE: PS_PY_1042S_FILCTL'       ||
+                         ', TAX YEAR:'           || $DispTaxYear      ||
+                         ', TRANSMITTER:'        || $Parm_Transmitter ||
+                         ', PY_FILE_NO:'         || $DispFileNo
+
+begin-SQL on-error=Error-Display
+
+INSERT INTO PS_PY_1042S_FILCTL (TAX_YEAR,
+                                TRANSMITTER,
+                                PY_FILE_NO,
+                                PY_1042S_AMEND,
+                                PY_FORM_SUBMITTED,
+                                LAST_UPDT_OPRID,
+                                LAST_UPDATE_DTM)
+                        VALUES (#Parm_TaxYear,
+                                $Parm_Transmitter,
+                                #CurrFileNo,
+                                $Parm_Amend,
+                                'Y',
+                                ' ',
+                                NULL)
+end-SQL
+end-procedure
+
+
+!***********************************************************************
+begin-procedure Delete-Temp-Work-Records
+
+  let $err-statement1 = 'TAX950, Delete Error - Delete-Temp-Work-Records'
+  let $err-statement2 = 'Key Values: TABLE: PS_R_TAX950'
+
+begin-SQL
+DELETE FROM PS_R_TAX950
+end-SQL
+
+end-procedure
+
+begin-procedure Delete-Run-Control
+
+  let $err-statement1 = 'TAX950, Delete Error - Delete-Run-Control'
+  let $err-statement2 = 'Key Values: TABLE: PS_RC_PROC_1042'
+
+begin-SQL
+DELETE FROM PS_RC_PROC_1042
+WHERE OPRID       = $Prcs_OprID
+  AND RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-SQL
+
+  let $err-statement1 = 'TAX950, Delete Error - Delete-Run-Control'
+  let $err-statement2 = 'Key Values: TABLE: PS_RC_PROC_1042_EE'
+
+begin-SQL
+DELETE FROM PS_RC_PROC_1042_EE
+WHERE OPRID       = $Prcs_OprID
+  AND RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-SQL
+
+end-procedure
+
+!**************************************************************************
+begin-procedure Validate-String($ValidCharacters, $string_in, :$string_out)
+
+  let #I = 1
+  let $Format_String = ''
+  let #In_Len = Length(Rtrim($string_in, ' '))
+
+  while #I <= #In_Len
+
+    let $Char = Substr($string_in, #I, 1)
+    let #Loc = Instr($ValidCharacters,$Char,1)
+    if #Loc > 0
+      let $Format_String =  $Format_String || $Char
+    end-if
+
+    add 1 To #I
+
+  end-while
+
+  let $string_out = $Format_String
+
+end-procedure
+
+
+!***********************************************************************
+#Include 'rotname1.sqc'  ! Rotate-Name procedure
+#Include 'readxlat.sqc'  ! Read-Translate-Table procedure
+#Include 'reset1.sqc'    ! Reset printer procedure
+#Include 'curdttim.sqc'  ! Get-Current-DateTime procedure
+#Include 'datetime.sqc'  ! Routines for date and time formatting
+#Include 'datemath.sqc'  ! Routine to perform date math
+#Include 'number.sqc'    ! Routines to format numbers
+#Include 'stdapi.sqc'    ! Update Process API
+#Include 'getbalid.sqc'  ! Get-Calendar-Year-Id
+#Include 'getaddr.sqc'   ! Get Person Current Address
+#Include 'stderror.sqc'  ! Routine for error display

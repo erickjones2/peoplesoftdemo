@@ -1,0 +1,5883 @@
+!***************************************************************************
+!  GPBRRA01: RAIS REPORT                                                   *
+!                                                                          *
+!***************************************************************************
+!                                                                          *
+!                                                                          *
+!                                                                          *
+!                                                                          *
+! This software and related documentation are provided under a             *
+! license agreement containing restrictions on use and                     *
+! disclosure and are protected by intellectual property                    *
+! laws. Except as expressly permitted in your license agreement            *
+! or allowed by law, you may not use, copy, reproduce,                     *
+! translate, broadcast, modify, license, transmit, distribute,             *
+! exhibit, perform, publish or display any part, in any form or            *
+! by any means. Reverse engineering, disassembly, or                       *
+! decompilation of this software, unless required by law for               *
+! interoperability, is prohibited.                                         *
+! The information contained herein is subject to change without            *
+! notice and is not warranted to be error-free. If you find any            *
+! errors, please report them to us in writing.                             *
+!                                                                          *
+!                                                                          *
+! Copyright (C) 1988, 2018, Oracle and/or its affiliates.                  *
+! All Rights Reserved.                                                     *
+!***************************************************************************
+!                                                                          *
+!       $Release:  HR92                                                    *
+!           $Bug:  27447891                                                *
+!                                                                          *
+!***************************************************************************
+#Include 'setenv.sqc'    !Set environment
+
+Begin-Setup
+    #include 'setupdb.sqc'
+
+    Declare-Printer   THIS_REPORT
+        Type=HPLASERJET
+        Font=3
+        Point-Size=1
+        Symbol-Set=0U     ! ASCII symbol set
+    End-Declare
+
+    Declare-Layout THIS_REPORT
+        Orientation   = Portrait
+        Top-margin    = 0.5
+        Left-margin   = 0.5
+        Right-margin  = 0.5
+        !Max-Lines    = 250
+        Char-Width    = 4      ! 7.2
+        Line-Height   = 10
+    End-Declare
+
+    Declare-Report THIS_REPORT
+        Printer-Type=HPLASERJET
+        LayOut=THIS_REPORT
+    End-Declare
+    
+End-Setup
+
+Begin-Program
+    Do Init-Report
+    Do ReportMain
+    Do Stdapi-Term
+    Do PrintTime ('Report Ended')
+    display ' '
+End-Program
+
+!***************************************************************************
+Begin-Procedure Init-Report
+#debug show 'PROCEDURE : Init-Report'
+!***************************************************************************
+    Move     'GPBRRA01' to $ReportID
+    Display  $ReportID
+    Move    'Relação Anual de Informações Sociais' to $ReportTitle1
+    Display $ReportTitle1
+    Display ' '
+    Do Init-DateTime
+    Do Init-Number
+    Do Stdapi-Init
+    Do Get-Current-DateTime
+    Do PrintTime ('Report Began')
+    Display ' '
+    display 'Ver.PUM #26'
+    Display ' '
+    Alter-Locale MONEY-SIGN = 'R$'
+    Move '1' to $ReportDateType
+    Move '1' to $Reportyear4
+End-Procedure Init-Report
+
+!***************************************************************************
+Begin-Procedure ReportMain
+#debug show 'PROCEDURE : ReportMain'
+!***************************************************************************
+    Do OpenLog
+
+    Let #FileNumber = 1
+    Create-Array name=Months Size=13
+        field = month:number
+        field = day:number
+
+    Do GetRCParameters
+    Do LoadCentralTbl
+
+        Do CreateEstabIndex2
+
+        #Debug Show 'Manual: Commit-Transaction after Create Establishments Index'
+        Do Commit-Transaction
+        #ifdef ORACLE
+            BEGIN-SQL
+                ANALYZE TABLE PS_GPBR_RAIS_E_WRK COMPUTE STATISTICS
+            END-SQL
+        #endif
+
+     Do GetCNPJRec00-09
+
+     Let $Y = $Year
+     Move #prcs_process_instance To $I '000000'
+     Do OpenFile ('RAIS', 1, $Y, $I, $Raisfile)
+     Let #Records1 = 0
+     Let #Records2 = 0
+     Let #SEQ = 0
+     Let #5MinWage = 0
+     Do GetMinWage
+     Do Get_Record00
+
+     Do Put_Record00
+     Let $TMP_CNPJ   = ''
+     Let $TMP_Prefix = ''
+     Let $Estab_CNPJ  = ''
+     Let $Estab_Prefix = ''
+
+     Do PreFillEmployeeWRK
+
+     Do ProcEstablishment2
+
+     Do Get_Record09
+     Do Put_Record09
+     Close #FileNumber
+
+    Do CloseLog
+
+    Show 'RAIS File :' $Raisfile
+    #ifdef UNIX
+       Do ConvertUnixToDOSWin($Raisfile)
+    #endif
+    Do EmptyWorkTable
+End-Procedure ReportMain
+
+!***************************************************************************
+Begin-Procedure GetRCParameters
+#debug show 'PROCEDURE : GetRCParameters'
+!***************************************************************************
+#ifdef debug
+    Show '  $Prcs_OprID            [' $Prcs_OprID ']'
+    Show '  $Prcs_Run_Cntl_ID      [' $Prcs_Run_Cntl_ID ']'
+    Show '  #prcs_process_instance [' #prcs_process_instance ']'
+    Show '  $Instance              [' $Instance ']'
+#endif
+
+Begin-Select
+COMPANY
+GPBR_YEAR_CD
+GPBR_GEN_DATE
+GPBR_ADDR_TYPE
+GPBR_DELIVERY_TYPE
+DATE_VALUE
+GPBR_CREA_NBR
+RAIS_CENTR_IND_BRA
+CENTR_ESTABID_BRA
+LANGUAGE_CD
+
+
+    Let $Company    = Rtrim(&COMPANY     , ' ')
+    Let $RC_Company = Rtrim(&COMPANY     , ' ')
+    Let $Year       = Rtrim(&GPBR_YEAR_CD, ' ')
+    Let $Addr_Type  = Rtrim(&GPBR_ADDR_TYPE, ' ')
+    Let $D_Type     = Rtrim(&GPBR_DELIVERY_TYPE, ' ')
+    Let $RCDate     = Rtrim(&DATE_VALUE, ' ')
+    let $GenDate    = rtrim(&GPBR_GEN_DATE, ' ')
+    
+    let $Centr_Ind   = rtrim(&RAIS_CENTR_IND_BRA, ' ')
+    Let $Centr_Comp  = Rtrim(&COMPANY     , ' ')
+    Let $Centr_Estab = Rtrim(&CENTR_ESTABID_BRA, ' ')
+
+    Let $CalBeginDt = $Year  || '-01-01'
+    Let $CalEndDt   = $Year  || '-12-31'
+    Do Convert-from-DTU-Date($CalBeginDt ,$CalBeginDt1)
+    Do Convert-from-DTU-Date($CalEndDt   ,$CalEndDt1)
+
+    Do FillMonthArray
+
+    Let $R00-Rectification = $D_Type
+
+    Do Convert-To-DTU-Date($RCDate, $ReportDate)
+    Do DTU-Parse-Date($ReportDate, #Year, #Month, #Day)
+    Move #Year  To $YYYY '0000'
+    Move #Month To $MM   '00'
+    Move #Day   To $DD   '00'
+    Let $DateR = $DD || $MM || $YYYY
+
+    Do Convert-To-DTU-Date($GenDate, $GenDate)
+    Do DTU-Parse-Date($GenDate, #Y, #M, #D)
+    Move #Y To $Y '0000'
+    Move #M To $M '00'
+    Move #D To $D '00'
+    Let $R00-GenerationDate = $D || $M || $Y
+    Let $R00-CREA = &GPBR_CREA_NBR
+
+    If  $R00-Rectification = '1'
+        Let $R00-Rectification-Date = $DateR
+    Else
+        Let $R00-Rectification-Date = '00000000'
+    End-If
+    let $LangCD = rtrim(&LANGUAGE_CD, ' ')
+
+    #Ifdef debug
+        show ''
+        show '  $Company               [' $Company ']'
+        show '  $Year                  [' $Year ']'
+        show '  $Addr_Type             [' $Addr_Type ']'
+        show '  $D_Type                [' $D_Type ']'
+        show '  $RCDate                [' $RCDate ']'
+        show '  $CalBeginDt            [' $CalBeginDt ']'
+        show '  $CalEndDt              [' $CalEndDt ']'
+        show '  $CalBeginDt1           [' $CalBeginDt1 ']'
+        show '  $CalEndDt1             [' $CalEndDt1 ']'
+        show '  $R00-Rectification     [' $R00-Rectification ']'
+        show '  $R00-Rectification-Date[' $R00-Rectification-Date ']'
+        show '  $R00-GenerationDate    [' $R00-GenerationDate ']'
+        show '  $R00-CREA              [' $R00-CREA ']'
+        show '  $LangCD                [' $LangCD ']'
+        show '  $Centr_Ind             [' $Centr_Ind ']'
+        show '  $Centr_Comp            [' $Centr_Comp ']'
+        show '  $Centr_Estab           [' $Centr_Estab ']'
+    #endif
+
+FROM PS_GPBR_RC_RAIS01
+WHERE OPRID = $Prcs_OprID
+AND RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+End-Select
+
+!Variable used in procedure WorkedMonths
+!Only needs read one time.
+
+Begin-Select
+PIN_NUM
+
+    Let #13_fm_acumula_mes = &PIN_NUM
+
+FROM PS_GP_PIN
+WHERE PIN_NM = '13 FM ACUMULA MES'
+End-Select
+
+End-Procedure GetRCParameters
+
+!***************************************************************************
+Begin-Procedure CreateEstabIndex2
+#debug show 'PROCEDURE : CreateEstabIndex2'
+!***************************************************************************
+    #debug show '  $Centr_Ind             ' $Centr_Ind
+    #debug show '  $Centr_Comp            ' $Centr_Comp
+    #debug show '  $Centr_Estab           ' $Centr_Estab
+
+!***** Create Establishment Index
+
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS_E_WRK (
+PROCESS_INSTANCE,
+ESTABID,
+COMP_INS_TYPE_BRA,
+GPBR_CNPJ,
+RAIS_ESTAB_PRE_BRA,
+COMPANY,
+
+OWNER_NUM_BRA,
+ESTAB_TYPE_CD_BRA,
+PAT_OPTION_BRA,
+OWN_SERV_PCT_BRA,
+KIT_ADMIN_PCT_BRA,
+MEAL_AGR_PCT_BRA,
+TRANS_MEAL_PCT_BRA,
+FOOD_BSKT_PCT_BRA,
+TIMECARD_TYPE_BRA,
+RAIS_DT_BRA,
+FEED_AGR_PCT_BRA,
+CAGED_CLOSEACT_BRA,
+CAT_DATE_BRA,
+!Contributions
+ASSOC_UNION_ID_BRA,
+ASSOC_UNION_AM_BRA,
+GPBR_ASSOC_CNPJ,
+CONTR_UNION_ID_BRA,
+CONTR_UNION_AM_BRA,
+GPBR_CONTR_CNPJ,
+ASSIS_UNION_ID_BRA,
+ASSIS_UNION_AM_BRA,
+GPBR_ASSIS_CNPJ,
+CONFE_UNION_ID_BRA,
+CONFE_UNION_AM_BRA,
+GPBR_CONFE_CNPJ,
+WO_ACTIVITIES_BRA,
+DESCR30,
+ADDRESS1,
+NUM1,
+ADDRESS2,
+ADDRESS3,
+ADDRESS4,
+POSTAL,
+COUNTY_CD_BRA,
+CITY,
+STATE,
+PHONE,
+GPBR_CNAE,
+LEGAL_TYPE,
+SIMPLES_OPTION_BRA,
+GPBR_CEI,
+RAIS_RESP_ID_BRA,
+DESCR1)
+SELECT
+#prcs_process_instance,
+A.ESTABID,
+A.COMP_INS_TYPE_BRA,
+CASE
+  WHEN A.COMP_INS_TYPE_BRA = '20'
+       AND ES2.ESTAB_ID_BRA IS NULL
+       THEN ' '
+  WHEN A.COMP_INS_TYPE_BRA = '20'
+      AND ES2.ESTAB_ID_BRA IS NOT NULL
+       THEN ES2.ESTAB_ID_BRA
+
+  ELSE ES.ESTAB_ID_BRA
+END,
+A.RAIS_ESTAB_PRE_BRA,
+C.COMPANY,
+A.OWNER_NUM_BRA,
+A.ESTAB_TYPE_CD_BRA,
+A.PAT_OPTION_BRA,
+A.OWN_SERV_PCT_BRA,
+A.KIT_ADMIN_PCT_BRA,
+A.MEAL_AGR_PCT_BRA,
+A.TRANS_MEAL_PCT_BRA,
+A.FOOD_BSKT_PCT_BRA,
+A.TIMECARD_TYPE_BRA,
+A.RAIS_DT_BRA,
+A.FEED_AGR_PCT_BRA,
+A.CAGED_CLOSEACT_BRA,
+A.CAT_DATE_BRA,
+!Contributions
+A.ASSOC_UNION_ID_BRA,
+A.ASSOC_UNION_AM_BRA,
+' ',
+A.CONTR_UNION_ID_BRA,
+A.CONTR_UNION_AM_BRA,
+' ',
+A.ASSIS_UNION_ID_BRA,
+A.ASSIS_UNION_AM_BRA,
+' ',
+A.CONFE_UNION_ID_BRA,
+A.CONFE_UNION_AM_BRA,
+' ',
+A.WO_ACTIVITIES_BRA,
+C.DESCR,
+C.ADDRESS1,
+C.NUM1,
+C.ADDRESS2,
+C.ADDRESS3,
+C.ADDRESS4,
+C.POSTAL,
+A.COUNTY_CD_BRA,
+C.CITY,
+C.STATE,
+CASE
+  WHEN P.PHONE IS NULL THEN ' '
+  ELSE P.PHONE
+END,
+CASE
+  WHEN CN.ESTAB_ID_BRA IS NULL THEN ' '
+  ELSE CN.ESTAB_ID_BRA
+END,
+COMP.LEGAL_TYPE,
+COMPB.SIMPLES_OPTION_BRA,
+CASE
+  WHEN A.COMP_INS_TYPE_BRA = '20'
+       THEN ES3.ESTAB_ID_BRA
+  ELSE ' '
+END,
+A.RAIS_RESP_ID_BRA,
+CASE
+WHEN CNL.DESCR IS NOT NULL
+  THEN CNL.DESCR
+ELSE
+  COMP.DESCR
+END
+
+FROM PS_GPBR_CENT_ESTAB CENT
+     ,(PS_ESTAB_TBL_BRA A LEFT OUTER JOIN PS_ESTAB_ID_BRA ES
+                                         ON ES.ESTABID = A.ESTABID
+                                         AND ES.EFFDT = A.EFFDT
+                                         AND ES.COUNTRY = 'BRA'
+                                         AND ES.ESTAB_ID_TYPE_BRA = 'CNPJ'
+                         LEFT OUTER JOIN PS_ESTAB_ID_BRA CN
+                                         ON CN.ESTABID = A.ESTABID
+                                         AND CN.EFFDT = A.EFFDT
+                                         AND CN.COUNTRY = 'BRA'
+                                         AND CN.ESTAB_ID_TYPE_BRA = 'CNAE'
+                        LEFT OUTER JOIN PS_ESTAB_ID_BRA ES3
+                                         ON ES3.ESTABID = A.ESTABID
+                                         AND ES3.EFFDT = A.EFFDT
+                                         AND ES3.COUNTRY = 'BRA'
+                                         AND A.COMP_INS_TYPE_BRA = '20'
+                                         AND ES3.ESTAB_ID_TYPE_BRA = 'CEI'
+                        LEFT OUTER JOIN PS_ESTAB_ID_BRA ES2
+                                         ON ES2.ESTABID = A.ESTAB_ASOC_BRA
+                                         AND ES2.EFFDT = A.EFFDT
+                                         AND ES2.COUNTRY = 'BRA'
+                                         AND ES2.ESTAB_ID_TYPE_BRA = 'CNPJ')
+     ,PS_ESTAB_TBL C     LEFT OUTER JOIN PS_ESTAB_PHONE P
+                                         ON P.ESTABID = C.ESTABID
+                                         AND P.EFFDT = C.EFFDT
+                                         AND P.PHONE_TYPE = 'BUSN'
+     ,PS_COMPANY_TBL COMP  LEFT OUTER JOIN PS_COMPNY_TBL_LANG CNL
+                                         ON CNL.COMPANY = COMP.COMPANY
+                                         AND CNL.LANGUAGE_CD = 'POR'
+                                         AND CNL.EFFDT = COMP.EFFDT
+     ,PS_COMPANY_TBL_BRA COMPB
+WHERE CENT.PROCESS_INSTANCE = #prcs_process_instance
+AND CENT.CENTR_ESTABID_BRA = $Centr_Estab
+AND A.ESTABID = CENT.ESTABID
+AND A.EFFDT = (SELECT MAX(EFFDT)
+                      FROM PS_ESTAB_TBL_BRA
+                      WHERE ESTABID = A.ESTABID
+                      AND EFFDT <= $CalEndDt1)
+AND C.ESTABID = A.ESTABID
+AND C.EFFDT   = A.EFFDT
+AND COMP.COMPANY = C.COMPANY
+AND COMP.EFFDT = (SELECT MAX(ICOMP.EFFDT)
+                      FROM PS_COMPANY_TBL ICOMP
+                      WHERE ICOMP.COMPANY = COMP.COMPANY
+                        AND ICOMP.EFFDT <= $CalEndDt1)
+AND COMPB.COMPANY = COMP.COMPANY
+AND COMPB.EFFDT = (SELECT MAX(ICOMPB.EFFDT)
+                      FROM PS_COMPANY_TBL_BRA ICOMPB
+                      WHERE ICOMPB.COMPANY = COMPB.COMPANY
+                        AND ICOMPB.EFFDT <= $CalEndDt1)
+End-SQL
+
+!****** Update Union CNPJs
+!** Associative
+Begin-SQL
+UPDATE PS_GPBR_RAIS_E_WRK
+SET GPBR_ASSOC_CNPJ = (SELECT U.UNION_CNPJ_BRA
+                         FROM PS_UNION_TBL_BRA U
+                         WHERE U.UNION_CD = PS_GPBR_RAIS_E_WRK.ASSOC_UNION_ID_BRA
+                         AND U.EFFDT      = (SELECT MAX(EFFDT)
+                                             FROM PS_UNION_TBL_BRA
+                                             WHERE UNION_CD = U.UNION_CD
+                                             AND EFFDT     <= $CalEndDt1)
+                         )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND ASSOC_UNION_ID_BRA <> ' '
+AND EXISTS (SELECT 'X'
+            FROM PS_UNION_TBL_BRA U
+                         WHERE U.UNION_CD = PS_GPBR_RAIS_E_WRK.ASSOC_UNION_ID_BRA
+                         AND U.EFFDT      = (SELECT MAX(EFFDT)
+                                             FROM PS_UNION_TBL_BRA
+                                             WHERE UNION_CD = U.UNION_CD
+                                             AND EFFDT     <= $CalEndDt1)
+            )
+End-SQL
+
+!** Contrib
+Begin-SQL
+UPDATE PS_GPBR_RAIS_E_WRK
+SET GPBR_CONTR_CNPJ = (SELECT U.UNION_CNPJ_BRA
+                         FROM PS_UNION_TBL_BRA U
+                         WHERE U.UNION_CD = PS_GPBR_RAIS_E_WRK.CONTR_UNION_ID_BRA
+                         AND U.EFFDT      = (SELECT MAX(EFFDT)
+                                             FROM PS_UNION_TBL_BRA
+                                             WHERE UNION_CD = U.UNION_CD
+                                             AND EFFDT     <= $CalEndDt1)
+                         )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND CONTR_UNION_ID_BRA <> ' '
+AND EXISTS (SELECT 'X'
+            FROM PS_UNION_TBL_BRA U
+                         WHERE U.UNION_CD = PS_GPBR_RAIS_E_WRK.CONTR_UNION_ID_BRA
+                         AND U.EFFDT      = (SELECT MAX(EFFDT)
+                                             FROM PS_UNION_TBL_BRA
+                                             WHERE UNION_CD = U.UNION_CD
+                                             AND EFFDT     <= $CalEndDt1)
+            )
+End-SQL
+
+!** Assist
+Begin-SQL
+UPDATE PS_GPBR_RAIS_E_WRK
+SET GPBR_ASSIS_CNPJ = (SELECT U.UNION_CNPJ_BRA
+                         FROM PS_UNION_TBL_BRA U
+                         WHERE U.UNION_CD = PS_GPBR_RAIS_E_WRK.ASSIS_UNION_ID_BRA
+                         AND U.EFFDT      = (SELECT MAX(EFFDT)
+                                             FROM PS_UNION_TBL_BRA
+                                             WHERE UNION_CD = U.UNION_CD
+                                             AND EFFDT     <= $CalEndDt1)
+                         )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND ASSIS_UNION_ID_BRA <> ' '
+AND EXISTS (SELECT 'X'
+            FROM PS_UNION_TBL_BRA U
+                         WHERE U.UNION_CD = PS_GPBR_RAIS_E_WRK.ASSIS_UNION_ID_BRA
+                         AND U.EFFDT      = (SELECT MAX(EFFDT)
+                                             FROM PS_UNION_TBL_BRA
+                                             WHERE UNION_CD = U.UNION_CD
+                                             AND EFFDT     <= $CalEndDt1)
+            )
+End-SQL
+
+!** Confed
+Begin-SQL
+UPDATE PS_GPBR_RAIS_E_WRK
+SET GPBR_CONFE_CNPJ = (SELECT U.UNION_CNPJ_BRA
+                         FROM PS_UNION_TBL_BRA U
+                         WHERE U.UNION_CD = PS_GPBR_RAIS_E_WRK.CONFE_UNION_ID_BRA
+                         AND U.EFFDT      = (SELECT MAX(EFFDT)
+                                             FROM PS_UNION_TBL_BRA
+                                             WHERE UNION_CD = U.UNION_CD
+                                             AND EFFDT     <= $CalEndDt1)
+                         )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND CONFE_UNION_ID_BRA <> ' '
+AND EXISTS (SELECT 'X'
+            FROM PS_UNION_TBL_BRA U
+                         WHERE U.UNION_CD = PS_GPBR_RAIS_E_WRK.CONFE_UNION_ID_BRA
+                         AND U.EFFDT      = (SELECT MAX(EFFDT)
+                                             FROM PS_UNION_TBL_BRA
+                                             WHERE UNION_CD = U.UNION_CD
+                                             AND EFFDT     <= $CalEndDt1)
+            )
+End-SQL
+
+
+!** Update Addresses if Run Control indicates use Responsible Mail Address
+If $Addr_Type = '1'
+
+#IFDEF MICROSOFT !Block for MS SQL Databases
+
+Begin-SQL
+UPDATE PS_GPBR_RAIS_E_WRK
+SET ADDRESS1      = (SELECT A.ADDRESS1
+                     FROM PS_ADDRESSES A
+                     WHERE A.ADDRESS_TYPE = 'BUSN'
+                     AND A.EFF_STATUS = 'A'
+                     AND A.EFFDT = (SELECT MAX(EFFDT) FROM PS_ADDRESSES WHERE EMPLID = A.EMPLID
+                     AND EFF_STATUS = A.EFF_STATUS AND EFFDT <= $CalEndDt1) ),
+    NUM1          = (SELECT A.NUM1
+                     FROM PS_ADDRESSES A
+                     WHERE A.ADDRESS_TYPE = 'BUSN'
+                     AND A.EFF_STATUS = 'A'
+                     AND A.EFFDT = (SELECT MAX(EFFDT) FROM PS_ADDRESSES WHERE EMPLID = A.EMPLID
+                     AND EFF_STATUS = A.EFF_STATUS AND EFFDT <= $CalEndDt1) ),
+    ADDRESS2      = (SELECT A.ADDRESS2
+                     FROM PS_ADDRESSES A
+                     WHERE A.ADDRESS_TYPE = 'BUSN'
+                     AND A.EFF_STATUS = 'A'
+                     AND A.EFFDT = (SELECT MAX(EFFDT) FROM PS_ADDRESSES WHERE EMPLID = A.EMPLID
+                     AND EFF_STATUS = A.EFF_STATUS AND EFFDT <= $CalEndDt1) ),
+    ADDRESS3      = (SELECT A.ADDRESS3
+                     FROM PS_ADDRESSES A
+                     WHERE A.ADDRESS_TYPE = 'BUSN'
+                     AND A.EFF_STATUS = 'A'
+                     AND A.EFFDT = (SELECT MAX(EFFDT) FROM PS_ADDRESSES WHERE EMPLID = A.EMPLID
+                     AND EFF_STATUS = A.EFF_STATUS AND EFFDT <= $CalEndDt1) ),
+    ADDRESS4      = (SELECT A.ADDRESS4
+                     FROM PS_ADDRESSES A
+                     WHERE A.ADDRESS_TYPE = 'BUSN'
+                     AND A.EFF_STATUS = 'A'
+                     AND A.EFFDT = (SELECT MAX(EFFDT) FROM PS_ADDRESSES WHERE EMPLID = A.EMPLID
+                     AND EFF_STATUS = A.EFF_STATUS AND EFFDT <= $CalEndDt1) ),
+    POSTAL        = (SELECT A.POSTAL
+                     FROM PS_ADDRESSES A
+                     WHERE A.ADDRESS_TYPE = 'BUSN'
+                     AND A.EFF_STATUS = 'A'
+                     AND A.EFFDT = (SELECT MAX(EFFDT) FROM PS_ADDRESSES WHERE EMPLID = A.EMPLID
+                     AND EFF_STATUS = A.EFF_STATUS AND EFFDT <= $CalEndDt1) ),
+    CITY          = (SELECT A.CITY
+                     FROM PS_ADDRESSES A
+                     WHERE A.ADDRESS_TYPE = 'BUSN'
+                     AND A.EFF_STATUS = 'A'
+                     AND A.EFFDT = (SELECT MAX(EFFDT) FROM PS_ADDRESSES WHERE EMPLID = A.EMPLID
+                     AND EFF_STATUS = A.EFF_STATUS AND EFFDT <= $CalEndDt1) ),
+    STATE         = (SELECT A.STATE
+                     FROM PS_ADDRESSES A
+                     WHERE A.ADDRESS_TYPE = 'BUSN'
+                     AND A.EFF_STATUS = 'A'
+                     AND A.EFFDT = (SELECT MAX(EFFDT) FROM PS_ADDRESSES WHERE EMPLID = A.EMPLID
+                     AND EFF_STATUS = A.EFF_STATUS AND EFFDT <= $CalEndDt1) )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS (SELECT 'X' FROM PS_ADDRESSES AD
+            WHERE AD.EMPLID     = PS_GPBR_RAIS_E_WRK.RAIS_RESP_ID_BRA
+            AND AD.ADDRESS_TYPE = 'BUSN'
+            AND AD.EFF_STATUS   = 'A'
+            AND AD.EFFDT        = (SELECT MAX(EM2.EFFDT)
+                                   FROM PS_ADDRESSES EM2
+                                   WHERE EM2.EMPLID   = AD.EMPLID
+                                   AND EM2.EFF_STATUS = AD.EFF_STATUS
+                                   AND EM2.EFFDT     <= $CalEndDt1))
+End-SQL
+
+
+Begin-SQL
+UPDATE PS_GPBR_RAIS_E_WRK
+SET COUNTY_CD_BRA = (SELECT EC.CODE_CITY_BRA
+                     FROM PS_CODE_CITY_BRA EC
+                     WHERE EC.STATE = PS_GPBR_RAIS_E_WRK.STATE
+                     AND EC.CITY    = PS_GPBR_RAIS_E_WRK.CITY)
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS (SELECT 'X'
+            FROM PS_CODE_CITY_BRA EC
+            WHERE EC.STATE = PS_GPBR_RAIS_E_WRK.STATE
+            AND EC.CITY    = PS_GPBR_RAIS_E_WRK.CITY)
+End-SQL
+
+#EndIf
+
+#IFNDEF MICROSOFT !Block for Non - MS SQL Databases
+
+Begin-SQL
+UPDATE PS_GPBR_RAIS_E_WRK
+SET (ADDRESS1
+,NUM1
+,ADDRESS2
+,ADDRESS3
+,ADDRESS4
+,POSTAL
+,CITY
+,STATE
+,COUNTY_CD_BRA) = (
+SELECT
+ EM.ADDRESS1
+,EM.NUM1
+,EM.ADDRESS2
+,EM.ADDRESS3
+,EM.ADDRESS4
+,EM.POSTAL
+,EM.CITY
+,EM.STATE
+,EC.CODE_CITY_BRA
+FROM PS_ADDRESSES EM,
+PS_CODE_CITY_BRA EC
+WHERE EM.EMPLID        = PS_GPBR_RAIS_E_WRK.RAIS_RESP_ID_BRA
+AND EM.ADDRESS_TYPE    = 'BUSN'
+AND EM.EFF_STATUS      = 'A'
+AND EM.EFFDT           = (SELECT MAX(EM2.EFFDT)
+                          FROM PS_ADDRESSES EM2
+                          WHERE EM2.EMPLID   = EM.EMPLID
+                          AND EM2.EFF_STATUS = EM.EFF_STATUS
+                          AND EM2.EFFDT     <= $CalEndDt1)
+AND EC.STATE           = EM.STATE
+AND EC.CITY            = EM.CITY)
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS (SELECT 'X' FROM PS_ADDRESSES AD
+            WHERE AD.EMPLID     = PS_GPBR_RAIS_E_WRK.RAIS_RESP_ID_BRA
+            AND AD.ADDRESS_TYPE = 'BUSN'
+            AND AD.EFF_STATUS   = 'A'
+            AND AD.EFFDT        = (SELECT MAX(EM2.EFFDT)
+                                   FROM PS_ADDRESSES EM2
+                                   WHERE EM2.EMPLID   = AD.EMPLID
+                                   AND EM2.EFF_STATUS = AD.EFF_STATUS
+                                   AND EM2.EFFDT     <= $CalEndDt1))
+End-SQL
+#EndIf
+
+End-If
+End-Procedure CreateEstabIndex2
+
+!***************************************************************************
+Begin-Procedure GetLegalNameOption
+#debug show 'PROCEDURE : GetLegalNameOption'
+!***************************************************************************
+Let $LegalNameOption = ''
+Begin-Select
+LN1.GPBR_CIALEGAL_NM
+
+    Let $LegalNameOption = Rtrim(&LN1.GPBR_CIALEGAL_NM, ' ')
+    #debug Show '  $LegalNameOption       [' $LegalNameOption ']'
+
+FROM PS_GPBR_PARM_RAIS LN1
+WHERE LN1.COMPANY = $Company
+AND LN1.EFFDT = (SELECT MAX(LN2.EFFDT)
+                FROM PS_GPBR_PARM_RAIS LN2
+                WHERE LN2.COMPANY =LN1.COMPANY
+                AND LN2.EFFDT <= $CalEndDt1)
+End-Select
+End-Procedure GetLegalNameOption
+
+!***************************************************************************
+Begin-Procedure GetEstabLegalNameOption
+#debug show 'PROCEDURE : GetEstabLegalNameOption'
+!***************************************************************************
+Let $LegalNameOption = ''
+Begin-Select
+TT.LEGAL_ENT_TYPE_BRA
+
+    Let $LglEstbNmOptn = Rtrim(&TT.LEGAL_ENT_TYPE_BRA, ' ')
+    #debug Show '  $LglEstbNmOptn        [' $LglEstbNmOptn  '] for Estabid ' $EstabID_R1
+
+FROM PS_ESTAB_TBL_BRA TT
+   WHERE TT.ESTABID = $EstabID_R1
+     AND TT.EFFDT = (SELECT MAX(ITT.EFFDT)
+                        FROM PS_ESTAB_TBL_BRA ITT
+                        WHERE ITT.ESTABID = TT.ESTABID
+                          AND ITT.EFFDT <= $CalEndDt1)
+End-Select
+End-Procedure GetEstabLegalNameOption
+
+!***************************************************************************
+Begin-Procedure GetCNPJRec00-09
+#debug show 'PROCEDURE : GetCNPJRec00-09'
+!***************************************************************************
+Begin-Select
+MN.GPBR_CNPJ
+MN.RAIS_ESTAB_PRE_BRA
+
+    Let $R00-PrefixFirstEstab = Rtrim(&MN.RAIS_ESTAB_PRE_BRA, ' ')
+    Let $R00-InscriFirstEstab = Rtrim(&MN.GPBR_CNPJ, ' ')
+
+FROM PS_GPBR_RAIS_E_WRK MN
+WHERE MN.PROCESS_INSTANCE = #prcs_process_instance
+AND MN.GPBR_CNPJ = (SELECT MIN(GPBR_CNPJ)
+                     FROM PS_GPBR_RAIS_E_WRK
+                     WHERE PROCESS_INSTANCE = MN.PROCESS_INSTANCE)
+AND MN.RAIS_ESTAB_PRE_BRA = (SELECT MIN(RAIS_ESTAB_PRE_BRA)
+                            FROM PS_GPBR_RAIS_E_WRK
+                            WHERE PROCESS_INSTANCE = MN.PROCESS_INSTANCE
+                            AND GPBR_CNPJ = MN.GPBR_CNPJ)
+End-Select
+
+#debug show '$R00-PrefixFirstEstab   [' $R00-PrefixFirstEstab ']'
+#debug show '$R00-InscriFirstEstab   [' $R00-InscriFirstEstab ']'
+
+End-Procedure GetCNPJRec00-09
+
+!***************************************************************************
+Begin-Procedure PreFillEmployeeWRK
+#debug show 'PROCEDURE : PreFillEmployeeWRK'
+!***************************************************************************
+#Debug Show ' '
+#Debug Show 'PS_GPBR_RAIS_WRK '
+#Debug Show '  MAIN INSERT '
+Do PrintTime (' ')
+Begin-SQL
+INSERT
+INTO PS_GPBR_RAIS_WRK
+  (
+    PROCESS_INSTANCE  ,
+    GPBR_CNPJ         ,
+    RAIS_ESTAB_PRE_BRA,
+    ESTABID           ,
+    DATE1             ,
+    DATE2             ,
+    EMPLID            ,
+    EMPL_RCD          ,
+    GP_PAYGROUP       ,
+    CAL_RUN_ID        ,
+    CAL_ID            ,
+    ORIG_CAL_RUN_ID   ,
+    RSLT_SEG_NUM      ,
+    COMPANY           ,
+    DEPTID            ,
+    JOBCODE           ,
+    DESCR254          ,
+    NATIONAL_ID       ,
+    STD_HOURS         ,
+    STD_HRS_FREQUENCY ,
+    CBO_CD_BRA        ,
+    GPBR_TOT_AMT      ,
+    CONT_SAL_TYPE_BRA ,
+    EMPL_CLASS        ,
+    INDEXNAME         ,
+    CALC_RSLT_VAL     ,
+    GPBR_RAIS_SEGS    ,
+    ADD_FLD1_NAME     ,
+    ADD_FLD2_NAME     ,
+    ADD_FLD3_NAME     ,
+    ADD_FLD4_NAME     ,
+    NAME_TYPE_SHORT   ,
+    GPBR_DATE1        ,
+    GPBR_AMT_01       ,
+    BIRTHDATE         ,
+    NID_CPF_BRA       ,
+    NID_CTPS_BRA      ,
+    GPBR_CTPS_ID      ,
+    EFFDT_FROM        ,
+    EFFSEQ_WRK        ,
+    HIRE_DT           ,
+    TERMINATION_DT    ,
+    ACTION            ,
+    ACTION_REASON     ,
+    RAIS_REASON_BRA   ,
+    GPBR_ACTION_02    ,
+    GPBR_ACTION_RSN_02,
+    GPBR_ACTION_03    ,
+    GPBR_ACTION_RSN_03,
+    MONTHLY_RT        ,
+    COMPRATE          ,
+    GPBR_WEEKLY_HOURS ,
+    NATIONALITY_CD_BRA,
+    EDUCATION_LVL_BRA ,
+    ETHNIC_GRP_CD     ,
+    UNION_CD_ALT_BRA  ,
+    UNION_CNPJ_BRA    ,
+    SEX               ,
+    CODE_CITY_BRA     ,
+    FULL_PART_TIME
+  )
+SELECT
+  #prcs_process_instance ,
+  WK.GPBR_CNPJ ,
+  WK.RAIS_ESTAB_PRE_BRA ,
+  N.ESTABID ,
+  P.SEG_BGN_DT ,
+  P.SEG_END_DT ,
+  N.EMPLID ,
+  N.EMPL_RCD ,
+  N.GP_PAYGROUP,
+  N.CAL_RUN_ID,
+  N.CAL_ID,
+  N.ORIG_CAL_RUN_ID,
+  N.RSLT_SEG_NUM,
+  WK.COMPANY,
+  J1.DEPTID,
+  J1.JOBCODE,
+  ' ' ,
+  CASE WHEN NID.NATIONAL_ID IS NULL THEN ' '
+    ELSE NID.NATIONAL_ID
+  END,
+  J1.STD_HOURS ,
+  J1.STD_HRS_FREQUENCY ,
+  JR1.CBO_CD_BRA ,
+  0 ,
+  JR1.CONT_SAL_TYPE_BRA ,
+  J1.EMPL_CLASS ,
+  '000000000000' ,
+  0 ,
+  ' ' ,
+  CASE WHEN EMPNAME.FIRST_NAME IS NULL THEN ' '
+    ELSE EMPNAME.FIRST_NAME
+    END,
+  CASE WHEN EMPNAME.MIDDLE_NAME IS NULL THEN ' '
+    ELSE EMPNAME.MIDDLE_NAME
+    END,
+  CASE WHEN EMPNAME.LAST_NAME IS NULL THEN ' '
+    ELSE EMPNAME.LAST_NAME
+    END,
+  CASE WHEN EMPNAME.SECOND_LAST_NAME IS NULL THEN ' '
+    ELSE EMPNAME.SECOND_LAST_NAME
+    END,
+  CASE WHEN EMPNAME.NAME_TYPE IS NULL THEN ' '
+    ELSE EMPNAME.NAME_TYPE
+    END,
+  P.SEG_END_DT ,
+  0,
+  PE.BIRTHDATE,
+  CASE WHEN N1.NATIONAL_ID IS NULL THEN ' '
+    ELSE N1.NATIONAL_ID
+    END,
+  CASE WHEN N2.NATIONAL_ID IS NULL THEN ' '
+    ELSE N2.NATIONAL_ID
+    END,
+  CASE WHEN PB.CTPS_SERIES_BRA IS NULL THEN ' '
+    ELSE PB.CTPS_SERIES_BRA
+    END,
+  J1.EFFDT,
+  J1.EFFSEQ,
+  J1.HIRE_DT,
+  J1.TERMINATION_DT,
+  J1.ACTION,
+  J1.ACTION_REASON,
+  CASE
+    WHEN AR.RAIS_REASON_BRA IS NULL THEN ' '
+    ELSE AR.RAIS_REASON_BRA
+  END,
+  ' ',
+  ' ',
+  ' ',
+  ' ',
+  J1.MONTHLY_RT,
+  0,
+  0,
+  ' ',
+  ' ',
+  ' ',
+  JR1.UNION_CD_ALT_BRA,
+  ' ',
+  ' ',
+  CASE
+  WHEN CCB.CODE_CITY_BRA IS NULL
+    THEN 0
+  ELSE
+    CCB.CODE_CITY_BRA
+  END,
+  J1.FULL_PART_TIME
+
+FROM PS_GP_SEG_GUIDE_WA N LEFT OUTER JOIN PS_PERS_NID NID
+                                          ON N.EMPLID              = NID.EMPLID
+                                          AND NID.NATIONAL_ID_TYPE = 'PIS'
+                          LEFT OUTER JOIN PS_NAMES EMPNAME
+                                          ON EMPNAME.EMPLID     = N.EMPLID
+                                          AND EMPNAME.NAME_TYPE = 'LEG'
+                          LEFT OUTER JOIN PS_PERSON PE
+                                          ON PE.EMPLID = N.EMPLID
+                          LEFT OUTER JOIN PS_PERSON_BRA PB
+                                          ON PB.EMPLID = N.EMPLID
+                          LEFT OUTER JOIN PS_PERS_NID N1
+                                          ON N1.EMPLID = N.EMPLID
+                                          AND N1.NATIONAL_ID_TYPE = 'CPF'
+                          LEFT OUTER JOIN PS_PERS_NID N2
+                                          ON N2.EMPLID = N.EMPLID
+                                          AND N2.NATIONAL_ID_TYPE = 'CTPS',
+    PS_ACTN_REASON_TBL AC LEFT OUTER JOIN PS_ACTN_REASON_BRA AR
+                                          ON AR.ACTION = AC.ACTION
+                                          AND AR.ACTION_REASON = AC.ACTION_REASON
+                                          AND AR.EFFDT         = AC.EFFDT,
+     PS_GP_PYE_SEG_STAT P,
+     PS_JOB J1,
+     PS_JOB_JR JR1,
+     PS_GPBR_RAIS_E_WRK WK,
+     PS_LOCATION_TBL LOCT LEFT OUTER JOIN PS_CODE_CITY_BRA CCB ON CCB.STATE = LOCT.STATE AND CCB.CITY = LOCT.CITY
+WHERE WK.PROCESS_INSTANCE = #prcs_process_instance
+AND N.ESTABID         = WK.ESTABID
+AND N.EMPLID          = P.EMPLID
+AND N.CAL_RUN_ID      = P.CAL_RUN_ID
+AND N.EMPL_RCD        = P.EMPL_RCD
+AND N.GP_PAYGROUP     = P.GP_PAYGROUP
+AND N.CAL_ID          = P.CAL_ID
+AND N.ORIG_CAL_RUN_ID = P.ORIG_CAL_RUN_ID
+AND P.RSLT_SEG_NUM    = N.RSLT_SEG_NUM
+AND P.RSLT_REV_NUM    = 1
+AND P.RSLT_VER_NUM    = 1
+AND P.SEG_END_DT     >= $CalBeginDt1
+AND P.SEG_END_DT     <= $CalEndDt1
+AND J1.EMPLID         = N.EMPLID
+AND J1.EMPL_RCD       = N.EMPL_RCD
+AND J1.ESTABID        = N.ESTABID
+AND J1.EFFDT          = (SELECT MAX(EFFDT)
+                         FROM PS_JOB
+                         WHERE EMPLID = J1.EMPLID
+                         AND EMPL_RCD = J1.EMPL_RCD
+                         AND ESTABID  = J1.ESTABID
+                         AND EFFDT   <= P.SEG_END_DT)
+AND J1.EFFSEQ         = (SELECT MAX(EFFSEQ)
+                         FROM PS_JOB
+                         WHERE EMPLID = J1.EMPLID
+                         AND EMPL_RCD = J1.EMPL_RCD
+                         AND ESTABID  = J1.ESTABID
+                         AND EFFDT    = J1.EFFDT)
+AND JR1.EMPLID              = J1.EMPLID
+AND JR1.EMPL_RCD            = J1.EMPL_RCD
+AND JR1.EFFDT               = J1.EFFDT
+AND JR1.EFFSEQ              = J1.EFFSEQ
+AND AC.ACTION               = J1.ACTION
+AND AC.ACTION_REASON        = J1.ACTION_REASON
+AND AC.EFFDT                = (SELECT MAX(EFFDT)
+                               FROM PS_ACTN_REASON_TBL
+                               WHERE ACTION      = AC.ACTION
+                               AND ACTION_REASON = AC.ACTION_REASON
+                               AND EFFDT        <= J1.EFFDT)
+AND J1.EMPL_CLASS          IN ('10','15','20','25','30','31','35','40','50','55','60','65','70','75','80','90','95','96','97')
+AND JR1.SEFIP_CATEGORY_BRA IN ('01','03','04','05','07','12','13','14','15','16','17','18','19','20','21','22')
+AND LOCT.SETID = J1.SETID_LOCATION
+AND LOCT.LOCATION = J1.LOCATION
+AND LOCT.EFFDT = (SELECT MAX(LOCI.EFFDT) FROM PS_LOCATION_TBL LOCI
+                      WHERE LOCI.SETID = LOCT.SETID
+                        AND LOCI.LOCATION = LOCT.LOCATION
+                        AND LOCI.EFFDT <= $CalEndDt1
+                        AND LOCI.EFF_STATUS = 'A')
+
+End-SQL
+
+#Debug Show ' '
+#Debug show '  Update names'
+Do PrintTime (' ')
+!***********************************************
+!** Update names with Primary type for employees
+!** with no Legal Name
+!***********************************************
+
+#IFDEF MICROSOFT !Block for MS SQL Databases
+!Microsoft SQL
+Begin-SQL
+UPDATE PS_GPBR_RAIS_WRK
+SET  PS_GPBR_RAIS_WRK.ADD_FLD1_NAME = (SELECT PS_NAMES.FIRST_NAME
+                                       FROM PS_NAMES WHERE PS_NAMES.EMPLID = PS_GPBR_RAIS_WRK.EMPLID AND PS_NAMES.NAME_TYPE = 'PRI'
+                                       AND PS_NAMES.EFFDT = (SELECT MAX(NM.EFFDT)
+                                                             FROM PS_NAMES NM WHERE NM.EMPLID = PS_NAMES.EMPLID
+                                                             AND NM.NAME_TYPE = 'PRI' AND NM.EFFDT <= $CalEndDt1 AND NM.EFF_STATUS = 'A')
+                                       AND PS_NAMES.EFF_STATUS = 'A')
+    ,PS_GPBR_RAIS_WRK.ADD_FLD2_NAME = (SELECT PS_NAMES.MIDDLE_NAME
+                                       FROM PS_NAMES WHERE PS_NAMES.EMPLID = PS_GPBR_RAIS_WRK.EMPLID AND PS_NAMES.NAME_TYPE = 'PRI'
+                                       AND PS_NAMES.EFFDT = (SELECT MAX(NM.EFFDT)
+                                                             FROM PS_NAMES NM WHERE NM.EMPLID = PS_NAMES.EMPLID
+                                                             AND NM.NAME_TYPE = 'PRI' AND NM.EFFDT <= $CalEndDt1 AND NM.EFF_STATUS = 'A')
+                                       AND PS_NAMES.EFF_STATUS = 'A')
+    ,PS_GPBR_RAIS_WRK.ADD_FLD3_NAME = (SELECT PS_NAMES.LAST_NAME
+                                       FROM PS_NAMES WHERE PS_NAMES.EMPLID = PS_GPBR_RAIS_WRK.EMPLID AND PS_NAMES.NAME_TYPE = 'PRI'
+                                       AND PS_NAMES.EFFDT = (SELECT MAX(NM.EFFDT)
+                                                             FROM PS_NAMES NM WHERE NM.EMPLID = PS_NAMES.EMPLID
+                                                             AND NM.NAME_TYPE = 'PRI' AND NM.EFFDT <= $CalEndDt1 AND NM.EFF_STATUS = 'A')
+                                       AND PS_NAMES.EFF_STATUS = 'A')
+    ,PS_GPBR_RAIS_WRK.ADD_FLD4_NAME = (SELECT PS_NAMES.SECOND_LAST_NAME
+                                       FROM PS_NAMES WHERE PS_NAMES.EMPLID = PS_GPBR_RAIS_WRK.EMPLID AND PS_NAMES.NAME_TYPE = 'PRI'
+                                       AND PS_NAMES.EFFDT = (SELECT MAX(NM.EFFDT)
+                                                             FROM PS_NAMES NM WHERE NM.EMPLID = PS_NAMES.EMPLID
+                                                             AND NM.NAME_TYPE = 'PRI' AND NM.EFFDT <= $CalEndDt1 AND NM.EFF_STATUS = 'A')
+                                       AND PS_NAMES.EFF_STATUS = 'A')
+    ,PS_GPBR_RAIS_WRK. NAME_TYPE_SHORT = 'PRI'
+WHERE PS_GPBR_RAIS_WRK.PROCESS_INSTANCE = #prcs_process_instance
+AND PS_GPBR_RAIS_WRK.NAME_TYPE_SHORT = ' '
+End-SQL
+
+#EndIf
+
+#IFNDEF MICROSOFT !Block for Non - MS SQL Databases
+
+!Non-Micrsoft SQL
+Begin-SQL
+UPDATE PS_GPBR_RAIS_WRK
+SET (PS_GPBR_RAIS_WRK.ADD_FLD1_NAME
+    ,PS_GPBR_RAIS_WRK.ADD_FLD2_NAME
+    ,PS_GPBR_RAIS_WRK.ADD_FLD3_NAME
+    ,PS_GPBR_RAIS_WRK.ADD_FLD4_NAME
+    ,PS_GPBR_RAIS_WRK. NAME_TYPE_SHORT)=
+    (SELECT
+     PS_NAMES.FIRST_NAME,
+     PS_NAMES.MIDDLE_NAME,
+     PS_NAMES.LAST_NAME,
+     PS_NAMES.SECOND_LAST_NAME,
+     'PRI'
+     FROM PS_NAMES
+     WHERE PS_NAMES.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+     AND PS_NAMES.NAME_TYPE = 'PRI'
+     AND PS_NAMES.EFFDT = (SELECT MAX(NM.EFFDT)
+                         FROM PS_NAMES NM
+                         WHERE NM.EMPLID = PS_NAMES.EMPLID
+                         AND NM.NAME_TYPE = 'PRI'
+                         AND NM.EFFDT <= $CalEndDt1
+                         AND NM.EFF_STATUS = 'A')
+     AND PS_NAMES.EFF_STATUS = 'A')
+WHERE PS_GPBR_RAIS_WRK.PROCESS_INSTANCE = #prcs_process_instance
+AND PS_GPBR_RAIS_WRK.NAME_TYPE_SHORT = ' '
+End-SQL
+
+#EndIf
+
+!***********************************************
+#Debug Show ' '
+#Debug show '  Update Comprate'
+Do PrintTime (' ')
+!***********************************************
+Begin-SQL
+UPDATE PS_GPBR_RAIS_WRK
+SET COMPRATE = (SELECT SUM(C.CONVERT_COMPRT)
+                FROM PS_COMPENSATION C
+                WHERE C.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+                AND C.EMPL_RCD = PS_GPBR_RAIS_WRK.EMPL_RCD
+                AND C.EFFDT    = PS_GPBR_RAIS_WRK.EFFDT_FROM
+                AND C.EFFSEQ   = PS_GPBR_RAIS_WRK.EFFSEQ_WRK
+                )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS (SELECT 'X'
+                FROM PS_COMPENSATION C
+                WHERE C.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+                AND C.EMPL_RCD = PS_GPBR_RAIS_WRK.EMPL_RCD
+                AND C.EFFDT    = PS_GPBR_RAIS_WRK.EFFDT_FROM
+                AND C.EFFSEQ   = PS_GPBR_RAIS_WRK.EFFSEQ_WRK)
+End-SQL
+
+!***********************************************
+#Debug Show ' '
+#Debug show '  Update Weekly Hours'
+Do PrintTime (' ')
+!***********************************************
+Begin-SQL
+UPDATE PS_GPBR_RAIS_WRK
+SET GPBR_WEEKLY_HOURS = (SELECT GPBR_WEEKLY_HOURS
+                         FROM PS_GPBR_PAYEE_PARM P
+                         WHERE P.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+                         AND P.EMPL_RCD = PS_GPBR_RAIS_WRK.EMPL_RCD
+                         AND P.BGN_DT  <= PS_GPBR_RAIS_WRK.DATE2
+                         AND (P.END_DT  >= PS_GPBR_RAIS_WRK.DATE2 OR P.END_DT IS NULL)
+                         )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS (SELECT 'X'
+            FROM PS_GPBR_PAYEE_PARM P
+            WHERE P.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+            AND P.EMPL_RCD = PS_GPBR_RAIS_WRK.EMPL_RCD
+            AND P.BGN_DT  <= PS_GPBR_RAIS_WRK.DATE2
+            AND (P.END_DT  >= PS_GPBR_RAIS_WRK.DATE2 OR P.END_DT IS NULL)
+            )
+End-SQL
+
+!***********************************************
+#Debug Show ' '
+#Debug show '  Update Nationality'
+Do PrintTime (' ')
+!***********************************************
+Begin-SQL
+UPDATE PS_GPBR_RAIS_WRK
+SET NATIONALITY_CD_BRA = (SELECT CASE
+                                   WHEN PE.BIRTHCOUNTRY <> 'BRA' AND PE_BRA.NATIONALITY_CD_BRA = 'BRA' THEN '20'
+                                 ELSE
+                                   CASE 
+                                     WHEN PE_BRA.NATIONALITY_CD_BRA = NA_VW.COUNTRY THEN NA_VW.NAT_RAIS_BRA
+                                   ELSE ' '
+                                   END
+                                 END
+                          FROM PS_PERSON PE
+                             , PS_PERS_DATA_BRA PE_BRA
+                             , PS_GPBR_RAIS_NA_VW NA_VW
+                          WHERE PE.EMPLID     = PS_GPBR_RAIS_WRK.EMPLID  
+                          AND PE_BRA.EMPLID   = PS_GPBR_RAIS_WRK.EMPLID
+                          AND PE_BRA.EFFDT    = (SELECT MAX(PE_BRA2.EFFDT) 
+                                                 FROM PS_PERS_DATA_BRA PE_BRA2
+                                                 WHERE PE_BRA2.EMPLID = PE_BRA.EMPLID 
+                                                 AND PE_BRA2.EFFDT   <= PS_GPBR_RAIS_WRK.DATE2)       
+                          AND NA_VW.EMPLID    = PS_GPBR_RAIS_WRK.EMPLID
+                          AND NA_VW.EFFDT     = (SELECT MAX(NA_VWA.EFFDT)
+                                                 FROM PS_GPBR_RAIS_NA_VW NA_VWA
+                                                 WHERE NA_VWA.EMPLID = NA_VW.EMPLID
+                                                 AND NA_VWA.EFFDT   <= PS_GPBR_RAIS_WRK.DATE2)
+                          AND NA_VW.EFFDT_OTH = (SELECT MAX(NA_VWB.EFFDT_OTH)
+                                                 FROM PS_GPBR_RAIS_NA_VW NA_VWB
+                                                 WHERE NA_VWB.EFFDT_OTH <= PS_GPBR_RAIS_WRK.DATE2)
+                         )
+WHERE EXISTS (SELECT 'X'
+              FROM PS_PERSON PE
+                 , PS_PERS_DATA_BRA PE_BRA
+                 , PS_GPBR_RAIS_NA_VW NA_VW
+              WHERE PE.EMPLID = PS_GPBR_RAIS_WRK.EMPLID  
+              AND PE_BRA.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+              AND PE_BRA.EFFDT = (SELECT MAX(PE_BRA2.EFFDT) 
+                                  FROM PS_PERS_DATA_BRA PE_BRA2
+                                  WHERE PE_BRA2.EMPLID = PE_BRA.EMPLID 
+                                  AND PE_BRA2.EFFDT   <= PS_GPBR_RAIS_WRK.DATE2)       
+              AND NA_VW.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+              AND NA_VW.EFFDT = (SELECT MAX(NA_VWA.EFFDT)
+                                 FROM PS_GPBR_RAIS_NA_VW NA_VWA
+                                 WHERE NA_VWA.EMPLID = NA_VW.EMPLID
+                                 AND NA_VWA.EFFDT   <= PS_GPBR_RAIS_WRK.DATE2)
+              AND NA_VW.EFFDT_OTH = (SELECT MAX(NA_VWB.EFFDT_OTH)
+                                     FROM PS_GPBR_RAIS_NA_VW NA_VWB
+                                     WHERE NA_VWB.EFFDT_OTH <= PS_GPBR_RAIS_WRK.DATE2)
+             )
+End-SQL
+
+!***********************************************
+#Debug Show ' '
+#Debug show '  Update Educ. Level'
+Do PrintTime (' ')
+!***********************************************
+
+#IFDEF MICROSOFT !Block for MS SQL Databases
+Begin-SQL
+UPDATE PS_GPBR_RAIS_WRK
+SET  EDUCATION_LVL_BRA = (SELECT P.EDUCATION_LVL_BRA
+                          FROM PS_PERS_DATA_BRA P WHERE P.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+                          AND P.EFFDT  = (SELECT MAX(EFFDT) FROM PS_PERS_DATA_BRA
+                                          WHERE EMPLID = P.EMPLID AND EFFDT <= PS_GPBR_RAIS_WRK.DATE2)),
+     ETHNIC_GRP_CD     = (SELECT P.ETHNIC_GRP_CD
+                          FROM PS_PERS_DATA_BRA P WHERE P.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+                          AND P.EFFDT  = (SELECT MAX(EFFDT) FROM PS_PERS_DATA_BRA
+                                          WHERE EMPLID = P.EMPLID AND EFFDT <= PS_GPBR_RAIS_WRK.DATE2))
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS (SELECT 'X'
+            FROM PS_PERS_DATA_BRA P
+                           WHERE P.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+                           AND   P.EFFDT  = (SELECT MAX(EFFDT)
+                                             FROM PS_PERS_DATA_BRA
+                                             WHERE EMPLID = P.EMPLID
+                                             AND EFFDT <= PS_GPBR_RAIS_WRK.DATE2)
+            )
+End-SQL
+#ENDIF
+
+#IFNDEF MICROSOFT !Block for Non - MS SQL Databases
+Begin-SQL
+UPDATE PS_GPBR_RAIS_WRK
+SET (EDUCATION_LVL_BRA,
+     ETHNIC_GRP_CD     ) = (SELECT P.EDUCATION_LVL_BRA,
+                           P.ETHNIC_GRP_CD
+                           FROM PS_PERS_DATA_BRA P
+                           WHERE P.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+                           AND   P.EFFDT  = (SELECT MAX(EFFDT)
+                                             FROM PS_PERS_DATA_BRA
+                                             WHERE EMPLID = P.EMPLID
+                                             AND EFFDT <= PS_GPBR_RAIS_WRK.DATE2)
+                         )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS (SELECT 'X'
+            FROM PS_PERS_DATA_BRA P
+                           WHERE P.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+                           AND   P.EFFDT  = (SELECT MAX(EFFDT)
+                                             FROM PS_PERS_DATA_BRA
+                                             WHERE EMPLID = P.EMPLID
+                                             AND EFFDT <= PS_GPBR_RAIS_WRK.DATE2)
+            )
+End-SQL
+#ENDIF
+
+!***********************************************
+#Debug Show ' '
+#Debug show '  Update Union CNPJ'
+Do PrintTime (' ')
+!***********************************************
+Begin-SQL
+UPDATE PS_GPBR_RAIS_WRK
+SET UNION_CNPJ_BRA    = (SELECT U.UNION_CNPJ_BRA
+                         FROM PS_UNION_TBL_BRA U
+                         WHERE U.UNION_CD = PS_GPBR_RAIS_WRK.UNION_CD_ALT_BRA
+                         AND U.EFFDT      = (SELECT MAX(EFFDT)
+                                             FROM PS_UNION_TBL_BRA
+                                             WHERE UNION_CD = U.UNION_CD
+                                             AND EFFDT     <= PS_GPBR_RAIS_WRK.DATE2)
+                         )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND UNION_CD_ALT_BRA <> ' '
+AND EXISTS (SELECT 'X'
+            FROM PS_UNION_TBL_BRA U
+                         WHERE U.UNION_CD = PS_GPBR_RAIS_WRK.UNION_CD_ALT_BRA
+                         AND U.EFFDT      = (SELECT MAX(EFFDT)
+                                             FROM PS_UNION_TBL_BRA
+                                             WHERE UNION_CD = U.UNION_CD
+                                             AND EFFDT     <= PS_GPBR_RAIS_WRK.DATE2)
+            )
+End-SQL
+
+!***********************************************
+#Debug Show ' '
+#Debug show '  Update Employee Gender'
+Do PrintTime (' ')
+!***********************************************
+Begin-SQL
+UPDATE PS_GPBR_RAIS_WRK
+SET SEX = (SELECT
+           SEX
+           FROM PS_PERS_DATA_EFFDT P
+           WHERE P.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+           AND P.EFFDT    = (SELECT MAX(EFFDT)
+                             FROM PS_PERS_DATA_EFFDT
+                             WHERE EMPLID = P.EMPLID
+                             AND EFFDT   <= PS_GPBR_RAIS_WRK.DATE2)
+           )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS (SELECT 'X'
+            FROM PS_PERS_DATA_EFFDT P
+            WHERE P.EMPLID = PS_GPBR_RAIS_WRK.EMPLID
+            AND P.EFFDT    = (SELECT MAX(EFFDT)
+                              FROM PS_PERS_DATA_EFFDT
+                              WHERE EMPLID = P.EMPLID
+                              AND EFFDT   <= PS_GPBR_RAIS_WRK.DATE2)
+           )
+End-SQL
+
+#Debug Show 'Manual: Commit-Transaction after Fill PS_GPBR_RAIS_WRK table'
+Do PrintTime (' ')
+Do Commit-Transaction
+
+#ifdef ORACLE
+    BEGIN-SQL
+        ANALYZE TABLE PS_GPBR_RAIS_WRK COMPUTE STATISTICS
+    END-SQL
+#endif
+
+#Debug Show ' '
+#Debug Show 'PS_GPBR_RAIS2_WRK'
+#Debug show '  INSERT Compensation  [COMPENSAT]'
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, GPBR_CONTRIB_TYPE
+, UNION_CD
+, UNION_CNPJ_BRA)
+
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID,
+WK1.EMPLID,
+WK1.EMPL_RCD,
+'COMPENSAT',
+DD1.SLICE_END_DT,
+SUM((DD1.CALC_RSLT_VAL + DD1.CALC_ADJ_VAL ) * EE1.GPBR_SIGN_NBR),
+0,
+' ',
+$CalBeginDt1,
+$CalEndDt1,
+0,
+0,
+0,
+' ',
+' ',
+' '
+
+FROM
+PS_GP_RSLT_ERN_DED DD1,
+PS_GPBR_PARM_RAIS3 EE1,
+PS_GPBR_RAIS_WRK WK1
+WHERE DD1.EMPLID        = WK1.EMPLID
+AND DD1.EMPL_RCD        = WK1.EMPL_RCD
+AND DD1.GP_PAYGROUP     = WK1.GP_PAYGROUP
+AND DD1.ORIG_CAL_RUN_ID = WK1.ORIG_CAL_RUN_ID
+AND DD1.CAL_ID          = WK1.CAL_ID
+AND DD1.CAL_RUN_ID      = WK1.CAL_RUN_ID
+AND DD1.RSLT_SEG_NUM    = WK1.RSLT_SEG_NUM
+AND DD1.SLICE_BGN_DT    = WK1.DATE1
+AND DD1.SLICE_END_DT    = WK1.DATE2
+AND DD1.PIN_NUM         = EE1.PIN_NUM
+AND EE1.COMPANY         = WK1.COMPANY
+AND EE1.EFFDT           = (SELECT MAX(EE31.EFFDT)
+                           FROM PS_GPBR_PARM_RAIS3 EE31
+                           WHERE EE31.COMPANY = EE1.COMPANY
+                           AND  EE31.EFFDT   <= DD1.SLICE_END_DT)
+AND WK1.PROCESS_INSTANCE = #prcs_process_instance
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, WK1.EMPLID, WK1.EMPL_RCD, DD1.SLICE_END_DT
+End-SQL
+
+#Debug Show ' '
+#Debug show '  INSERT 13th Salary 1 [13TH_ADV1]'
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, GPBR_CONTRIB_TYPE
+, UNION_CD
+, UNION_CNPJ_BRA)
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID,
+WK1.EMPLID,
+WK1.EMPL_RCD,
+'13TH_ADV1',
+DD1.SLICE_END_DT,
+SUM((DD1.CALC_RSLT_VAL + DD1.CALC_ADJ_VAL ) * EE1.GPBR_SIGN_NBR),
+0,
+' ',
+$CalBeginDt1,
+$CalEndDt1,
+0,
+0,
+0,
+' ',
+' ',
+' '
+
+FROM
+PS_GP_RSLT_ERN_DED DD1,
+PS_GPBR_PARM_RAIS4 EE1,
+PS_GPBR_RAIS_WRK WK1
+WHERE DD1.EMPLID        = WK1.EMPLID
+AND DD1.EMPL_RCD        = WK1.EMPL_RCD
+AND DD1.GP_PAYGROUP     = WK1.GP_PAYGROUP
+AND DD1.ORIG_CAL_RUN_ID = WK1.ORIG_CAL_RUN_ID
+AND DD1.CAL_ID          = WK1.CAL_ID
+AND DD1.CAL_RUN_ID      = WK1.CAL_RUN_ID
+AND DD1.RSLT_SEG_NUM    = WK1.RSLT_SEG_NUM
+AND DD1.SLICE_BGN_DT    = WK1.DATE1
+AND DD1.SLICE_END_DT    = WK1.DATE2
+AND DD1.PIN_NUM         = EE1.PIN_NUM
+AND EE1.COMPANY         = WK1.COMPANY
+AND EE1.EFFDT = (SELECT MAX(EE31.EFFDT)
+                 FROM PS_GPBR_PARM_RAIS4 EE31
+                 WHERE EE31.COMPANY = EE1.COMPANY
+                 AND  EE31.EFFDT   <= DD1.SLICE_END_DT)
+AND WK1.PROCESS_INSTANCE = #prcs_process_instance
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, WK1.EMPLID, WK1.EMPL_RCD, DD1.SLICE_END_DT
+End-SQL
+
+#Debug Show ' '
+#Debug show '  INSERT 13th Salary 2 [13TH_ADV2]'
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, GPBR_CONTRIB_TYPE
+, UNION_CD
+, UNION_CNPJ_BRA)
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID,
+WK1.EMPLID,
+WK1.EMPL_RCD,
+'13TH_ADV2',
+DD1.SLICE_END_DT,
+SUM((DD1.CALC_RSLT_VAL + DD1.CALC_ADJ_VAL ) * EE1.GPBR_SIGN_NBR),
+0,
+' ',
+$CalBeginDt1,
+$CalEndDt1,
+0,
+0,
+0,
+' ',
+' ',
+' '
+
+FROM
+PS_GP_RSLT_ERN_DED DD1,
+PS_GPBR_PARM_RAIS5 EE1,
+PS_GPBR_RAIS_WRK WK1
+WHERE DD1.EMPLID        = WK1.EMPLID
+AND DD1.EMPL_RCD        = WK1.EMPL_RCD
+AND DD1.GP_PAYGROUP     = WK1.GP_PAYGROUP
+AND DD1.ORIG_CAL_RUN_ID = WK1.ORIG_CAL_RUN_ID
+AND DD1.CAL_ID          = WK1.CAL_ID
+AND DD1.CAL_RUN_ID      = WK1.CAL_RUN_ID
+AND DD1.RSLT_SEG_NUM    = WK1.RSLT_SEG_NUM
+AND DD1.SLICE_BGN_DT    = WK1.DATE1
+AND DD1.SLICE_END_DT    = WK1.DATE2
+AND DD1.PIN_NUM         = EE1.PIN_NUM
+AND EE1.COMPANY         = WK1.COMPANY
+AND EE1.EFFDT = (SELECT MAX(EE31.EFFDT)
+                 FROM PS_GPBR_PARM_RAIS5 EE31
+                 WHERE EE31.COMPANY = EE1.COMPANY
+                 AND  EE31.EFFDT   <= DD1.SLICE_END_DT)
+AND WK1.PROCESS_INSTANCE = #prcs_process_instance
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, WK1.EMPLID, WK1.EMPL_RCD, DD1.SLICE_END_DT
+End-SQL
+
+#Debug Show ' '
+#Debug show '  INSERT 13th Salary Final [13TH_FINAL]'
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, GPBR_CONTRIB_TYPE
+, UNION_CD
+, UNION_CNPJ_BRA)
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID,
+WK1.EMPLID,
+WK1.EMPL_RCD,
+'13TH_FINAL',
+DD1.SLICE_END_DT,
+SUM((DD1.CALC_RSLT_VAL + DD1.CALC_ADJ_VAL ) * EE1.GPBR_SIGN_NBR),
+0,
+' ',
+$CalBeginDt1,
+$CalEndDt1,
+0,
+0,
+0,
+' ',
+' ',
+' '
+
+FROM
+PS_GP_RSLT_ERN_DED DD1,
+PS_GPBR_PARM_RAIS6 EE1,
+PS_GPBR_RAIS_WRK WK1
+WHERE DD1.EMPLID        = WK1.EMPLID
+AND DD1.EMPL_RCD        = WK1.EMPL_RCD
+AND DD1.GP_PAYGROUP     = WK1.GP_PAYGROUP
+AND DD1.ORIG_CAL_RUN_ID = WK1.ORIG_CAL_RUN_ID
+AND DD1.CAL_ID          = WK1.CAL_ID
+AND DD1.CAL_RUN_ID      = WK1.CAL_RUN_ID
+AND DD1.RSLT_SEG_NUM    = WK1.RSLT_SEG_NUM
+AND DD1.SLICE_BGN_DT    = WK1.DATE1
+AND DD1.SLICE_END_DT    = WK1.DATE2
+AND DD1.PIN_NUM         = EE1.PIN_NUM
+AND EE1.COMPANY         = WK1.COMPANY
+AND EE1.EFFDT = (SELECT MAX(EE31.EFFDT)
+                 FROM PS_GPBR_PARM_RAIS6 EE31
+                 WHERE EE31.COMPANY = EE1.COMPANY
+                 AND  EE31.EFFDT   <= DD1.SLICE_END_DT)
+AND WK1.PROCESS_INSTANCE = #prcs_process_instance
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, WK1.EMPLID, WK1.EMPL_RCD, DD1.SLICE_END_DT
+End-SQL
+
+
+#Debug Show ' '
+#Debug show '  INSERT OVERTIME [OVERTIME]'
+! The maximum Effective Dt in PS_JOB of Termination Dt for the RAIS period will
+! be End Calendar Dt plus 1 
+Let $effdt_termination_dt = dateadd(strtodate($CalEndDt1),'day',1)
+#Debugx show '  $effdt_termination_dt: ' $effdt_termination_dt
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, GPBR_CONTRIB_TYPE
+, UNION_CD
+, UNION_CNPJ_BRA)
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID,
+WK1.EMPLID,
+WK1.EMPL_RCD,
+'OVERTIME',
+DD1.SLICE_END_DT,
+SUM((DD1.UNIT_RSLT_VAL) + (DD1.UNIT_ADJ_VAL)),
+0,
+' ',
+$CalBeginDt1,
+$CalEndDt1,
+0,
+0,
+0,
+' ',
+' ',
+' '
+
+FROM
+PS_GP_RSLT_ERN_DED DD1,
+PS_GPBR_HOURS_RAIS EE1,
+PS_GPBR_RAIS_WRK WK1,
+PS_GP_ACM_MBR MB9,
+PS_GP_PIN_CMPNT CP9,
+PS_JOB JOB
+WHERE DD1.EMPLID        = WK1.EMPLID
+AND DD1.EMPL_RCD        = WK1.EMPL_RCD
+AND DD1.GP_PAYGROUP     = WK1.GP_PAYGROUP
+AND DD1.ORIG_CAL_RUN_ID = WK1.ORIG_CAL_RUN_ID
+AND DD1.CAL_ID          = WK1.CAL_ID
+AND DD1.CAL_RUN_ID      = WK1.CAL_RUN_ID
+AND DD1.RSLT_SEG_NUM    = WK1.RSLT_SEG_NUM
+AND DD1.SLICE_BGN_DT    = WK1.DATE1
+AND DD1.SLICE_END_DT    = WK1.DATE2
+AND CP9.PIN_NUM         = DD1.PIN_NUM
+AND CP9.PIN_AA_UNIT_NUM = MB9.PIN_MBR_NUM
+AND MB9.PIN_NUM         = EE1.PIN_NUM
+AND EE1.COMPANY         = WK1.COMPANY
+AND EE1.EFFDT = (SELECT MAX(EE31.EFFDT)
+                 FROM PS_GPBR_HOURS_RAIS EE31
+                 WHERE EE31.COMPANY = EE1.COMPANY
+                 AND  EE31.EFFDT   <= DD1.SLICE_END_DT)
+AND JOB.EMPLID = WK1.EMPLID
+AND JOB.EMPL_RCD = WK1.EMPL_RCD
+AND JOB.EFFDT = (SELECT MAX(JOB_2.EFFDT)
+                        FROM PS_JOB JOB_2
+                        WHERE JOB_2.EMPLID = JOB.EMPLID
+                            AND JOB_2.EMPL_RCD = JOB.EMPL_RCD
+                            AND JOB_2.EFFDT <= $effdt_termination_dt)
+AND (JOB.TERMINATION_DT < WK1.DATE1
+  OR JOB.TERMINATION_DT IS NULL)
+AND WK1.PROCESS_INSTANCE = #prcs_process_instance
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, WK1.EMPLID, WK1.EMPL_RCD, DD1.SLICE_END_DT
+End-SQL
+
+#Debug Show ' '
+#Debug show '  INSERT ABSENCES [ABSENCES]'
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, GPBR_CONTRIB_TYPE
+, UNION_CD
+, UNION_CNPJ_BRA)
+SELECT
+#prcs_process_instance,
+WK.GPBR_CNPJ,
+WK.RAIS_ESTAB_PRE_BRA,
+WK.ESTABID,
+AB.EMPLID,
+AB.EMPL_RCD,
+'ABSENCES',
+AB.ABS_END_DT,
+0,
+0,
+RB.GPBR_ABS_RAIS,
+MIN(AB.ABSENCE_DATE),
+MAX(AB.ABSENCE_DATE),
+COUNT(*),
+MIN(AB.END_ENTL_BAL),
+MAX(AB.BEGIN_ENTL_BAL),
+' ',
+' ',
+' '
+
+FROM PS_GP_RSLT_ABS AB
+,PS_GP_PYE_SEG_STAT PR
+,PS_GPBR_RAIS_WRK WK
+,PS_GPBR_ABS_RAIS_D RB
+WHERE WK.PROCESS_INSTANCE = #prcs_process_instance
+AND AB.EMPLID             = PR.EMPLID
+AND AB.EMPL_RCD           = PR.EMPL_RCD
+AND PR.CAL_RUN_ID         = AB.CAL_RUN_ID
+AND PR.EMPL_RCD           = AB.EMPL_RCD
+AND PR.GP_PAYGROUP        = AB.GP_PAYGROUP
+AND PR.PIN_NET_NUM        = 0
+AND PR.ORIG_CAL_RUN_ID    = AB.ORIG_CAL_RUN_ID
+AND PR.RSLT_SEG_NUM       = AB.RSLT_SEG_NUM
+AND PR.RSLT_REV_NUM       = 1
+AND PR.RSLT_VER_NUM       = (SELECT MAX(PR2.RSLT_VER_NUM)
+                             FROM PS_GP_PYE_SEG_STAT PR2
+                             WHERE PR2.EMPLID = PR.EMPLID
+                             AND PR2.CAL_RUN_ID = PR.CAL_RUN_ID
+                             AND PR2.EMPL_RCD = PR.EMPL_RCD
+                             AND PR2.GP_PAYGROUP = PR.GP_PAYGROUP
+                             AND PR2.CAL_ID = PR.CAL_ID
+                             AND PR2.ORIG_CAL_RUN_ID = PR.ORIG_CAL_RUN_ID
+                             AND PR2.RSLT_SEG_NUM = PR.RSLT_SEG_NUM
+                             AND PR2.RSLT_REV_NUM = 1)
+AND AB.EMPLID             = WK.EMPLID
+AND AB.EMPL_RCD           = WK.EMPL_RCD
+AND PR.CAL_RUN_ID         = WK.CAL_RUN_ID
+AND PR.EMPL_RCD           = WK.EMPL_RCD
+AND PR.GP_PAYGROUP        = WK.GP_PAYGROUP
+AND PR.ORIG_CAL_RUN_ID    = WK.ORIG_CAL_RUN_ID
+AND PR.RSLT_SEG_NUM       = WK.RSLT_SEG_NUM
+AND AB.PIN_TAKE_NUM       = RB.PIN_NUM
+AND AB.ABSENCE_REASON     = RB.ABSENCE_REASON
+AND RB.COMPANY            = WK.COMPANY
+AND AB.ABSENCE_DATE      <= WK.DATE2
+AND AB.ABSENCE_DATE      >= WK.DATE1
+AND RB.EFFDT              = (SELECT MAX(RB2.EFFDT)
+                             FROM PS_GPBR_ABS_RAIS_D RB2
+                             WHERE RB2.COMPANY = RB.COMPANY
+                             AND RB2.EFFDT <= $CalEndDt1)
+GROUP BY WK.GPBR_CNPJ, WK.RAIS_ESTAB_PRE_BRA, WK.ESTABID, AB.EMPLID, AB.EMPL_RCD, AB.ABS_END_DT, RB.GPBR_ABS_RAIS
+End-SQL
+
+#Debug Show ' '
+#Debug show '  INSERT Union Contributions [UNIONCONT]'
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, GPBR_CONTRIB_TYPE
+, UNION_CD
+, UNION_CNPJ_BRA)
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID,
+WK1.EMPLID,
+WK1.EMPL_RCD,
+'UNIONCONT',
+DD1.SLICE_END_DT,
+SUM((DD1.CALC_RSLT_VAL + DD1.CALC_ADJ_VAL ) * EE1.GPBR_SIGN_NBR),
+0,
+' ',
+$CalEndDt1,
+$CalEndDt1,
+0,
+0,
+0,
+EE1.GPBR_CONTRIB_TYPE,
+' ',
+' '
+
+FROM
+PS_GP_RSLT_ERN_DED DD1,
+PS_GPBR_PARM_RAIS8 EE1,
+PS_GPBR_RAIS_WRK WK1
+WHERE DD1.EMPLID        = WK1.EMPLID
+AND DD1.EMPL_RCD        = WK1.EMPL_RCD
+AND DD1.GP_PAYGROUP     = WK1.GP_PAYGROUP
+AND DD1.ORIG_CAL_RUN_ID = WK1.ORIG_CAL_RUN_ID
+AND DD1.CAL_ID          = WK1.CAL_ID
+AND DD1.CAL_RUN_ID      = WK1.CAL_RUN_ID
+AND DD1.RSLT_SEG_NUM    = WK1.RSLT_SEG_NUM
+AND DD1.SLICE_BGN_DT    = WK1.DATE1
+AND DD1.SLICE_END_DT    = WK1.DATE2
+AND DD1.PIN_NUM         = EE1.PIN_NUM
+AND EE1.COMPANY         = WK1.COMPANY
+AND EE1.EFFDT           = (SELECT MAX(EE31.EFFDT)
+                           FROM PS_GPBR_PARM_RAIS8 EE31
+                           WHERE EE31.COMPANY = EE1.COMPANY
+                           AND  EE31.EFFDT   <= DD1.SLICE_END_DT)
+AND WK1.PROCESS_INSTANCE = #prcs_process_instance
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, WK1.EMPLID, WK1.EMPL_RCD, DD1.SLICE_END_DT, EE1.GPBR_CONTRIB_TYPE
+End-SQL
+
+#Debug Show ' '
+#Debug show '  INSERT Union Contributions 2 Payroll & Manual [UNION2]'
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, GPBR_CONTRIB_TYPE
+, UNION_CD
+, UNION_CNPJ_BRA)
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID,
+WK1.EMPLID,
+WK1.EMPL_RCD,
+'UNION2',
+DD1.EFFDT,
+SUM(DD1.AMOUNT),
+0,
+' ',
+$CalBeginDt1,
+$CalEndDt1,
+0,
+0,
+0,
+' ',
+DD1.UNION_CD,
+UBRA.UNION_CNPJ_BRA
+
+FROM
+PS_GPBR_PYE_UN_WA DD1,
+PS_GPBR_RAIS_WRK WK1,
+PS_UNION_TBL_BRA UBRA
+WHERE DD1.EMPLID        = WK1.EMPLID
+AND DD1.EMPL_RCD        = WK1.EMPL_RCD
+AND DD1.GP_PAYGROUP     = WK1.GP_PAYGROUP
+AND DD1.ORIG_CAL_RUN_ID = WK1.ORIG_CAL_RUN_ID
+AND (
+      (DD1.CAL_ID          = WK1.CAL_ID
+       AND DD1.CAL_RUN_ID  = WK1.CAL_RUN_ID)
+    OR
+      (DD1.CAL_ID          = 'UNION'
+       AND DD1.CAL_RUN_ID  = 'UNION'
+       AND DD1.GPBR_CALC_TYPE = '02')
+    )
+AND DD1.RSLT_SEG_NUM    = WK1.RSLT_SEG_NUM
+!AND DD1.EFFDT          >= WK1.DATE1
+!AND DD1.EFFDT          <= WK1.DATE2
+AND WK1.PROCESS_INSTANCE = #prcs_process_instance
+AND UBRA.UNION_CD = DD1.UNION_CD
+AND UBRA.EFFDT = (SELECT MAX(UIN.EFFDT) FROM PS_UNION_TBL_BRA UIN
+                   WHERE UIN.UNION_CD = UBRA.UNION_CD
+                     AND UIN.EFFDT <= WK1.DATE2)
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, WK1.EMPLID, WK1.EMPL_RCD, DD1.EFFDT, DD1.UNION_CD, UBRA.UNION_CNPJ_BRA
+End-SQL
+
+#Debug Show ' '
+#Debug show '  INSERT CompRate Detail [COMPRATE_DTL]'
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, GPBR_CONTRIB_TYPE
+, UNION_CD
+, UNION_CNPJ_BRA)
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID,
+WK1.EMPLID,
+WK1.EMPL_RCD,
+'COMPRATE_DTL',
+WK1.DATE2,
+SUM(CO.CONVERT_COMPRT * R3.GPBR_SIGN_NBR),
+0,
+' ',
+$CalBeginDt1,
+$CalEndDt1,
+0,
+0,
+0,
+' ',
+' ',
+' '
+
+FROM
+PS_GPBR_RAIS_WRK WK1,
+PS_COMPENSATION CO,
+PS_GPBR_PARM_RAIS3 R3
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND CO.EMPLID   = WK1.EMPLID
+AND CO.EMPL_RCD = WK1.EMPL_RCD
+AND CO.EFFDT    = (SELECT MAX(EFFDT)
+                   FROM PS_COMPENSATION
+                   WHERE EMPLID = CO.EMPLID
+                   AND EMPL_RCD = CO.EMPL_RCD
+                   AND EFFDT   <= WK1.DATE2)
+AND CO.EFFSEQ   = (SELECT MAX(EFFSEQ)
+                   FROM PS_COMPENSATION
+                   WHERE EMPLID = CO.EMPLID
+                   AND EMPL_RCD = CO.EMPL_RCD
+                   AND EFFDT    = CO.EFFDT)
+AND R3.COMPANY =  WK1.COMPANY
+AND R3.EFFDT   = (SELECT MAX(EFFDT)
+                  FROM PS_GPBR_PARM_RAIS3
+                  WHERE COMPANY = R3.COMPANY
+                  AND EFFDT <= WK1.DATE2)
+AND R3.GPBR_RAIS_ETYPE = '04'
+AND R3.PIN_NUM = 0
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, WK1.EMPLID, WK1.EMPL_RCD, WK1.DATE2
+End-SQL
+
+
+#Debug Show ' '
+#Debug show '  INSERT Indemnity [INDEMNITY]'
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, GPBR_CONTRIB_TYPE
+, UNION_CD
+, UNION_CNPJ_BRA)
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID,
+WK1.EMPLID,
+WK1.EMPL_RCD,
+'INDEMNITY',
+DD1.SLICE_END_DT,
+SUM((DD1.CALC_RSLT_VAL + DD1.CALC_ADJ_VAL ) * EE1.GPBR_SIGN_NBR),
+0,
+' ',
+$CalEndDt1,
+$CalEndDt1,
+0,
+0,
+0,
+' ',
+' ',
+' '
+
+FROM
+PS_GP_RSLT_ERN_DED DD1,
+PS_GPBR_PARM_RAIS7 EE1,
+PS_GPBR_RAIS_WRK WK1
+WHERE DD1.EMPLID        = WK1.EMPLID
+AND DD1.EMPL_RCD        = WK1.EMPL_RCD
+AND DD1.GP_PAYGROUP     = WK1.GP_PAYGROUP
+AND DD1.ORIG_CAL_RUN_ID = WK1.ORIG_CAL_RUN_ID
+AND DD1.CAL_ID          = WK1.CAL_ID
+AND DD1.CAL_RUN_ID      = WK1.CAL_RUN_ID
+AND DD1.RSLT_SEG_NUM    = WK1.RSLT_SEG_NUM
+AND DD1.SLICE_BGN_DT    = WK1.DATE1
+AND DD1.SLICE_END_DT    = WK1.DATE2
+AND DD1.PIN_NUM         = EE1.PIN_NUM
+AND EE1.COMPANY         = WK1.COMPANY
+AND EE1.EFFDT           = (SELECT MAX(EE31.EFFDT)
+                           FROM PS_GPBR_PARM_RAIS7 EE31
+                           WHERE EE31.COMPANY = EE1.COMPANY
+                           AND  EE31.EFFDT   <= DD1.SLICE_END_DT)
+AND WK1.PROCESS_INSTANCE = #prcs_process_instance
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, WK1.EMPLID, WK1.EMPL_RCD, DD1.SLICE_END_DT
+End-SQL
+
+#Debug Show ' '
+#Debug show '  INSERT Payments In term [PAYTERM]'
+Do PrintTime (' ')
+Begin-SQL
+    INSERT INTO PS_GPBR_RAIS2_WRK
+    ( PROCESS_INSTANCE
+    , GPBR_CNPJ
+    , RAIS_ESTAB_PRE_BRA
+    , ESTABID
+    , EMPLID
+    , EMPL_RCD
+    , LABEL1
+    , SLICE_END_DT
+    , GPBR_CALC_RSLT_VAL
+    , UNIT_RSLT_VAL
+    ,  GPBR_CONTRIB_TYPE
+    , BGN_DT
+    , END_DT
+    , DURATION_ABS
+    , END_ENTL_BAL
+    , BEGIN_ENTL_BAL
+    ,  GPBR_ABS_RAIS
+, UNION_CD
+, UNION_CNPJ_BRA)
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID,
+WK1.EMPLID,
+WK1.EMPL_RCD,
+'PAYTERM',
+DD1.SLICE_END_DT,
+SUM((DD1.CALC_RSLT_VAL + DD1.CALC_ADJ_VAL ) * EE1.GPBR_SIGN_NBR),
+SUM((DD1.UNIT_RSLT_VAL + DD1.UNIT_ADJ_VAL ) * EE1.GPBR_SIGN_NBR),
+EE1.GPBR_RAIS_TER_TYPE,
+$CalEndDt1,
+$CalEndDt1,
+0,
+0,
+0,
+' ',
+' ',
+' '
+
+FROM
+PS_GP_RSLT_ERN_DED DD1,
+PS_GPBR_PARM_RAIS9 EE1,
+PS_GPBR_RAIS_WRK WK1
+WHERE DD1.EMPLID        = WK1.EMPLID
+AND DD1.EMPL_RCD        = WK1.EMPL_RCD
+AND DD1.GP_PAYGROUP     = WK1.GP_PAYGROUP
+AND DD1.ORIG_CAL_RUN_ID = WK1.ORIG_CAL_RUN_ID
+AND DD1.CAL_ID          = WK1.CAL_ID
+AND DD1.CAL_RUN_ID      = WK1.CAL_RUN_ID
+AND DD1.RSLT_SEG_NUM    = WK1.RSLT_SEG_NUM
+AND DD1.SLICE_BGN_DT    = WK1.DATE1
+AND DD1.SLICE_END_DT    = WK1.DATE2
+AND DD1.PIN_NUM         = EE1.PIN_NUM
+AND EE1.COMPANY         = WK1.COMPANY
+AND EE1.EFFDT           = (SELECT MAX(EE31.EFFDT)
+                           FROM PS_GPBR_PARM_RAIS9 EE31
+                           WHERE EE31.COMPANY = EE1.COMPANY
+                           AND  EE31.EFFDT   <= DD1.SLICE_END_DT)
+AND WK1.PROCESS_INSTANCE = #prcs_process_instance
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, WK1.EMPLID, WK1.EMPL_RCD, DD1.SLICE_END_DT, EE1.GPBR_RAIS_TER_TYPE
+End-SQL
+
+
+#Debug Show ' '
+#Debug show '  INSERT Begin/End Dates [ESTABDT]'
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CONTRIB_TYPE
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, UNION_CD
+, UNION_CNPJ_BRA
+)
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ         ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID           ,
+A.EMPLID              ,
+A.EMPL_RCD            ,
+'ESTABDT'             ,
+MAX(A.EFFDT)          ,
+A.ACTION              ,
+0                     ,
+0                     ,
+B.RAIS_REASON_BRA     ,
+$CalBeginDt1          ,
+$CalEndDt1            ,
+0                     ,
+0                     ,
+0,
+' ',
+' '
+
+FROM PS_JOB A,
+PS_ACTN_REASON_BRA B,
+PS_GPBR_RAIS_WRK WK1
+WHERE WK1.PROCESS_INSTANCE = #prcs_process_instance
+AND A.EMPLID               = WK1.EMPLID
+AND A.EMPL_RCD             = WK1.EMPL_RCD
+AND A.ESTABID              = WK1.ESTABID
+AND A.ACTION               = B.ACTION
+AND A.EFFDT                <= $CalEndDt1
+AND B.ACTION_REASON        = A.ACTION_REASON
+AND B.EFFDT                = (SELECT MAX(EFFDT)
+                              FROM PS_ACTN_REASON_BRA
+                              WHERE ACTION = B.ACTION
+                              AND ACTION_REASON = B.ACTION_REASON
+                              AND EFFDT <= A.EFFDT)
+AND B.RAIS_REASON_BRA IN ('1', '2', '3', '4', '5', '7', '9', '10', '11', '12', '13', '30', '31',
+                            '30','31', '10', '11', '12', '20', '21', '32', '34', '40', '50', '60',
+                            '62', '63', '64', '70', '71', '72', '73', '74', '75','90')
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, A.EMPLID, A.EMPL_RCD, A.ACTION, B.RAIS_REASON_BRA
+End-SQL
+
+#Debug Show ' '
+#Debug show '  INSERT MAX CompRt In Period [MAX_COMPR]'
+Do PrintTime (' ')
+Begin-SQL
+INSERT INTO PS_GPBR_RAIS2_WRK
+( PROCESS_INSTANCE
+, GPBR_CNPJ
+, RAIS_ESTAB_PRE_BRA
+, ESTABID
+, EMPLID
+, EMPL_RCD
+, LABEL1
+, SLICE_END_DT
+, GPBR_CALC_RSLT_VAL
+, UNIT_RSLT_VAL
+, GPBR_ABS_RAIS
+, BGN_DT
+, END_DT
+, DURATION_ABS
+, END_ENTL_BAL
+, BEGIN_ENTL_BAL
+, GPBR_CONTRIB_TYPE
+, UNION_CD
+, UNION_CNPJ_BRA)
+
+SELECT
+#prcs_process_instance,
+WK1.GPBR_CNPJ         ,
+WK1.RAIS_ESTAB_PRE_BRA,
+WK1.ESTABID           ,
+WK1.EMPLID            ,
+WK1.EMPL_RCD          ,
+'MAX_COMPR'           ,
+$CalEndDt1            ,
+MAX(WK1.COMPRATE)     ,
+0                     ,
+' '                   ,
+$CalEndDt1            ,
+$CalEndDt1            ,
+0                     ,
+0                     ,
+0                     ,
+' ',
+' ',
+' '
+
+FROM PS_GPBR_RAIS_WRK WK1
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+GROUP BY WK1.GPBR_CNPJ, WK1.RAIS_ESTAB_PRE_BRA, WK1.ESTABID, WK1.EMPLID, WK1.EMPL_RCD
+End-SQL
+
+
+
+#Debug Show 'Manual: Commit-Transaction after Fill PS_GPBR_RAIS2_WRK table'
+Do PrintTime (' ')
+Do Commit-Transaction
+
+#ifdef ORACLE
+    BEGIN-SQL
+        ANALYZE TABLE PS_GPBR_RAIS2_WRK COMPUTE STATISTICS
+    END-SQL
+#endif
+
+End-Procedure PreFillEmployeeWRK
+
+!***************************************************************************
+Begin-Procedure ProcEstablishment2
+#debug show 'PROCEDURE : ProcEstablishment2'
+Do PrintTime (' ')
+!***************************************************************************
+Let $EstabGuide = ''
+
+Begin-Select
+EG.GPBR_CNPJ
+EG.RAIS_ESTAB_PRE_BRA
+EG.COMPANY
+EG.ESTABID
+EG.COMP_INS_TYPE_BRA
+EG.OWNER_NUM_BRA
+EG.ESTAB_TYPE_CD_BRA
+EG.PAT_OPTION_BRA
+EG.OWN_SERV_PCT_BRA
+EG.KIT_ADMIN_PCT_BRA
+EG.MEAL_AGR_PCT_BRA
+EG.TRANS_MEAL_PCT_BRA
+EG.FOOD_BSKT_PCT_BRA
+EG.TIMECARD_TYPE_BRA
+EG.RAIS_DT_BRA
+EG.FEED_AGR_PCT_BRA
+EG.CAGED_CLOSEACT_BRA
+EG.CAT_DATE_BRA
+!Contributions
+EG.ASSOC_UNION_ID_BRA
+EG.ASSOC_UNION_AM_BRA
+EG.GPBR_ASSOC_CNPJ
+EG.CONTR_UNION_ID_BRA
+EG.CONTR_UNION_AM_BRA
+EG.GPBR_CONTR_CNPJ
+EG.ASSIS_UNION_ID_BRA
+EG.ASSIS_UNION_AM_BRA
+EG.GPBR_ASSIS_CNPJ
+EG.CONFE_UNION_ID_BRA
+EG.CONFE_UNION_AM_BRA
+EG.GPBR_CONFE_CNPJ
+EG.WO_ACTIVITIES_BRA
+EG.DESCR30
+EG.ADDRESS1
+EG.NUM1
+EG.ADDRESS2
+EG.ADDRESS3
+EG.ADDRESS4
+EG.POSTAL
+EG.COUNTY_CD_BRA
+EG.CITY
+EG.STATE
+EG.PHONE
+EG.GPBR_CNAE
+EG.LEGAL_TYPE
+EG.SIMPLES_OPTION_BRA
+EG.GPBR_CEI
+EG.DESCR1
+
+    Let $EstabID      = Rtrim(&EG.ESTABID, ' ')
+    Let $Estab_CNPJ   = Rtrim(&EG.GPBR_CNPJ, ' ')
+    Let $Estab_Prefix = Rtrim(&EG.RAIS_ESTAB_PRE_BRA, ' ')
+    Let $Estab_Key    = $Estab_CNPJ || $Estab_Prefix
+    Let $Company      = Rtrim(&EG.COMPANY, ' ')
+    Let $EstabID_R1   = $EstabID
+    Let $R01-CEI      = Rtrim(&EG.GPBR_CEI, ' ')
+    Let $EstabGuideTMP = $Estab_CNPJ || $Estab_Prefix
+
+    Let $EstabName    = Rtrim(&EG.DESCR30, ' ')
+    Let $CompanyName  = Rtrim(&EG.DESCR1, ' ')
+
+    Let $UnionASOCNPJ = RTrim(&EG.GPBR_ASSOC_CNPJ, ' ')
+    Let $UnionUNICNPJ = RTrim(&EG.GPBR_CONTR_CNPJ, ' ')
+    Let $UnionASICNPJ = RTrim(&EG.GPBR_ASSIS_CNPJ, ' ')
+    Let $UnionCONCNPJ = RTrim(&EG.GPBR_CONFE_CNPJ, ' ')
+
+    If $EstabGuide <> $EstabGuideTMP
+
+        Let $TimeLabel = '$EstabID: ' || $EstabID
+        Do PrintTime ($TimeLabel)
+
+        #Ifdef debug
+            Show '  $EstabID_R1            [' $EstabID_R1 ']'
+            Show '  $Estab_CNPJ            [' $Estab_CNPJ ']'
+            Show '  $Estab_Prefix          [' $Estab_Prefix ']'
+            Show '  $Estab_Key             [' $Estab_Key ']'
+        #endif
+
+        Do BeneficiaryInfo
+        Do Get_Record01
+        Let #EmplMin5 = 0
+        Let #EmplMax5 = 0
+
+        Let #RowsToCommit = 0
+        Do CountWageEmployees
+
+
+        Move #EmplMin5 To $R01-EmplLess5MinWage '000000'
+        Move #EmplMax5 To $R01-EmplMore5MinWage '000000'
+        #Ifdef debug
+            Show '  $EstabID_R1            [' $EstabID_R1 ']'
+            Show '  $Estab_CNPJ            [' $Estab_CNPJ ']'
+            Show '  $Estab_Prefix          [' $Estab_Prefix ']'
+            Show '  $Estab_Key             [' $Estab_Key ']'
+            Show '  #5MinWage              [' #5MinWage ']'
+        #endif
+        #debug Show '      $R01-EmplLess5MinWage     [' $R01-EmplLess5MinWage ']'
+        #debug Show '      $R01-EmplMore5MinWage     [' $R01-EmplMore5MinWage ']'
+
+         If #EmplMin5 > 0 or #EmplMax5 > 0 
+            If $R01-PATIndicator = '2'
+                Let $R01-EmplLess5MinWage = '000000'
+                Let $R01-EmplMore5MinWage = '000000'
+            End-If
+
+            Let $PrintRecord01 = 'Y'
+            If (#EmplMin5 + #EmplMax5) = 0
+                Let $R01-RAISType = '1'
+            Else
+                Let $R01-RAISType = '0'
+            End-If
+            Let $R01-EstabInscription = $Estab_CNPJ
+            Let $R01-EstabPrefix      = $Estab_Prefix
+
+            Let $R09-PrefixLastEstab  = $Estab_Prefix
+            Let $R09-InscriLastEstab  = $Estab_CNPJ
+
+            If $PrintRecord01 = 'Y'
+                Do Put_Record01
+                ! Activities check
+                #Debug show '         $WOActivities :' $WOActivities
+                if $WOActivities <> 'Y'
+                    Do Get_Record02
+                End-if
+            End-if
+
+            Let $EstabGuide = $EstabGuideTMP
+        End-If
+    End-If
+
+FROM PS_GPBR_RAIS_E_WRK EG
+WHERE EG.PROCESS_INSTANCE = #prcs_process_instance
+
+ORDER BY EG.GPBR_CNPJ, EG.RAIS_ESTAB_PRE_BRA
+End-Select
+End-Procedure ProcEstablishment2
+
+!***************************************************************************
+Begin-Procedure OpenFile ($Name, #Number, $Year, $Instance, :$Raisfile)
+#debug show 'PROCEDURE : OpenFile'
+!***************************************************************************
+!Convert special characters in filename
+Let $Name = replace($Name,'|','_')
+Let $Name = replace($Name,' ','_')
+Let $Name = replace($Name,';','_')
+Let $Name = replace($Name,'+','_')
+Let $Name = replace($Name,'%','_')
+Let $Name = replace($Name,'&','_')
+Let $Name = replace($Name,'''','_')
+Let $Name = replace($Name,'!!','_')
+Let $Name = replace($Name,'@','_')
+Let $Name = replace($Name,'#','_')
+Let $Name = replace($Name,'$','_')
+Let $Name = replace($Name,'\','_')
+Let $Name = replace($Name,'/','_')
+Let $Name = replace($Name,':','_')
+Let $Name = replace($Name,'*','_')
+Let $Name = replace($Name,'"','_')
+Let $Name = replace($Name,'<','_')
+Let $Name = replace($Name,'>','_')
+    #debug show '$Name     :' $Name
+    #debug Show '$Year     :' $Year
+    #debug Show '$Instance :'  $Instance
+Move #Number To $Number '0000'
+Let $FileName = '{FILEPREFIX}'|| $Name || $Year || '_' || $Instance || '.txt' || '{FILESUFFIX}'
+
+Open $FileName as #Number for-writing record=1000 status=#filestat
+If #filestat != 0
+    Display 'Error opening file ' noline
+    Display $FileName
+Else
+    #Debug Display 'File Open success ' noline
+    #Debug Display $FileName
+End-If
+Let $Raisfile = $FileName
+End-Procedure OpenFile
+
+!***************************************************************************
+Begin-Procedure Get_Record00
+#debug show 'PROCEDURE : Get_Record00'
+#Debug Show '    $Centr_Estab  :' $Centr_Estab
+#Debug Show '    $Addr_Type    :' $Addr_Type
+!***************************************************************************
+!_______________Get_Mail Indicator
+Let $R00-MailType = $Addr_Type
+
+!_______________Get Inscription Of Responsible Establishment in RAIS Parameters
+Let $R00-Resp-InscType    = ''
+Let $R00-Resp-Inscription = ''
+
+If $Centr_Ind = 'Y'
+
+   Let $EstabID_R0 = $Centr_Estab
+
+Else
+
+Begin-Select
+RP.GPBR_ESTAB_RESP
+
+   Let $EstabID_R0 = RTrim(&RP.GPBR_ESTAB_RESP, ' ')
+
+FROM PS_GPBR_PARM_RAIS RP
+WHERE RP.COMPANY = $Company
+AND RP.EFFDT = (SELECT MAX(RPI.EFFDT)
+                   FROM PS_GPBR_PARM_RAIS RPI
+                  WHERE RPI.COMPANY = RP.COMPANY
+                    AND RPI.EFFDT <= $CalEndDt1)
+End-Select
+
+End-if
+
+
+Begin-Select
+T.COMP_INS_TYPE_BRA
+T.RAIS_REP_TYPE_BRA
+T.RAIS_RESP_ID_BRA
+T.RAIS_ESTAB_PRE_BRA
+
+    If &T.COMP_INS_TYPE_BRA = '10'
+        Let $InscriptionType = 'CNPJ'
+        Let $R00-Resp-InscType    = '1'
+    End-If
+    If &T.COMP_INS_TYPE_BRA = '20'
+        Let $InscriptionType = 'CEI'
+        Let $R00-Resp-InscType    = '3'
+    End-If
+
+    Let $ResponsibleType = Rtrim(&T.RAIS_REP_TYPE_BRA, ' ')
+    Let $ResponsibleID   = Rtrim(&T.RAIS_RESP_ID_BRA, ' ')
+
+    #debug Show '  InscriptionType       [' $InscriptionType ']'
+    #debug Show '  ResponsibleType       [' $ResponsibleType ']'
+    #debug Show '  ResponsibleID         [' $ResponsibleID ']'
+
+FROM PS_ESTAB_TBL_BRA T
+WHERE T.ESTABID = $EstabID_R0
+AND T.EFFDT = (SELECT MAX(T2.EFFDT)
+               FROM PS_ESTAB_TBL_BRA T2
+               WHERE T2.ESTABID = T.ESTABID
+               AND T2.EFFDT <= $CalEndDt1)
+End-Select
+
+If $ResponsibleType = '3'
+    Write 10000 From 'O tipo responsável ' $ResponsibleID ' é inválido para RAIS, Use por favor um empregado ou não empregado'
+    Let $ResponsibleID = ''
+End-if
+
+!_______________Get Inscription of Establishment Responsible
+Let $ROO-InscripEstab = ''
+Begin-Select
+I.ESTAB_ID_BRA
+
+    Let $R00-Resp-Inscription = Rtrim(&I.ESTAB_ID_BRA, ' ')
+    #debug Show '  Inscription ID        [' $R00-Resp-Inscription ']'
+
+FROM PS_ESTAB_ID_BRA I
+WHERE I.ESTABID = $EstabID_R0
+AND I.ESTAB_ID_TYPE_BRA = $InscriptionType
+AND I.EFFDT = (SELECT MAX(I2.EFFDT)
+               FROM PS_ESTAB_ID_BRA I2
+               WHERE I2.ESTABID = I.ESTABID
+               AND I2.EFFDT <= $CalEndDt1)
+End-Select
+
+!________________Check if Responsible Establishment has CNPJ for use in Record 01 $R01-CentrCNPJ
+Let $R01-CentrCNPJ = ''
+If $R00-Resp-InscType = '1'
+    Let $R01-CentrCNPJ = $R00-Resp-Inscription
+End-If
+#debug Show '  R01-CentrCNPJ         [' $R01-CentrCNPJ ']'
+
+
+If $R00-Resp-Inscription = '' or $R00-Resp-Inscription = ' '
+    Write 10000 From 'Aviso: Informação faltante, Estabelecimento: ' $EstabID_R0 ' sem ' $InscriptionType
+End-If
+
+!_______________ Get Responsible Name
+
+If $Centr_Ind = 'Y'
+    !If centralization is active override company and establishmento according to
+    !Run control parameters
+
+    Let $Company_R0 = $Centr_Comp
+    Let $EstabID_R0 = $Centr_Estab
+Else
+    Let $Company_R0 = $Company
+    Let $EstabID_R0 = $Centr_Estab
+End-If
+
+Let $R00-Resp-Name = ''
+Do GetLegalNameOption !from RAIS Parameters
+
+If $LegalNameOption = '1'
+!Get Company Description
+begin-select
+CN.DESCR
+    let $CompDescr = rtrim(&CN.DESCR, ' ')
+    #debug show '  $LegalNameDescr   [' $LegalNameDescr ']'
+
+from PS_COMPANY_TBL CN
+where CN.COMPANY = $Company
+and CN.EFF_STATUS = 'A'
+and CN.EFFDT = (select MAX(CN2.EFFDT)
+                from PS_COMPANY_TBL CN2
+                where CN2.COMPANY = CN.COMPANY
+                and CN2.EFF_STATUS = CN.EFF_STATUS
+                and CN2.EFFDT <= $CalEndDt1)
+end-select
+
+
+
+begin-select
+LN.DESCR
+ let $CompDescrL = rtrim(&LN.DESCR, ' ')
+    #debug show '  $LegalNameDescr   [' $LegalNameDescr ']'
+
+from PS_COMPNY_TBL_LANG LN
+where LN.COMPANY = $Company
+and LN.LANGUAGE_CD = $LangCD
+and LN.EFFDT = (select MAX(LN2.EFFDT)
+                from PS_COMPNY_TBL_LANG LN2
+                where LN2.COMPANY = LN.COMPANY
+                and LN2.LANGUAGE_CD = LN.LANGUAGE_CD
+                and LN2.EFFDT <= $CalEndDt1)
+
+end-select
+
+
+
+if $CompDescrL = ''
+
+ let $LegalNameDescr = $CompDescr
+else
+ let $LegalNameDescr = $CompDescrL
+
+end-if
+
+Else
+!Get Establishment Description
+Begin-Select
+EN.DESCR
+
+    Let $LegalNameDescr = Rtrim(&EN.DESCR, ' ')
+    #debug Show '  $LegalNameDescr        [' $LegalNameDescr ']'
+
+FROM PS_ESTAB_TBL EN
+WHERE EN.ESTABID = $EstabID_R0
+AND EN.EFF_STATUS = 'A'
+and EN.EFFDT = (SELECT MAX(EN2.EFFDT)
+                FROM PS_ESTAB_TBL EN2
+                WHERE EN2.ESTABID = EN.ESTABID
+                AND EN2.EFF_STATUS = EN.EFF_STATUS
+                AND EN2.EFFDT <= $CalEndDt1)
+End-Select
+End-If
+
+Let $R00-Resp-Name = $LegalNameDescr
+!_______________Get Responsible Address
+Let $R00-Resp-Address      = ''
+Let $R00-Resp-Number       = ''
+Let $R00-Resp-Complement   = ''
+Let $R00-Resp-Neighborhood = ''
+Let $R00-Resp-ZipCode      = ''
+Let $R00-Resp-Citycode     = ''
+Let $R00-Resp-CityName     = ''
+Let $R00-Resp-UFCode       = ''
+
+If $Addr_Type = '1'
+
+    !Get Bussines Address from Reposnible Person
+    #Debug show '    $ResponsibleID :' $ResponsibleID
+
+    Do GetPersonAddress($ResponsibleID, $CalEndDt1, $Ad, $Nu, $Co, $Ne, $Zc, $Cc, $Cn, $UF)
+        Let $R00-Resp-Address      = $Ad
+        Let $R00-Resp-Number       = $Nu
+        Let $R00-Resp-Complement   = $Co
+        Let $R00-Resp-Neighborhood = $Ne
+        Let $R00-Resp-ZipCode      = $Zc
+        Let $R00-Resp-Citycode     = $Cc
+        Let $R00-Resp-CityName     = $Cn
+        Let $R00-Resp-UFCode       = $UF
+
+    If $Ad = '' Or $Nu = '' Or $Co = '' Or $Ne = '' Or $Ne = '' Or $Zc = '' Or $Cc = '' Or $Cn = '' Or $Uf = ''
+        Write 10000 From  'Aviso: Empregado: ' $ResponsibleID ' Endereço incompleto'
+    End-If
+
+
+Else
+    !Get Establishment Responsible Address
+    Do GetEstabAddress($EstabID_R0, $CalEndDt1, $Ad, $Nu, $Co, $Ne, $Zc, $Cc, $Cn, $UF)
+        Let $R00-Resp-Address      = $Ad
+        Let $R00-Resp-Number       = $Nu
+        Let $R00-Resp-Complement   = $Co
+        Let $R00-Resp-Neighborhood = $Ne
+        Let $R00-Resp-ZipCode      = $Zc
+        Let $R00-Resp-Citycode     = $Cc
+        Let $R00-Resp-CityName     = $Cn
+        Let $R00-Resp-UFCode       = $UF
+
+    If $Ad = '' Or $Nu = '' Or $Co = '' Or $Ne = '' Or $Ne = '' Or $Zc = '' Or $Cc = '' Or $Cn = '' Or $Uf = ''
+        Write 10000 From  'Aviso: Estabelecimento: ' $EstabID_R0 ' Endereço incompleto'
+    End-If
+
+End-If
+
+    Do GetPersonPhone($ResponsibleID, $R00-Contact-DDDPhone, $R00-Contact-Phone)
+    Do GetPersonEmail($ResponsibleID, $R00-Resp-email)
+    Do GetResponsibleName ($ResponsibleID, $R00-Resp-Name2)
+    Do GetResponsibleCPF($ResponsibleID, $R00-RespCPF)
+
+!******* Reponsable Birth date (ddmmaaaa)
+Let $R00-Resp-BirthDate = ' '
+Let $Bdate = ''
+
+Begin-Select
+BD.BIRTHDATE
+
+    Let $Bdate = Rtrim(&BD.BIRTHDATE, ' ')
+
+FROM PS_PERSON BD
+WHERE BD.EMPLID = $ResponsibleID
+End-Select
+
+if $Bdate <> ''
+    Do Convert-To-DTU-Date($Bdate, $Bdate)
+    Do DTU-Parse-Date($Bdate, #yyyy, #mm, #dd)
+
+    Move #yyyy to $Y '0000'
+    Move #mm   to $M '00'
+    Move #dd   to $D '00'
+
+    Let $R00-Resp-BirthDate = $D || $M || $Y
+Else
+    Write 10000 From 'Aviso: Responsável ' $ResponsibleID ' sem Data de nascimento'
+End-If
+
+#debug show '    $Bdate             : ' $Bdate
+#debug show '    $R00-Resp-BirthDate: ' $R00-Resp-BirthDate
+
+End-Procedure Get_Record00
+
+!***************************************************************************
+Begin-Procedure GetResponsibleName ($Resp_ID, :$RespName2)
+#debug show 'Procedure: GetResponsibleName'
+!***************************************************************************
+Let $LegalNamePresent = 'N'
+Let #NameLength = 0
+Begin-Select
+EN.FIRST_NAME
+EN.MIDDLE_NAME
+EN.LAST_NAME
+EN.SECOND_LAST_NAME
+EN.NAME_TYPE
+
+    Let $FirstName   = Rtrim(&EN.FIRST_NAME, ' ')
+    Let $MidName     = Rtrim(&EN.MIDDLE_NAME, ' ')
+    Let $LastName    = Rtrim(&EN.LAST_NAME, ' ')
+    Let $SecLastName = Rtrim(&EN.SECOND_LAST_NAME, ' ')
+
+    Let $EnName      = $FirstName || ' ' || $MidName || ' ' || $LastName || ' ' || $SecLastName
+    Let $EnNameType  = Rtrim (&EN.NAME_TYPE, ' ')
+
+    If $EnNameType = 'LEG'
+        Do CleanString($EnName, $EnName)
+        Let #NameLength = Length($EnName)
+        If #NameLength > 30
+            Write 10000 From 'Aviso: Nome legal do empregado ' $Emplid ' com mais de 30 caráteres'
+        End-if
+        Let $RespName2 = $EnName
+        Let $LegalNamePresent = 'Y'
+    End-If
+    If $EnNameType = 'PRI' And $LegalNamePresent = 'N'
+        Do CleanString($EnName, $EnName)
+        Let #NameLength = Length($EnName)
+        If #NameLength > 30
+            Write 10000 From 'Aviso: Nome legal do empregado ' $Emplid ' não encontrado, nome principal com mais de 30 caráteres'
+        End-if
+        Let $RespName2 = $EnName
+    End-If
+
+FROM PS_NAMES EN
+WHERE EN.EMPLID = $Resp_ID
+AND EN.EFFDT = (SELECT MAX(EN2.EFFDT)
+                FROM PS_NAMES EN2
+                WHERE EN2.EMPLID = EN.EMPLID
+                AND EN2.NAME_TYPE = EN.NAME_TYPE)
+ORDER BY EN.NAME_TYPE ASC
+End-Select
+
+End-Procedure GetResponsibleName
+
+!***************************************************************************
+Begin-Procedure GetResponsibleCPF ($Resp_ID, :$RespCPF)
+#debug show 'Procedure: GetResponsibleCPF'
+!***************************************************************************
+Let $RespCPF = ''
+Begin-Select
+NATIONAL_ID
+  Let $RespCPF = Rtrim(&NATIONAL_ID, ' ')
+
+FROM PS_PERS_NID
+WHERE EMPLID = $Resp_ID
+AND COUNTRY = 'BRA'
+AND NATIONAL_ID_TYPE = 'CPF'
+End-Select
+
+If $RespCPF = ''
+    Write 10000 From  'Aviso: Informação faltante ou invalid, responsável: ' $Resp_ID ' sem CPF'
+End-if
+
+End-Procedure GetResponsibleCPF
+
+!***************************************************************************
+Begin-Procedure Put_Record00
+#debug show 'PROCEDURE : Put_Record00'
+!***************************************************************************
+Let $R00-Type = '0'
+Let $R00-FixedNbr = '1'
+Let #SEQ = #SEQ + 1
+Let $R00-RegSize = '0551'
+Move #SEQ to $R00-Seq 000000
+
+Do ToNumField ($R00-InscriFirstEstab, 14, $R00-InscriFirstEstab)
+Do ToNumField ($R00-MailType, 1, $R00-MailType)
+Do ToNumField ($R00-Resp-Inscription, 14, $R00-Resp-Inscription)
+Do ToNumField ($R00-Resp-InscType, 1, $R00-Resp-InscType)
+Do CleanString ($R00-Resp-Name, $R00-Resp-Name)
+Do CleanString ($R00-Resp-Address, $R00-Resp-Address)
+Do OnlyNumbers ($R00-Resp-Number,6 , $R00-Resp-Number)
+Do CleanString ($R00-Resp-Complement, $R00-Resp-Complement)
+Do CleanString ($R00-Resp-Neighborhood, $R00-Resp-Neighborhood)
+Do ToNumField ($R00-Resp-ZipCode, 8, $R00-Resp-ZipCode)
+Do ToNumField ($R00-Resp-Citycode, 7, $R00-Resp-Citycode)
+Do CleanString ($R00-Resp-CityName, $R00-Resp-CityName)
+Do CleanString ($R00-Resp-UFCode, $R00-Resp-UFCode)
+Do ToNumField ($R00-Contact-DDDPhone, 2, $R00-Contact-DDDPhone)
+!Do ToNumField ($R00-Contact-Phone, 8, $R00-Contact-Phone)
+!Do ToNumField ($R00-Contact-Phone, 9, $R00-Contact-Phone)
+Do ToNumField ($R00-Rectification, 1, $R00-Rectification)
+Do ToNumField ($R00-Rectification-Date, 8, $R00-Rectification-Date)
+Do ToNumField ($R00-GenerationDate, 8, $R00-GenerationDate)
+Do ToNumField ($R00-RespCPF, 11, $R00-RespCPF)
+Do ToNumField ($R00-CREA, 12, $R00-CREA)
+
+Write #FileNumber From $R00-Seq:6                   -
+                       $R00-InscriFirstEstab:14     -
+                       $R00-PrefixFirstEstab:2      -
+                       $R00-Type:1                  -
+                       !$R00-MailType:1              -  Replaced by $R00-FixedNbr variable in RAIS 2017 layout                 
+                       $R00-FixedNbr:1              -
+                       $R00-Resp-Inscription:14     -
+                       $R00-Resp-InscType:1         -
+                       $R00-Resp-Name:40            -
+                       $R00-Resp-Address:40         -
+                       $R00-Resp-Number:6           -
+                       $R00-Resp-Complement:21      -
+                       $R00-Resp-Neighborhood:19    -
+                       $R00-Resp-ZipCode:8          -
+                       $R00-Resp-Citycode:7         -
+                       $R00-Resp-CityName:30        -
+                       $R00-Resp-UFCode:2           -
+                       $R00-Contact-DDDPhone:2      -
+                       !$R00-Contact-Phone:8         -
+                       $R00-Contact-Phone:9         -
+                       $R00-Rectification:1         -
+                       $R00-Rectification-Date:8    -
+                       $R00-GenerationDate:8        -
+                       $R00-Resp-email:45           -
+                       $R00-Resp-Name2:52           -
+                       !$R00-Spaces:20               -
+                       $R00-Spaces:24               -
+                       !$R00-RegSize:4               -
+                       $R00-RespCPF:11              -
+                       $R00-CREA:12                 -
+                       $R00-Resp-BirthDate:8        -
+                       !$R00-Spaces:160
+                       $R00-Spaces:159
+
+
+#Debug Show '$R00-Seq                [' $R00-Seq ']'
+#Debug Show '$R00-InscriFirstEstab   [' $R00-InscriFirstEstab ']'
+#Debug Show '$R00-PrefixFirstEstab   [' $R00-PrefixFirstEstab ']'
+#Debug Show '$R00-Type               [' $R00-Type ']'
+#Debug Show '$R00-FixedNbr           [' $R00-FixedNbr ']'
+#Debug Show '$R00-Resp-Inscription   [' $R00-Resp-Inscription ']'
+#Debug Show '$R00-Resp-InscType      [' $R00-Resp-InscType ']'
+#Debug Show '$R00-Resp-Name          [' $R00-Resp-Name ']'
+#Debug Show '$R00-Resp-Address       [' $R00-Resp-Address ']'
+#Debug Show '$R00-Resp-Number        [' $R00-Resp-Number ']'
+#Debug Show '$R00-Resp-Complement    [' $R00-Resp-Complement ']'
+#Debug Show '$R00-Resp-Neighborhood  [' $R00-Resp-Neighborhood ']'
+#Debug Show '$R00-Resp-ZipCode       [' $R00-Resp-ZipCode ']'
+#Debug Show '$R00-Resp-Citycode      [' $R00-Resp-Citycode ']'
+#Debug Show '$R00-Resp-CityName      [' $R00-Resp-CityName ']'
+#Debug Show '$R00-Resp-UFCode        [' $R00-Resp-UFCode ']'
+#Debug Show '$R00-Contact-DDDPhone   [' $R00-Contact-DDDPhone ']'
+#Debug Show '$R00-Contact-Phone      [' $R00-Contact-Phone ']'
+#Debug Show '$R00-Rectification      [' $R00-Rectification ']'
+#Debug Show '$R00-Rectification-Date [' $R00-Rectification-Date ']'
+#Debug Show '$R00-GenerationDate     [' $R00-GenerationDate ']'
+#Debug Show '$R00-Resp-email         [' $R00-Resp-email ']'
+#Debug Show '$R00-Resp-Name2         [' $R00-Resp-Name2 ']'
+#Debug Show '$R00-Spaces             [' $R00-Spaces ']'
+#Debug Show '$R00-RegSize            [' $R00-RegSize ']'
+#Debug Show '$R00-RespCPF            [' $R00-RespCPF ']'
+#Debug Show '$R00-CREA               [' $R00-CREA ']'
+#Debug Show '$R00-Resp-BirthDate     [' $R00-Resp-BirthDate ']'
+#Debug Show '$R00-Spaces             [' $R00-Spaces ']'
+
+End-Procedure Put_Record00
+
+!***************************************************************************
+Begin-Procedure Get_Record01
+#debug show 'PROCEDURE : Get_Record01'
+!***************************************************************************
+#Debug Show '      Get Record01 for Establishment :' $EstabID_R1
+
+!Get Establishment Inscription Type and Number of Owners
+Let $EstabInscrType = ''
+
+    If &EG.COMP_INS_TYPE_BRA = '10'
+        Let $EstabInscrType  = 'CNPJ'
+        Let $R01-InscType    = '1'
+    End-If
+    If &EG.COMP_INS_TYPE_BRA = '20'
+        Let $EstabInscrType  = 'CEI'
+        Let $R01-InscType    = '3'
+    End-If
+    If &EG.PAT_OPTION_BRA     = 'Y'
+        Let $R01-PATIndicator = '1'
+    Else
+        Let $R01-PATIndicator = '2'
+    End-if
+    Let $R01-ClosingDate = ''
+    Let $WOActivities = Rtrim(&EG.WO_ACTIVITIES_BRA, ' ')
+    If &EG.CAGED_CLOSEACT_BRA = 'Y'
+        Let $R01-Closing = '1'
+        Let $CDate = Rtrim(&EG.CAT_DATE_BRA, ' ')
+        Do Convert-To-DTU-Date($CDate, $CDate1)
+        Do DTU-Parse-Date($CDate1, #cYear,#cMonth,#cDay)
+        Move #cYear  To $cYYYY '0000'
+        Move #cMonth To $cMM   '00'
+        Move #cDay   To $cDD   '00'
+        Let $R01-ClosingDate = $cDD || $cMM || $cYYYY
+    Else
+        Let $R01-Closing = '2'
+    End-if
+
+
+    Let $R01-EstabPrefix = Rtrim(&EG.RAIS_ESTAB_PRE_BRA, ' ')
+
+    Move &EG.OWNER_NUM_BRA To $R01-Owners '0000'
+    Let $R01-CoSize = Rtrim(&EG.ESTAB_TYPE_CD_BRA, ' ')
+
+    Move &EG.OWN_SERV_PCT_BRA   To $R01-PercentOwnService '000'
+    Move &EG.KIT_ADMIN_PCT_BRA  To $R01-PercentKitchen    '000'
+    Move &EG.MEAL_AGR_PCT_BRA   To $R01-PercentMeals      '000'
+    Move &EG.TRANS_MEAL_PCT_BRA To $R01-PercentTrasport   '000'
+    move &EG.FOOD_BSKT_PCT_BRA  to $R01-PercentFood       '000'
+    move &EG.TIMECARD_TYPE_BRA  to $R01-TimecardType      '00'
+    Move &EG.FEED_AGR_PCT_BRA   To $R01-PercentFeed       '000'
+    move &EG.TIMECARD_TYPE_BRA  to $R01-TimecardType
+
+    let $R01-BaseDateSalary = rtrim(&EG.RAIS_DT_BRA, ' ')
+
+    Let $AsoID = Rtrim (&EG.ASSOC_UNION_ID_BRA, ' ')
+        Do GetUnionCNPJ ($AsoID, $CalEndDt1, $R01-Aso-CNPJ)
+        Let $UniID = Rtrim (&EG.CONTR_UNION_ID_BRA, ' ')
+        Do GetUnionCNPJ ($UniID, $CalEndDt1, $R01-Uni-CNPJ)
+        Let $AsiID = Rtrim (&EG.ASSIS_UNION_ID_BRA, ' ')
+        Do GetUnionCNPJ ($AsiID, $CalEndDt1, $R01-Asi-CNPJ)
+        Let $ConID = Rtrim (&EG.CONFE_UNION_ID_BRA, ' ')
+        Do GetUnionCNPJ ($ConID, $CalEndDt1, $R01-Con-CNPJ)
+
+        Move &EG.ASSOC_UNION_AM_BRA To $R01-Aso-Amount        '0000000.00'
+        Do RemovePoint ($R01-Aso-Amount, $R01-Aso-Amount)
+        Move &EG.CONTR_UNION_AM_BRA To $R01-Uni-Amount        '0000000.00'
+        Do RemovePoint ($R01-Uni-Amount, $R01-Uni-Amount)
+        Move &EG.ASSIS_UNION_AM_BRA To $R01-Asi-Amount        '0000000.00'
+        Do RemovePoint ($R01-Asi-Amount, $R01-Asi-Amount)
+        Move &EG.CONFE_UNION_AM_BRA To $R01-Con-Amount        '0000000.00'
+        Do RemovePoint ($R01-Con-Amount, $R01-Con-Amount)
+
+
+    #debug Show '      Inscription Type       [' $EstabInscrType ']'
+    #debug Show '      $R01-EstabPrefix       [' $R01-EstabPrefix ']'
+    #debug Show '      $R01-Owners            [' $R01-Owners ']'
+    #debug Show '      $R01-InscType          [' $R01-InscType ']'
+    #debug Show '      $R01-CoSize            [' $R01-CoSize ']'
+    #debug Show '      $R01-PATIndicator      [' $R01-PATIndicator ']'
+    #debug Show '      $R01-PercentOwnService [' $R01-PercentOwnService ']'
+    #debug Show '      $R01-PercentKitchen    [' $R01-PercentKitchen ']'
+    #debug Show '      $R01-PercentMeals      [' $R01-PercentMeals ']'
+    #debug Show '      $R01-PercentTrasport   [' $R01-PercentTrasport ']'
+    #debug Show '      $R01-PercentFood       [' $R01-PercentFood ']'
+    #debug Show '      $R01-PercentFeed       [' $R01-PercentFeed ']'
+    #debug Show '      $R01-ClosingDate       [' $R01-ClosingDate ']'
+
+    #debug Show '      $R01-Aso-CNPJ          ['$R01-Aso-CNPJ ']'
+    #debug Show '      $R01-Aso-Amount        ['$R01-Aso-Amount ']'
+    #debug Show '      $R01-Uni-CNPJ          ['$R01-Uni-CNPJ ']'
+    #debug Show '      $R01-Uni-Amount        ['$R01-Uni-Amount ']'
+    #debug Show '      $R01-Asi-CNPJ          ['$R01-Asi-CNPJ ']'
+    #debug Show '      $R01-Asi-Amount        ['$R01-Asi-Amount ']'
+    #debug Show '      $R01-Con-CNPJ          ['$R01-Con-CNPJ ']'
+    #debug Show '      $R01-Con-Amount        ['$R01-Con-Amount ']'
+    #debug Show '      $R01-UnionIndicator    ['$R01-UnionIndicator ']'
+    #debug show '      $R01-TimecardType      ['$R01-TimecardType ']'
+    #debug show '      $R01-BaseDateSalary    ['$R01-BaseDateSalary ']'
+
+!Get Legal Company Name
+    !*** For Establishment Record 01 always use Establishment name
+    Do GetEstabLegalNameOption
+    If $LglEstbNmOptn = 'COM'
+       Let $R01-LegalName = $CompanyName
+    Else
+       Let $R01-LegalName = $EstabName
+    End-If
+
+!Get Establishment Address
+    Let $R01-Address      = Rtrim(&EG.ADDRESS1, ' ')
+    Let $R01-Number       = Rtrim(&EG.NUM1, ' ')
+    Let $R01-Complement   = Rtrim(&EG.ADDRESS2, ' ') || ' ' || Rtrim(&EG.ADDRESS3, ' ')
+    Let $R01-Neighborhood = Rtrim(&EG.ADDRESS4, ' ')
+    Let $R01-Zipcode      = Rtrim(&EG.POSTAL, ' ')
+    Move &EG.COUNTY_CD_BRA to $R01-CityCode '0000000'
+    Let $R01-CityName     = Rtrim(&EG.CITY, ' ')
+    Let $R01-UFCode       = Rtrim(&EG.STATE, ' ')
+
+            #debug Show '  $R01-Address       [' $R01-Address ']'
+            #debug Show '  $R01-Number        [' $R01-Number ']'
+            #debug Show '  $R01-Complement    [' $R01-Complement ']'
+            #debug Show '  $R01-Neighborhood  [' $R01-Neighborhood ']'
+            #debug Show '  $R01-Zipcode       [' $R01-Zipcode ']'
+            #debug Show '  $R01-CityName      [' $R01-CityName ']'
+            #debug Show '  $R01-UFCode        [' $R01-UFCode ']'
+            #debug Show '  $R01-CityCode      [' $R01-CityCode ']'
+
+    If $R01-Address = '' Or $R01-Number = '' Or $R01-Complement = ''
+       Or $R01-Neighborhood = '' Or $Ne = '' Or $R01-Zipcode = ''
+       Or $R01-CityCode = '' Or $R01-CityName = '' Or $R01-UFCode = ''
+        Write 10000 From  'Aviso: Estabelecimento: ' $EstabID_R1 ' Endereço incompleto'
+    End-If
+
+
+!Get Establishment Phone
+    Do GetPhoneBRA (&EG.PHONE, $PhoneDDI, $PhoneDDD, $Phone, $PhoneRamal)
+
+    Let $R01-DDDPhone = $PhoneDDD
+    Let $R01-Phone    = $Phone
+
+    #Debug Show '   $R01-DDDPhone :' $R01-DDDPhone '   $R01-Phone :' $R01-Phone
+
+!Get Establishment - Take Email Responsible
+    Let $R01-EstabEmail = $R00-Resp-email
+
+!Get Establishment CNAE
+    Let $R01-CNAECode = Rtrim(&EG.GPBR_CNAE, ' ')
+Let #lenghtCNAE = LENGTH($R01-CNAECode)
+
+    If $R01-CNAECode = ''
+        Write 10000 From  'Aviso: Estabelecimento: ' $EstabID_R1 ' sem CNAE'
+    End-if
+    If #lenghtCNAE <> 7
+        Write 10000 From  'Aviso: O tamanho de CNAE não está correto (7 posições), Estabelecimento: ' $EstabID_R1
+    End-if
+
+!Get company Legal Nature
+    Let $R01-LegalNature = Rtrim(&EG.LEGAL_TYPE, ' ')
+    #debug Show '      $R01-LegalNature         [' $R01-LegalNature '] ' $Company
+
+    If $R01-LegalNature = ''
+        Write 10000 From  'Aviso: Informação faltante, Companhia: ' $Company ' sem Natureza Jurídica'
+    End-if
+
+!Get Option To Simples
+
+    Let $Option = Rtrim(&EG.SIMPLES_OPTION_BRA, ' ')
+    Evaluate $Option
+        When = '01'
+        When = '04'
+        When = '05'
+            !without Option
+            Let $R01-OptionIndicator = '2'
+            Break
+        When = '02'
+        When = '03'
+        When = '06'
+            !with Option
+            Let $R01-OptionIndicator = '1'
+            Break
+    End-Evaluate
+    #debug Show '      $R01-OptionIndicator      [' $R01-OptionIndicator ']'
+
+End-Procedure Get_Record01
+
+!***************************************************************************
+Begin-Procedure Put_Record01
+#debug show 'PROCEDURE : Put_Record01'
+!***************************************************************************
+Let #Records1 = #Records1 + 1
+Let #SEQ       = #SEQ + 1
+Move #SEQ      to $R01-Seq 000000
+Let $R01-Type  = '1'
+Let $R01-Zeros = '00'
+Let $R01-YearBase = $Year
+Let $R01-CompanyUsage = $EstabID_R1
+
+#debug show '$R01-CEI        :' $R01-CEI
+#debug show '$R01-CentrCNPJ  :' $R01-CentrCNPJ
+
+if $WOActivities <> 'Y'
+        Let $R01-Activity = '1'
+    Else
+        Let $R01-Activity = '2'
+End-if
+
+Let $R01-CentrIndicator = '2'
+Let $R01-CentrCNPJX = '00000000000000'
+Let $R01-UnionIndicator = '2'
+
+If $R01-CentrCNPJ = ''
+    Write 10000 From  'Aviso: Informação faltante, CNPJ-Centralizador, Estabelecimiento Responsável : ' $EstabID_R0 ' sem CNPJ. '
+End-If
+
+!this change is to allow include CNPJs and CEIs in the same file
+Let $R01-InscType = '1'
+
+Do ToNumField ($R01-EstabInscription, 14, $R01-EstabInscription)
+Do CleanString ($R01-LegalName, $R01-LegalName)
+Do CleanString ($R01-Address, $R01-Address)
+Do ToNumField ($R01-Number, 6, $R01-Number)
+Do CleanString ($R01-Complement, $R01-Complement)
+Do CleanString ($R01-Neighborhood, $R01-Neighborhood)
+Do ToNumField ($R01-Zipcode, 8, $R01-Zipcode)
+Do ToNumField ($R01-CityCode, 7, $R01-CityCode)
+Do CleanString ($R01-CityName, $R01-CityName)
+Do CleanString ($R01-UFCode, $R01-UFCode)
+Do ToNumField ($R01-DDDPhone, 2, $R01-DDDPhone)
+!Do ToNumField ($R01-Phone, 8, $R01-Phone)
+!Do ToNumField ($R01-Phone, 9, $R01-Phone)
+Do ToNumField ($R01-CNAECode, 7, $R01-CNAECode)
+Do ToNumField ($R01-LegalNature, 4, $R01-LegalNature)
+!Do ToNumField ($R01-Owners, 2, $R01-Owners)
+Do ToNumField ($R01-Owners, 4, $R01-Owners)
+Do ToNumField ($R01-BaseDateSalary, 2, $R01-BaseDateSalary)
+Do ToNumField ($R01-InscType, 1, $R01-InscType)
+Do ToNumField ($R01-RAISType, 1, $R01-RAISType)
+Do ToNumField ($R01-Zeros, 2, $R01-Zeros)
+Do ToNumField ($R01-CEI, 12, $R01-CEI)
+Do ToNumField ($R01-YearBase, 4, $R01-YearBase)
+Do ToNumField ($R01-CoSize, 1, $R01-CoSize)
+Do ToNumField ($R01-OptionIndicator, 1, $R01-OptionIndicator)
+Do ToNumField ($R01-PATIndicator, 1, $R01-PATIndicator)
+Do ToNumField ($R01-EmplLess5MinWage, 6, $R01-EmplLess5MinWage)
+Do ToNumField ($R01-EmplMore5MinWage, 6, $R01-EmplMore5MinWage)
+Do ToNumField ($R01-PercentOwnService, 3, $R01-PercentOwnService)
+Do ToNumField ($R01-PercentKitchen, 3, $R01-PercentKitchen)
+Do ToNumField ($R01-PercentMeals, 3, $R01-PercentMeals)
+Do ToNumField ($R01-PercentTrasport, 3, $R01-PercentTrasport)
+Do ToNumField ($R01-PercentFood, 3, $R01-PercentFood)
+Do ToNumField ($R01-PercentFeed, 3, $R01-PercentFeed)
+Do ToNumField ($R01-Closing, 1, $R01-Closing)
+Do ToNumField ($R01-ClosingDate, 8, $R01-ClosingDate)
+Do ToNumField ($R01-Aso-CNPJ, 14, $R01-Aso-CNPJ)
+Do ToNumField ($R01-Uni-CNPJ, 14, $R01-Uni-CNPJ)
+Do ToNumField ($R01-Asi-CNPJ, 14, $R01-Asi-CNPJ)
+Do ToNumField ($R01-Con-CNPJ, 14, $R01-Con-CNPJ)
+Do ToNumField ($R01-CentrCNPJX, 14, $R01-CentrCNPJX)
+
+Write #FileNumber From $R01-Seq:6                   -
+                       $R01-EstabInscription:14     -
+                       $R01-EstabPrefix:2           -
+                       $R01-Type:1                  -
+                       $R01-LegalName:52            -
+                       $R01-Address:40              -
+                       $R01-Number:6                -
+                       $R01-Complement:21           -
+                       $R01-Neighborhood:19         -
+                       $R01-Zipcode:8               -
+                       $R01-CityCode:7              -
+                       $R01-CityName:30             -
+                       $R01-UFCode:2                -
+                       $R01-DDDPhone:2              -
+                       !$R01-Phone:8                 -
+                       $R01-Phone:9                 -
+                       $R01-EstabEmail:45           -
+                       $R01-CNAECode:7              -
+                       $R01-LegalNature:4           -
+                       !$R01-Owners:2                -
+                       $R01-Owners:4                -
+                       $R01-BaseDateSalary:2        -
+                       $R01-InscType:1              -
+                       $R01-RAISType:1              -
+                       $R01-Zeros:2                 -
+                       $R01-CEI:12                  -
+                       $R01-YearBase:4              -
+                       $R01-CoSize:1                -
+                       $R01-OptionIndicator:1       -
+                       $R01-PATIndicator:1          -
+                       $R01-EmplLess5MinWage:6      -
+                       $R01-EmplMore5MinWage:6      -
+                       $R01-PercentOwnService:3     -
+                       $R01-PercentKitchen:3        -
+                       $R01-PercentMeals:3          -
+                       $R01-PercentTrasport:3       -
+                       $R01-PercentFood:3           -
+                       $R01-PercentFeed:3           -
+                       $R01-Closing:1               -
+                       $R01-ClosingDate:8           -
+                       $R01-Aso-CNPJ:14             -
+                       $R01-Aso-Amount:9            -
+                       $R01-Uni-CNPJ:14             -
+                       $R01-Uni-Amount:9            -
+                       $R01-Asi-CNPJ:14             -
+                       $R01-Asi-Amount:9            -
+                       $R01-Con-CNPJ:14             -
+                       $R01-Con-Amount:9            -
+                       $R01-Activity:1              -
+                       $R01-CentrIndicator:1        -
+                       $R01-CentrCNPJX:14           -
+                       $R01-UnionIndicator:1        -
+                       $R01-TimecardType:2          -
+                       !$R01-Space:90                -
+                       $R01-Space:85                -
+                       $R01-CompanyUsage:12
+End-Procedure Put_Record01
+
+!***************************************************************************
+Begin-Procedure GetPersonAddress($EmplID, $Dt1, :$Address, :$Number, :$Complement, :$Neighborhood, :$ZipCode, :$Citycode, :$CityName, :$UFCode)
+#debug show 'PROCEDURE : GetPersonAddress'
+!***************************************************************************
+Let $Address      = ''
+Let $Number       = ''
+Let $Complement   = ''
+Let $Neighborhood = ''
+Let $ZipCode      = ''
+Let $CityName     = ''
+Let $UFCode       = ''
+
+Begin-Select
+EM.ADDRESS1
+EM.NUM1
+EM.ADDRESS2
+EM.ADDRESS3
+EM.ADDRESS4
+EM.POSTAL
+EM.CITY
+EM.STATE
+EC.CODE_CITY_BRA
+
+
+    Let $Address      = Rtrim(&EM.ADDRESS1, ' ')
+    Let $Number       = Rtrim(&EM.NUM1, ' ')
+    Let $Complement   = Rtrim(&EM.ADDRESS2, ' ') || ' ' || Rtrim(&EM.ADDRESS3, ' ')
+    Let $Neighborhood = Rtrim(&EM.ADDRESS4, ' ')
+    Let $ZipCode      = Rtrim(&EM.POSTAL, ' ')
+    Let $CityName     = Rtrim(&EM.CITY, ' ')
+    Let $UFCode       = Rtrim(&EM.STATE, ' ')
+    Move &EC.CODE_CITY_BRA to $Citycode '0000000'
+
+
+        #debug Show '  $EmplID        [' $EmplID ']'
+        #debug Show '  $Dt1           [' $Dt1 ']'
+        #debug Show '  $Address       [' $Address ']'
+        #debug Show '  $Number        [' $Number ']'
+        #debug Show '  $Complement    [' $Complement ']'
+        #debug Show '  $Neighborhood  [' $Neighborhood ']'
+        #debug Show '  $ZipCode       [' $ZipCode ']'
+        #debug Show '  $CityName      [' $CityName ']'
+        #debug Show '  $UFCode        [' $UFCode ']'
+        #debug Show '  $Citycode      [' $Citycode ']'
+
+FROM PS_ADDRESSES EM,
+PS_CODE_CITY_BRA EC
+WHERE EM.EMPLID     = $EmplID
+AND EM.ADDRESS_TYPE = 'BUSN'
+AND EM.EFF_STATUS = 'A'
+AND EM.EFFDT = (SELECT MAX(EM2.EFFDT)
+                FROM PS_ADDRESSES EM2
+                WHERE EM2.EMPLID   = EM.EMPLID
+                AND EM2.EFF_STATUS = EM.EFF_STATUS
+                AND EM2.EFFDT <= $Dt1)
+AND EC.STATE = EM.STATE
+AND EC.CITY = EM.CITY
+End-Select
+End-Procedure GetPersonAddress
+
+!***************************************************************************
+Begin-Procedure GetEstabAddress($Estab, $Dt1, :$Address, :$Number, :$Complement, :$Neighborhood, :$ZipCode, :$Citycode, :$CityName, :$UFCode)
+#debug show 'PROCEDURE : GetEstabAddress'
+!***************************************************************************
+Let $Address      = ''
+Let $Number       = ''
+Let $Complement   = ''
+Let $Neighborhood = ''
+Let $ZipCode      = ''
+Let $CityName     = ''
+Let $UFCode       = ''
+
+Begin-Select
+ES.ADDRESS1
+ES.NUM1
+ES.ADDRESS2
+ES.ADDRESS3
+ES.ADDRESS4
+ES.POSTAL
+BS.COUNTY_CD_BRA
+
+    Let $Address      = Rtrim(&ES.ADDRESS1, ' ')
+    Let $Number       = Rtrim(&ES.NUM1, ' ')
+    Let $Complement   = Rtrim(&ES.ADDRESS2, ' ') || ' ' || Rtrim(&ES.ADDRESS3, ' ')
+    Let $Neighborhood = Rtrim(&ES.ADDRESS4, ' ')
+    Let $ZipCode      = Rtrim(&ES.POSTAL, ' ')
+    Let #Code_city    = &BS.COUNTY_CD_BRA
+    Move &BS.COUNTY_CD_BRA to $Citycode '0000000'
+        #debug Show '  $Estab         [' $Estab ']'
+        #debug Show '  $Dt1           [' $Dt1 ']'
+        #debug Show '  $Address       [' $Address ']'
+        #debug Show '  $Number        [' $Number ']'
+        #debug Show '  $Complement    [' $Complement ']'
+        #debug Show '  $Neighborhood  [' $Neighborhood ']'
+        #debug Show '  $ZipCode       [' $ZipCode ']'
+        #debug Show '  $CityName      [' $CityName ']'
+        #debug Show '  $UFCode        [' $UFCode ']'
+        #debug Show '  $Citycode      [' $Citycode '] - [' $Code_city ']'
+
+FROM PS_ESTAB_TBL ES
+,PS_ESTAB_TBL_BRA BS
+WHERE ES.ESTABID = $Estab
+AND ES.EFF_STATUS = 'A'
+AND ES.EFFDT = (SELECT MAX(ES2.EFFDT)
+                FROM PS_ESTAB_TBL ES2
+                WHERE ES2.ESTABID = ES.ESTABID
+                AND ES2.EFF_STATUS = ES.EFF_STATUS
+                AND ES2.EFFDT <= $Dt1)
+AND BS.ESTABID = ES.ESTABID
+AND BS.EFFDT = ES.EFFDT
+End-Select
+
+Begin-Select
+CT.CITY
+CT.STATE
+
+    Let $CityName     = Rtrim(&CT.CITY, ' ')
+    Do CleanString($CityName, $CityName)
+    Let $UFCode       = Rtrim(&CT.STATE, ' ')
+
+    #debug Show '  $CityName      [' $CityName ']'
+    #debug Show '  $UFCode        [' $UFCode ']'
+
+FROM PS_CODE_CITY_BRA CT
+WHERE CT.CODE_CITY_BRA = #Code_city
+End-Select
+End-Procedure GetEstabAddress
+
+!******************************************************************************
+Begin-Procedure GetPersonPhone($Person_ID, :$PDDD, :$PPhone)
+#debug show 'Procedure: GetPersonPhone'
+!******************************************************************************
+Let $FullPhone = ''
+Let $PhoneDDD  = '0'
+Let $Phone     = '0'
+Begin-Select
+DTB.PHONE
+
+    Let $FullPhone = Rtrim(&DTB.PHONE, ' ')
+
+FROM PS_PERSONAL_PHONE DTB
+WHERE DTB.EMPLID = $Person_ID
+AND DTB.PHONE_TYPE = 'BUSN'
+End-Select
+    Do GetPhoneBRA ($FullPhone, $PhoneDDI, $PhoneDDD, $Phone, $PhoneRamal)
+
+    #debug show '  $FullPhone  [' $FullPhone ']'
+    #debug show '  $PhoneDDI   [' $PhoneDDI ']'
+    #debug show '  $PhoneDDD   [' $PhoneDDD ']'
+    #debug show '  $Phone      [' $Phone ']'
+    #debug show '  $PhoneRamal [' $PhoneRamal ']'
+
+    Move $PhoneDDD To $PDDD   '00'
+    !Move $Phone    To $PPhone '00000000'
+    move $Phone    to $PPhone !'000000000'
+
+End-Procedure GetPersonPhone
+
+!******************************************************************************
+Begin-Procedure GetPersonEmail($Person_ID, :$Email)
+#debug show 'Procedure: GetPersonEmail'
+!******************************************************************************
+Begin-Select
+EMAIL_ADDR
+    Let $Email = Rtrim(&EMAIL_ADDR, ' ')
+FROM PS_EMAIL_ADDRESSES
+WHERE EMPLID = $Person_ID
+AND E_ADDR_TYPE = 'BUSN'
+End-Select
+End-Procedure GetPersonEmail
+
+!******************************************************************************
+Begin-Procedure GetPhoneBRA ($FullPhone, :$PhoneDDI, :$PhoneDDD, :$Phone, :$PhoneRamal)
+#debug show 'Procedure: GetPhoneBRA'
+!******************************************************************************
+  Let $PhoneDDI      = '0'
+  Let $PhoneDDD      = '0'
+  Let $Phone         = '0'
+  Let $PhoneRamal    = '0'
+  Let #i             = 1
+  Let #DotNumber     = 0
+  Let #SizeFullPhone = Length($FullPhone)
+  Let $CleanPhone    = ''
+  Let #PosDot1       = 0
+  Let #PosDot2       = 0
+  Let #PosDot3       = 0
+  !Clean Phone
+  While #i <= #SizeFullPhone
+    Let $Test = Substr($FullPhone,#i,1)
+    If $Test >= '0' And $Test <= '9' OR $Test = '.'
+          Let $CleanPhone = $CleanPhone || $Test
+    End-If
+    Add 1 to #i
+  End-While
+
+  Let #SizeCleanPhone = Length($CleanPhone)
+  Let #i = 1
+
+  !Find dots positions
+  While #i <= #SizeCleanPhone
+    Let $Test = Substr($CleanPhone,#i,1)
+    If $Test = '.'
+      If #PosDot1 > 0 AND #PosDot2 > 0
+        Let #PosDot3 = #i
+      End-If
+      If #PosDot1 > 0 AND #PosDot3 = 0
+              Let #PosDot2 = #i
+      End-If
+      If #PosDot2 = 0 AND #PosDot3 = 0
+              Let #PosDot1 = #i
+      End-if
+      add 1 to #DotNumber
+    End-If
+    Add 1 to #i
+  End-While
+  #debugX show '#PosDot1   :' #PosDot1
+  #debugX show '#PosDot2   :' #PosDot2
+  #debugX show '#PosDot3   :' #PosDot3
+  #debugX show '#DotNumber :' #DotNumber
+
+  Evaluate #DotNumber
+    When = 0
+      !Only phone
+      Let $Phone = $CleanPhone
+      Break
+    When = 1
+      !Maybe DDD.phone or phone.Ramal
+      If #PosDot1 <= 4
+        !DDD.Phone
+        Let $PhoneDDD   = Substr($CleanPhone,1           , #PosDot1 - 1)
+        Let $Phone      = Substr($CleanPhone,#PosDot1 + 1, #SizeCleanPhone)
+      Else
+        !Phone.Ramal
+        Let $Phone      = Substr($CleanPhone,1           , #PosDot1 - 1)
+        Let $PhoneRamal = Substr($CleanPhone,#PosDot1 + 1, #SizeCleanPhone)
+      End-If
+      Break
+    When = 2
+      !Maybe DDD.Phone.Ramal or DDI.DDD.Phone
+      If (#PosDot2 - #PosDot1) > 5
+        !DDD.Phone.Ramal
+        Let $PhoneDDD   = Substr($CleanPhone, 1           , #PosDot1 - 1)
+        Let $Phone      = Substr($CleanPhone, #PosDot1 + 1, (#PosDot2 - #PosDot1) - 1)
+        Let $PhoneRamal = Substr($CleanPhone,#PosDot2 + 1, #SizeCleanPhone)
+      Else
+        !DDI.DDD.Phone
+        Let $PhoneDDI   = Substr($CleanPhone,1           , #PosDot1 - 1)
+        Let $PhoneDDD   = Substr($CleanPhone,#PosDot1 + 1, (#PosDot2 - #PosDot1) - 1)
+        Let $Phone      = Substr($CleanPhone,#PosDot2 + 1, #SizeCleanPhone)
+      End-If
+
+      Break
+    When = 3
+      !Must be DDI.DDD.Phone.Ramal
+      Let $PhoneDDI   = Substr($CleanPhone, 1           , #PosDot1 - 1)
+      Let $PhoneDDD   = Substr($CleanPhone, #PosDot1 + 1, (#PosDot2 - #PosDot1) - 1)
+      Let $Phone      = Substr($CleanPhone, #PosDot2 + 1, (#PosDot3 - #PosDot2) - 1)
+      Let $PhoneRamal = Substr($CleanPhone, #PosDot3 + 1, #SizeCleanPhone)
+      Break
+  End-Evaluate
+  Let #X = Length($Phone)
+  Let #Y = Length($PhoneDDD)
+
+  If Substr($PhoneDDD,1,1) = '0'
+      Let $PhoneDDD = Substr($PhoneDDD,2,#Y)
+      Let #Y = Length($PhoneDDD)
+  End-If
+
+  !If #X > 8
+  !  Let $Phone = Substr($Phone, 1,8)
+  If #X > 9
+    Let $Phone = Substr($Phone, 1,9)
+  End-If
+
+  If #Y > 2
+    Let $PhoneDDD = Substr($PhoneDDD, 1,2)
+  End-If
+End-Procedure GetPhoneBRA
+
+!***************************************************************************
+Begin-Procedure GetMinWage
+#debug show 'Procedure: GetMinWage'
+!***************************************************************************
+Begin-Select
+W.MONETARY_VALUE
+    Let #5MinWage = &W.MONETARY_VALUE
+FROM PS_GP_VARIABLE W
+WHERE W.EFF_STATUS = 'A'
+AND W.PIN_NUM = (SELECT MAX(M.PIN_NUM)
+                 FROM PS_GPBR_PARM_RAIS2 M
+                 WHERE M.COMPANY = $Company
+                 AND M.EFFDT = (SELECT MAX(M2.EFFDT)
+                                FROM PS_GPBR_PARM_RAIS2 M2
+                                WHERE M2.COMPANY = M.COMPANY
+                                AND M2.EFFDT <= $CalEndDt1))
+AND W.EFFDT = (SELECT MAX(W2.EFFDT)
+               FROM PS_GP_VARIABLE W2
+               WHERE W2.PIN_NUM = W.PIN_NUM
+               AND W2.EFF_STATUS = W.EFF_STATUS
+               AND W2.EFFDT <= $CalEndDt1)
+End-Select
+    #debug Show '  #5MinWage 1x              [' #5MinWage ']'
+    Let #5MinWage = #5MinWage * 5
+    #debug Show '  #5MinWage 5x              [' #5MinWage ']'
+End-Procedure GetMinWage
+
+
+!*******************************************************************************
+!*                    PROCEDURES TO RETRIVE RECORD 2 DATA                      *
+!*******************************************************************************
+
+!***************************************************************************
+Begin-Procedure CountWageEmployees
+#debug show 'Procedure: CountWageEmployees'
+!***************************************************************************
+    Let #EmplMin5 = 0
+    Let #EmplMax5 = 0
+
+Begin-Select
+COUNT(*) &WageCount1
+
+    Let #EmplMin5 = &WageCount1
+
+FROM PS_GPBR_RAIS2_WRK M
+WHERE M.PROCESS_INSTANCE = #prcs_process_instance
+AND M.ESTABID            = $EstabID_R1
+AND M.GPBR_CNPJ          = $Estab_CNPJ
+AND M.RAIS_ESTAB_PRE_BRA = $Estab_Prefix
+AND M.LABEL1             = 'MAX_COMPR'
+AND M.GPBR_CALC_RSLT_VAL <= #5MinWage
+End-Select
+
+Begin-Select
+COUNT(*) &WageCount2
+
+    Let #EmplMax5 = &WageCount2
+
+
+FROM PS_GPBR_RAIS2_WRK M
+WHERE M.PROCESS_INSTANCE = #prcs_process_instance
+AND M.ESTABID            = $EstabID_R1
+AND M.GPBR_CNPJ          = $Estab_CNPJ
+AND M.RAIS_ESTAB_PRE_BRA = $Estab_Prefix
+AND M.LABEL1             = 'MAX_COMPR'
+AND M.GPBR_CALC_RSLT_VAL > #5MinWage
+End-Select
+#debug show ' ++++ Max Salary '   #5MinWage ' Empl Min: ' #EmplMin5 '  Empl Max: ' #EmplMax5
+End-Procedure CountWageEmployees
+
+!***************************************************************************
+Begin-Procedure EmptyWorkTable
+#debug show 'PROCEDURE : EmptyWorkTable'
+!***************************************************************************
+!Clean Values
+Begin-SQL
+DELETE FROM PS_GPBR_RAIS_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+Begin-SQL
+DELETE FROM PS_GPBR_RAIS2_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+Begin-SQL
+DELETE FROM PS_GPBR_RAIS_E_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+Begin-SQL
+DELETE FROM PS_GPBR_CENT_ESTAB
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+End-Procedure EmptyWorkTable
+
+!***************************************************************************
+Begin-Procedure Get_Record02
+#debug show 'Procedure: Get_Record02'
+!***************************************************************************
+#Debug Show '    $Estab_CNPJ   [' $Estab_CNPJ ']'
+#Debug Show '    $Estab_Prefix [' $Estab_Prefix ']'
+
+Let $Emplid     = ''
+Let $PrevEmplid = ''
+let $ActEmplid = '' 
+let $pregnt = ''
+let $pregnt_field=''
+let $intermittent='2'
+do Convert-from-DTU-Date($GenDate ,$GenerationDate)
+
+Begin-Select DISTINCT
+RE.ESTABID
+RE.EMPLID
+RE.EMPL_RCD
+RE.NATIONAL_ID
+RE.CBO_CD_BRA
+RE.CONT_SAL_TYPE_BRA
+RE.EMPL_CLASS
+RE.GPBR_TOT_AMT
+RE.GPBR_CNPJ
+RE.RAIS_ESTAB_PRE_BRA
+RE.BIRTHDATE
+RE.ADD_FLD1_NAME
+RE.ADD_FLD2_NAME
+RE.ADD_FLD3_NAME
+RE.ADD_FLD4_NAME
+RE.NAME_TYPE_SHORT
+RE.NID_CPF_BRA
+RE.NID_CTPS_BRA
+RE.GPBR_CTPS_ID
+RE.GPBR_WEEKLY_HOURS
+RE.NATIONALITY_CD_BRA
+RE.EDUCATION_LVL_BRA
+RE.ETHNIC_GRP_CD
+RE.MONTHLY_RT
+RE.COMPRATE
+RE.UNION_CNPJ_BRA
+RE.DEPTID
+RE.JOBCODE
+RE.SEX
+RE.CODE_CITY_BRA
+PREG.GPBR_PREGNT_DATE
+RE.FULL_PART_TIME
+JORN.REG_JORN_BRA
+
+    let $pregnt=&PREG.GPBR_PREGNT_DATE 
+    let $Employeeclass=&RE.EMPL_CLASS  
+    let $fullparttime=&RE.FULL_PART_TIME
+    let $regjornbra=&JORN.REG_JORN_BRA
+    
+    if $Employeeclass = '55' and $pregnt <>''
+        let $pregnt_field='1'
+        move $pregnt_field to $R02-Pregnt_field '0'
+    else
+        let $pregnt_field='2'
+        move $pregnt_field to $R02-Pregnt_field '0'
+    end-if
+    
+    if $fullparttime='P'
+      let $fullparttime_field= '1'
+      move $fullparttime_field to $R02-fullparttime_field '0'
+    else
+      let $fullparttime_field= '2'
+      move $fullparttime_field to $R02-fullparttime_field '0'
+    end-if  
+    
+    if $regjornbra = '4'
+      let $regjornbra_field= '1'
+      move $regjornbra_field to $R02-regjornbra_field '0' 
+    else 
+      let $regjornbra_field= '2'
+      move $regjornbra_field to $R02-regjornbra_field '0' 
+    end-if  
+    
+     move $intermittent to $R02-intermittent '0' 
+
+     #debug Show '    '  &RE.EMPLID ' - ' #Empl_rcd '  ' $ActEmplid '   ' $PrevEmplid
+    
+    Let $Emplid              = Rtrim(&RE.EMPLID,' ')
+    Let #Empl_rcd            = &RE.EMPL_RCD 
+    
+    
+    let $ActEmplid = $Emplid || to_char(#Empl_Rcd)
+    
+    If $ActEmplid <> $PrevEmplid 
+        !If Employee have information in PS_GP_SEG_GUIDE_WA is candidate for RAIS report
+        Let $PrintEERow = 'Y'
+        Do ProcessEmplid
+    End-If
+
+    let $PrevEmplid = $Emplid || to_char(#Empl_rcd)
+
+from PS_GPBR_RAIS_WRK RE 
+LEFT OUTER JOIN PS_GPBR_PYEST_PARM PREG
+   ON PREG.EMPLID=RE.EMPLID
+   and PREG.EMPL_RCD=RE.EMPL_RCD
+   and to_number(to_char(PREG.GPBR_PREGNT_DATE,'YYYY')) = $Year
+LEFT OUTER JOIN PS_ADDL_INFO_BRA  JORN  
+   ON JORN.EMPLID=RE.EMPLID
+   and JORN.EMPL_RCD=RE.EMPL_RCD
+   and JORN.EFFDT =(select MAX(J.EFFDT) from PS_ADDL_INFO_BRA J where J.EMPLID=JORN.EMPLID and J.EMPL_RCD=JORN.EMPL_RCD and J.EFFDT <= $GenerationDate)
+where RE.GPBR_CNPJ        = $Estab_CNPJ
+AND RE.RAIS_ESTAB_PRE_BRA = $Estab_Prefix
+and RE.PROCESS_INSTANCE   = #PRCS_PROCESS_INSTANCE
+order by RE.GPBR_CNPJ ASC, RE.RAIS_ESTAB_PRE_BRA ASC, RE.NATIONAL_ID ASC, RE.EMPLID ASC, RE.EMPL_RCD ASC 
+End-Select
+End-Procedure Get_Record02
+
+
+!***************************************************************************
+Begin-Procedure ProcessEmplid
+#debug show 'Procedure: ProcessEmplid'
+!***************************************************************************
+#debug show '                            $EmplID :' &RE.ESTABID '--' &RE.DATE2 '--' &RE.EMPLID
+
+    Let $TER-flag = 'FALSE'
+    !Let $PrintEERow = 'N'
+
+    Let $EstabIDRec02         = Rtrim(&RE.ESTABID,' ')
+
+    Move &RE.CODE_CITY_BRA to $R02-CodMunc '0000000'
+
+    Let $R02-EstabInscription = Rtrim(&RE.GPBR_CNPJ,' ')
+    Let $R02-EstabPrefix      = Rtrim(&RE.RAIS_ESTAB_PRE_BRA,' ')
+
+    Let $Emplid              = Rtrim(&RE.EMPLID,' ')
+    Let #Empl_rcd            = &RE.EMPL_RCD
+
+     #Debug show '$Emplid             [' $Emplid '] [' #Empl_rcd ']'
+
+    Let $R02-PisPasepCode    = Rtrim(&RE.NATIONAL_ID, ' ')
+    Let $R02-CBO             = Rtrim(&RE.CBO_CD_BRA, ' ')
+    Let $R02-ContractSalType = Rtrim(&RE.CONT_SAL_TYPE_BRA, ' ')
+    Let $R02-EmploymentCode  = Rtrim(&RE.EMPL_CLASS, ' ')
+
+    Let #Contract_Salary     = &RE.MONTHLY_RT
+    Move #Contract_Salary to $R02-ContractSal '0000000.00'
+
+    Do RemovePoint($R02-ContractSal, $R02-ContractSal)
+
+    Let $BDate            = RTrim(&RE.BIRTHDATE, ' ')
+    Do Convert-To-DTU-Date($Bdate, $EmpBDate)
+    Do DTU-Parse-Date($EmpBDate, #Y, #M, #D)
+    Move #Y To $Y '0000'
+    Move #M To $M '00'
+    Move #D To $D '00'
+    Let $R02-BirthDate = $D || $M || $Y
+
+    Let $R02-Nationality      = ''
+    Let $R02-InstructionLevel = ''
+    Let $R02-Ethnic           = ''
+    Do GetNationality
+
+    Let $ArrivalDate = ''
+    if &RE.NATIONALITY_CD_BRA <> '10'
+        Do GetArrivalDate
+    End-If
+
+    If $ArrivalDate = ''
+        Let $R02-YearEntryBrazil = '0000'
+    Else
+        Do Convert-To-DTU-Date($ArrivalDate, $ADate)
+        Do DTU-Parse-Date($ADate, #Y, #M, #D)
+        Move #Y To $Y '0000'
+        Let $R02-YearEntryBrazil = $Y
+    End-If
+
+    Let #Work_01 = 0
+    Let #Work_02 = 0
+    Let #Work_03 = 0
+    Let #Work_04 = 0
+    Let #Work_05 = 0
+    Let #Work_06 = 0
+    Let #Work_07 = 0
+    Let #Work_08 = 0
+    Let #Work_09 = 0
+    Let #Work_10 = 0
+    Let #Work_11 = 0
+    Let #Work_12 = 0
+
+
+    Do GetEmployeeName
+    Do GetNIDs
+    Do GetDisability
+    Do GetGender
+    Do GetHours
+    Do EmployeeInfo
+    Do GetAbsences
+    Do GetCompensation
+
+    !Get Hire/Transfer date (ddmmyyyy)
+    Let $Get_Date    = $CalbeginDt1
+    Let $Get_DateEnd = $CalEndDt1
+
+    !This procedure update $RAIS-Reason and $RAIS-ACTION variables
+    !Do GetRaisReasonDate2
+
+    If $TER-flag = 'TRUE'
+     !   Do GetIndemnity
+
+    Else
+      !  Let $R02-IndemPrev = '000000000'
+    End-If
+
+    ! Indemnity amount is cleared out if no Termination Cd is populated
+    If $R02-TerminationCode = '00'
+        Let $R02-IndemPrev  = '000000000'   
+    End-If
+    !Do Contributions
+    Let $EmplCNPJEstabID = Rtrim (&RE.ESTABID, ' ')
+    Let $EmplCNPJDate    = $CalEndDt1
+
+
+
+    #Debug show '$EMplid : ' $Emplid ' ' $PrintEERow
+    If $PrintEERow = 'Y'
+        Do Put_Record02
+    End-if
+
+End-Procedure ProcessEmplid
+
+
+!***************************************************************************
+Begin-Procedure GetCompensation
+#debug show 'Procedure: GetCompensation'
+#debug show '                            $PrintEERow :' $PrintEERow $EmplId
+!***************************************************************************
+!Clean Variables
+    Let $R02-CompJan = '000000000'
+    Let $R02-CompFeb = '000000000'
+    Let $R02-CompMar = '000000000'
+    Let $R02-CompApr = '000000000'
+    Let $R02-CompMay = '000000000'
+    Let $R02-CompJun = '000000000'
+    Let $R02-CompJul = '000000000'
+    Let $R02-CompAug = '000000000'
+    Let $R02-CompSep = '000000000'
+    Let $R02-CompOct = '000000000'
+    Let $R02-CompNov = '000000000'
+    Let $R02-CompDec = '000000000'
+    Let #Monthly_01 = 0
+    Let #Monthly_02 = 0
+    Let #Monthly_03 = 0
+    Let #Monthly_04 = 0
+    Let #Monthly_05 = 0
+    Let #Monthly_06 = 0
+    Let #Monthly_07 = 0
+    Let #Monthly_08 = 0
+    Let #Monthly_09 = 0
+    Let #Monthly_10 = 0
+    Let #Monthly_11 = 0
+    Let #Monthly_12 = 0
+
+    Let #Monthly_01_compval = 0
+    Let #Monthly_02_compval = 0
+    Let #Monthly_03_compval = 0
+    Let #Monthly_04_compval = 0
+    Let #Monthly_05_compval = 0
+    Let #Monthly_06_compval = 0
+    Let #Monthly_07_compval = 0
+    Let #Monthly_08_compval = 0
+    Let #Monthly_09_compval = 0
+    Let #Monthly_10_compval = 0
+    Let #Monthly_11_compval = 0
+    Let #Monthly_12_compval = 0
+
+    !Init Variables
+    Let #ResultAdvance1  = 0
+    Let #ResultAdvance2  = 0
+    Let #ResultAdvance   = 0
+
+    Let #MaxMonthAdv1    = 0
+    Let #MaxMonthAdv2    = 0
+    Let #MaxMonth        = 0
+
+
+    Let $R02-13thSalAdv      = '000000000'
+    Let $R02-13thSalAdvMonth = '00'
+
+    Let #ResultFinal   = 0
+    Let #MaxMonthFinal = 0
+    Let #13thFinal     = 0
+
+    Let $R02-13thSalFin      = '000000000'
+    Let $R02-13thSalFinMonth = '00'
+
+    Let $R02-UnionIndicator = '2'
+    Let $R02-Aso1-Amt = '00000000'
+    Let $R02-Aso2-Amt = '00000000'
+    Let $R02-Assi-Amt = '00000000'
+    Let $R02-Conf-Amt = '00000000'
+    Let $R02-Unio-Amt = '00000000'
+
+    Let $IntermASOCNPJ = ''
+    Let $IntermASICNPJ = ''
+    Let $IntermCONCNPJ = ''
+    Let $IntermUNICNPJ = ''
+
+    Let #INDEMNITY = 0
+
+    Let #ContribAmountASO = 0
+    Let #ContribAmountASI = 0
+    Let #ContribAmountCON = 0
+    Let #UcAmount         = 0
+
+    Let $Found_Bgn           = 'N'
+    Let $R02-HireTransDate   = '00000000'
+    Let $R02-HireType        = '00'
+    Let $R02-IndemPrev       = '000000000'
+
+    Let $Found_End           = 'N'
+    Let $R02-TerminationCode = '00'
+    Let $R02-TerminationDate = '0000'
+    Let $TER-flag = 'FALSE'
+
+    !Clean variables
+    Let #VacAmt   = 0
+    Let #BankHAmt = 0
+    Let #BankHUnt = 0
+    Let #UnionAmt = 0
+    Let #UnionUnt = 0
+    Let #OtherAmt = 0
+    Let #OtherUnt = 0
+    Let #FGTSAmt  = 0
+
+    Let #month20 = 0
+    Let #month30 = 0
+    Let #month40 = 0
+
+Begin-Select
+BB1A.SLICE_END_DT
+BB1A.LABEL1 &PYMNT_TYPE
+BB1A.UNION_CD
+BB1A.UNION_CNPJ_BRA
+BB1A.GPBR_CONTRIB_TYPE  &RD_ACTION
+BB1A.GPBR_ABS_RAIS      &RD_RAIS_REASON_BRA
+SUM(BB1A.GPBR_CALC_RSLT_VAL) &COMP_RATE
+SUM(BB1A.UNIT_RSLT_VAL) &TermUnits
+
+    Let $Date        = Rtrim(&BB1A.SLICE_END_DT, ' ')
+    Do Convert-To-DTU-Date ($Date,$DateN)
+    Do DTU-Parse-Date ($DateN,#Year,#Month,#Day)
+    Let $UnionSindCD = RTrim(&BB1A.UNION_CD, ' ')
+    Let $UnionSindCNPJ = RTrim(&BB1A.UNION_CNPJ_BRA, ' ')
+
+    If $UnionSindCNPJ = ''
+       Let $UnionSindCNPJ = '00000000000000'
+    End-If
+
+    Let #MR_CompRate = &COMP_RATE
+
+    Evaluate &PYMNT_TYPE
+    When = 'COMPRATE_DTL'
+   !The monthly rate option for is not longer valid for this version of RAIS in Monthly Remmuneration Section.
+
+        #debug show 'Emplid :' $Emplid '  Month :' #Month '  Rate Code :' #MR_CompRate
+
+        Evaluate #Month
+            When = 1
+                Let #Monthly_01 = #Monthly_01 + #MR_CompRate
+            break
+            When = 2
+                Let #Monthly_02 = #Monthly_02 + #MR_CompRate
+            break
+            When = 3
+                Let #Monthly_03 = #Monthly_03 + #MR_CompRate
+            break
+            When = 4
+                Let #Monthly_04 = #Monthly_04 + #MR_CompRate
+            Break
+            When = 5
+                Let #Monthly_05 = #Monthly_05 + #MR_CompRate
+            Break
+            When = 6
+                Let #Monthly_06 = #Monthly_06 + #MR_CompRate
+            Break
+            When = 7
+                Let #Monthly_07 = #Monthly_07 + #MR_CompRate
+            Break
+            When = 8
+                Let #Monthly_08 = #Monthly_08 + #MR_CompRate
+            Break
+            When = 9
+                Let #Monthly_09 = #Monthly_09 + #MR_CompRate
+            Break
+            When = 10
+                Let #Monthly_10 = #Monthly_10 + #MR_CompRate
+            Break
+            When = 11
+                Let #Monthly_11 = #Monthly_11 + #MR_CompRate
+            Break
+            When = 12
+                Let #Monthly_12 = #Monthly_12 + #MR_CompRate
+            Break
+        End-Evaluate
+        Break
+
+    When = '13TH_ADV1'
+         Do Get13thAdvance1
+         Break
+
+    When = '13TH_ADV2'
+         Do Get13thAdvance
+         Break
+
+    When = '13TH_FINAL'
+         Do Get13thFinal
+         Break
+
+    When =   'COMPENSAT'
+         Do GetCompensationValues
+         Break
+
+     When = 'ESTABDT'
+         Do GetRaisReasonDate2
+         Break
+
+    When =  'INDEMNITY'
+         Do GetIndemnity
+         Break
+
+    When =  'PAYTERM'
+         Do GetPaymentsInTerm
+         Break
+
+    When = 'UNIONCONT'
+          Do Contributions
+          Break
+
+    When = 'UNION2'
+          Do GetUnion2
+          Break
+
+    When = 'OVERTIME'
+          Do GetWorkedHours
+          Break
+
+    End-Evaluate
+
+FROM PS_GPBR_RAIS2_WRK BB1A
+WHERE BB1A.PROCESS_INSTANCE = #prcs_process_instance
+AND BB1A.ESTABID            = $EstabIDRec02
+AND BB1A.EMPLID             = $Emplid
+AND BB1A.EMPL_RCD           = #Empl_rcd
+AND BB1A.LABEL1             <> 'ABSENCES'
+AND BB1A.LABEL1             <> 'MAX_COMPR'
+GROUP BY BB1A.SLICE_END_DT, LABEL1, BB1A.GPBR_CONTRIB_TYPE, BB1A.GPBR_ABS_RAIS, BB1A.UNION_CD, BB1A.UNION_CNPJ_BRA
+End-Select
+
+!Save Results
+Let #ResultAdvance   =  #ResultAdvance1 + #ResultAdvance2
+
+Let $R02-13thSalAdv  = '000000000'
+Let $R02-13thSalAdvMonth  = '00'
+    if #ResultAdvance > 0
+        Move #ResultAdvance to $R02-13thSalAdv '0000000.00'
+        Do RemovePoint ($R02-13thSalAdv, $R02-13thSalAdv)
+        Let $PrintEERow = 'Y'
+
+    If #MaxMonthAdv1 > #MaxMonthAdv2
+        Let #MaxMonth = #MaxMonthAdv1
+    Else
+        Let #MaxMonth = #MaxMonthAdv2
+    End-If
+    Move #MaxMonth to $R02-13thSalAdvMonth '00'
+End-if
+#debug show '$Emplid             : ' $Emplid
+#debug show '$R02-13thSalAdv     : ' $R02-13thSalAdv
+#debug show '$R02-13thSalAdvMonth: ' $R02-13thSalAdvMonth
+
+#debug show '                            $PrintEERow :' $PrintEERow $EmplId
+
+Let $R02-Vacation-Amt   = '00000000'
+Let $R02-Overtime-Amt   = '00000000'
+Let $R02-Overtime-Month = '00'
+Let $R02-Raise-Amt      = '00000000'
+Let $R02-Raise-Month    = '00'
+Let $R02-Other-Amt      = '00000000'
+Let $R02-Other-Month    = '00'
+Let $R02-FGTS-Fine      = '00000000'
+
+If #VacAmt > 0
+    Move #VacAmt   to $R02-Vacation-Amt   '000000.00'
+    Do RemovePoint ($R02-Vacation-Amt, $R02-Vacation-Amt)
+    Let $PrintEERow = 'Y'
+End-if
+
+If #BankHAmt > 0
+    Move #BankHAmt to $R02-Overtime-Amt   '000000.00'
+    Do RemovePoint ($R02-Overtime-Amt, $R02-Overtime-Amt)
+    Let $PrintEERow = 'Y'
+End-if
+
+Move #BankHUnt to $R02-Overtime-Month '00'
+
+if #UnionAmt > 0
+    Move #UnionAmt to $R02-Raise-Amt      '000000.00'
+    Do RemovePoint ($R02-Raise-Amt,    $R02-Raise-Amt)
+    Let $PrintEERow = 'Y'
+End-if
+
+Move #UnionUnt to $R02-Raise-Month    '00'
+
+If #OtherAmt > 0
+    Move #OtherAmt to $R02-Other-Amt      '000000.00'
+    Do RemovePoint ($R02-Other-Amt,    $R02-Other-Amt)
+    Let $PrintEERow = 'Y'
+End-if
+
+
+Move #OtherUnt to $R02-Other-Month    '00'
+
+If #FGTSAmt > 0
+    Move #FGTSAmt  to $R02-FGTS-Fine      '000000.00'
+    Do RemovePoint ($R02-FGTS-Fine,    $R02-FGTS-Fine)
+    Let $PrintEERow = 'Y'
+End-if
+
+#debug show '      $R02-Vacation-Amt :' $R02-Vacation-Amt
+#debug show '      $R02-Overtime-Amt :' $R02-Overtime-Amt  '  ' $R02-Overtime-Month
+#debug show '      $R02-Raise-Amt    :' $R02-Raise-Amt     '  ' $R02-Raise-Month
+#debug show '      $R02-Other-Amt    :' $R02-Other-Amt     '  ' $R02-Other-Month
+#debug show '      $R02-FGTS-Fine    :' $R02-FGTS-Fine
+#debug show '                            $PrintEERow :' $PrintEERow ' ' $EmplId
+
+Move #Work_01 To $R02-HoursJan '000'
+Move #Work_02 To $R02-HoursFeb '000'
+Move #Work_03 To $R02-HoursMar '000'
+Move #Work_04 To $R02-HoursApr '000'
+Move #Work_05 To $R02-HoursMay '000'
+Move #Work_06 To $R02-HoursJun '000'
+Move #Work_07 To $R02-HoursJul '000'
+Move #Work_08 To $R02-HoursAug '000'
+Move #Work_09 To $R02-HoursSep '000'
+Move #Work_10 To $R02-HoursOct '000'
+Move #Work_11 To $R02-HoursNov '000'
+Move #Work_12 To $R02-HoursDec '000'
+
+    #Debug Show
+
+#debug show '                            $PrintEERow :' $PrintEERow $EmplId
+
+Let #Monthly_01_compval = #Monthly_01_compval + #Monthly_01
+Let #Monthly_02_compval = #Monthly_02_compval + #Monthly_02
+Let #Monthly_03_compval = #Monthly_03_compval + #Monthly_03
+Let #Monthly_04_compval = #Monthly_04_compval + #Monthly_04
+Let #Monthly_05_compval = #Monthly_05_compval + #Monthly_05
+Let #Monthly_06_compval = #Monthly_06_compval + #Monthly_06
+Let #Monthly_07_compval = #Monthly_07_compval + #Monthly_07
+Let #Monthly_08_compval = #Monthly_08_compval + #Monthly_08
+Let #Monthly_09_compval = #Monthly_09_compval + #Monthly_09
+Let #Monthly_10_compval = #Monthly_10_compval + #Monthly_10
+Let #Monthly_11_compval = #Monthly_11_compval + #Monthly_11
+Let #Monthly_12_compval = #Monthly_12_compval + #Monthly_12
+
+if #Monthly_01_compval > 0
+    Move #Monthly_01_compval To $R02-CompJan '0000000.00'
+    Do RemovePoint ($R02-CompJan, $R02-CompJan)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_01_compval : ' #Monthly_01_compval
+End-if
+!#debug show $R02-CompJan
+
+if #Monthly_02_compval > 0
+    Move #Monthly_02_compval To $R02-CompFeb '0000000.00'
+    Do RemovePoint ($R02-CompFeb, $R02-CompFeb)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_02_compval : ' #Monthly_02_compval
+End-if
+
+if #Monthly_03_compval > 0
+    Move #Monthly_03_compval To $R02-CompMar '0000000.00'
+    Do RemovePoint ($R02-CompMar, $R02-CompMar)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_03_compval : ' #Monthly_03_compval
+End-if
+
+if #Monthly_04_compval > 0
+    Move #Monthly_04_compval To $R02-CompApr '0000000.00'
+    Do RemovePoint ($R02-CompApr, $R02-CompApr)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_04_compval : ' #Monthly_04_compval
+End-if
+
+if #Monthly_05_compval > 0
+    Move #Monthly_05_compval To $R02-CompMay '0000000.00'
+    Do RemovePoint ($R02-CompMay, $R02-CompMay)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_05_compval : ' #Monthly_05_compval
+End-if
+
+if #Monthly_06_compval > 0
+    Move #Monthly_06_compval To $R02-CompJun '0000000.00'
+    Do RemovePoint ($R02-CompJun, $R02-CompJun)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_06_compval : ' #Monthly_06_compval
+End-if
+
+if #Monthly_07_compval > 0
+    Move #Monthly_07_compval To $R02-CompJul '0000000.00'
+    Do RemovePoint ($R02-CompJul, $R02-CompJul)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_07_compval : ' #Monthly_07_compval
+End-if
+
+if #Monthly_08_compval > 0
+    Move #Monthly_08_compval To $R02-CompAug '0000000.00'
+    Do RemovePoint ($R02-CompAug, $R02-CompAug)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_08_compval : ' #Monthly_08_compval
+End-if
+
+if #Monthly_09_compval > 0
+    Move #Monthly_09_compval To $R02-CompSep '0000000.00'
+    Do RemovePoint ($R02-CompSep, $R02-CompSep)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_09_compval : ' #Monthly_09_compval
+End-if
+
+if #Monthly_10_compval > 0
+    Move #Monthly_10_compval To $R02-CompOct '0000000.00'
+    Do RemovePoint ($R02-CompOct, $R02-CompOct)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_10_compval : ' #Monthly_10_compval
+End-if
+
+if #Monthly_11_compval > 0
+    Move #Monthly_11_compval To $R02-CompNov '0000000.00'
+    Do RemovePoint ($R02-CompNov, $R02-CompNov)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_11_compval : ' #Monthly_11_compval
+End-if
+
+if #Monthly_12_compval > 0
+    Move #Monthly_12_compval To $R02-CompDec '0000000.00'
+    Do RemovePoint ($R02-CompDec, $R02-CompDec)
+    Let $PrintEERow = 'Y'
+    #debug show '       #Monthly_12_compval : ' #Monthly_12_compval
+End-If
+#debug show '                            $PrintEERow :' $PrintEERow $EmplId
+
+
+!Save Results
+if #ResultFinal > 0
+    Move #ResultFinal to $R02-13thSalFin '0000000.00'
+    Do RemovePoint ($R02-13thSalFin, $R02-13thSalFin)
+    Let $PrintEERow = 'Y'
+    Move #MaxMonthFinal to $R02-13thSalFinMonth '00'
+End-if
+#debug show '$Emplid             : ' $Emplid
+#debug show '$R02-13thSalFin     : ' $R02-13thSalFin
+#debug show '$R02-13thSalFinMonth: ' $R02-13thSalFinMonth
+
+
+!Union contributions
+
+If #ContribAmountASO > 0
+    Move #ContribAmountASO To $R02-Aso1-Amt '000000.00'
+    Move $IntermASOCNPJ to $R02-Aso1-CNPJ '00000000000000'
+    Move 1 to $R02-UnionIndicator '0'
+    Do RemovePoint ($R02-Aso1-Amt, $R02-Aso1-Amt)
+Else
+    Move #ContribAmountASO To $R02-Aso1-Amt '000000.00'
+    Move $IntermASOCNPJ to $R02-Aso1-CNPJ '00000000000000'
+    Move 2 to $R02-UnionIndicator '0'
+    Do RemovePoint ($R02-Aso1-Amt, $R02-Aso1-Amt)
+End-If
+
+If #ContribAmountASI >= 0
+    Move #ContribAmountASI To $R02-Assi-Amt '000000.00'
+    Move $IntermASICNPJ to $R02-Assi-CNPJ '00000000000000'
+    Do RemovePoint ($R02-Assi-Amt, $R02-Assi-Amt)
+End-If
+
+If #ContribAmountCON >= 0
+    Move #ContribAmountCON To $R02-Conf-Amt '000000.00'
+    Move $IntermCONCNPJ to $R02-Conf-CNPJ '00000000000000'
+    Do RemovePoint ($R02-Conf-Amt, $R02-Conf-Amt)
+End-If
+
+If #UcAmount >= 0
+    Move #UcAmount To $R02-Unio-Amt '000000.00'
+    Move $IntermUNICNPJ to $R02-Unio-CNPJ '00000000000000'
+    Do RemovePoint ($R02-Unio-Amt, $R02-Unio-Amt)
+End-if
+
+Do ToNumField ($R02-Aso1-CNPJ, 14, $R02-Aso1-CNPJ)
+Do ToNumField ($R02-Aso2-CNPJ, 14, $R02-Aso2-CNPJ)
+Do ToNumField ($R02-Unio-CNPJ, 14, $R02-Unio-CNPJ)
+Do ToNumField ($R02-Assi-CNPJ, 14, $R02-Assi-CNPJ)
+Do ToNumField ($R02-Conf-CNPJ, 14, $R02-Conf-CNPJ)
+
+#debugx show '                            $PrintEERow :' $PrintEERow $EmplId
+End-Procedure GetCompensation
+
+!***************************************************************************
+Begin-Procedure GetCompensationValues
+#debug show 'Procedure: GetCompensationValues'
+!***************************************************************************
+
+
+    Let $Date        = Rtrim(&BB1A.SLICE_END_DT, ' ')
+    Let #Result      = #MR_CompRate
+    Do Convert-To-DTU-Date ($Date,$DateN)
+    Do DTU-Parse-Date ($DateN,#Year,#Month,#Day)
+
+    #Debug Show $Emplid  ',' $EstabIDRec02 ',' #Month ',' #Result
+
+    Evaluate #Month
+        When = 1
+            Let #Monthly_01_compval = #Monthly_01_compval + #Result
+        Break
+        When = 2
+            Let #Monthly_02_compval = #Monthly_02_compval + #Result
+        Break
+        When = 3
+            Let #Monthly_03_compval = #Monthly_03_compval + #Result
+        Break
+        When = 4
+            Let #Monthly_04_compval = #Monthly_04_compval + #Result
+        Break
+        When = 5
+            Let #Monthly_05_compval = #Monthly_05_compval + #Result
+        Break
+        When = 6
+            Let #Monthly_06_compval = #Monthly_06_compval + #Result
+        Break
+        When = 7
+            Let #Monthly_07_compval = #Monthly_07_compval + #Result
+        Break
+        When = 8
+            Let #Monthly_08_compval = #Monthly_08_compval + #Result
+        Break
+        When = 9
+            Let #Monthly_09_compval = #Monthly_09_compval + #Result
+        Break
+        When = 10
+            Let #Monthly_10_compval = #Monthly_10_compval + #Result
+        Break
+        When = 11
+            Let #Monthly_11_compval = #Monthly_11_compval + #Result
+        Break
+        When = 12
+            Let #Monthly_12_compval = #Monthly_12_compval + #Result
+        Break
+    End-Evaluate
+
+
+End-Procedure GetCompensationValues
+
+!***************************************************************************
+Begin-Procedure Get13thAdvance1
+#debug show 'Procedure: Get13thAdvance'
+!***************************************************************************
+
+!Get Results from Paid in the Vacation Payroll
+
+   Let #13thAdvance = #MR_CompRate
+
+    Let $DateAdvance    = Rtrim(&BB1A.SLICE_END_DT, ' ')
+    Let #ResultAdvance1 = #ResultAdvance1 + #13thAdvance
+    Do Convert-To-DTU-Date ($DateAdvance,$DateAdvance)
+    Do DTU-Parse-Date ($DateAdvance,#Year,#Month,#Day)
+    Let #MaxMonthAdv1 = #Month
+
+    #debug Display '      '     noline
+    #debug Display $Emplid      noline
+    #debug Display ' '          noline
+    #debug Display #Empl_rcd    noline
+    #debug Display '      '     noline
+    #debug display $DateAdvance noline
+    #debug Display '  '         noline
+    #debug display #13thAdvance
+
+End-Procedure Get13thAdvance1
+
+!***************************************************************************
+Begin-Procedure Get13thAdvance
+#debug show 'Procedure: Get13thAdvance'
+!***************************************************************************
+!Get Results from First Installment
+
+    Let #13thFirst = #MR_CompRate
+
+    Let $DateFirst    = Rtrim(&BB1A.SLICE_END_DT, ' ')
+    Let #ResultAdvance2 = #ResultAdvance2 + #13thFirst
+    Do Convert-To-DTU-Date ($DateFirst,$DateFirst)
+    Do DTU-Parse-Date ($DateFirst,#Year,#Month,#Day)
+    Let #MaxMonthAdv2 = #Month
+
+
+    #debug Display '      '   noline
+    #debug Display $Emplid    noline
+    #debug Display ' '        noline
+    #debug Display #Empl_rcd  noline
+    #debug Display '      '   noline
+    #debug display $DateFirst noline
+    #debug Display '  '       noline
+    #debug display #13thFirst
+
+End-Procedure Get13thAdvance
+
+!***************************************************************************
+Begin-Procedure Get13thFinal
+#debug show 'Procedure: Get13thFinal'
+!***************************************************************************
+!Init Variables
+
+!Get Results from Final Installment
+
+    Let #13thFinal = #MR_CompRate
+    Let $DateFinal      = Rtrim(&BB1A.SLICE_END_DT, ' ')
+    Let #ResultFinal    = #ResultFinal + #13thFinal
+
+    Do Convert-To-DTU-Date ($DateFinal,$DateFinal)
+    Do DTU-Parse-Date ($DateFinal,#Year,#Month,#Day)
+    Let #MaxMonthFinal = #Month
+
+    #debug Display '      '   noline
+    #debug Display $Emplid    noline
+    #debug Display ' '        noline
+    #debug Display #Empl_rcd  noline
+    #debug Display '      '   noline
+    #debug display $DateFinal noline
+    #debug Display '  '       noline
+    #debug display #13thFinal
+
+
+End-Procedure Get13thFinal
+
+!***************************************************************************
+Begin-Procedure GetAbsences
+#debug show 'Procedure: GetAbsences'
+!***************************************************************************
+#Debug show '  $Emplid                 [' $Emplid ']'
+#Debug show '  $Company                [' $Company ']'
+#Debug show '  $Query_Absences         [' $Query_Absences ']'
+#Debug show '  $QueryAbs01             [' $QueryAbs01 ']'
+#Debug show '  $QueryAbs02             [' $QueryAbs02 ']'
+
+Let $R02-LeaveReason01  = '00'
+Let $R02-LeaveStart01   = '0000'
+Let $R02-LeaveEnd01     = '0000'
+Let #Duration01         = 0
+Let $R02-LeaveReason02  = '00'
+Let $R02-LeaveStart02   = '0000'
+Let $R02-LeaveEnd02     = '0000'
+Let #Duration02         = 0
+Let $R02-LeaveReason03  = '00'
+Let $R02-LeaveStart03   = '0000'
+Let $R02-LeaveEnd03     = '0000'
+Let #Duration02         = 0
+Let $R02-TotalAbsDays   = '000'
+
+
+Let #Count     = 1
+Let #TotalDays = 0
+
+Begin-Select
+AB.EMPLID
+AB.EMPL_RCD
+AB.GPBR_ABS_RAIS
+AB.BGN_DT
+AB.END_DT
+AB.DURATION_ABS
+
+    !Get RAIS Reason
+    Let $RaisReason = Rtrim(&AB.GPBR_ABS_RAIS, ' ')
+
+    !Get Start Date
+    Do Convert-To-DTU-Date(&AB.BGN_DT, $Start_Date)
+    Do DTU-Parse-Date($Start_Date, #Y, #M, #D)
+    Move #M To $StartM '00'
+    Move #D To $StartD '00'
+
+    !Get End Date
+    Do Convert-To-DTU-Date(&AB.END_DT, $End_Date)
+    Do DTU-Parse-Date($End_Date, #Y, #M, #D)
+    Move #M To $EndM '00'
+    Move #D To $EndD '00'
+
+    !Get Days Duration
+    Let #Duration = &AB.DURATION_ABS
+
+    !Get Total Absence Days
+    Let #TotalDays = #TotalDays + #Duration
+    #debug Show 'Start_Date :' $Start_Date '  End Date:' $End_Date '  Duration:' #Duration  '  total:' #TotalDays
+
+    !Get Biggest 3 Absences
+    !Down the lower durations
+    If #Duration > #Duration01
+        Let $R02-LeaveReason03  = $R02-LeaveReason02
+        Let $R02-LeaveStart03   = $R02-LeaveStart02
+        Let $R02-LeaveEnd03     = $R02-LeaveEnd02
+        Let #Duration03         = #Duration02
+
+        Let $R02-LeaveReason02  = $R02-LeaveReason01
+        Let $R02-LeaveStart02   = $R02-LeaveStart01
+        Let $R02-LeaveEnd02     = $R02-LeaveEnd01
+        Let #Duration02         = #Duration01
+
+        Let $R02-LeaveReason01  = $RaisReason
+        Let $R02-LeaveStart01   = $StartD || $StartM
+        Let $R02-LeaveEnd01     = $EndD   || $EndM
+        Let #Duration01         = #Duration
+
+    Else
+        If #Duration > #Duration02
+            Let $R02-LeaveReason03  = $R02-LeaveReason02
+            Let $R02-LeaveStart03   = $R02-LeaveStart02
+            Let $R02-LeaveEnd03     = $R02-LeaveEnd02
+            Let #Duration03         = #Duration02
+
+            Let $R02-LeaveReason02  = $RaisReason
+            Let $R02-LeaveStart02   = $StartD || $StartM
+            Let $R02-LeaveEnd02     = $EndD   || $EndM
+            Let #Duration02         = #Duration
+
+        Else
+            If #Duration > #Duration03
+                Let $R02-LeaveReason03  = $RaisReason
+                Let $R02-LeaveStart03   = $StartD || $StartM
+                Let $R02-LeaveEnd03     = $EndD   || $EndM
+                Let #Duration03         = #Duration
+
+            End-If
+        End-If
+    End-If
+
+FROM PS_GPBR_RAIS2_WRK AB
+WHERE AB.PROCESS_INSTANCE = #prcs_process_instance
+AND AB.ESTABID            = $EstabIDRec02
+AND AB.EMPLID             = $Emplid
+AND AB.EMPL_RCD           = #Empl_rcd
+AND AB.LABEL1             = 'ABSENCES'
+ORDER BY AB.DURATION_ABS DESC
+End-Select
+
+If #TotalDays >= 0
+    Move #TotalDays To $R02-TotalAbsDays '000'
+End-if
+#debug show '                            $PrintEERow :' $PrintEERow $EmplId
+End-Procedure GetAbsences
+
+!***************************************************************************
+Begin-Procedure GetDisability
+#debugx show 'Procedure: GetDisability'
+!***************************************************************************
+Let $R02-Handicap = '0'
+Let $R02-HandicapIndic = '2'
+Begin-Select
+DIS.DISABLED_TYPE_BRA
+
+        Let $R02-Handicap = Rtrim(&DIS.DISABLED_TYPE_BRA, ' ')
+
+FROM PS_DISABILITY_BRA DIS
+WHERE DIS.EMPLID = $Emplid
+End-Select
+
+If $R02-Handicap <> '0'
+  Let $R02-HandicapIndic = '1'
+end-if
+
+End-Procedure GetDisability
+
+!***************************************************************************
+Begin-Procedure GetGender
+#debugx show 'Procedure: GetGender'
+!***************************************************************************
+! 1-Male 2-Female
+    If Rtrim(&RE.SEX, ' ') = 'M'
+        Let $R02-Gender = '1'
+    Else
+        Let $R02-Gender = '2'
+    End-If
+    If Rtrim(&RE.SEX, ' ') = 'U'
+           Let $R02-Gender = '0'
+        Write 10000 From  'Aviso: Informação faltante, Empregado: ' $Emplid ' sem Sexo'
+    End-if
+End-Procedure GetGender
+
+!***************************************************************************
+Begin-Procedure GetRaisReasonDate2
+#debug show 'Procedure: GetRaisReasonDate2'
+#Debug show '    $Found_Bgn              ' $Found_Bgn
+#Debug show '    $Found_End              ' $Found_End
+!***************************************************************************
+
+    Let $RAIS-Reason = Rtrim(&RD_RAIS_REASON_BRA, ' ')
+
+    If $Found_Bgn  = 'N'
+        Evaluate $RAIS-Reason
+            When = '1'
+            When = '2'
+            When = '3'
+            When = '4'
+            When = '5'
+            When = '7'
+            When = '9'
+            When = '10'
+            When = '11'
+            When = '12'
+            When = '13'
+            !When = '30'
+            !When = '31'
+
+                Let $StartDate = Rtrim(&BB1A.SLICE_END_DT, ' ')
+
+                Do Convert-To-DTU-Date($StartDate, $StartDate)
+                Do DTU-Parse-Date($StartDate, #Y, #M, #D)
+                Move #Y To $Y '0000'
+                Move #M To $M '00'
+                Move #D To $D '00'
+                Let $R02-HireTransDate   = $D || $M || $Y
+
+                Let $R02-HireType = $RAIS-Reason
+
+                Let $Found_Bgn  = 'Y'
+            Break
+        End-Evaluate
+    Else
+        Evaluate $RAIS-Reason
+            When = '30'
+            When = '31'
+            When = '10'
+            When = '11'
+            When = '12'
+            When = '20'
+            When = '21'
+            When = '32'
+            When = '34'
+            When = '40'
+            When = '50'
+            When = '60'
+            When = '62'
+            When = '63'
+            When = '64'
+            When = '70'
+            When = '71'
+            When = '72'
+            When = '73'
+            when = '74'
+            when = '90'
+            when = '75'
+                Let $FinishDate = Rtrim(&BB1A.SLICE_END_DT, ' ')
+                Do Convert-To-DTU-Date($FinishDate, $FinishDate)
+
+                Let $R02-TerminationCode = $RAIS-Reason
+
+                Let $Job_Action = Rtrim(&RD_ACTION, ' ')
+                If $Job_Action = 'TER'
+                    Let $TER-flag = 'TRUE'
+                    Do dtu-add-days($FinishDate, -1, $FinishDate)
+                End-If
+
+                Do DTU-Parse-Date($FinishDate, #Y, #M, #D)
+                Move #M To $M '00'
+                Move #D To $D '00'
+                Let $R02-TerminationDate = $D || $M
+                Let $Found_End = 'Y'
+        End-Evaluate
+    End-if
+
+#Debug show '    $RAIS-Reason            ' $RAIS-Reason
+#Debug show '    $EstabIDRec02           ' $EstabIDRec02
+#Debug show '    $Emplid                 ' $Emplid
+#Debug show '    #Empl_rcd               ' #Empl_rcd
+#Debug show '    $Found_Bgn              ' $Found_Bgn
+#Debug show '    $R02-HireTransDate      ' $R02-HireTransDate
+#Debug show '    $R02-HireType           ' $R02-HireType
+#Debug show '    $Found_End              ' $Found_End
+#Debug show '    $R02-TerminationCode    ' $R02-TerminationCode
+#Debug show '    $R02-TerminationDate    ' $R02-TerminationDate
+#Debug show '    $TER-flag               ' $TER-flag
+#Debug show '    &RD_ACTION              ' &RD_ACTION
+
+End-Procedure GetRaisReasonDate2
+
+!***************************************************************************
+Begin-Procedure GetIndemnity
+#debug show 'Procedure: GetIndemnity'
+#debug show '        $Emplid         :' $Emplid
+#debug show '        #Empl_rcd       :' #Empl_rcd
+#debug show '        $Query_Indemnity:' $Query_Indemnity
+!***************************************************************************
+
+    Let #INDEMNITY = #INDEMNITY + #MR_CompRate
+    Move #INDEMNITY to $R02-IndemPrev '0000000.00'
+    Do RemovePoint($R02-IndemPrev, $R02-IndemPrev)
+    #Debug show '                      $R02-IndemPrev : ' $R02-IndemPrev
+
+End-Procedure GetIndemnity
+
+!***************************************************************************
+Begin-Procedure GetHours
+#debugx show 'Procedure: GetHours'
+#debugx show '    $Emplid  :' $Emplid
+!***************************************************************************
+
+
+    Move &RE.GPBR_WEEKLY_HOURS to $R02-Hours '00'
+    #debugx show '    &WK.GPBR_WEEKLY_HOURS :' &RE.GPBR_WEEKLY_HOURS
+
+    If &RE.GPBR_WEEKLY_HOURS > 44
+        Write 10000 From 'Aviso: Empregado ' $Emplid ' com ' &RE.GPBR_WEEKLY_HOURS ' horas por semana, RAIS suporta um máximo de 44 horas.'
+    End-If
+
+    If &RE.GPBR_WEEKLY_HOURS <= 0
+        Write 10000 From 'Aviso: Empregado ' $Emplid ' com ' &RE.GPBR_WEEKLY_HOURS ' horas por semana, RAIS espera um número entre 1 e 44.'
+    End-If
+
+#debugx show '    $R02-Hours :' $R02-Hours
+End-Procedure GetHours
+
+!***************************************************************************
+Begin-Procedure BeneficiaryInfo
+#debug show 'Procedure: BeneficiaryInfo'
+!***************************************************************************
+Let #InfoCount = 0
+Begin-Select
+BI.FIELDNAME
+BT.FIELDTYPE
+BI.SEQNUM
+BT.LENGTH
+  Evaluate #InfoCount
+  When = 0
+    Let $TakeField1 = 'EI.' || Rtrim(&BI.FIELDNAME, ' ')
+    Let #TakeType1  = &BT.FIELDTYPE
+    Let #Length1 = &BT.LENGTH
+    Add 1 to #InfoCount
+    Break
+  When = 1
+    Let $TakeField2 = 'EI.' || Rtrim(&BI.FIELDNAME, ' ')
+    Let #TakeType2  = &BT.FIELDTYPE
+    Let #Length2 = &BT.LENGTH
+    Add 1 to #InfoCount
+    Break
+  When = 2
+    Let $TakeField3 = 'EI.' || Rtrim(&BI.FIELDNAME, ' ')
+    Let #TakeType3  = &BT.FIELDTYPE
+    Let #Length3 = &BT.LENGTH
+    Add 1 to #InfoCount
+    Break
+  End-Evaluate
+
+FROM PS_GPBR_RAIS_USAGE BI
+, PSDBFIELD BT
+WHERE BI.COMPANY = $Company
+AND BI.EFFDT = (SELECT MAX(BI2.EFFDT)
+                FROM PS_GPBR_RAIS_USAGE BI2
+                WHERE BI2.COMPANY = BI.COMPANY
+                AND BI2.EFFDT <= $CalEndDt1)
+AND BT.FIELDNAME = BI.FIELDNAME
+ORDER BY BI.SEQNUM
+End-Select
+
+#debug show '$TakeField1 :' $TakeField1 ' type :' #TakeType1 ' length :' #Length1
+#debug show '$TakeField2 :' $TakeField2 ' type :' #TakeType2 ' length :' #Length2
+#debug show '$TakeField3 :' $TakeField3 ' type :' #TakeType3 ' length :' #Length3
+
+If $TakeField1 = '' AND $TakeField2 = '' AND $TakeField3 = ''
+  Let $TakeField1 = 'EMPLID'
+End-If
+End-Procedure BeneficiaryInfo
+
+!***************************************************************************
+Begin-Procedure EmployeeInfo
+#debug show 'Procedure: EmployeeInfo'
+!***************************************************************************
+
+#debug show $Company
+#debug show $CalEndDt1
+#debug show $Emplid
+Let $R02-CiaUsage = ''
+
+Evaluate $TakeField1
+    When = 'EMPLID'
+        Let $R02-CiaUsage = &RE.EMPLID
+        Break
+    When = 'ESTABID'
+        Let $R02-CiaUsage = &RE.ESTABID
+        Break
+    When = 'DEPTID'
+        Let $R02-CiaUsage = &RE.DEPTID
+        Break
+    When = 'JOCODE'
+        Let $R02-CiaUsage = &RE.JOBCODE
+        Break
+    When-Other
+        If $TakeField1 != ''
+          Do GetJobTableData ($TakeField1, #TakeType1, #Length1, $Company, $CalEndDt1, $Emplid, $TextValue)
+          Let $R02-CiaUsage = $TextValue
+          #Debug show '$TextValue :'$TextValue
+        End-If
+End-Evaluate
+
+Evaluate $TakeField2
+    When = 'EMPLID'
+        Let $R02-CiaUsage = $R02-CiaUsage ||'-' || &RE.EMPLID
+        Break
+    When = 'ESTABID'
+        Let $R02-CiaUsage = $R02-CiaUsage ||'-' || &RE.ESTABID
+        Break
+    When = 'DEPTID'
+        Let $R02-CiaUsage = $R02-CiaUsage ||'-' || &RE.DEPTID
+        Break
+    When = 'JOCODE'
+        Let $R02-CiaUsage = $R02-CiaUsage ||'-' || &RE.JOBCODE
+        Break
+    When-Other
+        If $TakeField2 != ''
+          Do GetJobTableData ($TakeField2, #TakeType2, #Length2, $Company, $CalEndDt1, $Emplid, $TextValue)
+          Let $R02-CiaUsage = $R02-CiaUsage ||'-' || $TextValue
+          #Debug show '$TextValue :'$TextValue
+        End-If
+End-Evaluate
+
+Evaluate $TakeField3
+    When = 'EMPLID'
+        Let $R02-CiaUsage = $R02-CiaUsage ||'-' || &RE.EMPLID
+        Break
+    When = 'ESTABID'
+        Let $R02-CiaUsage = $R02-CiaUsage ||'-' || &RE.ESTABID
+        Break
+    When = 'DEPTID'
+        Let $R02-CiaUsage = $R02-CiaUsage ||'-' || &RE.DEPTID
+        Break
+    When = 'JOCODE'
+        Let $R02-CiaUsage = $R02-CiaUsage ||'-' || &RE.JOBCODE
+        Break
+    When-Other
+        If $TakeField3 != ''
+          Do GetJobTableData ($TakeField3, #TakeType3, #Length3, $Company, $CalEndDt1, $Emplid, $TextValue)
+          Let $R02-CiaUsage = $R02-CiaUsage ||'-' || $TextValue
+          #Debug show '$TextValue :'$TextValue
+        End-If
+End-Evaluate
+
+#Debug show '$R02-DecUse :'$R02-DecUse
+
+End-Procedure EmployeeInfo
+
+!***************************************************************************
+Begin-Procedure GetJobTableData ($Field, #Type, #Length, $C, $D, $E, :$TextValue)
+#debug show 'Procedure: GetJobTableData'
+!***************************************************************************
+#Debug show '  --Input--'
+#debug show '  $Field  :' $Field
+#debug show '  #Type   :' #Type
+#debug show '  #Length :' #Length
+#debug show '  $C      :' $C
+#debug show '  $D      :' $D
+#debug show '  $E      :' $E
+
+!FIELD TYPE     CODE Type
+!-------------- ---  ----------
+!Character       0   Char
+!Long Character  1   Char
+!Number          2   Number
+!Signed Number   3   Number
+!Date            4   Char
+!Time            5   No process
+!DateTime        6   No process
+!Image           8   No process
+!Attachment      8   No process
+!ImageReference  9   No process
+
+Let $TextValue = ''
+Evaluate #Type
+  When = 0
+  When = 1
+  When = 4
+
+Begin-Select
+[$Field] &V = Char
+  !It's Character?
+  If #Type = 0
+    Let $TextValue = Rtrim(&V, ' ')
+  End-If
+  !It's Long Character?
+  If #Type = 1
+      Let $TextValue = Rtrim(&V, ' ')
+  End-If
+  !It's Date?
+  If #Type = 4
+      Let $TextValue = Rtrim(&V, ' ')
+      Do Convert-To-DTU-Date($TextValue,$TextValue)
+  End-If
+  #Debug show '-->$TextValue :'$TextValue
+FROM PS_JOB EI
+WHERE EI.COMPANY = $C
+AND EI.EFFDT = (SELECT MAX(EI2.EFFDT)
+               FROM PS_JOB EI2
+               WHERE EI2.COMPANY = EI.COMPANY
+               AND EI2.EMPLID = EI.EMPLID
+               AND EI2.EMPL_RCD = EI.EMPL_RCD
+               AND EI2.EFFDT <= $D)
+AND EI.EFFSEQ = (SELECT MAX(EI3.EFFSEQ)
+                FROM PS_JOB EI3
+                WHERE EI3.COMPANY = EI.COMPANY
+                AND EI3.EMPLID = EI.EMPLID
+                AND EI3.EMPL_RCD = EI.EMPL_RCD
+                AND EI3.EFFDT = EI.EFFDT)
+AND EI.EMPLID = $E
+End-Select
+    Break
+  When = 2
+Begin-Select
+[$Field] &V3 = Number
+  Let $V3 = to_char(&V3)
+  Let $TextValue = RTrim($V3, ' ')
+  #Debug show '-->$TextValue :'$TextValue
+FROM PS_JOB EI
+WHERE EI.COMPANY = $C
+AND EI.EFFDT = (SELECT MAX(EI2.EFFDT)
+               FROM PS_JOB EI2
+               WHERE EI2.COMPANY = EI.COMPANY
+               AND EI2.EMPLID = EI.EMPLID
+               AND EI2.EMPL_RCD = EI.EMPL_RCD
+               and EI2.EFFDT <= $D)
+AND EI.EFFSEQ = (SELECT MAX(EI3.EFFSEQ)
+                FROM PS_JOB EI3
+                WHERE EI3.COMPANY = EI.COMPANY
+                AND EI3.EMPLID = EI.EMPLID
+                AND EI3.EMPL_RCD = EI.EMPL_RCD
+                AND EI3.EFFDT = EI.EFFDT)
+AND EI.EMPLID = $E
+End-Select
+    Break
+  When = 3
+Begin-Select
+[$Field] &V2 = Number
+  Move &V2 to $TextValue 999.99
+  #Debug show '-->$TextValue :'$TextValue
+FROM PS_JOB EI
+WHERE EI.COMPANY = $C
+AND EI.EFFDT = (SELECT MAX(EI2.EFFDT)
+               FROM PS_JOB EI2
+               WHERE EI2.COMPANY = EI.COMPANY
+               AND EI2.EMPLID = EI.EMPLID
+               AND EI2.EMPL_RCD = EI.EMPL_RCD
+               AND EI2.EFFDT <= $D)
+AND EI.EFFSEQ = (SELECT MAX(EI3.EFFSEQ)
+                FROM PS_JOB EI3
+                WHERE EI3.COMPANY = EI.COMPANY
+                AND EI3.EMPLID = EI.EMPLID
+                AND EI3.EMPL_RCD = EI.EMPL_RCD
+                AND EI3.EFFDT = EI.EFFDT)
+AND EI.EMPLID = $E
+End-Select
+    Break
+End-Evaluate
+End-Procedure GetJobTableData
+
+!***************************************************************************
+Begin-Procedure Put_Record02
+#debug show 'Procedure: Put_Record02'
+!***************************************************************************
+Let #Records2 = #Records2 + 1
+Let #SEQ      = #SEQ + 1
+Move #SEQ    to $R02-Seq 000000
+!Let $R02-EstabInscription = $R01-EstabInscription
+!Let $R02-EstabPrefix      = $R01-EstabPrefix
+Let $R02-Type = '2'
+Let $R02-Charter = '2'
+
+Do ToNumField ($R02-EstabInscription, 14, $R02-EstabInscription)
+Do ToNumField ($R02-Type, 1, $R02-Type)
+Do ToNumField ($R02-PisPasepCode, 11, $R02-PisPasepCode)
+Do ToNumField ($R02-BirthDate, 8, $R02-BirthDate)
+Do ToNumField ($R02-Nationality, 2, $R02-Nationality)
+Do ToNumField ($R02-YearEntryBrazil, 4, $R02-YearEntryBrazil)
+Do ToNumField ($R02-InstructionLevel, 2, $R02-InstructionLevel)
+Do ToNumField ($R02-CPF, 11, $R02-CPF)
+Do ToNumField ($R02-CTPS, 8, $R02-CTPS)
+Do ToNumField ($R02-HireTransDate, 8, $R02-HireTransDate)
+Do ToNumField ($R02-HireType, 2, $R02-HireType)
+Do ToNumField ($R02-ContractSal, 9, $R02-ContractSal)
+Do ToNumField ($R02-ContractSalType, 1, $R02-ContractSalType)
+Do ToNumField ($R02-Hours, 2, $R02-Hours)
+Do ToNumField ($R02-CBO, 6, $R02-CBO)
+Do ToNumField ($R02-EmploymentCode, 2, $R02-EmploymentCode)
+Do ToNumField ($R02-TerminationCode, 2, $R02-TerminationCode)
+Do ToNumField ($R02-TerminationDate, 4, $R02-TerminationDate)
+Do ToNumField ($R02-Ethnic, 1, $R02-Ethnic)
+Do ToNumField ($R02-Charter, 1, $R02-Charter)
+Do ToNumField ($R02-IndemPrev, 9, $R02-IndemPrev)
+Do ToNumField ($R02-LeaveReason01, 2, $R02-LeaveReason01)
+Do ToNumField ($R02-LeaveStart01, 4, $R02-LeaveStart01)
+Do ToNumField ($R02-LeaveEnd01, 4, $R02-LeaveEnd01)
+Do ToNumField ($R02-LeaveReason02, 2, $R02-LeaveReason02)
+Do ToNumField ($R02-LeaveStart02, 4, $R02-LeaveStart02)
+Do ToNumField ($R02-LeaveEnd02, 4, $R02-LeaveEnd02)
+Do ToNumField ($R02-LeaveReason03, 2, $R02-LeaveReason03)
+Do ToNumField ($R02-LeaveStart03, 4, $R02-LeaveStart03)
+Do ToNumField ($R02-LeaveEnd03, 4, $R02-LeaveEnd03)
+do ToNumField ($R02-TotalAbsDays, 3, $R02-TotalAbsDays)
+do ToNumField ($R02-Pregnt_field, 1, $R02-Pregnt_field)
+do ToNumField ($R02-fullparttime_field, 1, $R02-fullparttime_field)
+do ToNumField ($R02-regjornbra_field, 1, $R02-regjornbra_field)
+do ToNumField ($R02-intermittent, 1, $R02-intermittent)
+
+Do CleanString($R02-EmployeeName,$R02-EmployeeName)
+
+
+!ALTER-PRINTER
+!  POINT-SIZE = 6
+!  FONT = 7
+
+!Print $Emplid (+1,1)
+!Print $R02-CompJan (,9)
+!Print $R02-CompFeb (,+1)
+!Print $R02-CompMar (,+1)
+!Print $R02-CompApr (,+1)
+!Print $R02-CompMay (,+1)
+!Print $R02-CompJun (,+1)
+!Print $R02-CompJul (,+1)
+!Print $R02-CompAug (,+1)
+!Print $R02-CompSep (,+1)
+!Print $R02-CompOct (,+1)
+!Print $R02-CompNov (,+1)
+!Print $R02-CompDec (,+1)
+!Print $EstabId     (,+1)
+
+Write #FileNumber From $R02-Seq:6                   -
+                       $R02-EstabInscription:14     -
+                       $R02-EstabPrefix:2           -
+                       $R02-Type:1                  -
+                       $R02-PisPasepCode:11         -
+                       $R02-EmployeeName:52         -
+                       $R02-BirthDate:8             -
+                       $R02-Nationality:2           -
+                       $R02-YearEntryBrazil:4       -
+                       $R02-InstructionLevel:2      -
+                       $R02-CPF:11                  -
+                       $R02-CTPS:8                  -
+                       $R02-CTPSSerie:5             -
+                       $R02-HireTransDate:8         -
+                       $R02-HireType:2              -
+                       $R02-ContractSal:9           -
+                       $R02-ContractSalType:1       -
+                       $R02-Hours:2                 -
+                       $R02-CBO:6                   -
+                       $R02-EmploymentCode:2        -
+                       $R02-TerminationCode:2       -
+                       $R02-TerminationDate:4       -
+                       $R02-CompJan:9               -
+                       $R02-CompFeb:9               -    
+                       $R02-CompMar:9               -
+                       $R02-CompApr:9               -
+                       $R02-CompMay:9               -
+                       $R02-CompJun:9               -
+                       $R02-CompJul:9               -
+                       $R02-CompAug:9               -
+                       $R02-CompSep:9               -
+                       $R02-CompOct:9               -
+                       $R02-CompNov:9               -
+                       $R02-CompDec:9               -
+                       $R02-13thSalAdv:9            -
+                       $R02-13thSalAdvMonth:2       -
+                       $R02-13thSalFin:9            -
+                       $R02-13thSalFinMonth:2       -
+                       $R02-Ethnic:1                -
+                       $R02-HandicapIndic:1         -
+                       $R02-Handicap:1              -
+                       $R02-Charter:1               -
+                       $R02-IndemPrev:9             -
+                       $R02-Gender:1                -
+                       $R02-LeaveReason01:2         -
+                       $R02-LeaveStart01:4          -
+                       $R02-LeaveEnd01:4            -
+                       $R02-LeaveReason02:2         -
+                       $R02-LeaveStart02:4          -
+                       $R02-LeaveEnd02:4            -
+                       $R02-LeaveReason03:2         -
+                       $R02-LeaveStart03:4          -
+                       $R02-LeaveEnd03:4            -
+                       $R02-TotalAbsDays:3          -
+                       $R02-Vacation-Amt:8          -
+                       $R02-Overtime-Amt:8          -
+                       $R02-Overtime-Month:2        -
+                       $R02-Raise-Amt:8             -
+                       $R02-Raise-Month:2           -
+                       $R02-Other-Amt:8             -
+                       $R02-Other-Month:2           -
+                       $R02-FGTS-Fine:8             -
+                       $R02-Aso1-CNPJ:14            -
+                       $R02-Aso1-Amt:8              -
+                       $R02-Aso2-CNPJ:14            -
+                       $R02-Aso2-Amt:8              -
+                       $R02-Unio-CNPJ:14            -
+                       $R02-Unio-Amt:8              -
+                       $R02-Assi-CNPJ:14            -
+                       $R02-Assi-Amt:8              -
+                       $R02-Conf-CNPJ:14            -
+                       $R02-Conf-Amt:8              -
+                       $R02-CodMunc:7               -
+                       $R02-HoursJan:3              -
+                       $R02-HoursFeb:3              -
+                       $R02-HoursMar:3              -
+                       $R02-HoursApr:3              -
+                       $R02-HoursMay:3              -
+                       $R02-HoursJun:3              -
+                       $R02-HoursJul:3              -
+                       $R02-HoursAug:3              -
+                       $R02-HoursSep:3              -
+                       $R02-HoursOct:3              -
+                       $R02-HoursNov:3              -
+                       $R02-HoursDec:3              -
+                       $R02-UnionIndicator:1        -
+                       $R02-Pregnt_field:1          -
+                       $R02-fullparttime_field:1    -
+                       $R02-regjornbra_field:1      -
+                       $R02-intermittent:1          
+                       
+                       $R02-CiaUsage:8
+End-Procedure Put_Record02
+
+!***************************************************************************
+Begin-Procedure GetNationality
+#debugx show 'Procedure: GetNationality'
+!***************************************************************************
+
+    Let $R02-Nationality      = Rtrim(&RE.NATIONALITY_CD_BRA, ' ')
+    Let $R02-InstructionLevel = Rtrim(&RE.EDUCATION_LVL_BRA, ' ')
+
+    #debug Show 'Emplid :' $Emplid '$R02-InstructionLevel :' $R02-InstructionLevel
+        Evaluate $R02-InstructionLevel
+            When = '01'
+                Let $R02-InstructionLevel = '01'
+            Break
+            When = '02'
+                Let $R02-InstructionLevel = '02'
+            Break
+            When = '03'
+                Let $R02-InstructionLevel = '03'
+            Break
+            When = '04'
+                Let $R02-InstructionLevel = '04'
+            Break
+            When = '05'
+                Let $R02-InstructionLevel = '05'
+            Break
+            When = '06'
+                Let $R02-InstructionLevel = '06'
+            Break
+            When = '07'
+                Let $R02-InstructionLevel = '07'
+            Break
+            When = '08'
+                Let $R02-InstructionLevel = '08'
+            Break
+            When = '09'
+            When = '10'
+            When = '11'
+            When = '12'
+                Let $R02-InstructionLevel = '09'
+            Break
+            When = '13'
+            When = '14'
+                Let $R02-InstructionLevel = '10'
+            Break
+            When = '15'
+            When = '16'
+            When = '17'
+                Let $R02-InstructionLevel = '11'
+            Break
+    End-Evaluate
+    #debug Show 'Emplid :' $Emplid '$R02-InstructionLevel :' $R02-InstructionLevel
+
+    Let $R02-Ethnic           = Rtrim(&RE.ETHNIC_GRP_CD, ' ')
+    Let $R02-Ethnic           = substr($R02-Ethnic,2 ,1)
+
+If $R02-Nationality = ''
+    Write 10000 From  'Aviso: Informação faltante, Empregado: ' $Emplid ' sem Nacionalidade '
+End-if
+If $R02-InstructionLevel = ''
+    Write 10000 From  'Aviso: Informação faltante, Empregado: ' $Emplid ' sem Grau de Instrução'
+End-if
+If $R02-Ethnic = ''
+    Write 10000 From  'Aviso: Informação faltante, Empregado: ' $Emplid ' sem Raça'
+End-if
+End-Procedure GetNationality
+
+!***************************************************************************
+Begin-Procedure GetArrivalDate
+#debugx show 'Procedure: GetArrivalDate'
+!**************************************************************************
+Begin-Select
+V.ARRIVAL_DATE_BRA
+    Let $ArrivalDate = Rtrim(&V.ARRIVAL_DATE_BRA, ' ')
+FROM PS_PERS_DATA_BRA V
+WHERE V.EMPLID = $Emplid
+AND V.EFFDT = (SELECT MAX(V2.EFFDT)
+        FROM PS_PERS_DATA_BRA V2
+        WHERE V2.EMPLID = V.EMPLID
+        AND V2.EFFDT <= $CalEndDt1)
+End-Select
+End-Procedure GetArrivalDate
+
+!***************************************************************************
+Begin-Procedure GetEmployeeName
+#debug show 'Procedure: GetEmployeeName'
+!***************************************************************************
+Let $LegalNamePresent = 'N'
+Let #NameLength = 0
+
+
+    Let $FirstName   = Rtrim(&RE.ADD_FLD1_NAME, ' ')
+    Let $MidName     = Rtrim(&RE.ADD_FLD2_NAME, ' ')
+    Let $LastName    = Rtrim(&RE.ADD_FLD3_NAME, ' ')
+    Let $SecLastName = Rtrim(&RE.ADD_FLD4_NAME, ' ')
+
+    #Debug show '    $Emplid      : ' $Emplid
+    #Debug show '    $FirstName   : ' $FirstName
+    #Debug show '    $MidName     : ' $MidName
+    #Debug show '    $LastName    : ' $LastName
+    #Debug show '    $SecLastName : ' $SecLastName
+
+    Let $EnName      = $FirstName || ' ' || $MidName || ' ' || $LastName || ' ' || $SecLastName
+    Let $EnNameType  = Rtrim (&RE.NAME_TYPE_SHORT, ' ')
+
+
+    If $EnNameType = 'LEG'
+        Do CleanString($EnName, $EnName)
+        Let #NameLength = Length($EnName)
+        If #NameLength > 52
+            Write 10000 From 'Aviso: Nome legal do empregado ' $Emplid ' com mais de 30 caráteres'
+        End-if
+        Let $R02-EmployeeName = $EnName
+        Let $LegalNamePresent = 'Y'
+    End-If
+    If $EnNameType = 'PRI' And $LegalNamePresent = 'N'
+        Do CleanString($EnName, $EnName)
+        Let #NameLength = Length($EnName)
+        If #NameLength > 52
+            Write 10000 From 'Aviso: Nome legal do empregado ' $Emplid ' não encontrado, nome principal com mais de 52 caráteres'
+        End-if
+        Let $R02-EmployeeName = $EnName
+    End-If
+
+End-Procedure GetEmployeeName
+
+
+!***************************************************************************
+Begin-Procedure GetNIDs
+#debugx show 'Procedure: GetNIDs'
+!***************************************************************************
+    Let $R02-CPF  = ''
+    Let $R02-CTPS = ''
+    Let $R02-CTPSSerie = ''
+
+    Let $R02-CPF       = Rtrim(&RE.NID_CPF_BRA, ' ')
+    Let $R02-CTPS      = Rtrim(&RE.NID_CTPS_BRA, ' ')
+    Let $R02-CTPSSerie = Rtrim(&RE.GPBR_CTPS_ID, ' ')
+
+    If $R02-CPF = ''
+        Write 10000 From  'Aviso: Informação faltante, Empregado: ' $Emplid ' sem Grau de CPF'
+    End-if
+    If $R02-CTPS = ''
+        Let $R02-CTPS = '00000000'
+        Write 10000 From  'Aviso: Informação faltante ou invalid, Empregado: ' $Emplid ' sem CTPS'
+    End-if
+    If $R02-CTPSSerie = ''
+        Write 10000 From  'Aviso: Informação faltante ou invalid, Empregado: ' $Emplid ' sem CTPS Serie'
+    End-if
+End-Procedure GetNIDs
+
+!***************************************************************************
+Begin-Procedure Get_Record09
+#debug show 'PROCEDURE : Get_Record09'
+!***************************************************************************
+
+Move #Records1 to $R09-Records1 '000000'
+Move #Records2 to $R09-Records2 '000000'
+
+
+End-Procedure Get_Record09
+
+!***************************************************************************
+Begin-Procedure Put_Record09
+#debug show 'PROCEDURE : Put_Record09'
+!***************************************************************************
+Let #SEQ = #SEQ + 1
+Move #SEQ to $R09-Seq 000000
+Let $R09-Type = '9'
+Write #FileNumber From $R09-Seq:6                   -
+                       $R09-InscriLastEstab:14      -
+                       $R09-PrefixLastEstab:2       -
+                       $R09-Type:1                  -
+                       $R09-Records1:6              -
+                       $R09-Records2:6              -
+                       $R09-Filler:516
+End-Procedure Put_Record09
+
+!***************************************************************************
+Begin-Procedure CleanString($String_In, :$String_out)
+#debugx show 'PROCEDURE : CleanString'
+!***************************************************************************
+!Clean String for Internationa Characters, Double Spaces and Convert
+!to Uppercase
+!***************************************************************************
+let $String_In  = ltrim(rtrim($String_In, ' '),' ')
+let #I = 1
+Let $String_Out = ''
+let #Len = Length($String_In)
+let $Test_Char1 = ''
+let $Test_Char2 = ''
+let $Test_Char3 = ''
+
+While #I  <= #Len
+   Let $Test_Char    = Substr($String_In,#I, 1)
+   let $Test_Char3   = $Test_Char2
+   let $Test_Char2   = $Test_Char1
+   let $Test_Char1   = $Test_Char
+   if $Test_Char3 = $Test_Char2 and $Test_Char2 = $Test_Char1
+      let $Test_Char  = ''
+   end-if
+   !If $Test_Char <> '-'
+   !   Let $String_Out = $String_Out || Upper($Test_Char)
+   !End-if
+
+   let $Found = 'N'
+   !let $Test_Char = Substr($String_In, #I, 1)
+   let #Test_Code = ascii(Upper($Test_Char))
+   if (#Test_Code > 64 and #Test_Code < 91) or (#Test_Code > 47 and #Test_Code < 58)
+      let $String_Out = $String_Out || Upper($Test_Char)
+      let $Found = 'Y'
+   end-if
+
+   if ($Found = 'N')
+      evaluate $Test_Char
+        when = 'é'
+        when = 'ê'
+        when = 'ë'
+        when = 'è'
+        when = 'É'
+        when = 'Ê'
+        when = 'Ë'
+        when = 'È'
+          let $Test_Char = 'E'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = 'á'
+        when = 'â'
+        when = 'ä'
+        when = 'à'
+        when = 'å'
+        when = 'ã'
+        when = 'Á'
+        when = 'Â'
+        when = 'Ä'
+        when = 'À'
+        when = 'Å'
+        when = 'Ã'
+          let $Test_Char = 'A'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = 'ï'
+        when = 'î'
+        when = 'ì'
+        when = 'í'
+        when = 'Ï'
+        when = 'Î'
+        when = 'Ì'
+        when = 'Í'
+          let $Test_Char = 'I'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = 'ô'
+        when = 'ö'
+        when = 'ò'
+        when = 'Ö'
+        when = 'ó'
+        when = 'Ô'
+        when = 'Ö'
+        when = 'Ò'
+        when = 'Ö'
+        when = 'Ó'
+          let $Test_Char = 'O'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = 'ü'
+        when = 'û'
+        when = 'ù'
+        when = 'ú'
+        when = 'Ü'
+        when = 'Û'
+        when = 'Ù'
+        when = 'Ú'
+          let $Test_Char = 'U'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = 'ñ'
+        when = 'Ñ'
+          let $Test_Char = 'N'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = 'Ç'
+        when = 'ç'
+          let $Test_Char = 'C'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = ' '
+        when = '-'
+          let $String_Out  = $String_Out || $Test_Char
+        when-other
+          break
+      end-evaluate
+    end-if
+    add 1 To #I
+End-While
+Let $String_Out = Upper($String_Out)
+Let $String_Out = replace($String_Out, '  ', ' ')
+End-procedure CleanString
+
+!******************************************************************************
+Begin-procedure RemovePoint($in, :$out)
+#debugx show 'Procedure: RemovePoint'
+!******************************************************************************
+  Let $out = Replace($in, '.' , '')
+End-Procedure RemovePoint
+
+!******************************************************************************
+Begin-Procedure FillMonthArray
+#debugx show '  Procedure: FillMonthArray'
+!******************************************************************************
+Let #i = 1
+Let $EvalDate = $CalBeginDt
+While #i <= 12
+    Do dtu-month-end  ($EvalDate, $MLast-Date)          !Get Las day of month
+    Do dtu-parse-date ($MLast-Date, #yr, #mo, #da)      !Parse Date
+
+    Put #mo #da into Months(#i)                         !Put in Array
+    Do dtu-add-months($EvalDate, 1, $EvalDate)          !Add one month to eval Date
+    Let #i = #i + 1                                     !Add one to counter #i
+End-While
+End-Procedure FillMonthArray
+
+
+!******************************************************************************
+Begin-Procedure OpenLog
+#debug show 'PROCEDURE : OpenLog'
+!******************************************************************************
+
+Move #prcs_process_instance To $ProcInstance '0000000000'
+Let $FileLog = '{FILEPREFIX}RAIS_'|| $ProcInstance || '.log' || '{FILESUFFIX}'
+
+Open $FileLog as 10000 for-writing record=1000 status=#filestat
+If #filestat != 0
+    Display 'Error opening Log file ' noline
+    Display $FileName
+
+Else
+    #Debug Display '  File Open success ' noline
+    #Debug Display $FileLog
+
+    Let $TimeToShow = datetostr(datenow(), 'HH24:MI:SS.NNNNNN')
+    Write 10000 From 'Report Begin :' $TimeToShow
+
+End-If
+End-Procedure OpenLog
+
+!******************************************************************************
+Begin-Procedure CloseLog
+#debug show 'Procedure: CloseLog'
+!******************************************************************************
+    Let $TimeToShow = datetostr(datenow(), 'HH24:MI:SS.NNNNNN')
+    Write 10000 From 'Report End :' $TimeToShow
+    Close 10000
+End-Procedure CloseLog
+
+
+
+!******************************************************************************
+Begin-Procedure OnlyNumbers($StringIn, #LenIn, :$StringOut)
+#debugx show 'Procedure: OnlyNumbers'
+!******************************************************************************
+!Remove Any no number digit, and align to right and fill with zeros
+    Let $StringTemp = ''
+    Let $Char       = ''
+    Let #Found      = 0
+    Let #i          = 1
+    Let #j          = 1
+    Let $Digits     = '1234567890'
+    Let #Len        = length($StringIn)
+    Let #NumTemp    = 0
+
+    While #i <= #Len
+        Let $Char  = Substr($StringIn, #i , 1)
+        Let #Found = instr($Digits, $Char, 1)
+        If #Found <> 0
+            Let $StringTemp = $StringTemp || $Char
+        End-If
+        Let #i = #i + 1
+    End-While
+    Let $StringOut = lpad($StringTemp, #LenIn, ' ')
+End-Procedure OnlyNumbers
+
+!******************************************************************************
+Begin-Procedure ToNumField($StringIn, #LenIn, :$StringOut)
+#debugx show 'Procedure: ToNumField'
+!******************************************************************************
+!Remove Any no number digit, and align to right and fill with zeros
+    Let $StringTemp = ''
+    Let $Char       = ''
+    Let #Found      = 0
+    Let #i          = 1
+    Let #j          = 1
+    Let $Mask       = ''
+    Let $Digits     = '1234567890'
+    Let #Len        = length($StringIn)
+    Let #NumTemp    = 0
+
+    While #i <= #Len
+        Let $Char  = Substr($StringIn, #i , 1)
+        Let #Found = instr($Digits, $Char, 1)
+        If #Found <> 0
+            Let $StringTemp = $StringTemp || $Char
+        End-If
+        Let #i = #i + 1
+    End-While
+
+    If #Len = 0
+        Let $StringTemp = '0'
+    End-If
+
+    While #j <= #LenIn
+        Let $Mask = $Mask || '0'
+        Let #j = #j + 1
+    End-While
+
+    Let #Lentmp = length($StringTemp)
+
+    If #Lentmp <= #LenIn
+        Let #NumTemp = to_number($StringTemp)
+        Move #NumTemp To $StringOut :$Mask
+    Else
+        Let $StringOut = $StringTemp
+    End-If
+
+    !show '$StringIn   : ' $StringIn
+    !show '#LenIn      : ' #LenIn
+    !show '$StringTemp : ' $StringTemp
+    !show '#Lentmp     : ' #Lentmp
+    !Show '#NumTemp    : ' #NumTemp
+    !Show '$Mask       : ' $Mask
+    !Show '$StringOut  : ' $StringOut
+    !Show ''
+End-Procedure ToNumField
+
+!******************************************************************************
+Begin-Procedure GetUnionCNPJ($UnionID, $DateTocheck, :$UnionCNPJ)
+#debug show 'Procedure: GetUnionCNPJ'
+#Debug Show '$UnionID      : ' $UnionID
+#debug show '$DateTocheck  : ' $DateTocheck
+!******************************************************************************
+Let $UnionCNPJ = ''
+
+Begin-Select
+UNI1.UNION_CNPJ_BRA
+
+     Let $UnionCNPJ = Rtrim(&UNI1.UNION_CNPJ_BRA, ' ')
+
+FROM PS_UNION_TBL_BRA UNI1
+WHERE UNI1.UNION_CD = $UnionID
+AND UNI1.EFFDT = (SELECT MAX(UNI2.EFFDT)
+          FROM PS_UNION_TBL_BRA UNI2
+          WHERE UNI2.UNION_CD = UNI1.UNION_CD
+          AND UNI2.EFFDT <= $DateTocheck)
+End-Select
+
+If $UnionCNPJ = ''
+        Write 10000 From 'Aviso: Entidade Sindical ' $UnionID ' sem CNPJ'
+End-If
+End-Procedure GetUnionCNPJ
+
+!******************************************************************************
+Begin-Procedure GetPaymentsInTerm
+!This procedure replace: PaymentsInTerm
+#debug show 'Procedure: GetPaymentsInTerm'
+!******************************************************************************
+
+#debug show '  $R02-TerminationDate :' $R02-TerminationDate
+#debug show '  $Emplid              :' $Emplid
+#debug show '  $Company             :' $Company
+
+
+
+If $TER-flag = 'TRUE'
+!If $R02-TerminationDate <> '0000'
+
+  Let #TermPayment = &COMP_RATE
+  #debug show &BB1A.SLICE_END_DT '  ' &RD_ACTION '  ' #TermPayment '  ' &TermUnits
+
+  Let $Slice_endDt = Rtrim(&BB1A.SLICE_END_DT, ' ')
+  Do Convert-To-DTU-Date($Slice_endDt, $Slice_endDt)
+  Do dtu-parse-date ($Slice_endDt, #Y, #M, #D)
+  Move #M To $M '00'
+  Move #D To $D '00'
+
+  Let $SlcDt = $D || $M
+
+  If $SlcDt = $R02-TerminationDate
+
+      !Concept                Translate  RAIS Variable
+      !Indemnified Vacations      10     $R02-Vacation-Amt
+      !Bank of Hours              20     $R02-Overtime-Amt
+      !                                  $R02-Overtime-Month
+      !Union Adjustment           30     $R02-Raise-Amt
+      !                                  $R02-Raise-Month
+      !Other Compensations        40     $R02-Other-Amt
+      !                                  $R02-Other-Month
+      !FGTS Fine                  50     $R02-FGTS-Fine
+
+      Evaluate &RD_ACTION
+        When = '10'
+          Let #VacAmt = #VacAmt + #TermPayment
+        Break
+        When = '20'
+            Let #BankHAmt = #BankHAmt + #TermPayment
+            Let #BankHUnt = #BankHUnt + &TermUnits
+        Break
+        When = '30'
+            Let #UnionAmt = #UnionAmt + #TermPayment
+            Let #UnionUnt = #UnionUnt + &TermUnits
+        Break
+        When = '40'
+            Let #OtherAmt = #OtherAmt + #TermPayment
+            Let #OtherUnt = #OtherUnt + &TermUnits
+        Break
+        When = '50'
+          Let #FGTSAmt = #FGTSAmt + #TermPayment
+        Break
+      End-Evaluate
+  End-If
+End-If
+
+End-Procedure GetPaymentsInTerm
+
+!******************************************************************************
+Begin-Procedure Contributions
+#debug show 'Procedure: Contributions'
+!******************************************************************************
+
+    !Let #ContribAmount = &COMP_RATE + #ContribAmount
+
+    If &COMP_RATE >= 0
+
+        Let $ContribType = Rtrim(&RD_ACTION, ' ')
+        Evaluate $ContribType
+        When = 'ASO'
+            Let #ContribAmountASO = #ContribAmountASO + &COMP_RATE
+            Let $IntermASOCNPJ = $UnionASOCNPJ
+            Break
+        When = 'ASI'
+            Let #ContribAmountASI = #ContribAmountASI + &COMP_RATE
+            Let $IntermASICNPJ = $UnionASICNPJ
+            Break
+        When = 'CON'
+            Let #ContribAmountCON = #ContribAmountCON + &COMP_RATE
+            Let $IntermCONCNPJ = $UnionCONCNPJ
+            Break
+        End-Evaluate
+
+        !Let $PrintEERow = 'Y'
+    End-If
+End-Procedure Contributions
+
+!******************************************************************************
+Begin-Procedure GetUnion2
+#debug show 'Procedure: GetUnion2'
+!******************************************************************************
+
+    Let #UcAmount = #UcAmount + &COMP_RATE
+    Let $IntermUNICNPJ = $UnionSindCNPJ
+
+End-Procedure GetUnion2
+
+
+!******************************************************************************
+Begin-Procedure GetWorkedHours
+#debug show 'Procedure: GetWorkedHours'
+!******************************************************************************
+Let $Query_Hours = Replace($Query_Compensation, 'AA.SEG_','AA9.SEG_')
+#debug show '$Emplid      : ' $Emplid
+#debug show '$Query_Hours : ' $Query_Hours
+
+
+    Let $Date          = Rtrim(&BB1A.SLICE_END_DT, ' ')
+    Let #WorkedHours   = &COMP_RATE
+    Do Convert-To-DTU-Date ($Date,$DateN)
+    Do DTU-Parse-Date ($DateN,#Year,#Month,#Day)
+
+
+    #Debug Show $Emplid  ',' $EstabID ',' $Empl_PayGroup ',' #Month ',' #WorkedHours
+
+    Evaluate #Month
+        When = 1
+            Let #Work_01 = #Work_01 + #WorkedHours
+        Break
+        When = 2
+            Let #Work_02 = #Work_02 + #WorkedHours
+        Break
+        When = 3
+            Let #Work_03 = #Work_03 + #WorkedHours
+        Break
+        When = 4
+            Let #Work_04 = #Work_04 + #WorkedHours
+        Break
+        When = 5
+            Let #Work_05 = #Work_05 + #WorkedHours
+        Break
+        When = 6
+            Let #Work_06 = #Work_06 + #WorkedHours
+        Break
+        When = 7
+            Let #Work_07 = #Work_07 + #WorkedHours
+        Break
+        When = 8
+            Let #Work_08 = #Work_08 + #WorkedHours
+        Break
+        When = 9
+            Let #Work_09 = #Work_09 + #WorkedHours
+        Break
+        When = 10
+            Let #Work_10 = #Work_10 + #WorkedHours
+        Break
+        When = 11
+            Let #Work_11 = #Work_11 + #WorkedHours
+        Break
+        When = 12
+            Let #Work_12 = #Work_12 + #WorkedHours
+        Break
+    End-Evaluate
+
+
+    #Debug Show
+
+End-Procedure GetWorkedHours
+
+!**************************************
+begin-procedure LoadCentralTbl
+#debug show '* LoadCentralTbl'
+!**************************************
+
+If $Centr_Ind = 'Y'
+
+  #debug show '* Centralização SIM'
+  Begin-Sql
+ INSERT INTO PS_GPBR_CENT_ESTAB
+  (
+   PROCESS_INSTANCE
+  ,CENTR_ESTABID_BRA
+  ,ESTABID
+  )
+  SELECT #prcs_process_instance,
+         A.ESTABID,
+         A.ESTABID
+  FROM PS_ESTAB_TBL_BRA A
+  WHERE A.ESTABID = $Centr_Estab
+    AND A.EFFDT = (SELECT MAX(X.EFFDT)
+                        FROM PS_ESTAB_TBL_BRA X
+                        WHERE X.ESTABID = A.ESTABID
+                        AND X.EFFDT <= $CalEndDt1)
+  End-Sql
+
+  Begin-Sql
+  INSERT INTO PS_GPBR_CENT_ESTAB
+  (
+   PROCESS_INSTANCE
+  ,CENTR_ESTABID_BRA
+  ,ESTABID
+  )
+  SELECT #prcs_process_instance,
+         A.CENTR_ESTABID_BRA,
+         A.ESTABID
+  FROM PS_ESTAB_TBL_BRA A
+  WHERE A.CENTR_ESTABID_BRA = $Centr_Estab
+      AND A.EFFDT = (SELECT MAX(X.EFFDT)
+                        FROM PS_ESTAB_TBL_BRA X
+                        WHERE X.ESTABID = A.ESTABID
+                        AND X.EFFDT <= $CalEndDt1)
+      AND 0 = ( SELECT COUNT(*)
+    FROM PS_GPBR_CENT_ESTAB
+    WHERE PROCESS_INSTANCE = #prcs_process_instance
+      AND CENTR_ESTABID_BRA = A.CENTR_ESTABID_BRA
+      AND ESTABID = A.ESTABID)
+  End-Sql
+
+Else
+
+Begin-Select
+COUNT (*) &RC_RAIS2
+
+FROM PS_GPBR_RC_RAIS02
+WHERE OPRID = $Prcs_OprID
+AND RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+End-Select
+
+   If &RC_RAIS2 > 0
+
+Begin-Select
+ESA.ESTABID
+
+     Let $Centr_Estab = Rtrim(&ESA.ESTABID , ' ')
+
+FROM PS_ESTAB_TBL ESA
+   , PS_GPBR_RC_RAIS02 B
+WHERE ESA.COMPANY = $RC_Company
+  AND ESA.HQUNIT = 'Y'
+  AND ESA.EFFDT = (SELECT MAX(IA.EFFDT)
+                          FROM PS_ESTAB_TBL IA
+                          WHERE IA.ESTABID = ESA.ESTABID
+                            AND IA.EFFDT <= $CalEndDt1)
+  AND B.OPRID = $Prcs_OprID
+  AND B.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+  AND B.ESTABID = ESA.ESTABID
+End-Select
+
+      #debug show '* Centralização NÃO $Prcs_OprID  > ' $Prcs_OprID
+      #debug show '* Centralização NÃO $Prcs_Run_Cntl_ID  > ' $Prcs_Run_Cntl_ID
+
+      If $Centr_Estab = ' ' OR $Centr_Estab = ''
+
+Begin-Select
+ESID.ESTABID
+
+     Let $Centr_Estab = Rtrim(&ESID.ESTABID , ' ')
+
+FROM PS_GPBR_RC_RAIS01 A,
+     PS_GPBR_RC_RAIS02 B,
+     PS_ESTAB_ID_BRA ESID
+WHERE A.OPRID = $Prcs_OprID
+  AND B.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+  AND B.OPRID = A.OPRID
+  AND B.RUN_CNTL_ID = A.RUN_CNTL_ID
+  AND ESID.ESTABID = B.ESTABID
+  AND ESID.EFFDT = (SELECT MAX(IESID.EFFDT) FROM PS_ESTAB_ID_BRA IESID
+                              WHERE IESID.ESTABID = ESID.ESTABID
+                               AND IESID.EFFDT <= $CalEndDt1)
+  AND ESID.ESTAB_ID_TYPE_BRA = 'CNPJ'
+               ORDER BY ESID.ESTAB_ID_BRA DESC
+End-Select
+      End-If
+
+      Begin-Sql
+         insert into PS_GPBR_CENT_ESTAB
+         (
+          PROCESS_INSTANCE
+         ,CENTR_ESTABID_BRA
+         ,ESTABID
+         )
+         SELECT #prcs_process_instance,
+            $Centr_Estab,
+            B.ESTABID
+         FROM PS_GPBR_RC_RAIS01 A,
+              PS_GPBR_RC_RAIS02 B
+         WHERE A.OPRID = $Prcs_OprID
+          AND B.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+          AND B.OPRID = A.OPRID
+          AND B.RUN_CNTL_ID = A.RUN_CNTL_ID
+         End-Sql
+
+   Else
+
+Begin-Select
+ESA1.ESTABID
+
+    Let $Centr_Estab = Rtrim(&ESA1.ESTABID , ' ')
+
+FROM PS_ESTAB_TBL ESA1
+WHERE ESA1.COMPANY = $RC_Company
+  AND ESA1.HQUNIT = 'Y'
+  AND ESA1.EFFDT = (SELECT MAX(IA.EFFDT)
+                          FROM PS_ESTAB_TBL IA
+                          WHERE IA.ESTABID = ESA1.ESTABID
+                            AND IA.EFFDT <= $CalEndDt1)
+End-Select
+
+      Begin-Sql
+          insert into PS_GPBR_CENT_ESTAB
+          (
+           PROCESS_INSTANCE
+          ,CENTR_ESTABID_BRA
+          ,ESTABID
+          )
+          SELECT #prcs_process_instance,
+            $Centr_Estab,
+            ESA.ESTABID
+          FROM PS_ESTAB_TBL ESA
+          WHERE ESA.COMPANY = $RC_Company
+           AND ESA.EFFDT = (SELECT MAX(IA.EFFDT)
+                             FROM PS_ESTAB_TBL IA
+                             WHERE IA.ESTABID = ESA.ESTABID
+                            AND IA.EFFDT <= $CalEndDt1)
+      End-Sql
+   End-If
+
+End-If
+
+!------ This statement includes CEI establishments
+  Begin-Sql
+  insert into PS_GPBR_CENT_ESTAB
+  (
+   PROCESS_INSTANCE
+  ,CENTR_ESTABID_BRA
+  ,ESTABID
+  )
+  SELECT #prcs_process_instance,
+         $Centr_Estab,
+         A.ESTABID
+  FROM PS_ESTAB_TBL_BRA A
+  WHERE A.ESTAB_ASOC_BRA IN (SELECT B.ESTABID
+                               FROM PS_GPBR_CENT_ESTAB B
+                               WHERE PROCESS_INSTANCE = #prcs_process_instance)
+      and A.EFFDT = (SELECT MAX(X.EFFDT)
+                        FROM PS_ESTAB_TBL_BRA X
+                        WHERE X.ESTABID = A.ESTABID
+                        AND X.EFFDT <= $CalEndDt1)
+          and 0 = ( SELECT COUNT(*)
+    FROM PS_GPBR_CENT_ESTAB
+    WHERE PROCESS_INSTANCE = #prcs_process_instance
+      AND CENTR_ESTABID_BRA = $Centr_Estab
+      AND ESTABID = A.ESTABID)
+  End-Sql
+
+do Commit-Transaction
+
+#ifdef ORACLE
+    begin-sql
+        ANALYZE table PS_GPBR_CENT_ESTAB COMPUTE STATISTICS
+    end-sql
+#endif
+
+end-procedure LoadCentralTbl
+
+!******************************************************************************
+Begin-Procedure PrintTime($label)
+#debugx show 'Procedure: PrintTime'
+!******************************************************************************
+  Let $tempTime = datenow()
+
+  Let $TimeToShow = datetostr(datenow(), 'HH24:MI:SS.NNNNNN')
+
+  Show '    TIME :: ' $label ' ' $TimeToShow
+End-Procedure
+
+!*******************************************************************************
+#include 'stdapi.sqc'    !Update Process API
+#include 'prcsapi.sqc'   !Process API
+#include 'datemath.sqc'  !Routines for date
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'sqrtrans.sqc'
+#include 'number.sqc'
+#include 'getcodta.sqc'  !Get selected fields from Company Table
+#include 'brfile01.sqc'  !File Utilities
+#Include 'tranctrl.sqc'  !Transaction control
+!*******************************************************************************

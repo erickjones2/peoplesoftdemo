@@ -1,0 +1,891 @@
+!***********************************************************************
+!  GPGBGTNA.SQR - GROSS TO NET ANALYSIS SQR                            *
+!                                                                      *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      
+! Copyright (C) 1988, 2017, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!                                                                      !
+!       $Release:  HR92                                                !
+!           $Bug:  25693974                                            !
+!                                                                      *
+!***********************************************************************
+!----------------------------------------------------------------------*
+! Date          Modification                                           *
+! ----          ------------                                           *
+! 08/2001       - Replace department table for Descr                   *
+! 12/2001       - Lines variables made global                          *
+! 08/2005       - Corrected page overflow issue;                       *
+!                 Added SPP and SAP absences under Statutory Commitment*
+!                 Corrected problem with summing of statutory details  *
+!                 in case of multiple paygroups in Calendar Group.     *
+!                 General cleanup.                                     *
+! 08/2006       - Modified for NI-Retro Changes                        *       
+! 06/2010       - Modified for  Gross to Net GBR report not resetting  *
+!                 all values between paygroups                         *
+! 04/2015       - Modified to include SHPP in Statutory commitment     *
+!***********************************************************************
+!test comment
+!******************************************************************
+!*** Setting up the environment
+!******************************************************************
+
+#include 'setenv.sqc'   ! Set environment
+#include 'setup32.sqc'  ! printer and page-size initialization
+
+!******************************************************************
+!*** Constants definitions
+!******************************************************************
+
+!Define Column Location Variables
+#define PageLength              177
+#define PosNumPage              165
+
+#define Pos1                    1
+#define Pos2                    20
+#define Pos3                    33
+#define Pos4                    55
+#define Pos5                    85
+#define Pos6                    110
+#define Pos7                    155
+#define Pos8                    165
+
+!******************************************************************
+!*** Heading section - Title
+!******************************************************************
+
+begin-heading 6 !This number must be changed to match the number
+                !of lines in the header (including column headings)
+                
+        let $ReportDateTime =  $ReportDate || ' ' ||  $ReportTime    
+
+        print $ReportTitle              ()   bold center
+        print 'Report ID:  '            (+1,1)
+        print $ReportID                 (,{Pos2})
+        print 'Calender Group:'         (,{Pos4})
+        print $T_CAL_RUN                (,{Pos5})
+        page-number                     ( ,{PosNumPage}) 'Page: '
+        last-page                       () ' / '
+        print 'Date '                   (+1,1)
+        print $ReportDateTime           (,{Pos2})
+        print 'Department:'             (,{Pos4})
+        print $T_DEPTID                 (,{Pos5})
+        print 'Pay Entity:'             (+1,1)
+        print $PAY_ENTITY_DESCR         (,{Pos2})
+        print 'Paygroup:'               (,{Pos4})
+        print $PAYGROUP_DESCR           (,{Pos5})
+
+!******************************************************************
+!*** Heading section - Headers
+!******************************************************************
+
+        print 'PAYMENTS'                 (+2,{Pos1})
+        print 'DEDUCTIONS'               (,{Pos4})
+        print 'STATUTORY COMMITMENT'     (,{Pos6})
+!        graphic                          (,1,96) horz-line
+
+end-heading
+
+!******************************************************************
+!***    Begin Report Section
+!******************************************************************
+begin-report
+
+        !----------------------------------------------------------
+        !***    Call the main procedures
+        !----------------------------------------------------------
+        do Init-report
+        do MAIN-REPORT
+        move #CountError to $CountError 99999
+        do Append-Log ('WHERE_STATEMENT'  , $_WHERE_STATEMENT)
+        do Append-Log ('CountError '  , $CountError)
+        do Append-Log('----------------------------- ' , '------------------------------' )
+        do Get-log
+        
+        
+       
+end-report
+
+
+!******************************************************************
+! I N I T I A L I Z E   A N D / O R   G E T    V A R I A B L E S
+!******************************************************************
+
+
+!*=================================================================
+! Procedure     :Init-Report
+! Comment       :This procedure performs the application
+!                initializations formats variables for use, and
+!                calls the procedures to get input parameters.
+!*=================================================================
+begin-procedure Init-report
+#Debug Show 'Init-Report -> '
+
+        do INIT-DATETIME
+        do INIT-NUMBER
+        do INIT-VARIABLES
+        do DEFINE-PRCS-VARS
+        do GET-RUN-CONTROL-PARMS
+        do GET-CURRENT-DATETIME
+
+        if isnull($prcs_process_instance)
+            do ASK-VALUES !SQR not run through process scheduler
+        else
+            do GET-VALUES !SQR run through process scheduler
+        end-if
+
+        let $ReportID    = 'GTNA'
+        let $ReportTitle = 'Gross To Net Analysis'
+      
+#Debug Show 'Init-Report <- '
+end-procedure Init-Report
+
+!*=================================================================
+! Procedure    :Init-variables
+! Comment      :Initializations of all varaibles used by the report
+!*=================================================================
+begin-procedure Init-variables
+#Debug Show 'Init-variables -> ' 
+
+        let #TRUE               = 1
+        let #FALSE              = 0
+        let #CountError         = 0
+        let #counter            = 0
+        let #TotConPay          = 0
+        let #TOT_PAY            = 0
+        let #TOT_DED            = 0
+        let #TAX_DED            = 0
+        let #TOT_SMP            = 0
+        let #TOT_GROSS          = 0
+        let #TOT_STY            = 0
+        let #NI_REBATES         = 0
+        let #SMP                = 0
+        let #SPP                = 0
+        let #ASPP               = 0
+        let #SHPP               = 0
+        let #SAP                = 0
+        let #EES_NI             = 0
+        let #ERS_NI             = 0
+        let #GROSS              = 0
+        let #TOT_NETT           = 0
+        let #TOT_TAX            = 0
+        let #LINEA              = 1
+        let #LINEB              = 1
+        let #OVRFLW             = 45
+        let #OVRFLW2            = 40
+        let #STATLIMIT          = 12
+        
+#Debug Show 'Init-variables <- '
+end-procedure Init-variables
+
+
+!*=================================================================
+! Procedure   :Ask-Values
+! Comment     :This procedure prompts the user for those variable
+!              values that will be used throughout the report.
+!              ASK-VALUES is called when the user is not using
+!              the process scheduler. This procedure calls whatever
+!              procedures are needed. (eg. do ASK-FROM-THRU-DATE).
+!*=================================================================
+begin-procedure Ask-values
+#Debug Show 'Ask-values -> '
+
+        !*---------------------------------------------------------
+        !***    Enter the Calender Run ID
+        !*---------------------------------------------------------
+        !input $PNL_CAL_RUN_ID 'Enter Calender Run ID'
+
+        !*---------------------------------------------------------
+        !***    Enter the Pay Entity
+        !*---------------------------------------------------------
+        !input $PNL_PAY_ENTITY 'Enter Pay Entity'
+
+        !*---------------------------------------------------------
+        !***    Enter the Deptid
+        !*---------------------------------------------------------
+        !input $PNL_DEPTID 'Enter Department ID'
+
+        !*---------------------------------------------------------
+        !***    Enter the Pay Group
+        !*---------------------------------------------------------
+        !input $PNL_PAYGROUP 'Enter Pay Group '
+
+        !*---------------------------------------------------------
+        !***    Enter the Employee ID
+        !*---------------------------------------------------------
+        !input $PNL_EMPLID 'Enter Employee ID '
+
+        !*---------------------------------------------------------
+        !***    Enter the Tax Period
+        !*---------------------------------------------------------
+        !input $PNL_TAX_PERIOD 'Enter Tax Period'
+
+        !*---------------------------------------------------------
+        !***    Enter the Frequency ID
+        !*---------------------------------------------------------
+        !input $PNL_FREQUENCY_ID 'Enter Frequency ID'
+
+        !*---------------------------------------------------------
+        !***    Enter the Tax Year
+        !*---------------------------------------------------------
+        !input $PNL_TAX_YEAR 'Enter The Year the Tax Year Begins In'
+
+#Debug Show 'Ask-values <- ' 
+end-procedure Ask-values
+
+
+!*=================================================================
+! Procedure     :Get-Values
+! Comment       :This procedure gets the variable name (beginning
+!                with a $) that will be used throughout the report
+!                using the run control parameters called in
+!                GET-RUN-CONTROL-PARMS.
+!*=================================================================
+begin-procedure Get-values
+#Debug Show 'Get-values -> ' 
+
+begin-SELECT on-error=ERROR-SQL   !SELECTS THE DATA FROM THE PANEL
+RUNDB.CAL_RUN_ID
+RUNDB.DEPTID
+RUNDB.SETID
+RUNDB.PAY_ENTITY
+RUNDB.GP_PAYGROUP
+RUNDB.EMPLID
+RUNDB.FREQUENCY_ID
+RUNDB.GPGB_TAX_PERIOD
+RUNDB.GPGB_TAX_BGN_YR
+
+        let $PNL_CAL_RUN_ID         = RTRIM(&RUNDB.CAL_RUN_ID,' ')
+        let $PNL_DEPTID             = RTRIM(&RUNDB.DEPTID,' ')
+        let $PNL_SETID              = RTRIM(&RUNDB.SETID,' ')
+        let $PNL_PAY_ENTITY         = RTRIM(&RUNDB.PAY_ENTITY,' ')
+        let $PNL_PAYGROUP           = RTRIM(&RUNDB.GP_PAYGROUP,' ')
+        let $PNL_EMPLID             = RTRIM(&RUNDB.EMPLID,' ')
+        let #PNL_TAX_PERIOD         = &RUNDB.GPGB_TAX_PERIOD
+        let $PNL_FREQUENCY_ID       = RTRIM(&RUNDB.FREQUENCY_ID,' ')
+        let $PNL_TAX_YEAR           = RTRIM(EDIT(&RUNDB.GPGB_TAX_BGN_YR, '9999'),' ')
+        let #PNL_TAX_YEAR           = &RUNDB.GPGB_TAX_BGN_YR
+        let $PNL_TAX_PERIOD         = EDIT(#PNL_TAX_PERIOD,'09')
+
+FROM  PS_GPGB_RUNCTL_SQR RUNDB
+WHERE RUNDB.OPRID       = $Prcs_OprID
+AND RUNDB.RUN_CNTL_ID   = $Prcs_Run_Cntl_ID
+
+end-SELECT
+
+#Debug Show 'Get-values <- ' 
+end-procedure Get-values
+
+!******************************************************************
+!           S T A R T   O F   T H E   R E P O R T
+!******************************************************************
+
+!*=================================================================
+! Procedure     : Main Report                                     !
+! Descr         : This procedure is the main procedure of the     !
+!                 report and calls other procedures               !
+!                                                                 !
+!*=================================================================
+
+begin-procedure Main-report
+#Debug Show 'Main-report -> Global Payroll 90 Bundle Update E' 
+
+        Do Get-titles
+
+        Do Select-employees ($PNL_CAL_RUN_ID, $PNL_DEPTID, $PNL_PAY_ENTITY,
+        $PNL_PAYGROUP, $PNL_EMPLID, $PNL_TAX_PERIOD, $PNL_FREQUENCY_ID,
+        $PNL_TAX_YEAR)
+
+        Do UPDATE-PRCS-RUN-STATUS
+        
+#Debug Show 'Main-report <- ' 
+end-procedure Main-report
+
+!*==================================================================
+! Procedure     : Select Employees                                 !
+! Descr         : Retrieves employees for selected criteria chosen !
+!               : from the run control panel                       !
+!*==================================================================
+
+begin-procedure Select-employees($PNL_CAL_RUN_ID, $PNL_DEPTID,
+                $PNL_PAY_ENTITY, $PNL_PAYGROUP,$PNL_EMPLID,
+                $PNL_TAX_PERIOD, $PNL_FREQUENCY_ID, $PNL_TAX_YEAR)
+#Debug Show 'Select-employees -> ' $Where_statement
+
+        let $Q                  = ''''
+
+        let $WHERE_STATEMENT    = 'WHERE GER.GPGB_TAX_BGN_YR = '
+                                  || $PNL_TAX_YEAR
+        let $FREQ_WHERE         = ' AND GER.FREQUENCY_ID = '''
+                                  || $PNL_FREQUENCY_ID || $Q
+        let $PERIOD_WHERE       = ' AND GER.GPGB_TAX_PERIOD = '
+                                  || $PNL_TAX_PERIOD
+        let $CALENDER_WHERE     = ' AND GER.CAL_RUN_ID = '''
+                                  || $PNL_CAL_RUN_ID || $Q
+        let $DEPTID_WHERE       = ' AND GER.DEPTID = '''
+                                  || $PNL_DEPTID || $Q
+        let $PAY_ENTITY_WHERE   = ' AND GER.PAY_ENTITY = '''
+                                  || $PNL_PAY_ENTITY || $Q
+        let $EMPLID_WHERE       = ' AND GER.EMPLID = '''
+                                  || $PNL_EMPLID || $Q
+        let $PAYGROUP_WHERE     = ' AND GER.GP_PAYGROUP = '''
+                                  || $PNL_PAYGROUP || $Q
+
+        MOVE $PNL_TAX_PERIOD    TO   #TAX_PERIOD
+
+        if  #TAX_PERIOD <> 00
+                let $WHERE_STATEMENT= $WHERE_STATEMENT
+                                      || $PERIOD_WHERE
+        end-if
+        
+        evaluate ''
+        when <> $PNL_FREQUENCY_ID
+                let $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $FREQ_WHERE
+        when <> $PNL_CAL_RUN_ID
+                let $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $CALENDER_WHERE
+        when <> $PNL_DEPTID
+                let $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $DEPTID_WHERE
+                BREAK
+        when <> $PNL_PAY_ENTITY
+                let $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $PAY_ENTITY_WHERE
+
+        when <> $PNL_EMPLID
+                let $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $EMPLID_WHERE
+                BREAK
+        when <> $PNL_PAYGROUP
+                let $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $PAYGROUP_WHERE
+                BREAK
+        end-evaluate
+
+        let $_WHERE_STATEMENT2= $WHERE_STATEMENT
+        
+        if  $PNL_TAX_YEAR < '2013'     
+begin-SELECT DISTINCT
+GER.PAY_ENTITY          &PAY_ENTITY  () on-break print=never level=1
+GER.GP_PAYGROUP         &PAYGROUP    () on-break print=never level=2 before=Reset-Values after=Retrieve-earning-and-deductions ($SELECTED_PAY_ENTITY, $SELECTED_PAYGROUP)
+PE_DESCR.DESCR          &PE_DESCR
+PG_DESCR.DESCR          &PG_DESCR
+PYE.GPGB_SMP_STD        &GPGB_SMP_STD
+
+                let $SELECTED_PAY_ENTITY = RTRIM(&PAY_ENTITY, ' ')
+                let $SELECTED_PAYGROUP   = RTRIM(&PAYGROUP, ' ')
+                let $_PAY_ENTITY_DESCR   = RTRIM(&PE_DESCR, ' ')
+                let $_PAYGROUP_DESCR     = RTRIM(&PG_DESCR, ' ')
+                let #_GPGB_SMP_STD       = &GPGB_SMP_STD
+         
+FROM PS_GPGB_EE_RSLT GER, PS_GP_PYE_PRC_STAT GPPS,PS_GP_PYENT PE_DESCR, 
+     PS_GP_PYGRP PG_DESCR, PS_GPGB_PYENT_DTL PYE
+[$Where_statement]
+AND GER.EMPLID = GPPS.EMPLID
+AND GER.CAL_RUN_ID = GPPS.CAL_RUN_ID
+AND GER.EMPL_RCD = GPPS.EMPL_RCD
+AND GER.CAL_ID = GPPS.CAL_ID
+AND GER.GP_PAYGROUP = GPPS.GP_PAYGROUP
+AND GPPS.CALC_TYPE = 'P'
+AND GPPS.RSLT_REV_NUM <= 1
+AND GPPS.RSLT_VER_NUM = (SELECT MAX (X.RSLT_VER_NUM) FROM PS_GP_PYE_PRC_STAT X
+                                WHERE GPPS.EMPLID       = X.EMPLID
+                                AND GPPS.EMPL_RCD       = X.EMPL_RCD
+                                AND GPPS.CAL_ID         = X.CAL_ID
+                                AND GPPS.GP_PAYGROUP    = X.GP_PAYGROUP
+                                AND GPPS.CALC_TYPE      = X.CALC_TYPE)
+AND GER.ORIG_CAL_RUN_ID = GPPS.ORIG_CAL_RUN_ID
+!AND GER.ORIG_CAL_RUN_ID = GER.CAL_RUN_ID
+AND PE_DESCR.PAY_ENTITY = GER.PAY_ENTITY
+AND PG_DESCR.GP_PAYGROUP = GER.GP_PAYGROUP
+AND PYE.PAY_ENTITY = GER.PAY_ENTITY
+AND PYE.GPGB_TAX_BGN_YR = GER.GPGB_TAX_BGN_YR
+ORDER BY GER.PAY_ENTITY, GER.GP_PAYGROUP
+
+
+END-SELECT
+    
+        Else
+        
+begin-SELECT DISTINCT
+GER.PAY_ENTITY          &PAY_ENTITY1  () on-break print=never level=1
+GER.GP_PAYGROUP         &PAYGROUP1    () on-break print=never level=2 before=Reset-Values after=Retrieve-earning-and-deductions ($SELECTED_PAY_ENTITY, $SELECTED_PAYGROUP)
+PE_DESCR.DESCR          &PE_DESCR1
+PG_DESCR.DESCR          &PG_DESCR1
+PYE.GPGB_SMP_REC        &GPGB_SMP_REC
+PYE.GPGB_ASPP_REC       &GPGB_ASPP_REC
+PYE.GPGB_OSPP_REC       &GPGB_SPP_REC
+PYE.GPGB_SAP_REC        &GPGB_SAP_REC
+
+                let $SELECTED_PAY_ENTITY = RTRIM(&PAY_ENTITY1, ' ')
+                let $SELECTED_PAYGROUP   = RTRIM(&PAYGROUP1, ' ')
+                let $_PAY_ENTITY_DESCR   = RTRIM(&PE_DESCR1, ' ')
+                let $_PAYGROUP_DESCR     = RTRIM(&PG_DESCR1, ' ')
+                let #_GPGB_SMP_REC       = &GPGB_SMP_REC
+                let #_GPGB_ASPP_REC      = &GPGB_ASPP_REC
+                let #_GPGB_SPP_REC       = &GPGB_SPP_REC
+                let #_GPGB_SAP_REC       = &GPGB_SAP_REC
+         
+FROM PS_GPGB_EE_RSLT GER, PS_GP_PYE_PRC_STAT GPPS,PS_GP_PYENT PE_DESCR, 
+     PS_GP_PYGRP PG_DESCR, PS_GPGB_PYENT_RTI PYE
+[$Where_statement]
+AND GER.EMPLID = GPPS.EMPLID
+AND GER.CAL_RUN_ID = GPPS.CAL_RUN_ID
+AND GER.EMPL_RCD = GPPS.EMPL_RCD
+AND GER.CAL_ID = GPPS.CAL_ID
+AND GER.GP_PAYGROUP = GPPS.GP_PAYGROUP
+AND GPPS.CALC_TYPE = 'P'
+AND GPPS.RSLT_REV_NUM <= 1
+AND GPPS.RSLT_VER_NUM = (SELECT MAX (X.RSLT_VER_NUM) FROM PS_GP_PYE_PRC_STAT X
+                                WHERE GPPS.EMPLID       = X.EMPLID
+                                AND GPPS.EMPL_RCD       = X.EMPL_RCD
+                                AND GPPS.CAL_ID         = X.CAL_ID
+                                AND GPPS.GP_PAYGROUP    = X.GP_PAYGROUP
+                                AND GPPS.CALC_TYPE      = X.CALC_TYPE)
+AND GER.ORIG_CAL_RUN_ID = GPPS.ORIG_CAL_RUN_ID
+!AND GER.ORIG_CAL_RUN_ID = GER.CAL_RUN_ID
+AND PE_DESCR.PAY_ENTITY = GER.PAY_ENTITY
+AND PG_DESCR.GP_PAYGROUP = GER.GP_PAYGROUP
+AND PYE.PAY_ENTITY = GER.PAY_ENTITY
+AND PYE.GPGB_TAX_BGN_YR = GER.GPGB_TAX_BGN_YR
+ORDER BY GER.PAY_ENTITY, GER.GP_PAYGROUP
+
+
+END-SELECT
+        End-if
+#Debug Show 'Select-employees <- ' 
+end-procedure Select-employees
+
+
+!*=================================================================
+! Procedure:  Start-new-page                                      !
+! Descr:      New page each time the Pay Entity changes           !
+!                                                                 !
+!*=================================================================
+begin-procedure Start-new-page 
+#Debug Show 'Start-new-page  -> ' 
+
+        NEW-PAGE
+        
+#Debug Show 'Start-new-page  <- ' 
+end-procedure Start-new-page
+
+!*=================================================================
+! Procedure:  Get titles                                          !
+! Descr:      Retrieves Titles for Run Control                    !
+!                                                                 !
+!*=================================================================
+begin-procedure Get-titles
+#Debug Show 'Get-titles -> ' 
+
+BEGIN-SELECT
+CIV.DESCR       &CIV.DESCR
+
+        let $T_CAL_RUN = &CIV.DESCR
+
+FROM PS_GPGB_CAL_ID_VW  CIV
+WHERE CIV.CAL_RUN_ID = $PNL_CAL_RUN_ID
+END-SELECT
+
+BEGIN-SELECT
+DV.DESCR        &DV.DESCR
+
+        let $T_DEPTID = &DV.DESCR
+
+FROM PS_SET_DEPT_VW  DV
+WHERE DV.DEPTID      = $PNL_DEPTID
+AND   DV.SETID_DEPT  = $PNL_SETID
+END-SELECT
+
+BEGIN-SELECT
+GP.DESCR        &GP.DESCR
+
+        let $T_PAYGROUP = &GP.DESCR
+
+FROM PS_GP_PYGRP GP
+WHERE GP.GP_PAYGROUP = $PNL_PAYGROUP
+END-SELECT
+
+#Debug Show 'Get-titles <- ' 
+end-procedure Get-titles
+
+
+!*=================================================================
+! Procedure: Print-report                                         !
+! Descr:     Prints Report Details                                !
+!                                                                 !
+!*=================================================================
+begin-procedure Print-report ($PIN_CODE, $PERIOD, $NI_CATEGORY, $EMPLID,
+        $PAY_ENTITY)
+#Debug Show 'Print-report  -> ' 
+
+!----  Empty because called from used GPGBRTTC.SQC       -  08/2001
+#Debug Show 'Print-report  <- ' 
+end-procedure Print-report 
+
+!*=================================================================
+! Procedure: Print-summary                                        !
+! Descr:     Prints Earnings and Deduction information            !
+!                                                                 !
+!*=================================================================
+begin-procedure Print-summary
+#Debug Show 'Print-summary -> '
+
+        if $PIN_CODE <> 'NI DD EES GBR' AND $PIN_CODE <> 'NI DD EESRBT GBR' AND
+        $PIN_CODE <> 'NI DD ERS GBR' AND $PIN_CODE <>'NI DD ERSRBT GBR' AND $PIN_CODE <>'TAX DD PAYE GBR'
+        AND $PIN_CODE <>'NI ER HI RTO GBR' AND $PIN_CODE <> 'SL DD AMOUNT GBR'  AND $PIN_CODE <> 'ER DD APRLVY GBR' AND $PIN_CODE <> 'ER DD LVYALL GBR'
+                evaluate $PIN_TYPE
+                when = 'ER'
+                        if #AMT <> 0
+                                if #LINEA > #OVRFLW 
+                                   let #LINEA = 1
+                                   let #LINEB = 1
+                                   DO Start-new-page 
+                                end-if
+
+                                print $PIN_DESCR    (#LINEA,{Pos1})
+                                print #AMT      (,{Pos3}) edit 9,999,999,999,999.99
+                                let #TOT_PAY = #TOT_PAY + #AMT
+                                ADD 1 TO #LINEA
+                        end-if
+                break
+                when = 'DD'
+                        if #AMT <> 0
+                                if #LINEB > #OVRFLW
+                                   let #LINEA = 1
+                                   let #LINEB = 1
+                                   DO Start-new-page 
+                                end-if
+
+                                print $PIN_DESCR    (#LINEB,{Pos4})
+                                print #AMT      (,{Pos5}) edit 9,999,999,999,999.99
+                                let #TOT_DED = #TOT_DED + #AMT
+                                ADD 1 TO #LINEB
+                        end-if
+                break
+                end-evaluate
+        end-if
+        
+#Debug Show 'Print-summary <- ' 
+end-procedure Print-summary
+
+!*=================================================================
+! Procedure: Print-totals                                         !
+! Descr:     Prints Statutory information and Gross Analysis      !
+!                                                                 !
+!*=================================================================
+begin-procedure Print-totals
+#Debug Show 'Print-totals -> ' 
+        If #PNL_TAX_YEAR < 2013
+        let #SMP= (#SMP_TEMP1 + #SMP_TEMP2) * #GPGB_SMP_STD/100   
+        let #SPP= (#SPPA + #SPPB) * #GPGB_SMP_STD/100
+        let #ASPP= (#ASPPA + #ASPPB) * #GPGB_SMP_STD/100
+        let #SAP= #SAP_TEMP * #GPGB_SMP_STD/100  
+        Else
+        let #SMP= (#SMP_TEMP1 + #SMP_TEMP2) * #GPGB_SMP_REC/100   
+        let #SPP= (#SPPA + #SPPB) * #GPGB_SPP_REC/100
+        let #ASPP= (#ASPPA + #ASPPB) * #GPGB_ASPP_REC/100
+        let #SHPP= (#SHPPA + #SHPPB) * #GPGB_ASPP_REC/100
+        let #SAP= #SAP_TEMP * #GPGB_SAP_REC/100
+        End-If
+        if #LINEA >= #OVRFLW2 OR #LINEB >= #OVRFLW2    !01/2008
+             DO Start-new-page 
+        end-if
+
+        let #NI_REBATES  = #EES_RBT + #ERS_RBT
+        let #TOT_STY     = #TAX_DED + #ERS_NI + #EES_NI + #SLD +#LEVY_AMT - #NI_REBATES - #SMP - #SPP -#ASPP -#SHPP - #SAP - #TXCRD - #LEVY_ALLOWNCE
+        #Debug SHOW #TAX_DED '<>' #ERS_NI '<>' #EES_NI '<>' #NI_REBATES '<>' #SMP92 '<>' #TXCRD '<>' #SLD
+
+        print 'Tax Deducted'                    (1,{Pos6})
+        print #TAX_DED                          (,{Pos7})  edit 9,999,999,999,999.99
+        print 'Employers NI'                    (+1,{Pos6})
+        print #ERS_NI                           (,{Pos7})  edit 9,999,999,999,999.99
+        print 'Employees NI'                    (+1,{Pos6})
+        print #EES_NI                           (,{Pos7})  edit 9,999,999,999,999.99
+        if #PNL_TAX_YEAR > 2016
+        print 'Apprenticeship Levy'             (+1,{Pos6})
+        print #LEVY_AMT                         (,{Pos7})  edit 9,999,999,999,999.99
+        print '(-) Apprenticeship Allowance'    (+1,{Pos6})
+        print #LEVY_ALLOWNCE                    (,{Pos7})  edit 9,999,999,999,999.99
+        end-if
+        print '(-) NI Rebates'                  (+1,{Pos6})
+        print #NI_REBATES                       (,{Pos7})  edit 9,999,999,999,999.99
+        print '(-) SMP'                          (+1,{Pos6})
+        print #SMP                               (,{Pos7})  edit 9,999,999,999,999.99
+        print '(-) SPP'                          (+1,{Pos6})
+        print #SPP                               (,{Pos7})  edit 9,999,999,999,999.99 
+        print '(-) ASPP'                          (+1,{Pos6})
+        print #ASPP                               (,{Pos7})  edit 9,999,999,999,999.99  
+        print '(-) SHPP'                          (+1,{Pos6})
+        print #SHPP                               (,{Pos7})  edit 9,999,999,999,999.99  
+        print '(-) SAP'                          (+1,{Pos6})
+        print #SAP                               (,{Pos7})  edit 9,999,999,999,999.99  
+
+        if #PNL_TAX_YEAR < 2006 
+        print '(-) Tax Credits'                 (+1,{Pos6})
+        print #TXCRD                            (,{Pos7})  edit 9,999,999,999,999.99
+        end-if
+        
+        print 'Student Loans'                   (+1,{Pos6})
+        print #SLD                              (,{Pos7})  edit 9,999,999,999,999.99
+
+
+        if #LINEA >= #OVRFLW2  OR #LINEB > #OVRFLW2 OR (#LINEA < #STATLIMIT AND #LINEB < #STATLIMIT)
+                graphic                          (#STATLIMIT,1,177) horz-line
+        else
+                if #LINEA >= #LINEB  AND  #LINEA >= #STATLIMIT
+                        graphic                          (#LINEA,1,177) horz-line
+                else
+                        graphic                          (#LINEB,1,177) horz-line
+                end-if
+        end-if
+
+        print 'Total Payments'                  (+2,{Pos1})
+        print #TOT_PAY                          (,{Pos3})  edit 9,999,999,999,999.99
+        print 'Total Deductions'                (,{Pos4})
+        print #TOT_DED                          (,{Pos5})  edit 9,999,999,999,999.99
+        print 'Total Statutory'                 (,{Pos6})
+        print #TOT_STY                          (,{Pos7})  edit 9,999,999,999,999.99
+        graphic                                 (+1,1,177) horz-line
+
+
+        DO Reset-Values
+        DO Start-new-page
+        
+#Debug Show 'Print-totals <- ' 
+end-procedure Print-totals
+
+!*====================================================================================
+! Procedure: Reset-Values                                                            !
+! Comment:   Resets Calculated Values                                                !                                                                 !
+!                                                                                    !
+!*====================================================================================
+
+begin-procedure Reset-Values
+#Debug Show 'Reset-Values -> '
+
+
+        let #TOT_PAY            = 0
+        let #TOT_DED            = 0
+        let #TAX_DED            = 0
+        let #TOT_SMP            = 0
+        let #TOT_STY            = 0
+        let #NI_REBATES         = 0
+        let #SMP                = 0
+        let #SPP                = 0
+        let #ASPP               = 0
+        let #SHPP               = 0
+        let #SAP                = 0
+        let #_SAP_TEMP          = 0
+        let #SAP_TEMP           = 0        
+        let #EES_NI             = 0
+        let #ERS_NI             = 0
+        let #_EES_RBT           = 0       
+        let #_ERS_RBT           = 0  
+        let #_TAX_DED           = 0
+        let #_TXCRD             = 0
+        let #_SMP_TEMP1         = 0       
+        let #_SMP_TEMP2         = 0
+        let #SMP_TEMP1          = 0
+        let #SMP_TEMP2          = 0        
+        let #GROSS              = 0
+        let #TOT_TAX            = 0
+        let #LINEA              = 1
+        let #LINEB              = 1
+        let #_SPPB              = 0
+        let #_SPPA              = 0
+        let #SPPA               = 0
+        let  #SPPB              = 0
+        let #_ASPPB             = 0
+        let #_ASPPA             = 0
+        let #ASPPA              = 0
+        let #ASPPB              = 0
+        let #_SHPPB             = 0
+        let #_SHPPA             = 0
+        let #SHPPA              = 0
+        let #SHPPB              = 0
+        let #_SLD               = 0
+        let #SLD                = 0
+        let #_LEVY_AMT          = 0
+        let #_LEVY_ALLOWNCE     = 0
+        let #LEVY_AMT          = 0
+        let #LEVY_ALLOWNCE     = 0
+
+        
+#Debug Show 'Reset-Values <- '
+end-procedure Reset-Values
+
+!*=================================================================
+! Procedure     : Retrieve-earning-and-deductions                 !
+! Descr         : Retrieves information for all selected Employees!
+!                                                                 !
+!*=================================================================
+
+begin-procedure Retrieve-earning-and-deductions ($SELECTED_PAY_ENTITY, $SELECTED_PAYGROUP)
+#Debug Show 'Retrieve-earning-and-deductions -> ' $_Where_statement2
+
+        let $PERIOD = 'NEW'
+        let $_PRINTB = 'N'
+
+BEGIN-SELECT
+GP.PIN_CODE          &PIN_CODE
+GP.PIN_TYPE          &PIN_TYPE
+GP.DESCR             &PIN_DESCR
+SUM(GRED.CALC_RSLT_VAL)   &CALC_RSLT_VAL
+SUM(GRED.CALC_ADJ_VAL)    &CALC_ADJ_VAL
+
+
+        let $_PIN_CODE          = RTRIM(&PIN_CODE,' ')
+        let $_PIN_TYPE          = RTRIM(&PIN_TYPE,' ')
+        let $_PIN_DESCR         = RTRIM(&PIN_DESCR,' ')
+        let #_AMT               = &CALC_RSLT_VAL + &CALC_ADJ_VAL
+     
+
+        DO Print-summary
+
+        evaluate $_PIN_CODE
+        when = 'NI DD EES GBR'
+                let #_EES_NI = #_AMT
+                break
+        when = 'NI DD ERS GBR'
+                let #_ERS_NI = #_AMT
+                break
+        when = 'NI DD EESRBT GBR'
+                let #_EES_RBT = #_AMT
+                break
+        when = 'NI DD ERSRBT GBR'
+                let #_ERS_RBT = #_AMT
+                break
+        when = 'TAX DD PAYE GBR'
+                let #_TAX_DED = #_AMT
+                break
+        when = 'SL DD AMOUNT GBR'
+                let #_SLD = #_AMT
+                break
+        when = 'TC ER TXCRD1 GBR'
+                let #_TXCRD = #_AMT
+                break
+
+        when = 'SMP ER PAY1 GBR'
+                let #_SMP_TEMP1 = #_AMT
+                break
+        when = 'SMP ER PAY2 GBR'
+                let #_SMP_TEMP2 = #_AMT
+                break
+        when = 'SPPA ER PAY GBR'
+                let #_SPPA = #_AMT
+                break
+        when = 'SPPB ER PAY GBR'
+                let #_SPPB = #_AMT
+                break
+        when = 'ASPPA ER PAY GBR'
+                let #_ASPPA = #_AMT
+                break
+        when = 'ASPPB ER PAY GBR'
+                let #_ASPPB = #_AMT
+                break
+        when = 'SHPA ER PAY GBR'
+                let #_SHPPA = #_AMT
+                break
+        when = 'SHPB ER PAY GBR'
+                let #_SHPPB = #_AMT
+                break
+        when = 'SAP ER PAY GBR'
+                let #_SAP_TEMP = #_AMT
+                break
+        when = 'ER DD APRLVY GBR'
+                let #_LEVY_AMT = #_AMT
+                break
+        when = 'ER DD LVYALL GBR'
+                let #_LEVY_ALLOWNCE = #_AMT
+                break               
+
+        end-evaluate
+
+FROM PS_GP_PIN GP, PS_GP_RSLT_ERN_DED GRED, PS_GPGB_EE_RSLT GER, PS_GP_PYE_PRC_STAT GPPS
+[$_Where_statement2]
+AND GP.PIN_NUM = GRED.PIN_NUM
+AND GRED.EMPLID = GER.EMPLID
+AND GRED.EMPL_RCD = GER.EMPL_RCD
+AND GRED.CAL_RUN_ID = GER.CAL_RUN_ID
+AND GRED.GP_PAYGROUP = GER.GP_PAYGROUP
+AND GRED.CAL_ID= GER.CAL_ID
+AND GRED.ORIG_CAL_RUN_ID = GER.ORIG_CAL_RUN_ID
+AND GRED.RSLT_SEG_NUM = GER.RSLT_SEG_NUM
+AND GRED.EMPLID = GPPS.EMPLID
+AND GRED.EMPL_RCD = GPPS.EMPL_RCD
+AND GRED.CAL_RUN_ID = GPPS.CAL_RUN_ID
+AND GRED.GP_PAYGROUP = GPPS.GP_PAYGROUP
+AND GRED.CAL_ID= GPPS.CAL_ID
+AND GRED.ORIG_CAL_RUN_ID = GPPS.ORIG_CAL_RUN_ID
+AND GPPS.CALC_TYPE = 'P'
+AND GPPS.SEL_ACTION='C'
+AND GER.PAY_ENTITY = $SELECTED_PAY_ENTITY 
+AND GER.GP_PAYGROUP = $SELECTED_PAYGROUP
+AND GPPS.RSLT_REV_NUM <= 1 
+AND GPPS.RSLT_VER_NUM = (SELECT MAX (X.RSLT_VER_NUM) FROM PS_GP_PYE_PRC_STAT X
+                                WHERE GPPS.EMPLID       = X.EMPLID
+                                AND GPPS.EMPL_RCD       = X.EMPL_RCD
+                                AND GPPS.CAL_ID         = X.CAL_ID
+                                AND GPPS.GP_PAYGROUP    = X.GP_PAYGROUP
+                                AND GPPS.CALC_TYPE      = X.CALC_TYPE)
+GROUP BY GP.PIN_CODE, GP.PIN_TYPE, GP.DESCR
+ORDER BY GP.DESCR
+END-SELECT
+
+        DO Print-totals 
+        
+#Debug Show 'Retrieve-earning-and-deductions <- '
+end-procedure Retrieve-earning-and-deductions
+
+!******************************************************************
+!                  G E N E R A L   F U N C T I O N S
+!******************************************************************
+
+!******************************************************************
+!***    ERROR - SQL error procedure
+!******************************************************************
+begin-procedure ERROR-SQL
+
+        add 1 to #CountError
+
+        show 'SQL Error -> ' $ProcedureName
+        show 'SQL Error -> ' $ErrorMessage
+        show 'SQL Error -> ' $SQL-ERROR
+
+        stop
+
+end-procedure ERROR-SQL
+
+!******************************************************************
+!***    Common SQC Modules Copied In For Program Usage
+!******************************************************************
+#include 'reset.sqc'    ! Reset printer procedure
+#include 'curdttim.sqc' ! Get-Current-DateTime procedure
+#include 'datetime.sqc' ! Routines for date and time formatting
+#include 'number.sqc'   ! Routines to format numbers
+#include 'prcsapi.sqc'  ! Update Process Request API
+#include 'prcsdef.sqc'  !Update Process Request variable declaration
+#include 'readxlat.sqc' ! read translate table
+#include 'gpgbut02.sqc'
+!******************************* End Of Program *******************

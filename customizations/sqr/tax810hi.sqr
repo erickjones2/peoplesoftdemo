@@ -1,0 +1,1314 @@
+!***********************************************************************
+!  TAX810HI:  Qtrly Wage List - Tape - HAWAII                          *
+!                                                                      *
+!             NOTE: "#IFDEF TAXTEST" in main SELECT is used for        *
+!                   testing this report against DEMO database          *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2019, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  30381427                                            !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+#include 'setup31.sqc' !Printer and page-size initialization
+#Include 'usarpt.sqc' !USA-specific variables
+
+begin-report
+  do Init-Report
+! These variables are used by rptsmmry.sqc
+  Let $Prnt_CoTxGrs = 'N'
+  Let $Prnt_CoExGrs = 'N'
+
+  do Process-Main
+
+  if $RecordWritten = 'Y'
+
+     display '' 
+    display 'Upon successful conclusion of this program, ' noline
+    display 'the following file(s) will be created:' 
+    display ' '
+    display '  T81HIxxx  where "xxx" represents a volume identifier'
+    DISPLAY '            for each company code. ' 
+    DISPLAY 'The file(s) are created in the .CSV format.'
+    DISPLAY 'Follow the instructions from the department for ' noline
+    display 'preparing and submitting the file.'
+    display ' '
+
+  else
+    do Print-Summary-Data('NoData')
+  end-if
+
+  do Stdapi-Term
+
+end-report
+
+begin-procedure Init-Report
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Get-Calendar-Year-Id
+  do Stdapi-Init
+
+  do Initialization
+  move 'TAX810HI' to $ReportID
+  MOVE 'TAX810HI' to $Program
+
+  move 'Hawaii Quarterly UI Wage Report' to $ReportTitle
+  display ''
+  display 'Creating File for Hawaii UI Wage Reporting'
+
+
+  create-array name=OOS-Data2 size= 100  -
+    field=State-OOS2:char  
+    field=TxGQTD-OOS2:Decimal:6
+    
+  create-array name=OOS-Data size=100
+     field=State-OOS:Char
+     field=BalanceQTR-OOS:Integer
+     
+  create-array name=Work-Array size=100
+     field=State-Wk-Arr:Char
+     field=BalanceQTR-Wk-Arr:Integer
+
+end-procedure
+
+begin-procedure Initialization
+#ifdef TAXTEST
+  move 'CA'              to $State
+#else
+  move 'HI'              to $State
+#endif
+
+  let #FileExtension = 0
+  do Get-Tax-Reporting-Run-Controls
+  move $PeriodEndDate    to $AsOfDate
+
+  display ' '
+  display 'Processing balances for '   noline
+  display $RptQtrYr
+
+  move '000000000000000' to $Zf  !for "write" statements -- zero fill
+  do Select-Parameters
+  DO Get-Quarter-Dates
+  DO Set-State-Values-OOS
+  DO Read-State-MaxGross
+
+  
+end-procedure
+
+
+begin-procedure Open-File
+   move 0 to #RecordCount
+   let $FileExtension = 'CSV'
+
+#ifdef OS400
+  let $FileID = 'T81HI' || $Company || '(D' || $FileExtension || ')'
+#else
+  #ifdef MVS
+    let $FileID = 'T81HI' || $Company
+  #else
+    let $FileID = 'T81HI' || $Company || '.' || $FileExtension
+  #endif
+#endif
+  let $FileID = '{IMPORTPREFIX}' || $FileID
+#ifdef MVS
+  open $FileID as 10 for-writing record=275:fixed_nolf
+#else
+  open $FileID as 10 for-writing record=275:fixed
+#endif
+
+   move 1 to #FileExtension
+
+end-procedure
+
+
+begin-procedure Close-File
+if #FileExtension > 0
+   close 10
+   move 0 to #FileExtension
+end-if
+end-procedure
+
+begin-procedure Process-Main
+
+begin-SELECT
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+end-SELECT
+
+begin-SELECT
+B.COMPANY
+
+  MOVE &B.COMPANY       to $Company
+  DO Read-Employee-Data
+
+FROM  PS_COMPANY_TBL B
+WHERE B.EFF_STATUS = 'A'
+  AND B.TAX_REPORT_TYPE = '2'
+  AND B.EFFDT =
+  (SELECT MAX(EFFDT)
+     FROM PS_COMPANY_TBL
+     WHERE  COMPANY = B.COMPANY
+       AND  EFFDT  <= $AsOfDate)
+ORDER BY COMPANY
+end-SELECT
+  let $Company     = ' '
+  let $CompanyName = ' '
+  if #Count_F > 0
+    do Print-Summary-Data('FileTotal')
+  end-if
+end-procedure
+
+begin-procedure Read-Employee-Data
+
+begin-SELECT
+C.COMPANY    () on-break print=never before=Before-Company
+                                     AFTER=AFTER-COMPANY
+C.EMPLID
+C.BALANCE_PERIOD
+C.NLGRS_QTD
+C.TXGRS_QTD
+D1.NATIONAL_ID
+PN.NAME
+PN.LAST_NAME_SRCH
+PN.FIRST_NAME_SRCH
+PN.MIDDLE_NAME
+  move &C.EMPLID    to $EmplID
+  move &PN.NAME     to $EmplName
+  move &PN.LAST_NAME_SRCH to $LastNameCaps
+  move &PN.FIRST_NAME_SRCH to $FirstNameCaps
+  move &PN.MIDDLE_NAME to $MiddleName
+  move &C.NlGrs_QTD to #NlGrs_QTD
+  move &C.TXGRS_QTD to #TxGrs_QTD
+
+  if &C.NlGrs_QTD > 0
+    do Process-Employee
+  end-if
+
+  
+FROM  PS_TAX_BALANCE C, PS_NAMES PN, PS_PERS_NID D1
+WHERE C.COMPANY       = &B.Company
+  AND D1.EMPLID = C.EMPLID 
+  AND D1.COUNTRY = {NID_Country}
+  AND D1.NATIONAL_ID_TYPE = $PAYROLL_NID_TYPE
+  AND PN.EMPLID       = C.EMPLID
+  AND C.TAX_CLASS     = 'U'
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+#ifdef TAXTEST
+  AND C.STATE         = 'CA'
+#else
+  AND C.STATE         = 'HI'
+#endif
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND C.NLGRS_QTD <> 0
+  AND PN.NAME_TYPE = 'PRI'
+  AND PN.EFFDT =
+      (SELECT MAX(PX.EFFDT)
+       FROM   PS_NAMES PX
+       WHERE  PX.EMPLID    = PN.EMPLID
+         AND  PX.NAME_TYPE = PN.NAME_TYPE
+         AND  PX.EFFDT    <= $AsOfDate)
+ORDER BY D1.NATIONAL_ID
+end-SELECT
+
+end-procedure
+begin-procedure Process-Employee
+
+  move &D1.NATIONAL_ID to $S123 xxx       !isolate first 3 digits
+  if $S123 = &Temp_SSN_Mask or RTRIM(&D1.NATIONAL_ID, ' ') = ''
+    move '000000000'   to $SSN
+  else
+    move &D1.NATIONAL_ID        to $SSN
+  end-if
+  
+  LET $SSN = SUBSTR($SSN,1,9) 
+  IF LENGTH($SSN) < 9
+     LET $SSN = LPAD($SSN,9,'0')     
+  END-IF 
+  MOVE $SSN to $NATIONAL_ID XXX-XX-XXXX
+  
+  move $EmplName       to $Name
+  uppercase $Name
+  do Rotate-Name
+  let $MiddleInitial  = ''
+  extract $MiddleInitial from $MiddleName 0 1
+
+ ! Remove Punctuation from Name
+
+  while INSTR($LastName,'.',1)
+    let #locnper = INSTR($LastName,'.',1)
+    let $LastName = SUBSTR($LastName,1,#locnper - 1)   ||
+                    SUBSTR($LastName,#locnper + 1,40)
+  end-while
+
+  add #NlGrs_QTD to #Co_NlGrs_QTD
+  !multiply 100 times #NlGrs_QTD
+
+  LET $ZEROES-AMT-OOS = 'N'  
+  DO Determine-EE-OOS
+  IF #EE-OOS > 0
+     DO Out-Of-State-Wages
+  End-If  
+  do Write-Employee-Record
+
+  add #TxGrs_QTD to #Co_TxGrs_QTD
+end-procedure
+
+begin-procedure Before-Company
+
+#ifdef TAXTEST
+  move 'CA'              to $State
+#else
+  move 'HI'              to $State
+#endif
+  do Get-Company-Data
+  do Get-State-Tax-Data             !Employer ID
+
+  if RTRIM(&Employer_ID_SUT,' ') = ''
+    display '*** State Unemployment ID missing in Company State Tax Table ***'
+    display '****************************************************************'
+  end-if
+
+  !*** remove blanks and dash from employer ID ***
+  let $Employer_ID_SUT = &Employer_ID_SUT
+  let $Edited_SUT = &Employer_ID_SUT
+  let $Edited_SUT = translate($Edited_SUT, ' ' , '')
+  let $Edited_SUT = translate($Edited_SUT, '-' , '')
+  move $Edited_SUT to $StateEIN 09999999
+
+  move &SUT_Experience_Rt to #Experience_Rt
+  multiply 100 times #Experience_Rt
+  move #Experience_Rt to $Rate 999
+  Do Close-File
+  Do Open-File
+
+end-procedure
+
+
+begin-procedure After-Company
+
+  if #Count_S > 0
+    DO Print-Summary-Data('CoTotal')
+
+
+    add #Co_NlGrs_QTD to #Tot_NlGrs_QTD
+    add #Co_TxGrs_QTD to #Tot_TxGrs_QTD
+    add #Count_S to #Count_F
+
+    move 0 to #Co_NlGrs_QTD
+    move 0 to #Co_TxGrs_QTD
+    move 0 to #Count_S
+    new-page
+  end-if
+
+end-procedure
+
+
+begin-procedure Write-Employee-Record
+
+  do Format-Number (#NlGrs_QTD,  $NlGrs_QTD,  '99999999.99')
+  LET $NlGrs_QTD = LTRIM($NlGrs_QTD, ' ')
+  do Write-Record
+
+end-procedure
+
+begin-procedure Write-Record
+
+  let $CSVLine = ''
+  LET $LastNameCaps = substr($LastNameCaps,1,30) 
+  LET $FirstNameCaps  = substr($FirstNameCaps,1,30) 
+  IF $ZEROES-AMT-OOS = 'Y'
+     let $CSVLine =  $NATIONAL_ID || ','|| $LastNameCaps || ',' ||
+                     $FirstNameCaps  || ',' || $MiddleInitial  || ','|| 
+                     $NlGrs_QTD || ',,'
+  ELSE               
+     let $CSVLine =  $NATIONAL_ID || ','|| $LastNameCaps || ',' ||
+                     $FirstNameCaps  || ',' || $MiddleInitial  || ','|| 
+                     $NlGrs_QTD || ',' || $TxGRS_QTD_OOS || ',' || $StateOOS
+  END-IF
+
+  write 10 from  $CSVLine
+
+  add 1 to #RecordCount
+  add 1 to #Count_S
+  MOVE 'Y' TO $RecordWritten
+  
+end-procedure
+
+begin-procedure Get-Quarter-Dates
+
+    move &TX.Balance_Year   to $EffYear 9999
+    move &TX.Balance_Qtr    to $EffQuarter 9
+
+
+    evaluate $EffQuarter
+        when = '1'
+            move '01'       to $1stmonth
+            move '02'       to $2ndmonth
+            move '03'       to $3rdmonth
+            move '31'       to $Lastday
+            move 'Jan'      to $Month1_Name
+            move 'Feb'      to $Month2_Name
+            move 'Mar'      to $Month3_Name
+            break
+        when = '2'
+            move '04'       to $1stmonth
+            move '05'       to $2ndmonth
+            move '06'       to $3rdmonth
+            move '30'       to $Lastday
+            move 'Apr'      to $Month1_Name
+            move 'May'      to $Month2_Name
+            move 'Jun'      to $Month3_Name
+            break
+        when = '3'
+            move '07'       to $1stmonth
+            move '08'       to $2ndmonth
+            move '09'       to $3rdmonth
+            move '30'       to $Lastday
+            move 'Jul'      to $Month1_Name
+            move 'Aug'      to $Month2_Name
+            move 'Sep'      to $Month3_Name
+            break
+        when-other
+            move '10'       to $1stmonth
+            move '11'       to $2ndmonth
+            move '12'       to $3rdmonth
+            move '31'       to $Lastday
+            move 'Oct'      to $Month1_Name
+            move 'Nov'      to $Month2_Name
+            move 'Dec'      to $Month3_Name
+    end-evaluate
+
+    let $Date_Field         =  $EffYear || $1stMonth || '01'
+    do Format-DateTime($Date_Field, $First_Day_Of_Quarter, {DEFCMP},'','native')
+
+    let $Date_Field         =  $EffYear || $3rdMonth || $Lastday
+    do Format-DateTime($Date_Field, $Last_Day_Of_Quarter, {DEFCMP},'','native')
+
+end-procedure
+
+Begin-Procedure Set-State-Values-OOS
+
+    LET $HI_AK_OOS =  'AK'
+    LET $HI_AL_OOS =  'AL'
+    LET $HI_AR_OOS =  'AR'
+    LET $HI_AZ_OOS =  'AZ'
+    LET $HI_CA_OOS =  'CA'
+    LET $HI_CO_OOS =  'CO'
+    LET $HI_CT_OOS =  'CT'
+    LET $HI_DC_OOS =  'DC'
+    LET $HI_DE_OOS =  'DE'
+    LET $HI_FL_OOS =  'FL'
+    LET $HI_GA_OOS =  'GA'
+    LET $HI_HI_OOS =  'HI'
+    LET $HI_IA_OOS =  'IA'
+    LET $HI_ID_OOS =  'ID'
+    LET $HI_IL_OOS =  'IL'
+    LET $HI_IN_OOS =  'IN'
+    LET $HI_KS_OOS =  'KS'
+    LET $HI_KY_OOS =  'KY'
+    LET $HI_LA_OOS =  'LA'
+    LET $HI_MA_OOS =  'MA'
+    LET $HI_MD_OOS =  'MD'
+    LET $HI_ME_OOS =  'ME'
+    LET $HI_MI_OOS =  'MI'
+    LET $HI_MN_OOS =  'MN'
+    LET $HI_MO_OOS =  'MO'
+    LET $HI_MS_OOS =  'MS'
+    LET $HI_MT_OOS =  'MT'
+    LET $HI_NC_OOS =  'NC'
+    LET $HI_ND_OOS =  'ND'
+    LET $HI_NE_OOS =  'NE'
+    LET $HI_NH_OOS =  'NH'
+    LET $HI_NJ_OOS =  'NJ'
+    LET $HI_NM_OOS =  'NM'
+    LET $HI_NV_OOS =  'NV'
+    LET $HI_NY_OOS =  'NY'
+    LET $HI_OH_OOS =  'OH'
+    LET $HI_OK_OOS =  'OK'
+    LET $HI_OR_OOS =  'OR'
+    LET $HI_PA_OOS =  'PA'
+    LET $HI_PR_OOS =  'PR'
+    LET $HI_RI_OOS =  'RI'
+    LET $HI_SC_OOS =  'SC'
+    LET $HI_SD_OOS =  'SD'
+    LET $HI_TN_OOS =  'TN'
+    LET $HI_TX_OOS =  'TX'
+    LET $HI_UT_OOS =  'UT'
+    LET $HI_VA_OOS =  'VA'
+    LET $HI_VI_OOS =  'VI'
+    LET $HI_VT_OOS =  'VT'
+    LET $HI_WA_OOS =  'WA'
+    LET $HI_WI_OOS =  'WI'
+    LET $HI_WV_OOS =  'WV'
+    LET $HI_WY_OOS =  'WY'
+
+end-procedure
+
+
+Begin-Procedure Determine-EE-OOS
+LET #EE-OOS = 0
+begin-SELECT
+COUNT(*)  &EE-OOS
+
+ MOVE &EE-OOS TO #EE-OOS
+ 
+FROM  PS_TAX_BALANCE
+WHERE EMPLID        = &C.EMPLID
+  AND COMPANY       = &C.Company
+  AND BALANCE_ID    = $Calendar_Year_Id
+  AND BALANCE_YEAR  = &TX.Balance_Year
+  AND BALANCE_QTR   = &TX.Balance_Qtr
+  AND BALANCE_PERIOD  <= &C.BALANCE_PERIOD
+  AND STATE         NOT IN ('$U','HI')
+  AND LOCALITY      = ' '
+  AND TAX_CLASS     = 'U'
+End-Select 
+
+ IF #EE-OOS = 0 
+    LET $ZEROES-AMT-OOS = 'Y'
+ END-IF
+ 
+End-procedure
+
+
+begin-procedure Out-Of-State-Wages
+    DO Initialize-OOS-Data-Array
+    DO Initialize-OOS2-Data-Array
+    DO Initialize-Wk-Arr-Array
+    LET $Date_Field  = $EffYear || '0101'
+    LET $KeyOOS_Ant =  '00  ' 
+    !FOR HI, THE ARRAY OOS-Data STARTS ON 1
+    LET #NumStates-OOS = 1
+    DO Format-DateTime($Date_Field, $First_Day_Of_Year, {DEFCMP},'','native')
+    DO Get-Check-Dates
+    DO Get-IniHI-TOOS
+    DO Get-Only-OOS-Records
+    DO Get-QTR-STATE-Combination
+    DO Sort-By-QTR-STATE
+    DO Get-OOS-FromTaxBal
+    DO Process-Array-OOS
+    IF #NumStates-OOS > 1 
+       DO Sum-All-OOS-Amt
+       DO Get-Max-OOS-Amount
+    ELSE 
+       LET $StateOOS = OOS-Data2.State-OOS2 (1)
+       LET #TxGRS_QTD_OOS = OOS-Data2.TxGQTD-OOS2 (1,5)
+       IF #TxGRS_QTD_OOS = 0
+          LET $ZEROES-AMT-OOS = 'Y'
+       ELSE
+          DO Format-Number(#TxGRS_QTD_OOS, $TxGRS_QTD_OOS, '99999999.99')
+          LET $TxGRS_QTD_OOS = LTRIM ($TxGRS_QTD_OOS, ' ')
+       END-IF
+    END-IF
+end-procedure
+
+
+Begin-procedure Get-Check-Dates
+BEGIN-SELECT DISTINCT
+PC.CHECK_DT
+PT.STATE
+ Do Load-OOS-Data-Array
+FROM    PS_PAY_CHECK PC,
+        PS_PAY_TAX PT
+WHERE 
+      PC.COMPANY    = PT.COMPANY 
+  AND PC.PAYGROUP   = PT.PAYGROUP
+  AND PC.PAY_END_DT = PT.PAY_END_DT
+  AND PC.OFF_CYCLE  = PT.OFF_CYCLE
+  AND PC.PAGE_NUM   = PT.PAGE_NUM
+  AND PC.LINE_NUM   = PT.LINE_NUM
+  AND PC.SEPCHK     = PT.SEPCHK
+  AND PT.COMPANY    = $Company
+  AND PT.STATE       NOT IN ('$U')
+  AND PT.LOCALITY   = ' ' 
+  AND PT.TAX_CLASS  =  'U'
+  AND PC.EMPLID     = $EmplID
+  AND PC.CHECK_DT BETWEEN $First_Day_Of_Year AND $Last_Day_Of_Quarter
+  AND PC.PAYCHECK_STATUS IN ('F','A','R') !CONFIRMED, ADJUSTED, REVERSED
+  ORDER BY PC.CHECK_DT
+END-SELECT
+End-Procedure
+
+
+begin-procedure Load-OOS-Data-Array
+   If #NumStates-OOS > 99
+        display '*** Array size exceeded for Work-Array array.'
+        display '*** Employee ID = ' noline
+        display $Emplid noline
+        display ' was not processed.'
+        DISPLAY '*** Process stopped'
+        stop
+   End-If
+   
+   Move &PT.STATE To $PT.STATE
+   Let $PT.STATE = Rtrim(Ltrim($PT.STATE, ' '), ' ')
+   Move &PC.CHECK_DT To $Input_Date
+   do Format-DateTime($Input_Date, $tempout, {DEFCMP},'','')
+   do Get-DateComponents($tempout, #tempYears, #PeriodRef, #tempDays)
+   Move #PeriodRef To $Period 99
+   Let $KeyOOS = rtrim(ltrim ($Period || $PT.STATE, ' '), ' ')
+   Let $KeyOOS_Ant = rtrim(ltrim($KeyOOS_Ant, ' '), ' ')
+   
+   If $KeyOOS <> $KeyOOS_Ant
+      If #PeriodRef < 4 
+         Move 1 To #QTRref 
+      Else
+         If #PeriodRef < 7 
+            Move 2 To #QTRref
+         Else    
+            If #PeriodRef < 10 
+               Move 3 To #QTRref 
+            Else
+               Move 4 To #QTRref 
+            End-If
+         End-If
+      End-if
+      Put  $PT.STATE  #QTRref
+      Into Work-Array(#NumStates-OOS)
+           State-Wk-Arr BalanceQTR-Wk-Arr
+      Add 1        TO #NumStates-OOS
+      Move $KeyOOS    TO $KeyOOS_Ant
+    End-If
+    
+end-procedure
+
+
+begin-procedure Get-IniHI-TOOS
+!WE SEARCH FOR INDEX OF THE LATEST ENTRY FOR HI.
+!ALL THE ENTRIES BEFORE THE INDEX FOUND
+!WILL BE TRANSFERRED TO THE ARRAY THAT WILL HOLD ALL THE OOS DATA.
+!THIS IS REQUIRED IN ORDER TO USE THE CORRECT SEQUENCE OF TRANSFERS
+
+   Let #j = #NumStates-OOS - 1
+   Let #IndexIni = 0
+   While #j > 0
+      let $variable = Work-Array.State-Wk-Arr(#j)
+      If Work-Array.State-Wk-Arr(#j) = 'HI'
+         Let #IndexIni = #j
+         Move 0 to #j
+      End-If
+      let #j = #j - 1
+   End-While
+end-procedure
+
+
+begin-procedure Get-Only-OOS-Records
+   Let #j = 1
+   LET #NumStates-OOS = 0
+   While #j < #IndexIni
+      If Work-Array.State-Wk-Arr(#j) <> 'HI'
+         LET #NumStates-OOS = #NumStates-OOS + 1
+         LET OOS-Data.State-OOS(#NumStates-OOS) = Work-Array.State-Wk-Arr(#j)
+         LET OOS-Data.BalanceQTR-OOS(#NumStates-OOS) = Work-Array.BalanceQTR-Wk-Arr(#j)
+      End-If
+      let #j = #j + 1
+   End-While
+end-procedure
+
+
+Begin-Procedure Get-OOS-FromTaxBal
+  LET #i = 1
+  LET #j = 1
+  LET #x = 1
+  
+  LET $StateOOSAnt = ''
+   While #i <= #NumStates-OOS
+      LET #TXGRS-QTD = 0
+      LET $StateOOS = OOS-Data.State-OOS(#i)
+      LET #QuarterOOS = OOS-Data.BalanceQTR-OOS(#i)
+      DO Read-OOS-TaxBalance
+
+      IF $StateOOS <> $StateOOSAnt
+         LET OOS-Data2.State-OOS2(#j) = $StateOOS
+         LET OOS-Data2.TxGQTD-OOS2(#j,#QuarterOOS) = #TXGRS-QTD
+         LET #x = #j 
+         LET #j = #j + 1
+      ELSE
+         LET OOS-Data2.State-OOS2(#x) = $StateOOS
+         LET OOS-Data2.TxGQTD-OOS2(#x,#QuarterOOS) = #TXGRS-QTD
+      END-IF 
+      LET $StateOOSAnt = OOS-Data.State-OOS(#i)
+      LET #i = #i + 1
+   End-while
+   LET #NumStates-OOS = #j - 1
+
+End-Procedure
+
+
+Begin-Procedure Read-OOS-TaxBalance
+
+Begin-Select
+TBOOS.TXGRS_QTD 
+ MOVE &TBOOS.TXGRS_QTD TO #TXGRS-QTD 
+FROM  PS_TAX_BALANCE TBOOS
+WHERE 
+    TBOOS.EMPLID        = $EmplId
+AND TBOOS.COMPANY        = $Company
+AND TBOOS.BALANCE_ID     = $Calendar_Year_Id
+AND TBOOS.BALANCE_YEAR   = &TX.Balance_Year
+AND TBOOS.BALANCE_QTR    = #QuarterOOS
+AND TBOOS.STATE          = $StateOOS
+AND TBOOS.LOCALITY       = ' '
+AND TBOOS.TAX_CLASS      = 'U' 
+AND TBOOS.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = TBOOS.EMPLID
+         AND  COMPANY       = TBOOS.COMPANY
+         AND  BALANCE_ID    = TBOOS.BALANCE_ID
+         AND  BALANCE_YEAR  = TBOOS.BALANCE_YEAR
+         AND  BALANCE_QTR   = TBOOS.BALANCE_QTR
+         AND  STATE         = TBOOS.STATE
+         AND  LOCALITY      = TBOOS.LOCALITY
+         AND  TAX_CLASS     = TBOOS.TAX_CLASS)
+AND TBOOS.TXGRS_QTD >= 0
+End-Select
+End-Procedure
+
+
+BEGIN-PROCEDURE Get-QTR-STATE-Combination
+!REMOVES DUPLICATES FOR STATE-QTR
+  LET #i = 2
+  LET #j = 1
+  LET #x = 1
+  LET $StateOOS-Exist = ' '
+  LET #QuarterOOS-Exist = 0
+  LET $KeyOOS = ' '
+  LET $KeyOOS_Ant =  ' '
+   
+  !IN ORDER TO AVOID DOUBLING THE NLGRS AMOUNT.
+  !WE USED AGAIN THE WORK ARRAY FOR THIS TASK.
+  DO Initialize-Wk-Arr-Array
+  !LOAD THE FIRST STATE-QTR
+  LET Work-Array.State-Wk-Arr(1) = OOS-Data.State-OOS(1)
+  LET Work-Array.BalanceQTR-Wk-Arr(1) = OOS-Data.BalanceQTR-OOS(1)
+     
+   WHILE #i <= #NumStates-OOS
+     LET  #j = 1
+     LET  $StateOOS = OOS-Data.State-OOS(#i)
+     LET  #QuarterOOS = OOS-Data.BalanceQTR-OOS(#i)
+     MOVE #QuarterOOS TO $QuarterOOS 99
+     LET  $KeyOOS = $QuarterOOS || $StateOOS
+     LET  $KeyOOS = LTRIM ($KeyOOS, ' ')
+     LET $STATE-QTR-EXIST = 'N'
+     
+     WHILE  #j <= #x
+         LET $StateOOS-Exist = Work-Array.State-Wk-Arr(#j) 
+         LET #QuarterOOS-Exist = Work-Array.BalanceQTR-Wk-Arr(#j)
+         Move #QuarterOOS-Exist To $QuarterOOS-Exist 99
+         LET $KeyOOS_Exist =  $QuarterOOS-Exist ||  $StateOOS-Exist
+         LET $KeyOOS_Exist = LTRIM($KeyOOS_Exist, ' ')
+
+         IF $KeyOOS = $KeyOOS_Exist
+            LET $STATE-QTR-EXIST = 'Y'
+            LET #j = #x
+         END-IF
+         LET #j = #j + 1
+      END-WHILE
+      
+      IF $STATE-QTR-EXIST = 'N'
+         LET #x = #x + 1
+         LET Work-Array.State-Wk-Arr(#x) = OOS-Data.State-OOS(#i)
+         LET Work-Array.BalanceQTR-Wk-Arr(#x) = OOS-Data.BalanceQTR-OOS(#i)
+      END-IF
+      
+      LET #i = #i + 1 
+   END-WHILE
+   LET #NumStates-OOS = #x
+   
+   !MOVE THE ENTRIES FROM WORK ARRAY TO THE OOS-Data ARRAY
+   LET #i = 1
+   WHILE #i <= #NumStates-OOS
+      LET OOS-Data.State-OOS(#i) = Work-Array.State-Wk-Arr(#i)
+      LET OOS-Data.BalanceQTR-OOS(#i) = Work-Array.BalanceQTR-Wk-Arr(#i)
+      LET #i = #i + 1 
+   END-WHILE 
+   
+   
+END-PROCEDURE
+
+
+Begin-Procedure Sort-By-QTR-STATE
+   LET #j = 1
+   WHILE #j <  #NumStates-OOS
+      LET #i = 1
+      WHILE #i <  #NumStates-OOS
+         LET #x = #i + 1
+         
+         LET  $StateOOS = OOS-Data.State-OOS(#i)
+         LET  $KeyOOSA = $StateOOS
+         LET  $KeyOOSA = LTRIM ($KeyOOSA, ' ')
+         
+         LET  $StateOOS = OOS-Data.State-OOS(#x)
+         LET  $KeyOOSB =  $StateOOS
+         LET  $KeyOOSB = LTRIM($KeyOOSB, ' ')
+         
+         IF $KeyOOSA > $KeyOOSB
+            LET #QuarterOOSx = OOS-Data.BalanceQTR-OOS(#i)
+            LET OOS-Data.BalanceQTR-OOS(#i) = OOS-Data.BalanceQTR-OOS(#x)
+            LET OOS-Data.BalanceQTR-OOS(#x) = #QuarterOOSx
+            
+            LET $StateOOSx = OOS-Data.State-OOS(#i)
+            LET OOS-Data.State-OOS(#i) = OOS-Data.State-OOS(#x)
+            LET OOS-Data.State-OOS(#x) = $StateOOSx
+            
+         END-IF
+         LET #i = #i + 1
+      END-WHILE      
+      LET #j = #j + 1
+   END-WHILE
+
+END-PROCEDURE
+
+
+Begin-Procedure Process-Array-OOS
+  LET #i = 1
+  LET #ZEROES = 0.00
+  LET #QTRref = &TX.Balance_Qtr
+  WHILE #i <= #NumStates-OOS
+     LET #j = 1
+     LET #AccumTxG = 0
+     LET #aAccumTxG = 0
+     LET #StateMaxGross = 0
+     LET $FStateOOS = OOS-Data2.State-OOS2(#i)
+     DO Get-State-MaxGross
+     IF #QTRref = 1
+        LET #AccumTxG = OOS-Data2.TxGQTD-OOS2(#i,1)
+        LET #j = 99
+     END-IF
+     WHILE #j < #QTRref
+        LET #aAccumTxG = OOS-Data2.TxGQTD-OOS2(#i,#j)
+        LET #AccumTxG = #AccumTxG + #aAccumTxG
+        LET #j = #j + 1
+     END-WHILE
+     
+     IF #QTRref = 1
+        LET #AsOfTodayNLG = #AccumTxG
+     ELSE
+        LET #AsOfTodayNLG = #AccumTxG + OOS-Data2.TxGQTD-OOS2(#i,#QTRref)
+     END-IF
+
+     IF #AsOfTodayNLG <= #StateMaxGross
+        LET OOS-Data2.TxGQTD-OOS2(#i,5) = OOS-Data2.TxGQTD-OOS2(#i,#QTRref)
+     ELSE
+        IF #AccumTxG < #StateMaxGross
+           LET OOS-Data2.TxGQTD-OOS2(#i,5) = #StateMaxGross - #AccumTxG
+        ELSE
+           IF #QTRref = 1
+              LET OOS-Data2.TxGQTD-OOS2(#i,5) = #StateMaxGross
+           ELSE
+              LET OOS-Data2.TxGQTD-OOS2(#i,5) = #ZEROES
+           END-IF
+        END-IF
+     END-IF  
+     LET #i = #i + 1
+  END-WHILE
+    
+End-procedure
+
+
+begin-procedure Initialize-OOS-Data-Array
+   let #j = 1
+   let $SpaceChar   = ' '
+   WHILE #j <= 99
+      put $SpaceChar 0
+      into OOS-Data(#j) 
+          State-OOS  BalanceQTR-OOS
+      let #j = #j + 1
+   END-WHILE
+End-Procedure 
+
+
+begin-procedure Initialize-Wk-Arr-Array
+   let #j = 1
+   let $SpaceChar   = ' '
+   WHILE #j <= 99
+      put $SpaceChar 0
+      into Work-Array(#j) 
+          State-Wk-Arr  BalanceQTR-Wk-Arr
+      let #j = #j + 1
+   END-WHILE
+End-Procedure 
+
+
+begin-procedure Initialize-OOS2-Data-Array
+   LET #i = 1
+   let $SpaceChar   = ' '
+   WHILE #i <= 99
+      LET #j = 1
+      WHILE #j <= 5
+         put $SpaceChar 0.00  
+         into OOS-Data2(#i,#j) 
+             State-OOS2  TxGQTD-OOS2
+             LET #j = #j + 1
+      END-WHILE
+      let #i = #i + 1
+   END-WHILE
+End-Procedure
+
+
+begin-procedure Sum-All-OOS-Amt
+   LET #i = 1
+   LET #nTxGRS_QTD_OOS = 0
+   LET #TxGRS_QTD_OOS = 0
+   WHILE #i <=  #NumStates-OOS
+      LET  #nTxGRS_QTD_OOS = OOS-Data2.TxGQTD-OOS2 (#i,5)
+      LET  #TxGRS_QTD_OOS = #TxGRS_QTD_OOS + #nTxGRS_QTD_OOS
+      let #i = #i + 1
+   END-WHILE
+   IF #TxGRS_QTD_OOS = 0
+      LET $ZEROES-AMT-OOS = 'Y'
+   ELSE
+      DO Format-Number(#TxGRS_QTD_OOS, $TxGRS_QTD_OOS, '99999999.99')
+      LET $TxGRS_QTD_OOS = LTRIM ($TxGRS_QTD_OOS, ' ')
+   END-IF
+
+End-Procedure
+
+begin-procedure Get-Max-OOS-Amount
+!GET THE STATE WITH THE HIGHEST AMOUNT
+   IF $ZEROES-AMT-OOS = 'N'
+      LET #j = 1
+      WHILE #j <  #NumStates-OOS
+         LET #x = #j
+         LET #x = #x + 1
+         IF OOS-Data2.TxGQTD-OOS2 (#j,5) > OOS-Data2.TxGQTD-OOS2 (#x,5)
+            LET #AUX = OOS-Data2.TxGQTD-OOS2 (#j,5)
+            LET OOS-Data2.TxGQTD-OOS2 (#j,5) = OOS-Data2.TxGQTD-OOS2 (#x,5)
+            LET OOS-Data2.TxGQTD-OOS2 (#x,5) = #AUX
+         
+            LET $AUX2 = OOS-Data2.State-OOS2 (#j)
+            LET OOS-Data2.State-OOS2 (#j) = OOS-Data2.State-OOS2 (#x)
+            LET OOS-Data2.State-OOS2 (#x) = $AUX2
+         END-IF
+         LET #j = #j + 1
+      END-WHILE
+      LET $StateOOS = OOS-Data2.State-OOS2 (#NumStates-OOS)
+   END-IF
+   
+End-Procedure
+
+
+begin-procedure Read-State-MaxGross
+ LET #MAX_GROSS = 0
+begin-SELECT
+O.STATE
+O.MAX_GROSS
+   MOVE &O.STATE TO $STATE-MaxGross
+   LET $STATE-MaxGross = RTRIM(LTRIM($STATE-MaxGross, ' '), ' ')
+   EVALUATE $STATE-MaxGross
+      WHEN = $HI_AK_OOS
+         MOVE &O.MAX_GROSS TO #HI_AK_OOS
+         BREAK
+      WHEN = $HI_AL_OOS
+         MOVE &O.MAX_GROSS TO #HI_AL_OOS
+         BREAK
+      WHEN = $HI_AR_OOS
+         MOVE &O.MAX_GROSS TO #HI_AR_OOS
+         BREAK
+      WHEN = $HI_AZ_OOS
+         MOVE &O.MAX_GROSS TO #HI_AZ_OOS
+         BREAK
+      WHEN = $HI_CA_OOS
+         MOVE &O.MAX_GROSS TO #HI_CA_OOS
+         BREAK
+      WHEN = $HI_CO_OOS
+         MOVE &O.MAX_GROSS TO #HI_CO_OOS
+         BREAK
+      WHEN = $HI_CT_OOS
+         MOVE &O.MAX_GROSS TO #HI_CT_OOS
+         BREAK
+      WHEN = $HI_DC_OOS
+         MOVE &O.MAX_GROSS TO #HI_DC_OOS
+         BREAK
+      WHEN = $HI_DE_OOS
+         MOVE &O.MAX_GROSS TO #HI_DE_OOS
+         BREAK
+      WHEN = $HI_FL_OOS
+         MOVE &O.MAX_GROSS TO #HI_FL_OOS
+         BREAK
+      WHEN = $HI_GA_OOS
+         MOVE &O.MAX_GROSS TO #HI_GA_OOS
+         BREAK
+      WHEN = $HI_HI_OOS
+         MOVE &O.MAX_GROSS TO #HI_HI_OOS
+         BREAK
+      WHEN = $HI_IA_OOS
+         MOVE &O.MAX_GROSS TO #HI_IA_OOS
+         BREAK
+      WHEN = $HI_ID_OOS
+         MOVE &O.MAX_GROSS TO #HI_ID_OOS
+         BREAK
+      WHEN = $HI_IL_OOS
+         MOVE &O.MAX_GROSS TO #HI_IL_OOS
+         BREAK
+      WHEN = $HI_IN_OOS
+         MOVE &O.MAX_GROSS TO #HI_IN_OOS
+         BREAK
+      WHEN = $HI_KS_OOS
+         MOVE &O.MAX_GROSS TO #HI_KS_OOS
+         BREAK
+      WHEN = $HI_KY_OOS
+         MOVE &O.MAX_GROSS TO #HI_KY_OOS
+         BREAK
+      WHEN = $HI_LA_OOS
+         MOVE &O.MAX_GROSS TO #HI_LA_OOS
+         BREAK
+      WHEN = $HI_MA_OOS
+         MOVE &O.MAX_GROSS TO #HI_MA_OOS
+         BREAK
+      WHEN = $HI_MD_OOS
+         MOVE &O.MAX_GROSS TO #HI_MD_OOS
+         BREAK
+      WHEN = $HI_ME_OOS
+         MOVE &O.MAX_GROSS TO #HI_ME_OOS
+         BREAK
+      WHEN = $HI_MI_OOS
+         MOVE &O.MAX_GROSS TO #HI_MI_OOS
+         BREAK
+      WHEN = $HI_MN_OOS
+         MOVE &O.MAX_GROSS TO #HI_MN_OOS
+         BREAK
+      WHEN = $HI_MO_OOS
+         MOVE &O.MAX_GROSS TO #HI_MO_OOS
+         BREAK
+      WHEN = $HI_MS_OOS
+         MOVE &O.MAX_GROSS TO #HI_MS_OOS
+         BREAK
+      WHEN = $HI_MT_OOS
+         MOVE &O.MAX_GROSS TO #HI_MT_OOS
+         BREAK
+      WHEN = $HI_NC_OOS
+         MOVE &O.MAX_GROSS TO #HI_NC_OOS
+         BREAK
+      WHEN = $HI_ND_OOS
+         MOVE &O.MAX_GROSS TO #HI_ND_OOS
+         BREAK
+      WHEN = $HI_NE_OOS
+         MOVE &O.MAX_GROSS TO #HI_NE_OOS
+         BREAK
+      WHEN = $HI_NH_OOS
+         MOVE &O.MAX_GROSS TO #HI_NH_OOS
+         BREAK
+      WHEN = $HI_NJ_OOS
+         MOVE &O.MAX_GROSS TO #HI_NJ_OOS
+         BREAK
+      WHEN = $HI_NM_OOS
+         MOVE &O.MAX_GROSS TO #HI_NM_OOS
+         BREAK
+      WHEN = $HI_NV_OOS
+         MOVE &O.MAX_GROSS TO #HI_NV_OOS
+         BREAK
+      WHEN = $HI_NY_OOS
+         MOVE &O.MAX_GROSS TO #HI_NY_OOS
+         BREAK
+      WHEN = $HI_OH_OOS
+         MOVE &O.MAX_GROSS TO #HI_OH_OOS
+         BREAK
+      WHEN = $HI_OK_OOS
+         MOVE &O.MAX_GROSS TO #HI_OK_OOS
+         BREAK
+      WHEN = $HI_OR_OOS
+         MOVE &O.MAX_GROSS TO #HI_OR_OOS
+         BREAK
+      WHEN = $HI_PA_OOS
+         MOVE &O.MAX_GROSS TO #HI_PA_OOS
+         BREAK
+      WHEN = $HI_PR_OOS
+         MOVE &O.MAX_GROSS TO #HI_PR_OOS
+         BREAK
+      WHEN = $HI_RI_OOS
+         MOVE &O.MAX_GROSS TO #HI_RI_OOS
+         BREAK
+      WHEN = $HI_SC_OOS
+         MOVE &O.MAX_GROSS TO #HI_SC_OOS
+         BREAK
+      WHEN = $HI_SD_OOS
+         MOVE &O.MAX_GROSS TO #HI_SD_OOS
+         BREAK
+      WHEN = $HI_TN_OOS
+         MOVE &O.MAX_GROSS TO #HI_TN_OOS
+         BREAK
+      WHEN = $HI_TX_OOS
+         MOVE &O.MAX_GROSS TO #HI_TX_OOS
+         BREAK
+      WHEN = $HI_UT_OOS
+         MOVE &O.MAX_GROSS TO #HI_UT_OOS
+         BREAK
+      WHEN = $HI_VA_OOS
+         MOVE &O.MAX_GROSS TO #HI_VA_OOS
+         BREAK
+      WHEN = $HI_VI_OOS
+         MOVE &O.MAX_GROSS TO #HI_VI_OOS
+         BREAK
+      WHEN = $HI_VT_OOS
+         MOVE &O.MAX_GROSS TO #HI_VT_OOS
+         BREAK
+      WHEN = $HI_WA_OOS
+         MOVE &O.MAX_GROSS TO #HI_WA_OOS
+         BREAK
+      WHEN = $HI_WI_OOS
+         MOVE &O.MAX_GROSS TO #HI_WI_OOS
+         BREAK
+      WHEN = $HI_WV_OOS
+         MOVE &O.MAX_GROSS TO #HI_WV_OOS
+         BREAK
+      WHEN = $HI_WY_OOS
+         MOVE &O.MAX_GROSS TO #HI_WY_OOS
+         BREAK
+      WHEN-OTHER
+         DISPLAY '****************************************************************'
+         DISPLAY 'Read-State-MaxGross:'
+         DISPLAY 'Unemployment-ER Maximum Gross not defined for State: ' NOLINE
+         DISPLAY $STATE-MaxGross
+         DISPLAY 'If there are Hawaii Out Of State Wages for this state, ' NOLINE
+         DISPLAY 'results might be unaccurate.'
+         DISPLAY 'Go To Tax Table Page and validate the rate for this state.'
+         DISPLAY '********************************************************'
+   
+   END-EVALUATE
+
+ FROM PS_ST_OTH_TAX_TBL O
+WHERE O.STATE <> '$U'
+  AND O.TAX_CLASS = 'U'
+  AND O.EFFDT = (SELECT MAX (O2.EFFDT) 
+                   FROM PS_ST_OTH_TAX_TBL O2
+                  WHERE O2.STATE = O.STATE
+                    AND O2.TAX_CLASS = O.TAX_CLASS
+                )
+  ORDER BY O.STATE
+end-SELECT
+end-procedure
+
+
+begin-procedure Get-State-MaxGross
+   LET $FStateOOS = RTRIM(LTRIM($FStateOOS, ' '), ' ')
+   
+   EVALUATE $FStateOOS
+      WHEN = $HI_AK_OOS
+         MOVE #HI_AK_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_AL_OOS          
+         MOVE #HI_AL_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_AR_OOS          
+         MOVE #HI_AR_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_AZ_OOS          
+         MOVE #HI_AZ_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_CA_OOS          
+         MOVE #HI_CA_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_CO_OOS          
+         MOVE #HI_CO_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_CT_OOS          
+         MOVE #HI_CT_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_DC_OOS          
+         MOVE #HI_DC_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_DE_OOS          
+         MOVE #HI_DE_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_FL_OOS          
+         MOVE #HI_FL_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_GA_OOS
+         MOVE #HI_GA_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_HI_OOS          
+         MOVE #HI_HI_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_IA_OOS          
+         MOVE #HI_IA_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_ID_OOS          
+         MOVE #HI_ID_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_IL_OOS          
+         MOVE #HI_IL_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_IN_OOS          
+         MOVE #HI_IN_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_KS_OOS          
+         MOVE #HI_KS_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_KY_OOS          
+         MOVE #HI_KY_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_LA_OOS          
+         MOVE #HI_LA_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_MA_OOS          
+         MOVE #HI_MA_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_MD_OOS          
+         MOVE #HI_MD_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_ME_OOS          
+         MOVE #HI_ME_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_MI_OOS          
+         MOVE #HI_MI_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_MN_OOS          
+         MOVE #HI_MN_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_MO_OOS          
+         MOVE #HI_MO_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_MS_OOS          
+         MOVE #HI_MS_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_MT_OOS          
+         MOVE #HI_MT_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_NC_OOS          
+         MOVE #HI_NC_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_ND_OOS          
+         MOVE #HI_ND_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_NE_OOS          
+         MOVE #HI_NE_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_NH_OOS          
+         MOVE #HI_NH_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_NJ_OOS          
+         MOVE #HI_NJ_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_NM_OOS          
+         MOVE #HI_NM_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_NV_OOS          
+         MOVE #HI_NV_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_NY_OOS          
+         MOVE #HI_NY_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_OH_OOS          
+         MOVE #HI_OH_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_OK_OOS          
+         MOVE #HI_OK_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_OR_OOS          
+         MOVE #HI_OR_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_PA_OOS          
+         MOVE #HI_PA_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_PR_OOS          
+         MOVE #HI_PR_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_RI_OOS          
+         MOVE #HI_RI_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_SC_OOS          
+         MOVE #HI_SC_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_SD_OOS          
+         MOVE #HI_SD_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_TN_OOS          
+         MOVE #HI_TN_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_TX_OOS          
+         MOVE #HI_TX_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_UT_OOS          
+         MOVE #HI_UT_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_VA_OOS          
+         MOVE #HI_VA_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_VI_OOS          
+         MOVE #HI_VI_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_VT_OOS          
+         MOVE #HI_VT_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_WA_OOS          
+         MOVE #HI_WA_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_WI_OOS          
+         MOVE #HI_WI_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_WV_OOS          
+         MOVE #HI_WV_OOS TO #StateMaxGross
+         BREAK
+      WHEN = $HI_WY_OOS          
+         MOVE #HI_WY_OOS TO #StateMaxGross
+         BREAK
+         
+      WHEN-OTHER
+         DISPLAY '****************************************************************'
+         DISPLAY 'Get-State-MaxGross:'
+         DISPLAY 'Unemployment-ER Maximum Gross not defined for State: ' NOLINE
+         DISPLAY $FStateOOS
+         DISPLAY 'If there are Hawaii Out Of State Wages for this state, ' NOLINE
+         DISPLAY 'results might be unaccurate.'
+         DISPLAY 'Go To Tax Table Page and validate the rate for this state.'
+         DISPLAY '********************************************************'
+   
+   END-EVALUATE
+   
+End-Procedure   
+
+
+
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'getstdta.sqc'  !Get-State-Tax-Data procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'datemath.sqc'  !Routines for date comparisons
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'rotname2.sqc'  !Rotate-Name procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'rptsmmry.sqc'  !Print-Summary-Data procedure
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'txrnctl1.sqc'  !Get-Run-Control procedure
+

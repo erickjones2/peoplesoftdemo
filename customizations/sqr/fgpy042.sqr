@@ -1,0 +1,933 @@
+!***********************************************************************
+!  FGPY042:  Treasury Interface SPS File(s) and Report                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2014, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2014/10/14:11:23:55                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  102                                                 !
+!                                                                      *
+!***********************************************************************
+#include 'setenv.sqc'    !Set environment
+#Include 'setup31.sqc'   !Printer and page-size initialization
+
+begin-report
+
+   do Init-Report
+
+   do Process-Main
+
+   do Delete-Run-Control
+
+   do Commit-Updates
+
+   do Stdapi-Term
+
+end-report
+
+begin-heading 8
+#Include 'stdhdg03.sqc'
+   print '                 '        (4,1,17)
+   print 'Payroll Office #:'        (5,1,17)
+   print $agency_loc_code           (5,+1,8)
+   print 'Agency'                   (7,1,6)   underline
+   print 'Schedule Prefix'          (7,+2,15) underline
+   print 'Schedule Code'            (7,+2,13) underline
+   print 'Schedule Sequence'        (7,+2,17) underline
+   print 'Requested Payments'       (7,+2,18) underline
+   print 'Schedule Total Amount'    (7,+2,21) underline
+   print 'Output File'              (7,+2,11) underline
+
+end-heading
+
+!**************************
+begin-procedure Init-Report
+!**************************
+
+move 'FGPY042' to $ReportID
+move 'Treasury Interface SPS File Report' to $ReportTitle
+
+do Init-DateTime
+do Init-Number
+do Get-Current-DateTime
+do Stdapi-Init
+
+if $Prcs_Process_Instance = ''
+
+   display 'Secure Payment System file generation requires'
+   display 'submission through the Process Scheduler'
+
+   STOP
+
+else
+
+   do retrieve-agency-data
+
+   display '   Process Parameters : '
+   display '              Company            -  ' noline
+   display $company
+   display '              Summary Schedule   -  ' noline
+   display $summ_sched
+   display '              Process Option     -  ' noline
+   display $status_name
+
+end-if
+
+end-procedure       !Init-Report
+
+!***********************************
+begin-procedure retrieve-agency-data
+!***********************************
+
+begin-select
+
+RCP.GVT_SUMM_SCHED
+RCP.GVT_SCHED_STATUS
+COM.COMPANY
+COM.GVT_AGY_LOC_CODE
+COM.GVT_AGY_CHECK_ID
+COM.GVT_ECS_AGY_NAME
+COM.GVT_ECS_ADDR_1
+COM.GVT_ECS_ADDR_2
+COM.GVT_ECS_ADDR_CITY
+COM.GVT_ECS_ADDR_STATE
+COM.GVT_ECS_ADDR_ZIP
+COM.GVT_ECS_PHONE
+
+   let $summ_sched      = &RCP.GVT_SUMM_SCHED
+   let $sched_status    = &RCP.GVT_SCHED_STATUS
+
+   do get-schedule-status-XLAT
+
+   let $company         = rtrim(upper(&COM.COMPANY), ' ')
+   let $agency_loc_code = rtrim(upper(&COM.GVT_AGY_LOC_CODE), ' ')
+   let $agency_name     = rtrim(upper(&COM.GVT_ECS_AGY_NAME), ' ')
+   let $agency_id       = rtrim(upper(&COM.GVT_AGY_CHECK_ID), ' ')
+   let $agency_addr_1   = rtrim(upper(&COM.GVT_ECS_ADDR_1), ' ')
+   let $agency_addr_2   = rtrim(upper(&COM.GVT_ECS_ADDR_2), ' ')
+   let $agency_city     = rtrim(upper(&COM.GVT_ECS_ADDR_CITY), ' ')
+   let $agency_state    = rtrim(upper(substr(&COM.GVT_ECS_ADDR_STATE, 1, 2)), ' ')
+   let $zip_5           = upper(substr(&COM.GVT_ECS_ADDR_ZIP, 1, 5))
+   let $zip_4           = upper(substr(&COM.GVT_ECS_ADDR_ZIP, 7, 4))
+   let $agency_zip      = $zip_5||$zip_4
+   let $aaa             = upper(substr(&COM.GVT_ECS_PHONE, 1, 3))
+   let $eee             = upper(substr(&COM.GVT_ECS_PHONE, 5, 3))
+   let $nnnn            = upper(substr(&COM.GVT_ECS_PHONE, 9, 4))
+   let $agency_phone    = $aaa||$eee||$nnnn
+
+   do format-extract-address
+
+FROM  PS_RUNCTL_FGPY042 RCP,
+      PS_GVT_INTRFC_INFO COM
+WHERE RCP.OPRID        = $Prcs_OprID
+AND   RCP.RUN_CNTL_ID  = $Prcs_Run_Cntl_ID
+AND   COM.COMPANY      = RCP.COMPANY
+AND   COM.EFFDT        = (SELECT MAX(EFFDT)
+                          FROM  PS_GVT_INTRFC_INFO COM1
+                          WHERE COM1.COMPANY  = COM.COMPANY
+                          AND   COM1.EFFDT   <= $AsOfToday)
+
+end-select
+
+end-procedure       !retrieve-agency-data
+
+!*************************************
+begin-procedure format-extract-address
+!*************************************
+
+let $agency_address1 = $agency_addr_1
+
+if $agency_addr_2 = ''
+
+   let $agency_address2 = $agency_city||' '||$agency_state||' '||$agency_zip
+   let $agency_address3 = ''
+
+else
+
+   let $agency_address2 = $agency_addr_2
+   let $agency_address3 = $agency_city||' '||$agency_state||' '||$agency_zip
+
+end-if
+
+end-procedure       !format-extract-address
+
+!***************************
+begin-procedure Process-Main
+!***************************
+
+begin-select
+
+RCC.GVT_SCHED_PREFIX
+RCC.GVT_SCHED_CODE
+RCC.GVT_SCHED_SEQ
+RCC.GVT_SPS_CNTRL_NUM
+RCC.GVT_ECS_DOS_NAME
+RCC.GVT_ECS_DOS_EXT
+RCC.GVT_EXT_NOTE
+SD.GVT_ECS_RFC_INDIC
+SC.GVT_ECS_REQ_PAY_DT
+SC.GVT_TOTAL_COUNT
+SC.GVT_TOTAL_AMT
+PC.GVT_ECS_PYMNT_1
+PC.GVT_ECS_PYMNT_2
+
+   let $schedule_prefix = rtrim(&RCC.GVT_SCHED_PREFIX, ' ')
+   let $lpad_prefix     = lpad($schedule_prefix,10,'0')
+   let $schedule_code   = &RCC.GVT_SCHED_CODE
+   let #schedule_seq_no = &RCC.GVT_SCHED_SEQ
+   do Format-Number(#schedule_seq_no, $schedule_seq, '009')
+   let $schedule        = $lpad_prefix || $schedule_code || $schedule_seq
+   let $control_number  = &RCC.GVT_SPS_CNTRL_NUM
+   let $extract_note    = rtrim(upper(&RCC.GVT_EXT_NOTE), ' ')
+   let $rfc_indic       = rtrim(upper(&SD.GVT_ECS_RFC_INDIC), ' ')
+   let $payment_type_1  = &PC.GVT_ECS_PYMNT_1
+   let $payment_type_2  = &PC.GVT_ECS_PYMNT_2
+
+   evaluate $schedule_code
+
+       when = 'A'
+       when = 'B'
+       when = 'C'
+       when = 'D'
+
+           display ' '
+           display '     Processing Schedule ' noline
+           display $schedule
+
+           do write-sps-extract-summary
+           break
+
+       when-other
+           display 'Secure Payment System file generation program '
+           display 'supports only summary schedules.'
+           display $schedule noline
+           display ' is not processed. '
+           break
+
+   end-evaluate
+
+FROM  PS_RC_FGPY042_SCHD RCC,
+      PS_GVT_SCHED_DEFN  SD,
+      PS_GVT_SCHED_CNTRL SC,
+      PS_GVT_PAM_SYS_CTL PC
+WHERE RCC.OPRID            = $Prcs_OprID
+AND   RCC.RUN_CNTL_ID      = $Prcs_Run_Cntl_ID
+AND   RCC.GVT_SCHED_PREFIX = SD.GVT_SCHED_PREFIX
+AND   RCC.GVT_SCHED_PREFIX = SC.GVT_SCHED_PREFIX
+AND   RCC.GVT_SCHED_CODE   = SC.GVT_SCHED_CODE
+AND   RCC.GVT_SCHED_SEQ    = SC.GVT_SCHED_SEQ
+AND   RCC.GVT_SCHED_CODE   = PC.GVT_SCHED_CODE
+ORDER BY RCC.GVT_SCHED_PREFIX, RCC.GVT_SCHED_CODE, RCC.GVT_SCHED_SEQ
+
+end-select
+
+end-procedure       !Process-Main
+
+!****************************************
+begin-procedure write-sps-extract-summary
+!****************************************
+
+do open-sps-file
+
+let $schedule_type = 'M'
+do write-record-01
+
+let $payment_date   = datetostr(&SC.GVT_ECS_REQ_PAY_DT,'MMDDYYYY')
+let $mm             = upper(substr($payment_date, 1, 2))
+let $dd             = upper(substr($payment_date, 3, 2))
+let $yyyy           = upper(substr($payment_date, 5, 4))
+let $payment_due    = $mm||$dd||$yyyy
+let #count          = &SC.GVT_TOTAL_COUNT
+do Format-Number(#count, $payment_recs, '00000009')
+let #amount         = &SC.GVT_TOTAL_AMT
+multiply 100 times #amount
+do Format-Number(#amount, $payment_tot, '000000000000009')
+do write-record-04
+
+do retrieve-remarks
+
+do retrieve-TASBETC
+
+do update-schedule-definition
+
+do update-schedule-control
+
+do insert-extract-detail
+
+do print-schedule-info
+
+close 1
+
+display '     Process completed.'
+
+end-procedure       !write-sps-extract-summary
+
+!****************************
+begin-procedure open-sps-file
+!****************************
+
+if &RCC.GVT_ECS_DOS_EXT = ''
+
+   let $sps_output_file = '{IMPORTPREFIX}' || &RCC.GVT_ECS_DOS_NAME
+   let $file_name       = upper(&RCC.GVT_ECS_DOS_NAME)
+
+else
+
+   let $sps_output_file = '{IMPORTPREFIX}' || &RCC.GVT_ECS_DOS_NAME    || '.' || &RCC.GVT_ECS_DOS_EXT
+   let $file_name       = upper(&RCC.GVT_ECS_DOS_NAME)||'.'||upper(&RCC.GVT_ECS_DOS_EXT)
+
+end-if
+
+open $sps_output_file as 1 for-writing record=440:fixed_nolf
+
+end-procedure       !open-sps-file
+
+!******************************
+begin-procedure write-record-01
+!******************************
+
+let $record_type   = '01'
+let $file_format   = 'GWA001'
+
+write 1 from $record_type:2
+             $file_format:6
+             $schedule:14
+             $blanks_20:20
+             $rfc_indic:3
+             $agency_loc_code:8
+             $blanks_363:363
+             $schedule_type:1
+             $blanks_23:23
+
+end-procedure       !write-record-01
+
+!******************************
+begin-procedure write-record-04
+!******************************
+
+let $record_type    = '04'
+
+write 1 from $record_type:2
+             $blanks_24:24
+             $payment_due:8
+             $payment_type_1:1
+             $payment_type_2:1
+             $blanks_10:10
+             $control_number:7
+             $blanks_79:79
+             $payment_recs:8
+             $payment_tot:15
+             $blanks_285:285
+
+end-procedure       !write-record-04
+
+!*******************************
+begin-procedure retrieve-remarks
+!*******************************
+
+let $schedule_remark_1 = ''
+let $schedule_remark_2 = ''
+let $schedule_remark_3 = ''
+let $schedule_remark_4 = ''
+let $schedule_remark_5 = ''
+let $schedule_remark_6 = ''
+let $schedule_remark_7 = ''
+
+begin-select
+
+REMARK.GVT_ECS_REMARKS_NO
+REMARK.GVT_ECS_REMARKS
+
+   evaluate &REMARK.GVT_ECS_REMARKS_NO
+
+       when = 1
+
+           let $schedule_remark_1 = rtrim(upper(&REMARK.GVT_ECS_REMARKS), ' ')
+           break
+
+       when = 2
+
+           let $schedule_remark_2 = rtrim(upper(&REMARK.GVT_ECS_REMARKS), ' ')
+           break
+
+       when = 3
+
+           let $schedule_remark_3 = rtrim(upper(&REMARK.GVT_ECS_REMARKS), ' ')
+           break
+
+       when = 4
+
+           let $schedule_remark_4 = rtrim(upper(&REMARK.GVT_ECS_REMARKS), ' ')
+           break
+
+       when = 5
+
+           let $schedule_remark_5 = rtrim(upper(&REMARK.GVT_ECS_REMARKS), ' ')
+           break
+
+       when = 6
+
+           let $schedule_remark_6 = rtrim(upper(&REMARK.GVT_ECS_REMARKS), ' ')
+           break
+
+       when = 7
+
+           let $schedule_remark_7 = rtrim(upper(&REMARK.GVT_ECS_REMARKS), ' ')
+           break
+
+   end-evaluate
+
+FROM  PS_GVT_SCHED_REMKS REMARK
+WHERE REMARK.GVT_SCHED_PREFIX = &RCC.GVT_SCHED_PREFIX
+AND   REMARK.GVT_SCHED_CODE   = &RCC.GVT_SCHED_CODE
+
+end-select
+
+   do write-record-05
+   do write-record-06
+
+end-procedure       !retrieve-remarks
+
+!******************************
+begin-procedure write-record-05
+!******************************
+
+let $record_type = '05'
+
+write 1 from $record_type:2
+             $blanks_101:101
+             $schedule_remark_1:72
+             $schedule_remark_2:72
+             $schedule_remark_3:72
+             $blanks_121:121
+
+end-procedure       !write-record-05
+
+!******************************
+begin-procedure write-record-06
+!******************************
+
+let $record_type = '06'
+
+write 1 from $record_type:2
+             $blanks_20:20
+             $schedule_remark_4:72
+             $schedule_remark_5:72
+             $schedule_remark_6:72
+             $schedule_remark_7:72
+             $blanks_130:130
+
+end-procedure       !write-record-06
+
+!*******************************
+begin-procedure retrieve-TASBETC
+!*******************************
+
+do reset-TASBETC-var
+
+begin-select
+
+ES.GVT_SCHED_PREFIX
+ES.GVT_SCHED_CODE
+ES.GVT_SCHED_SEQ
+ES.GVT_TAS_GWA
+ES.GVT_BETC_CD
+
+#ifdef DB2ALL
+DECIMAL(SUM(ES.GVT_TOTAL_AMT),15,3) &ES.GVT_TOTAL_AMT
+#else
+SUM(ES.GVT_TOTAL_AMT) &ES.GVT_TOTAL_AMT
+#endif
+
+   if &ES.GVT_TOTAL_AMT <> 0
+
+      do find-TASBETC-defn
+
+      if #tas_betc_seq < 9
+         do find-TASBETC-seq
+
+      else
+         do write-record-07
+         do reset-TASBETC-var
+         do find-TASBETC-seq
+
+      end-if
+
+   end-if
+
+FROM  PS_GVT_SCHED_EXSUM ES
+WHERE ES.GVT_SCHED_PREFIX = &RCC.GVT_SCHED_PREFIX
+AND   ES.GVT_SCHED_CODE   = &RCC.GVT_SCHED_CODE
+AND   ES.GVT_SCHED_SEQ    = &RCC.GVT_SCHED_SEQ
+GROUP BY ES.GVT_SCHED_PREFIX, ES.GVT_SCHED_CODE, ES.GVT_SCHED_SEQ,
+         ES.GVT_TAS_GWA, ES.GVT_BETC_CD
+ORDER BY ES.GVT_TAS_GWA, ES.GVT_BETC_CD
+
+end-select
+
+   if #tas_betc_seq > 0
+      do write-record-07
+   end-if
+
+end-procedure        !retrieve-TASBETC
+
+!********************************
+begin-procedure reset-TASBETC-var
+!********************************
+
+let #tas_betc_seq   = 0
+let $tas_betc_01    = ''
+let $tas_betc_02    = ''
+let $tas_betc_03    = ''
+let $tas_betc_04    = ''
+let $tas_betc_05    = ''
+let $tas_betc_06    = ''
+let $tas_betc_07    = ''
+let $tas_betc_08    = ''
+let $tas_betc_09    = ''
+
+end-procedure        !reset-TASBETC-var
+
+!*******************************
+begin-procedure find-TASBETC-seq
+!*******************************
+
+add 1 to #tas_betc_seq
+
+do fill-TASBETC-var
+
+evaluate  #tas_betc_seq
+
+   when = 1
+     let $tas_betc_01 = $tas_betc_00
+     break
+
+   when = 2
+     let $tas_betc_02 = $tas_betc_00
+     break
+
+   when = 3
+     let $tas_betc_03 = $tas_betc_00
+     break
+
+   when = 4
+     let $tas_betc_04 = $tas_betc_00
+     break
+
+   when = 5
+     let $tas_betc_05 = $tas_betc_00
+     break
+
+   when = 6
+     let $tas_betc_06 = $tas_betc_00
+     break
+
+   when = 7
+     let $tas_betc_07 = $tas_betc_00
+     break
+
+   when = 8
+     let $tas_betc_08 = $tas_betc_00
+     break
+
+   when = 9
+     let $tas_betc_09 = $tas_betc_00
+     break
+
+end-evaluate
+
+let $tas_sp    = ''
+let $tas_ata   = ''
+let $tas_aid   = ''
+let $tas_bpoa  = ''
+let $tas_epoa  = ''
+let $tas_a     = ''
+let $tas_main  = ''
+let $tas_sub   = ''
+let $tas_betc  = ''
+let $is_credit = ''
+let $tas_total = ''
+
+end-procedure        !find-TASBETC-seq
+
+!*******************************
+begin-procedure fill-TASBETC-var
+!*******************************
+
+if rtrim(&TAS.GVT_TAS_SP,' ') = ''
+   let $tas_sp   = '**'
+else
+   let $tas_sp   = &TAS.GVT_TAS_SP
+end-if
+
+if rtrim(&TAS.GVT_TAS_ATA,' ') = ''
+   let $tas_ata  = '***'
+else
+   let $tas_ata  = &TAS.GVT_TAS_ATA
+end-if
+
+if rtrim(&TAS.GVT_TAS_AID,' ') = ''
+   let $tas_aid  = '***'
+else
+   let $tas_aid  = &TAS.GVT_TAS_AID
+end-if
+
+if rtrim(&TAS.GVT_TAS_BPOA,' ') = ''
+   let $tas_bpoa  = '****'
+else
+   let $tas_bpoa = &TAS.GVT_TAS_BPOA
+end-if
+
+if rtrim(&TAS.GVT_TAS_EPOA,' ') = ''
+   let $tas_epoa  = '****'
+else
+   let $tas_epoa = &TAS.GVT_TAS_EPOA
+end-if
+
+if rtrim(&TAS.GVT_TAS_A,' ') = ''
+   let $tas_a     = '*'
+else
+   let $tas_a    = &TAS.GVT_TAS_A
+end-if
+
+if rtrim(&TAS.GVT_TAS_MAIN,' ') = ''
+   let $tas_main  = '****'
+else
+   let $tas_main = &TAS.GVT_TAS_MAIN
+end-if
+
+if rtrim(&TAS.GVT_TAS_SUB,' ') = ''
+   let $tas_sub  = '***'
+else
+   let $tas_sub  = &TAS.GVT_TAS_SUB
+end-if
+
+let $tas_betc  = rpad(&ES.GVT_BETC_CD, 8, ' ')
+
+do Format-Number(#is_credit, $is_credit, '9')
+
+let #tas_total    = &ES.GVT_TOTAL_AMT
+multiply 100 times #tas_total
+
+if #tas_total < 0
+   let #tas_total = #tas_total * -1
+end-if
+
+do Format-Number(#tas_total, $tas_total, '000000000000009')
+
+let $tas_betc_00 = $tas_sp || $tas_ata  || $tas_aid  || $tas_bpoa || $tas_epoa
+let $tas_betc_00 = $tas_betc_00 || $tas_a || $tas_main || $tas_sub
+let $tas_betc_00 = $tas_betc_00 || $tas_betc || $is_credit || $tas_total
+
+let $tas_betc_00 = translate($tas_betc_00,'*', ' ')
+
+end-procedure        !fill-TASBETC-var
+
+!********************************
+begin-procedure find-TASBETC-defn
+!********************************
+
+begin-select
+
+TAS.GVT_TAS_GWA
+TAS.GVT_TAS_SP
+TAS.GVT_TAS_ATA
+TAS.GVT_TAS_AID
+TAS.GVT_TAS_BPOA
+TAS.GVT_TAS_EPOA
+TAS.GVT_TAS_A
+TAS.GVT_TAS_MAIN
+TAS.GVT_TAS_SUB
+BETC.GVT_BETC_CD
+BETC.GVT_PYMT_OR_CLLCTN
+BETC.GVT_ADJUSTMENT
+
+   let $Pymnt_Coll           = &BETC.GVT_PYMT_OR_CLLCTN
+   let $IsAdjustment         = &BETC.GVT_ADJUSTMENT
+
+   if ($Pymnt_Coll = 'P' and $IsAdjustment = 'N') or
+      ($Pymnt_Coll = 'C' and $IsAdjustment = 'Y')
+      let #is_credit = 0
+   end-if
+
+   if ($Pymnt_Coll = 'P' and $IsAdjustment = 'Y') or
+      ($Pymnt_Coll = 'C' and $IsAdjustment = 'N')
+      let #is_credit = 1
+   end-if
+
+FROM  PS_GVT_TAS_GWA_VW TAS,
+      PS_GVT_BETC_DEFN BETC
+WHERE TAS.GVT_TAS_GWA        = &ES.GVT_TAS_GWA
+AND   BETC.GVT_TAS_SP        = TAS.GVT_TAS_SP
+AND   BETC.GVT_TAS_ATA       = TAS.GVT_TAS_ATA
+AND   BETC.GVT_TAS_AID       = TAS.GVT_TAS_AID
+AND   BETC.GVT_TAS_BPOA      = TAS.GVT_TAS_BPOA
+AND   BETC.GVT_TAS_EPOA      = TAS.GVT_TAS_EPOA
+AND   BETC.GVT_TAS_A         = TAS.GVT_TAS_A
+AND   BETC.GVT_TAS_MAIN      = TAS.GVT_TAS_MAIN
+AND   BETC.GVT_TAS_SUB       = TAS.GVT_TAS_SUB
+AND   BETC.GVT_BETC_CD       = &ES.GVT_BETC_CD
+
+end-select
+
+end-procedure       !find-TASBETC-defn
+
+!******************************
+begin-procedure write-record-07
+!******************************
+
+let $record_type   = '07'
+
+write 1 from $record_type:2
+             $tas_betc_01:48
+             $tas_betc_02:48
+             $tas_betc_03:48
+             $tas_betc_04:48
+             $tas_betc_05:48
+             $tas_betc_06:48
+             $tas_betc_07:48
+             $tas_betc_08:48
+             $tas_betc_09:48
+             $blanks_6:6
+
+end-procedure        !write-record-07
+
+!*****************************************
+begin-procedure update-schedule-definition
+!*****************************************
+
+BEGIN-SQL
+
+UPDATE PS_GVT_SCHED_DEFN
+
+SET    GVT_SCHED_STATUS    = '4'
+
+WHERE  GVT_SCHED_PREFIX    = $schedule_prefix
+AND    GVT_SCHED_STATUS    = '3'
+
+END-SQL
+
+end-procedure       !update-schedule-definition
+
+!**************************************
+begin-procedure update-schedule-control
+!**************************************
+
+BEGIN-SQL
+
+UPDATE PS_GVT_SCHED_CNTRL
+
+SET    GVT_SPS_CNTRL_NUM   = $control_number
+
+WHERE  GVT_SCHED_PREFIX    = $schedule_prefix
+AND    GVT_SCHED_CODE      = $schedule_code
+AND    GVT_SCHED_SEQ       = #schedule_seq_no
+
+END-SQL
+
+end-procedure       !update-schedule-control
+
+!************************************
+begin-procedure insert-extract-detail
+!************************************
+
+do find-seq-count
+
+if &seq_count > 0
+   do find-max-seq
+   let #ext_seq_no = #ext_seq_no + 1
+else
+   let #ext_seq_no = 1
+end-if
+
+if $extract_note = ''
+   let $extract_note = ' '
+end-if
+
+begin-sql ON-ERROR=SQL-ERROR
+
+INSERT INTO PS_GVT_SCHED_EXDTL (GVT_SCHED_PREFIX,
+                                GVT_SCHED_CODE,
+                                GVT_SCHED_SEQ,
+                                GVT_EXT_SEQ_NO,
+                                GVT_ECS_GEN_DT,
+                                GVT_EXT_NOTE)
+                        VALUES ($schedule_prefix,
+                                $schedule_code,
+                                #schedule_seq_no,
+                                #ext_seq_no,
+                                $AsOfToday,
+                                $extract_note)
+
+end-sql
+
+end-procedure        !insert-extract-detail
+
+!*****************************
+begin-procedure find-seq-count
+!*****************************
+begin-select
+
+COUNT(*) &seq_count
+
+FROM  PS_GVT_SCHED_EXDTL ED
+WHERE ED.GVT_SCHED_PREFIX = &RCC.GVT_SCHED_PREFIX
+AND   ED.GVT_SCHED_CODE   = &RCC.GVT_SCHED_CODE
+AND   ED.GVT_SCHED_SEQ    = &RCC.GVT_SCHED_SEQ
+
+end-select
+
+end-procedure        !find-seq-count
+
+!***************************
+begin-procedure find-max-seq
+!***************************
+begin-select
+
+MAX(ED.GVT_EXT_SEQ_NO)  &sequence
+
+   let #ext_seq_no  = &sequence
+
+FROM  PS_GVT_SCHED_EXDTL ED
+WHERE ED.GVT_SCHED_PREFIX = &RCC.GVT_SCHED_PREFIX
+AND   ED.GVT_SCHED_CODE   = &RCC.GVT_SCHED_CODE
+AND   ED.GVT_SCHED_SEQ    = &RCC.GVT_SCHED_SEQ
+
+end-select
+
+end-procedure        !find-extract-seq
+
+!**********************************
+begin-procedure print-schedule-info
+!**********************************
+
+let #payment_recs   = to_number($payment_recs)
+let #payment_tot    = to_number($payment_tot)
+divide 100 into #payment_tot
+
+do get-schedule-code-XLAT
+
+print $company          (+1,2)
+print $schedule_prefix  (,12)
+print $code_name        (,27)
+print #schedule_seq_no  (,48) edit bb9
+print #payment_recs     (,68) edit 99,999,999
+print #payment_tot      (,+3) edit 9,999,999,999,999.99
+print $file_name        (,+2)
+
+end-procedure        !print-schedule-info
+
+!*************************************
+begin-procedure get-schedule-code-XLAT
+!*************************************
+
+begin-select
+XLAT.FIELDNAME
+XLAT.FIELDVALUE
+
+   let $FieldName  = &XLAT.FIELDNAME
+   let $FieldValue = &XLAT.FIELDVALUE
+   do Read-Translate-Table
+   let $xlat_name  = rtrim(upper($XlatShortName), ' ')
+   let $code_name  = $FieldValue || '-' || $xlat_Name
+
+FROM  PSXLATITEM XLAT
+WHERE XLAT.FIELDNAME   = 'GVT_SCHED_CODE'
+AND   XLAT.FIELDVALUE  = &RCC.GVT_SCHED_CODE
+AND   XLAT.EFFDT       = (SELECT MAX(EFFDT)
+                          FROM  PSXLATITEM XLAT1
+                          WHERE XLAT1.FIELDNAME   = XLAT.FIELDNAME
+                          AND   XLAT1.FIELDVALUE  = XLAT.FIELDVALUE
+                          AND   XLAT1.EFFDT       <= $AsOfToday)
+AND   XLAT.EFF_STATUS  = 'A'
+
+end-select
+
+end-procedure        !get-schedule-code-XLAT
+
+!***************************************
+begin-procedure get-schedule-status-XLAT
+!***************************************
+
+begin-select
+XLATS.FIELDNAME
+XLATS.FIELDVALUE
+
+   let $FieldName   = &XLATS.FIELDNAME
+   let $FieldValue  = &XLATS.FIELDVALUE
+   do Read-Translate-Table
+   let $status_name = rtrim($XlatLongName, ' ')
+
+FROM  PSXLATITEM XLATS
+WHERE XLATS.FIELDNAME   = 'GVT_SCHED_STATUS'
+AND   XLATS.FIELDVALUE  = &RCP.GVT_SCHED_STATUS
+AND   XLATS.EFFDT       = (SELECT MAX(EFFDT)
+                          FROM  PSXLATITEM XLATS1
+                          WHERE XLATS1.FIELDNAME   = XLATS.FIELDNAME
+                          AND   XLATS1.FIELDVALUE  = XLATS.FIELDVALUE
+                          AND   XLATS1.EFFDT       <= $AsOfToday)
+AND   XLATS.EFF_STATUS  = 'A'
+
+end-select
+
+end-procedure        !get-schedule-status-XLAT
+
+!*********************************
+begin-procedure Delete-Run-Control
+!*********************************
+
+begin-sql
+
+   DELETE FROM PS_RUNCTL_FGPY042
+   WHERE OPRID       = $Prcs_OprID
+   AND   RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+
+end-sql
+
+begin-sql
+
+   DELETE FROM PS_RC_FGPY042_SCHD
+   WHERE OPRID       = $Prcs_OprID
+   AND   RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+
+end-sql
+
+end-procedure       !Delete-Run-Control
+
+!*****************************
+begin-procedure Commit-Updates
+!*****************************
+
+do Commit-Transaction
+
+end-procedure       !Commit-Updates
+
+#Include 'reset.sqc'     !Reset printer
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'readxlat.sqc'  !Read-Translate-Table procedure
+#Include 'curdttim.sqc'  !Routines to get current date/time
+#include 'rotname1.sqc'  !Routine to reformat name
+#Include 'stdapi.sqc'    !Routines to Update Run Status
+#Include 'tranctrl.sqc'  !Commit-Transaction

@@ -1,0 +1,3078 @@
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!  GPFRPSL:  Pay-slip report (FRA)                                     *
+!                                                                      *
+!***********************************************************************
+!                                                                      *
+!                                                                             *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  30644433                                            !
+!                                                                                    *
+!***********************************************************************
+
+#include 'setenv.sqc'    !Set environment
+
+Begin-Setup
+    declare-variable
+        date    $PRD_END_DT $PRD_END_DT2 $temps3 $temps4 $tempst1 $tempst2 $tempst3 $Slice_bgndt $Slice_enddt
+        integer #GPFR_ELEMENT_ORDER #PIN_NUM #INSTANCE #RSLT_SEG_NUM2 #RSLT_SEG_NUM #EMPL_RCD #ACCOUNT_ID
+                #TMPJOBINSTANCE #i #j #pi #lastindice #Retro #Rows #swap #StoreTheIndice
+                #No_of_Rows #jstart #last_row #PRows #line_before #line_after #MaxPositiveInputs
+                #element_order #save_element_order #save_line_after #body_line #FoundLabel #RelatedLabel
+                #pin_val_company #pin_val_estabid #pin_val_obsrv #pin_val_obsrv2 #pin_val_hours #hours_edt
+                #sched_line_no #sched_min #sched_hr #pos_column #column_no #message_nbr #showrow04 #showrow06
+    end-declare
+
+#Include 'gpfrpsl.sqc'   !Printer and page-size initialization
+! JPEG design for the company's logo
+declare-image company_logo
+  type       = JPEG-FILE
+  !PLEASE CHANGE THIS LOCATION TO A PROPER LOCATION
+  source     = 'C:\TEMP\GPFRPSL.JPG'
+  image-size = (25,10)
+end-declare
+
+End-Setup
+
+#define MaxRows        800
+#define MaxRowsPI      200
+#define MaxRowsAcu     15
+#define bodyline       30
+#define maxbodyline    72
+!**********************************************************************
+
+begin-program
+        let $tempst1 = datenow()
+              let $simp_payslip = 'Y'
+  #debugd show 'SQR to print Simplified Payslip and Classic Payslip based on run control option '
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Stdapi-Term
+  do create-arrays
+  do Init-Report
+  do Security-Param
+  #debugd show '$SecurityClause = ' $SecurityClause
+  do print_count_payees
+  do select_calendar_type
+  if $caltyp_OFF_CYCLE = 'N'  
+   do print_paygroup_result
+  else
+   do print_paygroup_res_off
+  end-if
+  do print_paygroup_setup
+   !do GP-epay-Guide !if ePay installed write Guide data for each payslip
+  let #message_nbr = 20
+  do get_message_catalog
+  #debugd show $message_text $ReportID $message_key
+  do get_co_estab
+        let $tempst3 = datenow()
+        let #sumdiff_ini = #sumdiff_ini + datediff($tempst3 ,$tempst1 ,'second')
+  do Process-Main
+        let $temps3 = datenow()
+        let #sumdiff_mai = #sumdiff_mai + datediff($temps3 ,$tempst3 ,'second')
+  do GP-epay-Control !if ePay installed have a control row inserted
+  do Reset
+
+
+
+  do Stdapi-Term
+        let $tempst2 = datenow()
+        let #diff21 = datediff($tempst2 ,$tempst1 ,'second')
+        show ' '
+        show 'Temps Total  =' #diff21      edit 99,999.99 ' (sec.)'
+        show '      - Init =' #sumdiff_ini edit 99,999.99
+        show '      - Main =' #sumdiff_mai edit 99,999.99
+        show ' '
+        show 'Temps getnet =' #sumdiff_net edit 99,999.99
+        show 'Temps calend =' #sumdiff_sch edit 99,999.99
+        show 'Temps header =' #sumdiff_hdr edit 99,999.99
+        show 'Temps print H=' #sumdiff_hdp edit 99,999.99
+        show 'Temps p.i.   =' #sumdiff_pid edit 99,999.99
+        show 'Temps ern/ded=' #sumdiff_ern edit 99,999.99
+        show 'Temps sort   =' #sumdiff_bos edit 99,999.99
+        show 'Temps match  =' #sumdiff_bom edit 99,999.99
+        show 'Temps aggreg =' #sumdiff_boa edit 99,999.99
+        show 'Temps print B=' #sumdiff_prt edit 99,999.99
+        show 'Temps Footer =' #sumdiff_fot edit 99,999.99
+        show 'Temps accu   =' #sumdiff_fog edit 99,999.99
+        show 'Temps print F=' #sumdiff_fop edit 99,999.99
+        show ' '
+  let #message_nbr = 23
+  do get_message_catalog
+  show $message_text $ReportID $message_key
+
+end-program
+
+!****************************************************
+begin-procedure create-arrays
+#debugd do Fin-Debug-Msg('create-arrays')
+
+
+ ! body of the payslip, as it will be printed
+ create-array name=BODYLINES size={MaxRows}
+     field=GPFR_PYSL_B_A:char
+     field=GPFR_ELEMENT_ORDER:number
+     field=DESCR:char
+     field=INSTANCE:number
+     field=USER_FLD1:char
+     field=USER_FLD2:char
+     field=USER_FLD3:char
+     field=USER_FLD4:char
+     field=USER_FLD5:char
+     field=USER_FLD6:char
+     field=SLICE_BGN_DT:char
+     field=SLICE_END_DT:char
+        field=SLICE_BGNDT:date !simplified payslip
+     field=SLICE_ENDDT:date !simplified payslip
+     field=BASE:number
+     field=UNIT:number
+     field=RATE:number
+     field=EE_PER:number
+     field=EARN_EE:number
+     field=DED_EE:number
+     field=ER_PER:number
+     field=DED_ER:number
+     field=GPFR_RETRO_TYPE:char
+     field=GPFR_DET_INSTANCES:char
+     field=GPFR_LINES_BEFORE:number
+     field=GPFR_LINES_AFTER:number
+     field=ADJUST:char
+     field=RETRO:number
+     field=CURRENCY_CD2:char
+        field=GPFR_PIN_NUM_EE:number
+        field=GPFR_PIN_NUM_ER:number
+
+ ! setup of the payslip (GPFR_PAY_SLIP_1)
+ create-array name=BODYSETUP size={MaxRows}
+     field=GPFR_PAY_SLIP_ID:char
+     field=GPFR_PYSL_B_A:char
+     field=GPFR_ELEMENT_ORDER:number
+     field=GPFR_DESCR_TYPE:char
+     field=DESCR:char
+     field=GPFR_PIN_NUM_EE:number
+     field=GPFR_PIN_TYPE_EE:char
+     field=GPFR_PIN_NUM_ER:number
+     field=GPFR_PIN_TYPE_ER:char
+     field=GPFR_RETRO_TYPE:char
+     field=GPFR_DET_INSTANCES:char
+     field=GPFR_LINES_BEFORE:number
+     field=GPFR_LINES_AFTER:number
+
+ ! array used to manage recursivity for QSort
+ create-array name=QSort size={MaxRows}
+     field=n:number
+     field=j:number
+
+ ! positive inputs used as labels in the payslip
+ create-array name=POSITIVE_INPUTS size={MaxRowsPI}
+     field=DESCR:char
+     field=PIN_NUM:number
+     field=INSTANCE:number
+     field=CAL_ID:char
+     field=RSLT_SEG_NUM:number
+
+ ! footer of the payslip, as it will be printed
+ create-array name=ACCUMTITLE size={MaxRowsAcu}
+     field=DESCR1_FRA:char
+     field=PIN_NUM_CUR:number
+     field=PIN_NUM_YTD:number
+
+ ! footer of the payslip, as it will be printed
+ create-array name=ACCUMLINES size={MaxRowsAcu}
+     field=AMOUNT_CUR:number
+     field=AMOUNT_YTD:number
+
+end-procedure
+
+!***********************************************************************
+!  Init Report
+!***********************************************************************
+
+begin-procedure Init-Report
+#debugd do Fin-Debug-Msg('Init-Report')
+
+   move 'GPFRPSL' to $ReportID
+
+!Set default masks for French edits
+
+   alter-locale
+   money-sign-location = right
+   thousand-separator = ' '
+   decimal-separator  = ','
+   day-of-week-short  = ('D' , 'L' , 'M', 'M' , 'J' ,'V', 'S')
+   date-edit-mask = 'hh:mm'
+
+
+  do Stdapi-Init
+
+  let $language_cd      = 'FRA'
+  let $curr_language_cd = 'FRA'
+  if $PSOptions_Language_Cd <> $language_cd
+     let #RelatedLabel = 1
+  else
+     let #RelatedLabel = 0
+  end-if
+  if $prcs_process_instance = ''
+    ! no prompt
+  else
+    do Get-Values
+    do GP-epay-Init ! Initialize ePay variables
+  end-if
+
+  do Init_Printer
+
+  columns 1 10 22 34 46 58 70 82 94 106 118
+
+!
+! Reads the pay slip body setups
+!
+      let #Rows         = 0
+      let #MaxRowSetup  = 0
+
+   let $sql-statement = 'GPFRPSL.sqr,Select pay slip body setup'
+begin-select ON-ERROR=SQL-Error
+GPFR_PAY_SLIP_ID           &GPFR_PAY_SLIP_ID_1
+GPFR_PYSL_B_A              &GPFR_PYSL_B_A_1
+GPFR_ELEMENT_ORDER         &GPFR_ELEMENT_ORDER_1
+GPFR_DESCR_TYPE            &GPFR_DESCR_TYPE_1
+DESCR                      &DESCR_1
+GPFR_PIN_NUM_EE            &GPFR_PIN_NUM_EE_1
+GPFR_PIN_TYPE_EE           &GPFR_PIN_TYPE_EE_1
+GPFR_PIN_NUM_ER            &GPFR_PIN_NUM_ER_1
+GPFR_PIN_TYPE_ER           &GPFR_PIN_TYPE_ER_1
+GPFR_RETRO_TYPE            &GPFR_RETRO_TYPE_1
+GPFR_DET_INSTANCES         &GPFR_DET_INSTANCES_1
+GPFR_LINES_BEFORE          &GPFR_LINES_BEFORE_1
+GPFR_LINES_AFTER           &GPFR_LINES_AFTER_1
+      do Add_rows
+      let bodysetup.GPFR_PAY_SLIP_ID(#Rows)   = &GPFR_PAY_SLIP_ID_1
+      let bodysetup.GPFR_PYSL_B_A(#Rows)      = &GPFR_PYSL_B_A_1
+      let bodysetup.GPFR_ELEMENT_ORDER(#Rows) = &GPFR_ELEMENT_ORDER_1
+      let bodysetup.GPFR_DESCR_TYPE(#Rows)    = &GPFR_DESCR_TYPE_1
+      let bodysetup.DESCR(#Rows)              = &DESCR_1
+      let bodysetup.GPFR_PIN_NUM_EE(#Rows)    = &GPFR_PIN_NUM_EE_1
+      let bodysetup.GPFR_PIN_TYPE_EE(#Rows)   = &GPFR_PIN_TYPE_EE_1
+      let bodysetup.GPFR_PIN_NUM_ER(#Rows)    = &GPFR_PIN_NUM_ER_1
+      let bodysetup.GPFR_PIN_TYPE_ER(#Rows)   = &GPFR_PIN_TYPE_ER_1
+      let bodysetup.GPFR_RETRO_TYPE(#Rows)    = &GPFR_RETRO_TYPE_1
+      let bodysetup.GPFR_DET_INSTANCES(#Rows) = &GPFR_DET_INSTANCES_1
+      let bodysetup.GPFR_LINES_BEFORE(#Rows)  = &GPFR_LINES_BEFORE_1
+      let bodysetup.GPFR_LINES_AFTER(#Rows)   = &GPFR_LINES_AFTER_1
+FROM     PS_GPFR_PAY_SLIP_1
+ORDER BY GPFR_PAY_SLIP_ID ASC, GPFR_PYSL_B_A DESC, GPFR_ELEMENT_ORDER ASC
+end-select
+   let #MaxRowSetup = #Rows
+!
+! Reads the payslip body setup related-language
+!
+   let $sql-statement = 'GPFRPSL.sqr,Select pay slip body setup related-lang.'
+begin-select ON-ERROR=SQL-Error
+GPFR_PAY_SLIP_ID                 &GPFR_PAY_SLIP_ID_2
+GPFR_PYSL_B_A                    &GPFR_PYSL_B_A_2
+GPFR_ELEMENT_ORDER               &GPFR_ELEMENT_ORDER_2
+DESCR                    &DESCR_2
+
+     let #Rows = 1
+         while #Rows <= #MaxRowSetup
+            if bodysetup.GPFR_PAY_SLIP_ID(#Rows)   = &GPFR_PAY_SLIP_ID_2 and
+               bodysetup.GPFR_PYSL_B_A(#Rows)      = &GPFR_PYSL_B_A_2    and
+               bodysetup.GPFR_ELEMENT_ORDER(#Rows) = &GPFR_ELEMENT_ORDER_2
+                        let bodysetup.DESCR(#Rows) = &DESCR_2
+            end-if
+            add 1 to #Rows
+         end-while
+
+FROM PS_GPFR_PS1_LNG
+WHERE LANGUAGE_CD = $language_cd
+
+end-select
+
+!
+! Reads description from GP_PIN and GP_PIN_LANG
+!
+     let #Rows = 1
+         while #Rows <= #MaxRowSetup
+             ! description from Employee element
+             if bodysetup.GPFR_DESCR_TYPE(#Rows) = 'EE'
+                    let #pin = bodysetup.GPFR_PIN_NUM_EE(#Rows)
+                    do GetPinDescr(#pin, $descr)
+                        let bodysetup.DESCR(#Rows) = $descr
+             end-if
+             ! description from Employee element
+             if bodysetup.GPFR_DESCR_TYPE(#Rows) = 'ER'
+                    let #pin = bodysetup.GPFR_PIN_NUM_ER(#Rows)
+                    do GetPinDescr(#pin, $descr)
+                        let bodysetup.DESCR(#Rows) = $descr
+             end-if
+             add 1 to #Rows
+         end-while
+
+     let #Rows = 0
+
+end-procedure
+
+!***********************************************************************
+! Function:    print_count_payees                                      *
+!***********************************************************************
+begin-procedure print_count_payees
+#debugd do Fin-Debug-Msg('print_count_payees')
+
+   let $quote = ''''
+   let #message_nbr=4
+   do get_message_catalog
+   show $message_text $quote $prcs_run_cntl_id $quote ', ' $quote $calrunid $quote $message_key
+
+   let $sql-statement = 'GPFRPSL.sqr,Select count temporary guide table'
+begin-select ON-ERROR=SQL-Error
+
+count(*)           &no_of_recs
+
+     let #message_nbr=1
+     do get_message_catalog
+     show $message_text &no_of_recs $message_key
+
+ FROM PS_GPFR_P_SLIP_TMP tmp
+   WHERE tmp.CAL_RUN_ID  =  $calrunid
+     AND  OPRID = $prcs_oprid
+     AND RUN_CNTL_ID = $prcs_run_cntl_id
+     AND EXISTS (SELECT 'X' FROM PS_FAST_SQRFUT_SEC SCRTY WHERE SCRTY.EMPLID = tmp.EMPLID [$SecurityClause])
+
+end-select
+
+end-procedure
+
+!***********************************************************************
+! Function:    GetPinDescr                                             *
+!***********************************************************************
+begin-procedure GetPinDescr(#pin, :$descr)
+#debugd do Fin-Debug-Msg('GetPinDescr')
+
+   let $descr = ''
+   if #RelatedLabel = 1
+   let $sql-statement = 'GPFRPSL.sqr,Select element description rel-lang.'
+begin-select ON-ERROR=SQL-Error
+DESCR               &DESCR_PIN_LNG
+   let $descr     = &DESCR_PIN_LNG
+FROM PS_GP_PIN_LANG
+WHERE PIN_NUM     = #pin
+  AND LANGUAGE_CD = $_language_cd
+end-select
+   end-if
+
+   if $descr = ''
+   let $sql-statement = 'GPFRPSL.sqr,Select element description'
+begin-select ON-ERROR=SQL-Error
+DESCR               &DESCR_PIN
+   let $descr     = &DESCR_PIN
+FROM PS_GP_PIN
+WHERE PIN_NUM     = #pin
+end-select
+   end-if
+
+end-procedure
+
+!***********************************************************************
+! Function:    select_calendar_type                                    *
+!***********************************************************************
+begin-procedure select_calendar_type
+#debugd do Fin-Debug-Msg('select_calendar_type')
+
+   let $caltyp_OFF_CYCLE = 'N'
+   let $sql-statement = 'GPFRPSL.sqr,Select Calendar Type'
+begin-select ON-ERROR=SQL-Error
+DISTINCT caltyp.OFF_CYCLE &caltyp.OFF_CYCLE
+
+   let $caltyp_OFF_CYCLE = 'N'
+   #debugd show 'Offcycle calendar group ' &caltyp.OFF_CYCLE
+
+  FROM   PS_GP_CAL_RUN caltyp
+ WHERE   caltyp.CAL_RUN_ID = $calrunid
+end-select
+
+end-procedure
+
+!***********************************************************************
+! Function:    print_paygroup_result                                   *
+!***********************************************************************
+begin-procedure print_paygroup_result
+#debugd do Fin-Debug-Msg('print_paygroup_result')
+
+   let #logprc_GP_PAYGROUP = 0
+   #debugd show 'paygp results' $calrunid 
+   let $sql-statement = 'GPFRPSL.sqr,Select paygroup result'
+begin-select ON-ERROR=SQL-Error
+DISTINCT logprc.GP_PAYGROUP &logprc.GP_PAYGROUP
+   let #logprc_GP_PAYGROUP = #logprc_GP_PAYGROUP + 1
+   
+   #debugd show 'Paygp found ' #logprc_GP_PAYGROUP
+   let #message_nbr=5
+   do get_message_catalog
+   #debugd show $message_text &logprc.GP_PAYGROUP $message_key
+  FROM   PS_GP_CAL_RUN_DTL logprc
+ WHERE   logprc.CAL_RUN_ID = $calrunid
+end-select
+
+   if #logprc_GP_PAYGROUP = 0
+      let #message_nbr=5
+      do get_message_catalog
+      show 'paygp results' $calrunid ' ' $message_text '**ZERO**' $message_key
+   end-if
+   show ' '
+
+end-procedure
+
+!***********************************************************************
+! Function:    print_paygroup_res_off                                   *
+!***********************************************************************
+begin-procedure print_paygroup_res_off
+#debugd do Fin-Debug-Msg('print_paygroup_res_off')
+
+   let #logoff_GP_PAYGROUP = 0
+   let $sql-statement = 'GPFRPSL.sqr,Select paygroup result off'
+begin-select ON-ERROR=SQL-Error
+DISTINCT logoff.GP_PAYGROUP &logoff.GP_PAYGROUP
+   let #logoff_GP_PAYGROUP = #logoff_GP_PAYGROUP + 1
+   let #message_nbr=5
+   do get_message_catalog
+   show $message_text &logoff.GP_PAYGROUP $message_key
+  FROM   PS_GP_CAL_RUN_OFF logoff
+ WHERE   logoff.CAL_RUN_ID = $calrunid
+end-select
+
+   if #logoff_GP_PAYGROUP = 0
+      let #message_nbr=5
+      do get_message_catalog
+      show 'Offcycle Paygp ' $message_text '**ZERO**' $message_key
+   end-if
+   show ' '
+
+end-procedure
+
+!***********************************************************************
+! Function:    print_paygroup_setup                                    *
+!***********************************************************************
+begin-procedure print_paygroup_setup
+#debugd do Fin-Debug-Msg('print_paygroup_setup')
+
+   let $sql-statement = 'GPFRPSL.sqr,Select paygroup setup'
+begin-select ON-ERROR=SQL-Error
+DISTINCT logsetup.GP_PAYGROUP &logsetup.GP_PAYGROUP
+         let #message_nbr=6
+         do get_message_catalog
+         show $message_text &logsetup.GP_PAYGROUP $message_key
+ FROM    PS_GPFR_P_SLIP_GRP logsetup
+end-select
+
+end-procedure
+
+!***********************************************************************
+! Function:    Get-Values                                              *
+!                                                                      *
+! Description: Load parameters from run control                        *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get-Values
+#debugd do Fin-Debug-Msg('Get-Values')
+
+!
+! retrieves data from the run control
+!
+   let $sql-statement = 'GPFRPSL.sqr,Select run control'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.CAL_RUN_ID      &calrunid
+A.GPFR_PSLP_OPTION &spslp_option
+
+  let $calrunid = &calrunid
+  let $payslip_option = &spslp_option
+  
+  #debugd show '$payslip_option ' $payslip_option
+
+FROM PS_GPFR_RUNCTL_PSL A
+ WHERE A.OPRID = $prcs_oprid
+   AND A.RUN_CNTL_ID = $prcs_run_cntl_id
+
+END-SELECT
+
+end-procedure
+
+!****************************************************
+begin-procedure get_co_estab
+#debugd do Fin-Debug-Msg('get_co_estab')
+
+   let $sql-statement = 'GPFRPSL.sqr,Select,get_co_estab'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.PIN_NUM               &pin_num_1
+A.GPFR_ILL_ROW_ID       &gpfr_pin_codif
+
+     #debugd show 'emplid: ' $EMPLID 
+     #debugd show 'GPFR_ILL_ROWPIN: &pin_num_1=' &pin_num_1 ',  &gpfr_pin_codif=' &gpfr_pin_codif
+
+!    Element that contains the company code
+  if &gpfr_pin_codif  = '50'
+    let #pin_val_company = &pin_num_1
+  end-if
+
+!    Element that contains the establishment code
+  if &gpfr_pin_codif  = '51'
+    let #pin_val_estabid = &pin_num_1
+  end-if
+
+!    Element that contains the payslip abservation code
+  if &gpfr_pin_codif  = '52'
+    let #pin_val_obsrv   = &pin_num_1
+  end-if
+
+!    Element that contains the annex observation code
+  if &gpfr_pin_codif  = '53'
+    let #pin_val_obsrv2  = &pin_num_1
+  end-if
+
+!    Element that contains the hours number
+  if &gpfr_pin_codif  = '57'
+    let #pin_val_hours  = &pin_num_1
+  end-if
+
+FROM   PS_GPFR_ILL_ROWPIN A
+  WHERE  A.GPFR_ROW_NUM = 0
+    AND  A.GPFR_ILL_ROW_ID in ('50', '51', '52', '53', '57')
+
+END-SELECT
+
+end-procedure
+!***********************************************************************
+! Function:    Process-Main                                            *
+!                                                                      *
+! Description: Start point of the report                               *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Process-Main
+#debugd do Fin-Debug-Msg('Process-Main')
+
+   let $sql-statement = 'GPFRPSL.sqr,Select,Process-Main'
+BEGIN-SELECT ON-ERROR=SQL-Error  LOOPS = 1
+
+tmp.GP_PAYGROUP         &TMP_GP_PAYGROUP
+tmp.GPFR_PAY_SLIP_ID    &TMP_GPFR_PAY_SLIP_ID
+A.GPFR_PYSL_SK1_AD      &GPFR_PYSL_SK1_AD
+A.GPFR_PYSL_SK2_AD      &GPFR_PYSL_SK2_AD
+A.GPFR_PYSL_SK3_AD      &GPFR_PYSL_SK3_AD
+A.GPFR_PYSL_SK4_AD      &GPFR_PYSL_SK4_AD
+A.GPFR_PYSL_SK5_AD      &GPFR_PYSL_SK5_AD
+
+
+
+    let #TMPJOBINSTANCE = #prcs_job_instance !Simplified Payslip
+       ! let #TMPJOBINSTANCE = 138287 
+    Show 'Job Instance = ' #TMPJOBINSTANCE
+    
+    Let $fra_mob_pslp = 'N' 
+    do chk_mobile_payslip($calrunid, #TMPJOBINSTANCE) !Mobile payslip is available only for simplified payslip. Hence, the data from simplified payslip is inserted into the mobile payslip records.
+    
+    do get_tmp
+    
+
+
+FROM PS_GPFR_P_SLIP_TMP tmp,
+     PS_GPFR_P_SLIP_SK  A
+    WHERE tmp.CAL_RUN_ID =  $calrunid
+    AND tmp.OPRID = $prcs_oprid
+    AND tmp.RUN_CNTL_ID = $prcs_run_cntl_id
+    AND tmp.GPFR_PAY_SLIP_ID = A.GPFR_PAY_SLIP_ID
+
+ORDER BY tmp.GPFR_PAY_SLIP_ID
+
+END-SELECT
+
+do simp_payslip_grouped(#TMPJOBINSTANCE, $PAYSLIPID, $seg_beg_date, $seg_end_date)!Simplified Payslip body grouped
+!do mobile_payslip($calrunid, #TMPJOBINSTANCE) !Mobile payslip is available only for simplified payslip. Hence, the data from simplified payslip is inserted into the mobile payslip records.
+
+
+end-procedure
+!*****************************************************************
+
+begin-procedure get_tmp
+#debugd do Fin-Debug-Msg('get_tmp')
+
+   let $sql-statement = 'GPFRPSL.sqr,Select,get_tmp'
+BEGIN-SELECT ON-ERROR=SQL-Error
+
+tmp.GPFR_PYSL_SKEY1           &TMP_GPFR_PYSL_SKEY1
+tmp.GPFR_PYSL_SKEY2           &TMP_GPFR_PYSL_SKEY2
+tmp.GPFR_PYSL_SKEY3           &TMP_GPFR_PYSL_SKEY3
+tmp.GPFR_PYSL_SKEY4           &TMP_GPFR_PYSL_SKEY4
+tmp.GPFR_PYSL_SKEY5           &TMP_GPFR_PYSL_SKEY5
+tmp.EMPLID                    &EMPLID
+tmp.EMPL_RCD                  &EMPL_RCD
+tmp.GP_PAYGROUP               &GP_PAYGROUP
+tmp.CAL_ID                    &CAL_ID
+tmp.RSLT_SEG_NUM              &RSLT_SEG_NUM
+tmp.SEG_BGN_DT                &seg_bgn_dt
+tmp.SEG_END_DT                &seg_end_dt
+tmp.PYMT_DT                   &pymt_dt
+tmp.PIN_NET_VAL               &pin_net_val
+tmp.PYMT_KEY1                 &pymt_key1
+tmp.PYMT_KEY2                 &pymt_key2
+tmp.PYMT_KEY3                 &pymt_key3
+tmp.PYMT_KEY4                 &pymt_key4
+tmp.GPFR_PAY_SLIP_ID          &GPFR_PAY_SLIP_ID
+tmp.PYE_CALC_STAT             &PYE_CALC_STAT
+tmp.CURRENCY_CD               &CURRENCY_CD
+tmp.PRD_END_DT                &PRD_END_DT
+      let $EMPLID         = &EMPLID
+      let #EMPL_RCD       = &EMPL_RCD
+      let $GP_PAYGROUP    = &GP_PAYGROUP
+      let $CAL_ID         = &CAL_ID
+      let #RSLT_SEG_NUM   = &RSLT_SEG_NUM
+      let $seg_beg_date   = &seg_bgn_dt
+      let $seg_end_date   = &seg_end_dt
+      let $seg_end_date_2 = dateadd(&seg_end_dt, 'month', 2)
+      let $PYMT_DT        = &pymt_dt
+      let $_PYMT_DT        = &pymt_dt   
+      do Format-DateTime($pymt_dt, $pymt_dt_out, {DEFDMY}, '', '')
+      let #pin_net_val    = &pin_net_val
+      let $PAYSLIPID      = &GPFR_PAY_SLIP_ID
+      let $PYMT_KEY1      = &pymt_key1
+      let $PYMT_KEY2      = &pymt_key2
+      let $PYMT_KEY3      = &pymt_key3
+      let $PYMT_KEY4      = &pymt_key4
+      let $PYE_CALC_STAT  = &PYE_CALC_STAT
+      let $PRD_END_DT     = dateadd(&PRD_END_DT, 'day', 1)
+      let $PRD_END_DT2    = dateadd($PRD_END_DT, 'month', 2)
+      let $PRD_END_DT3    = dateadd($PRD_END_DT2, 'day', -1)
+         let $work_sched     = ' '
+         let $payment_info   = ' '
+         let $bank_info      = ' '
+         let #net_info       = 0
+         let $observation_info = ' '
+         let $observation      = ' '
+         
+      alter-locale
+      money-sign = &CURRENCY_CD
+      do mainline_rslt
+   do GP-epay-Guide !epay
+   
+  
+ FROM PS_GPFR_P_SLIP_TMP tmp
+   WHERE tmp.CAL_RUN_ID =  $calrunid
+     AND tmp.JOBINSTANCE = #TMPJOBINSTANCE
+
+
+     AND EXISTS (SELECT 'X' FROM PS_FAST_SQRFUT_SEC SCRTY WHERE SCRTY.EMPLID = tmp.EMPLID [$SecurityClause])
+ ORDER BY  tmp.GPFR_PYSL_SKEY1 [&GPFR_PYSL_SK1_AD],
+           tmp.GPFR_PYSL_SKEY2 [&GPFR_PYSL_SK2_AD],
+           tmp.GPFR_PYSL_SKEY3 [&GPFR_PYSL_SK3_AD],
+           tmp.GPFR_PYSL_SKEY4 [&GPFR_PYSL_SK4_AD],
+           tmp.GPFR_PYSL_SKEY5 [&GPFR_PYSL_SK5_AD],
+           tmp.EMPLID,
+           tmp.EMPL_RCD
+END-SELECT
+end-procedure
+
+!********************************************************************
+! Addition of a step that reads the descriptions from
+! positive inputs at employee level
+!********************************************************************
+begin-procedure get_pinput_descrs
+#debugd do Fin-Debug-Msg('get_pinput_descrs')
+
+!
+! Reads descriptions coming from positive inputs
+!
+   let #MaxPositiveInputs = 0
+   let $sql-statement = 'GPFRPSL.sqr,Select descriptions from positive inputs'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.PIN_NUM                                   &PIN_NUM_PI
+A.INSTANCE                                  &INSTANCE_PI
+A.CAL_ID                                    &CAL_ID_PI
+A.RSLT_SEG_NUM                              &RSLT_SEG_NUM_PI
+A.DESCR                                     &DESCR_PI
+   add 1 to #MaxPositiveInputs
+   let positive_inputs.DESCR(#MaxPositiveInputs)        = &DESCR_PI
+   let positive_inputs.PIN_NUM(#MaxPositiveInputs)      = &PIN_NUM_PI
+   let positive_inputs.INSTANCE(#MaxPositiveInputs)     = &INSTANCE_PI
+   let positive_inputs.CAL_ID(#MaxPositiveInputs)       = &CAL_ID_PI
+   let positive_inputs.RSLT_SEG_NUM(#MaxPositiveInputs) = &RSLT_SEG_NUM_PI
+FROM PS_GP_RSLT_PI_DATA A
+WHERE A.EMPLID          =   $EMPLID
+AND   A.CAL_RUN_ID      =   $calrunid
+AND   A.EMPL_RCD        =   #EMPL_RCD
+AND   A.GP_PAYGROUP     =   $GP_PAYGROUP
+AND   A.DESCR           <>  ' '
+AND   EXISTS (SELECT 'X' FROM PS_GPFR_PS_PIN_TMP B
+               WHERE B.JOBINSTANCE = #TMPJOBINSTANCE
+                 AND B.GP_PAYGROUP = A.GP_PAYGROUP
+                 AND B.PIN_NUM     = A.PIN_NUM )
+END-SELECT
+
+end-procedure
+
+!********************************************************************
+begin-procedure mainline_rslt
+#debugd do Fin-Debug-Msg('mainline_rslt')
+
+          let $temps3 = datenow()
+      do  get_net_val
+          let $temps4 = datenow()
+          let #sumdiff_net = #sumdiff_net + datediff($temps4 ,$temps3 ,'second')
+      do  get_schedule
+          let $temps3 = datenow()
+          let #sumdiff_sch = #sumdiff_sch + datediff($temps3 ,$temps4 ,'second')
+      do  get_heading_info
+          let $temps4 = datenow()
+          let #sumdiff_hdr = #sumdiff_hdr + datediff($temps4 ,$temps3 ,'second')
+                
+    if $payslip_option = 'C'                
+     do  print_body_heading
+        else
+        do  store_body_heading
+         if $payslip_option = 'B'                
+      do  print_body_heading
+         end-if
+       end-if
+          let $temps3 = datenow()
+          let #sumdiff_hdp = #sumdiff_hdp + datediff($temps3 ,$temps4 ,'second')
+      clear-array name=bodylines
+      let #Rows = 0
+      let #save_element_order  = 0
+         
+         !do update_smpl_pslp_hdr
+         
+      do  get_pinput_descrs
+          let $temps4 = datenow()
+          let #sumdiff_pid = #sumdiff_pid + datediff($temps4 ,$temps3 ,'second')
+      do  get_gp_rslt_ern_ded
+          let $temps3 = datenow()
+          let #sumdiff_ern = #sumdiff_ern + datediff($temps3 ,$temps4 ,'second')
+      let #No_of_Rows = #Rows
+      do  sort_body
+          let $temps4 = datenow()
+          let #sumdiff_bos = #sumdiff_bos + datediff($temps4 ,$temps3 ,'second')
+      do  match_body
+          let $temps3 = datenow()
+          let #sumdiff_bom = #sumdiff_bom + datediff($temps3 ,$temps4 ,'second')
+      do  aggregate_body
+          let $temps4 = datenow()
+          let #sumdiff_boa = #sumdiff_boa + datediff($temps4 ,$temps3 ,'second')
+      let #body_line = {bodyline}
+         
+       if  $payslip_option = 'C'
+      do  print_pay_slip
+       else
+          do  store_pay_slip
+          if $payslip_option = 'B'                
+       do  print_pay_slip
+          end-if
+       end-if
+          let $temps3 = datenow()
+          let #sumdiff_prt = #sumdiff_prt + datediff($temps3 ,$temps4 ,'second')
+    if $payslip_option = 'C'   
+       do  print_footing_desc
+       else
+       do store_footing_desc
+         if $payslip_option = 'B'                
+      do  print_footing_desc
+         end-if
+       end-if
+       
+          let $temps4 = datenow()
+          let #sumdiff_fot = #sumdiff_fot + datediff($temps4 ,$temps3 ,'second')
+      do  get_footing
+          let $temps3 = datenow()
+          let #sumdiff_fog = #sumdiff_fog + datediff($temps3 ,$temps4 ,'second')
+    
+    if $payslip_option = 'C'
+       do  print_accums
+       else
+       do  store_accums
+         if $payslip_option = 'B'                
+      do  print_accums
+         end-if
+       end-if
+       
+   !do GP-epay-Guide
+      let $SAVE_PYSL_B_A = $null
+         
+         if $payslip_option = 'C' or  $payslip_option = 'B'
+      new-page
+         end-if
+         
+          let $temps4 = datenow()
+          let #sumdiff_fop = #sumdiff_fop + datediff($temps4 ,$temps3 ,'second')
+end-procedure
+
+!****************************************************************************
+! Get Element description from Positive Input
+!
+!****************************************************************************
+begin-procedure get_pi_descr
+#debugd do Fin-Debug-Msg('get_pi_descr')
+
+   let $pi_descr=' '
+   let #pi = 1
+   while #pi <= #MaxPositiveInputs
+      if  positive_inputs.PIN_NUM(#pi)      = #PIN_NUM
+      and positive_inputs.INSTANCE(#pi)     = #INSTANCE
+      and positive_inputs.CAL_ID(#pi)       = $SRC_CAL_ID
+      and positive_inputs.RSLT_SEG_NUM(#pi) = #RSLT_SEG_NUM2
+         let $pi_descr = positive_inputs.DESCR(#pi)
+         break
+      end-if
+      add 1 to #pi
+   end-while
+end-procedure
+
+!**********************************************************************
+begin-procedure get_gp_rslt_ern_ded
+#debugd do Fin-Debug-Msg('get_gp_rslt_ern_ded')
+
+#debugd show '#TMPJOBINSTANCE: ' #TMPJOBINSTANCE ', $EMPLID: ' $EMPLID ', $calrunid: ' $calrunid ', #EMPL_RCD: ' #EMPL_RCD ', $GP_PAYGROUP: ' $GP_PAYGROUP
+#debugd show ', $CAL_ID: ' $CAL_ID ', #RSLT_SEG_NUM: ' #RSLT_SEG_NUM
+
+
+   let #lastindice = 1
+   let $sql-statement = 'GPFRPSL.sqr,Select,get_gp_rslt_ern_ded'
+BEGIN-SELECT ON-ERROR=SQL-Error
+V.GPFR_PAY_SLIP_ID
+V.GPFR_PYSL_B_A
+V.GPFR_ELEMENT_ORDER
+V.PIN_NUM
+V.INSTANCE
+V.DESCR15
+V.CURRENCY_CD2
+V.CURRENCY_CD
+{DATETIMEOUT-PREFIX}V.SLICE_BGN_DT{DATETIMEOUT-SUFFIX} &V.SLICE_BGN_DT
+{DATETIMEOUT-PREFIX}V.SLICE_END_DT{DATETIMEOUT-SUFFIX} &V.SLICE_END_DT
+V.SLICE_BGN_DT   &V.SLICE_BGN_Date
+V.SLICE_END_DT   &V.SLICE_END_Date
+V.USER_FLD1
+V.USER_FLD2
+V.USER_FLD3
+V.USER_FLD4
+V.USER_FLD5
+V.USER_FLD6
+SUM(V.CALC_RSLT_VAL)                                   &V.CALC_RSLT_VAL
+SUM(V.BASE_RSLT_VAL)                                   &V.BASE_RSLT_VAL
+V.RATE_RSLT_VAL
+SUM(V.UNIT_RSLT_VAL)                                   &V.UNIT_RSLT_VAL
+V.PCT_RSLT_VAL
+V.SRC_CAL_ID
+V.RSLT_SEG_NUM2
+        let $GPFR_PAY_SLIP_ID   =    &V.GPFR_PAY_SLIP_ID
+        let $GPFR_PYSL_B_A      =    &V.GPFR_PYSL_B_A
+        let #GPFR_ELEMENT_ORDER =    &V.GPFR_ELEMENT_ORDER
+        let #PIN_NUM            =    &V.PIN_NUM
+        let #INSTANCE           =    &V.INSTANCE
+        let $USER_FLD1          =    &V.USER_FLD1
+        let $USER_FLD2          =    &V.USER_FLD2
+        let $USER_FLD3          =    &V.USER_FLD3
+        let $USER_FLD4          =    &V.USER_FLD4
+        let $USER_FLD5          =    &V.USER_FLD5
+        let $USER_FLD6          =    &V.USER_FLD6
+        Do Format-DateTime(&V.SLICE_BGN_DT, $SLICE_BGN_DT, {DEFCMP},'','')
+        Do Format-DateTime(&V.SLICE_END_DT, $SLICE_END_DT, {DEFCMP},'','')
+              
+              let $Slice_bgndt= &V.SLICE_BGN_Date  !simplified payslip
+              let $Slice_enddt = &V.SLICE_END_Date !simplified payslip
+              
+              #debugd show ' Slice_bgndt ' $Slice_bgndt '  Slice_enddt ' $Slice_enddt
+
+              
+        let #EARN_DED           =    &V.CALC_RSLT_VAL
+        let #BASE               =    &V.BASE_RSLT_VAL
+        let #RATE               =    &V.RATE_RSLT_VAL
+        let #UNIT               =    &V.UNIT_RSLT_VAL
+        let #PERCENT            =    &V.PCT_RSLT_VAL
+        let $CURRENCY_CD        =    rtrim(&V.CURRENCY_CD, ' ')
+        let $CURRENCY_CD2       =    rtrim(&V.CURRENCY_CD2, ' ')
+        let $SRC_CAL_ID         =    &V.SRC_CAL_ID
+        let #RSLT_SEG_NUM2      =    &V.RSLT_SEG_NUM2
+        let $DESCR15            =    rtrim(&V.DESCR15, ' ')
+        if $DESCR15 = 'CURRENT'
+           let #Retro           =    0
+        else
+           let #Retro           =    1
+        end-if
+              #debugd show 'Get Ern Ded ' $GPFR_PAY_SLIP_ID '   '  $GPFR_PYSL_B_A  '     ' #PIN_NUM  '     '#INSTANCE  
+        do get_ee_er_values
+FROM PS_GPFR_PS_ERN_TMP V
+WHERE V.JOBINSTANCE      =   #TMPJOBINSTANCE
+AND   V.EMPLID           =   $EMPLID
+AND   V.CAL_RUN_ID       =   $calrunid
+AND   V.EMPL_RCD         =   #EMPL_RCD
+AND   V.GP_PAYGROUP      =   $GP_PAYGROUP
+AND   V.CAL_ID           =   $CAL_ID
+AND   V.RSLT_SEG_NUM     =   #RSLT_SEG_NUM
+GROUP BY V.GPFR_PAY_SLIP_ID, V.GPFR_PYSL_B_A, V.GPFR_ELEMENT_ORDER, V.PIN_NUM, V.DESCR15,
+         V.CURRENCY_CD2, V.CURRENCY_CD, V.SLICE_BGN_DT, V.SLICE_END_DT, V.USER_FLD1,V.USER_FLD2,V.USER_FLD3,V.USER_FLD4,V.USER_FLD5,V.USER_FLD6,V.INSTANCE, V.RATE_RSLT_VAL,
+         V.PCT_RSLT_VAL, V.SRC_CAL_ID, V.RSLT_SEG_NUM2
+ORDER BY V.GPFR_PAY_SLIP_ID ASC, V.GPFR_PYSL_B_A DESC, V.GPFR_ELEMENT_ORDER ASC,
+         V.PIN_NUM, V.DESCR15, V.CURRENCY_CD2, V.SLICE_BGN_DT, V.SLICE_END_DT, V.USER_FLD1,V.USER_FLD2,V.USER_FLD3,V.USER_FLD4,V.USER_FLD5,V.USER_FLD6,V.INSTANCE
+END-SELECT
+end-procedure
+
+!*****************************************************************************
+! Get values for Employee and Employer portions
+!
+!*****************************************************************************
+begin-procedure get_ee_er_values
+#debugd do Fin-Debug-Msg('get_ee_er_values')
+
+         let    #i  = #lastindice
+         while  #i <= #MaxRowSetup
+            if  bodysetup.GPFR_PAY_SLIP_ID(#i)   <> $GPFR_PAY_SLIP_ID
+            or  bodysetup.GPFR_PYSL_B_A(#i)      <> $GPFR_PYSL_B_A
+                goto NEXTSETUP
+            end-if
+            if  bodysetup.GPFR_ELEMENT_ORDER(#i) <  #GPFR_ELEMENT_ORDER
+                goto NEXTSETUP
+            end-if
+            if  bodysetup.GPFR_ELEMENT_ORDER(#i) =  #GPFR_ELEMENT_ORDER
+                if bodysetup.GPFR_PIN_NUM_EE(#i) =  #PIN_NUM
+                   let #StoreTheIndice = 1
+                end-if
+                if bodysetup.GPFR_PIN_NUM_ER(#i) =  #PIN_NUM
+                   let #StoreTheIndice = 2
+                end-if
+                do  storebodylines
+                let #lastindice = #i
+            end-if
+            break
+            NEXTSETUP:
+            add 1 to #i
+         end-while
+end-procedure
+
+!*****************************************************************************
+! Store the values for the result (common part between employee and employer)
+!
+!*****************************************************************************
+begin-procedure storebodylines
+#debugd do Fin-Debug-Msg('storebodylines')
+
+   do Add_rows
+   let bodylines.GPFR_PYSL_B_A(#Rows)      = bodysetup.GPFR_PYSL_B_A(#i)
+   let bodylines.GPFR_ELEMENT_ORDER(#Rows) = bodysetup.GPFR_ELEMENT_ORDER(#i)
+   let bodylines.DESCR(#Rows)              = bodysetup.DESCR(#i)
+   let bodylines.GPFR_PIN_NUM_EE(#Rows)              = bodysetup.GPFR_PIN_NUM_EE(#i) !Simplified Payslip
+   let bodylines.GPFR_PIN_NUM_ER(#Rows)              = bodysetup.GPFR_PIN_NUM_ER(#i) !Simplified Payslip
+   #debugd show ' Store body lines'
+   if #MaxPositiveInputs <> 0
+      do get_pi_descr
+      if isblank($pi_descr) = 0
+         let bodylines.DESCR(#Rows)        = $pi_descr
+      end-if
+   end-if
+   let bodylines.INSTANCE(#Rows)           = #INSTANCE
+   let bodylines.USER_FLD1(#Rows)          = $USER_FLD1
+   let bodylines.USER_FLD2(#Rows)          = $USER_FLD2
+   let bodylines.USER_FLD3(#Rows)          = $USER_FLD3
+   let bodylines.USER_FLD4(#Rows)          = $USER_FLD4
+   let bodylines.USER_FLD5(#Rows)          = $USER_FLD5
+   let bodylines.USER_FLD6(#Rows)          = $USER_FLD6
+   let bodylines.SLICE_BGN_DT(#Rows)       = $SLICE_BGN_DT
+   let bodylines.SLICE_END_DT(#Rows)       = $SLICE_END_DT
+   let bodylines.SLICE_BGNDT(#Rows)        =  $Slice_bgndt !simplified payslip
+   let bodylines.SLICE_ENDDT(#Rows)        =  $Slice_enddt !simplified payslip
+   let bodylines.GPFR_LINES_BEFORE(#Rows)  = bodysetup.GPFR_LINES_BEFORE(#i)
+   let bodylines.GPFR_LINES_AFTER(#Rows)   = bodysetup.GPFR_LINES_AFTER(#i)
+   let bodylines.GPFR_RETRO_TYPE(#Rows)    = bodysetup.GPFR_RETRO_TYPE(#i)
+   let bodylines.GPFR_DET_INSTANCES(#Rows) = bodysetup.GPFR_DET_INSTANCES(#i)
+   let bodylines.BASE(#Rows)               = #BASE
+   let bodylines.RATE(#Rows)               = #RATE
+   let bodylines.UNIT(#Rows)               = #UNIT
+   let bodylines.RETRO(#Rows)              = #Retro
+   if   bodylines.GPFR_RETRO_TYPE(#Rows)   = '30'
+   or ( bodylines.GPFR_RETRO_TYPE(#Rows)   = '20' and bodylines.RETRO(#Rows) = 1 )
+      let bodylines.ADJUST(#Rows)          = 'Y'
+   end-if
+   if  $CURRENCY_CD <> $CURRENCY_CD2
+       let bodylines.CURRENCY_CD2(#Rows)   = $CURRENCY_CD2
+   else
+       let bodylines.CURRENCY_CD2(#Rows)   = ' '
+   end-if
+   if #StoreTheIndice = 1
+      let bodylines.EE_PER(#Rows)          = #PERCENT
+      if bodysetup.GPFR_PIN_TYPE_EE(#i)    = 'ER0'
+         let bodylines.EARN_EE(#Rows)      = #EARN_DED
+      else
+         let bodylines.DED_EE(#Rows)       = #EARN_DED
+      end-if
+   else
+      let bodylines.ER_PER (#Rows)         = #PERCENT
+      let bodylines.DED_ER(#Rows)          = #EARN_DED
+   end-if
+end-procedure
+
+!**********************************************************************
+! Swap to elements of the bodyline
+!
+!**********************************************************************
+begin-procedure swap_body(#i,#j)
+#debugd do Fin-Debug-Msg('swap_body')
+
+   get $GPFR_PYSL_B_A_tmp    #GPFR_ELEMENT_ORDER_tmp   $DESCR_tmp
+       #INSTANCE_tmp         $USER_FLD1_tmp            $USER_FLD2_tmp
+       $USER_FLD3_tmp        $USER_FLD4_tmp            $USER_FLD5_tmp
+       $USER_FLD6_tmp        $SLICE_BGN_DT_tmp
+       $SLICE_END_DT_tmp     $SLICE_BGNDT_tmp         $SLICE_ENDDT_tmp
+          #BASE_tmp                 #UNIT_tmp
+       #RATE_tmp             #EE_PER_tmp               #EARN_EE_tmp
+       #DED_EE_tmp           #ER_PER_tmp               #DED_ER_tmp
+       $GPFR_RETRO_TYPE_tmp  $GPFR_DET_INSTANCES_tmp   #GPFR_LINES_BEFORE_tmp
+       #GPFR_LINES_AFTER_tmp $ADJUST_tmp   #RETRO_tmp  $CURRENCY_CD2_tmp
+
+       from bodylines(#i)
+   let bodylines.GPFR_PYSL_B_A(#i)      = bodylines.GPFR_PYSL_B_A(#j)
+   let bodylines.GPFR_ELEMENT_ORDER(#i) = bodylines.GPFR_ELEMENT_ORDER(#j)
+   let bodylines.DESCR(#i)              = bodylines.DESCR(#j)
+   let bodylines.INSTANCE(#i)           = bodylines.INSTANCE(#j)
+   let bodylines.USER_FLD1(#i)          = bodylines.USER_FLD1(#j)
+   let bodylines.USER_FLD2(#i)          = bodylines.USER_FLD2(#j)
+   let bodylines.USER_FLD3(#i)          = bodylines.USER_FLD3(#j)
+   let bodylines.USER_FLD4(#i)          = bodylines.USER_FLD4(#j)
+   let bodylines.USER_FLD5(#i)          = bodylines.USER_FLD5(#j)
+   let bodylines.USER_FLD6(#i)          = bodylines.USER_FLD6(#j)
+   let bodylines.SLICE_BGN_DT(#i)       = bodylines.SLICE_BGN_DT(#j)
+   let bodylines.SLICE_END_DT(#i)       = bodylines.SLICE_END_DT(#j)
+   let bodylines.SLICE_BGNDT(#i)       = bodylines.SLICE_BGNDT(#j)
+   let bodylines.SLICE_ENDDT(#i)       = bodylines.SLICE_ENDDT(#j)
+   let bodylines.BASE(#i)               = bodylines.BASE(#j)
+   let bodylines.UNIT(#i)               = bodylines.UNIT(#j)
+   let bodylines.RATE(#i)               = bodylines.RATE(#j)
+   let bodylines.EE_PER(#i)             = bodylines.EE_PER(#j)
+   let bodylines.EARN_EE(#i)            = bodylines.EARN_EE(#j)
+   let bodylines.DED_EE(#i)             = bodylines.DED_EE(#j)
+   let bodylines.ER_PER(#i)             = bodylines.ER_PER(#j)
+   let bodylines.DED_ER(#i)             = bodylines.DED_ER(#j)
+   let bodylines.GPFR_LINES_BEFORE(#i)  = bodylines.GPFR_LINES_BEFORE(#j)
+   let bodylines.GPFR_LINES_AFTER(#i)   = bodylines.GPFR_LINES_AFTER(#j)
+   let bodylines.GPFR_RETRO_TYPE(#i)    = bodylines.GPFR_RETRO_TYPE(#j)
+   let bodylines.GPFR_DET_INSTANCES(#i) = bodylines.GPFR_DET_INSTANCES(#j)
+   let bodylines.ADJUST(#i)             = bodylines.ADJUST(#j)
+   let bodylines.RETRO(#i)              = bodylines.RETRO(#j)
+   let bodylines.CURRENCY_CD2(#i)       = bodylines.CURRENCY_CD2(#j)
+   put $GPFR_PYSL_B_A_tmp    #GPFR_ELEMENT_ORDER_tmp   $DESCR_tmp
+       #INSTANCE_tmp         $USER_FLD1_tmp            $USER_FLD2_tmp
+       $USER_FLD3_tmp        $USER_FLD4_tmp            $USER_FLD5_tmp
+       $USER_FLD6_tmp        $SLICE_BGN_DT_tmp
+       $SLICE_END_DT_tmp     $SLICE_BGNDT_tmp          $SLICE_ENDDT_tmp 
+          #BASE_tmp                 #UNIT_tmp
+       #RATE_tmp             #EE_PER_tmp               #EARN_EE_tmp
+       #DED_EE_tmp           #ER_PER_tmp               #DED_ER_tmp
+       $GPFR_RETRO_TYPE_tmp  $GPFR_DET_INSTANCES_tmp   #GPFR_LINES_BEFORE_tmp
+       #GPFR_LINES_AFTER_tmp $ADJUST_tmp   #RETRO_tmp  $CURRENCY_CD2_tmp
+       into bodylines(#j)
+end-procedure
+
+!**********************************************************************
+! Compare two elements of the bodyline
+!
+!**********************************************************************
+begin-procedure compare_body(#i,#j,:#swap)
+#debugd do Fin-Debug-Msg('compare_body')
+
+   let #swap = 0
+   if bodylines.GPFR_PYSL_B_A(#i)       < bodylines.GPFR_PYSL_B_A(#j)
+      let #swap = 1
+      goto FINLOOP3
+   end-if
+   if bodylines.GPFR_PYSL_B_A(#i)       > bodylines.GPFR_PYSL_B_A(#j)
+      let #swap = 2
+      goto FINLOOP3
+   end-if
+   if  bodylines.GPFR_ELEMENT_ORDER(#i) > bodylines.GPFR_ELEMENT_ORDER(#j)
+      let #swap = 1
+      goto FINLOOP3
+   end-if
+   if  bodylines.GPFR_ELEMENT_ORDER(#i) < bodylines.GPFR_ELEMENT_ORDER(#j)
+      let #swap = 2
+      goto FINLOOP3
+   end-if
+   if  bodylines.RETRO(#i)              > bodylines.RETRO(#j)
+      let #swap = 1
+      goto FINLOOP3
+   end-if
+   if  bodylines.RETRO(#i)              < bodylines.RETRO(#j)
+      goto FINLOOP3
+   end-if
+   if  bodylines.SLICE_BGN_DT(#i)       > bodylines.SLICE_BGN_DT(#j)
+      let #swap = 1
+      goto FINLOOP3
+   end-if
+   if  bodylines.SLICE_BGN_DT(#i)       < bodylines.SLICE_BGN_DT(#j)
+      goto FINLOOP3
+   end-if
+   if  bodylines.SLICE_END_DT(#i)       > bodylines.SLICE_END_DT(#j)
+      let #swap = 1
+      goto FINLOOP3
+   end-if
+   if  bodylines.SLICE_END_DT(#i)       < bodylines.SLICE_END_DT(#j)
+      goto FINLOOP3
+   end-if
+   if  bodylines.CURRENCY_CD2(#i)       > bodylines.CURRENCY_CD2(#j)
+      let #swap = 1
+      goto FINLOOP3
+   end-if
+   if  bodylines.CURRENCY_CD2(#i)       < bodylines.CURRENCY_CD2(#j)
+      goto FINLOOP3
+   end-if
+   if  bodylines.INSTANCE(#i)           > bodylines.INSTANCE(#j)
+      let #swap = 1
+      goto FINLOOP3
+   end-if
+   if  bodylines.INSTANCE(#i)           < bodylines.INSTANCE(#j)
+      goto FINLOOP3
+   end-if
+
+
+   if  bodylines.USER_FLD1(#i)           > bodylines.USER_FLD1(#j)
+         let #swap = 1
+         goto FINLOOP3
+   end-if
+   if  bodylines.USER_FLD1(#i)           < bodylines.USER_FLD1(#j)
+         goto FINLOOP3
+   end-if
+
+
+   if  bodylines.USER_FLD2(#i)           > bodylines.USER_FLD2(#j)
+         let #swap = 1
+         goto FINLOOP3
+   end-if
+   if  bodylines.USER_FLD2(#i)           < bodylines.USER_FLD2(#j)
+         goto FINLOOP3
+   end-if
+
+   if  bodylines.USER_FLD3(#i)           > bodylines.USER_FLD3(#j)
+         let #swap = 1
+         goto FINLOOP3
+   end-if
+   if  bodylines.USER_FLD3(#i)           < bodylines.USER_FLD3(#j)
+         goto FINLOOP3
+   end-if
+
+   if  bodylines.USER_FLD4(#i)           > bodylines.USER_FLD4(#j)
+         let #swap = 1
+         goto FINLOOP3
+   end-if
+   if  bodylines.USER_FLD4(#i)           < bodylines.USER_FLD4(#j)
+         goto FINLOOP3
+   end-if
+
+   if  bodylines.USER_FLD5(#i)           > bodylines.USER_FLD5(#j)
+         let #swap = 1
+         goto FINLOOP3
+   end-if
+   if  bodylines.USER_FLD5(#i)           < bodylines.USER_FLD5(#j)
+         goto FINLOOP3
+   end-if
+
+   if  bodylines.USER_FLD6(#i)           > bodylines.USER_FLD6(#j)
+         let #swap = 1
+         goto FINLOOP3
+   end-if
+   if  bodylines.USER_FLD6(#i)           < bodylines.USER_FLD6(#j)
+         goto FINLOOP3
+   end-if
+
+   if  bodylines.DESCR(#i)              > bodylines.DESCR(#j)
+      let #swap = 1
+      goto FINLOOP3
+   end-if
+   if  bodylines.DESCR(#i)              < bodylines.DESCR(#j)
+      goto FINLOOP3
+   end-if
+   FINLOOP3:
+end-procedure
+
+!**********************************************************************
+! Showing the bodylines (debugging procedure)
+!**********************************************************************
+begin-procedure show_bodylines($showwhere, #showrow)
+#debugd do Fin-Debug-Msg('show_bodylines')
+
+      let  $showrow01 = bodylines.GPFR_PYSL_B_A(#showrow)
+      let  #showrow02 = bodylines.GPFR_ELEMENT_ORDER(#showrow)
+      let  $showrow03 = bodylines.DESCR(#showrow)
+      let  #showrow04 = bodylines.INSTANCE(#showrow)
+      let  $showrow05 = bodylines.CURRENCY_CD2(#showrow)
+      let  #showrow06 = bodylines.RETRO(#showrow)
+      let  $showrow07 = bodylines.SLICE_BGN_DT(#showrow)
+      let  $showrow08 = bodylines.SLICE_END_DT(#showrow)
+      let  #showrow09 = bodylines.BASE(#showrow)
+      let  #showrow10 = bodylines.RATE(#showrow)
+      let  #showrow11 = bodylines.EE_PER(#showrow)
+      let  #showrow12 = bodylines.ER_PER(#showrow)
+      let  #showrow13 = bodylines.UNIT(#showrow)
+      let  #showrow14 = bodylines.EARN_EE(#showrow)
+      let  #showrow15 = bodylines.DED_EE(#showrow)
+      let  #showrow16 = bodylines.DED_ER(#showrow)
+      let  $showrow17 = bodylines.ADJUST(#showrow)
+      let  $showrow18 = bodylines.USER_FLD1(#showrow)
+      show '-------------------- ' $showwhere ' : ' #showrow ' --------------------'
+      show $showrow01 '/' #showrow02 '/' $showrow03 '/' #showrow04 '/' $showrow05 '/' #showrow06
+      show $showrow07 '/' $showrow08 '/' #showrow09 '/' #showrow10 '/' #showrow11 '/' #showrow12
+      show #showrow13 '/' #showrow14 '/' #showrow15 '/' #showrow16 '/' $showrow17 '/' #showrow18
+end-procedure
+
+!**********************************************************************
+! Match employee and employer
+!
+!**********************************************************************
+begin-procedure match_body
+#debugd do Fin-Debug-Msg('match_body')
+
+ let #i = 1
+ while #i <= #No_of_Rows
+    if  bodylines.GPFR_ELEMENT_ORDER(#i) <>  0
+    !do show_bodylines('match_body i ', #i)
+    let #j = #i + 1
+    while #j <= #No_of_Rows
+      !do show_bodylines('match_body j ', #j)
+      if  (bodylines.GPFR_PYSL_B_A(#j)      >  bodylines.GPFR_PYSL_B_A(#i))
+         break
+      end-if
+      if  (bodylines.GPFR_PYSL_B_A(#j)      =  bodylines.GPFR_PYSL_B_A(#i)
+       and bodylines.GPFR_ELEMENT_ORDER(#j) >  bodylines.GPFR_ELEMENT_ORDER(#i))
+         break
+      end-if
+      if  (bodylines.GPFR_ELEMENT_ORDER(#i) <> bodylines.GPFR_ELEMENT_ORDER(#j))
+           goto FINLOOP2
+      end-if
+      if  (bodylines.SLICE_BGN_DT(#i)       <> bodylines.SLICE_BGN_DT(#j))
+      or  (bodylines.SLICE_END_DT(#i)       <> bodylines.SLICE_END_DT(#j))
+           goto FINLOOP2
+      end-if
+      if  (bodylines.INSTANCE(#i)           <> bodylines.INSTANCE(#j) AND bodylines.USER_FLD1(#i) = '' AND bodylines.USER_FLD1(#j)= '')
+      or  (bodylines.DESCR(#i)              <> bodylines.DESCR(#j))
+           goto FINLOOP2
+      end-if
+      if  (bodylines.USER_FLD1(#i)           <> bodylines.USER_FLD1(#j)AND bodylines.USER_FLD1(#i) <> '' AND bodylines.USER_FLD1(#j)<> '')
+                 goto FINLOOP2
+      end-if
+
+      if  (bodylines.USER_FLD2(#i)           <> bodylines.USER_FLD2(#j)AND bodylines.USER_FLD1(#i) <> '' AND bodylines.USER_FLD1(#j)<> '')
+                 goto FINLOOP2
+      end-if
+
+      if  (bodylines.USER_FLD3(#i)           <> bodylines.USER_FLD3(#j)AND bodylines.USER_FLD1(#i) <> '' AND bodylines.USER_FLD1(#j)<> '')
+                 goto FINLOOP2
+      end-if
+
+      if  (bodylines.USER_FLD4(#i)           <> bodylines.USER_FLD4(#j)AND bodylines.USER_FLD1(#i) <> '' AND bodylines.USER_FLD1(#j)<> '')
+                 goto FINLOOP2
+      end-if
+
+      if  (bodylines.USER_FLD5(#i)           <> bodylines.USER_FLD5(#j)AND bodylines.USER_FLD1(#i) <> '' AND bodylines.USER_FLD1(#j)<> '')
+                 goto FINLOOP2
+      end-if
+
+      if  (bodylines.USER_FLD6(#i)           <> bodylines.USER_FLD6(#j)AND bodylines.USER_FLD1(#i) <> '' AND bodylines.USER_FLD1(#j)<> '')
+                 goto FINLOOP2
+      end-if
+
+      if  (bodylines.BASE(#i)               <> bodylines.BASE(#j))
+      or  (bodylines.RATE(#i)               <> bodylines.RATE(#j))
+           goto FINLOOP2
+      end-if
+      if  (bodylines.GPFR_PYSL_B_A(#i)      <> bodylines.GPFR_PYSL_B_A(#j))
+      or  (bodylines.RETRO(#i)              <> bodylines.RETRO(#j))
+      or  (bodylines.CURRENCY_CD2(#i)       <> bodylines.CURRENCY_CD2(#j))
+           goto FINLOOP2
+      end-if
+      if  (bodylines.EE_PER(#i) = bodylines.EE_PER(#j) or bodylines.EE_PER(#i) = 0 or bodylines.EE_PER(#j) = 0 )
+      and (bodylines.ER_PER(#i) = bodylines.ER_PER(#j) or bodylines.ER_PER(#i) = 0 or bodylines.ER_PER(#j) = 0 )
+             let bodylines.UNIT(#i)    = bodylines.UNIT(#i)    + bodylines.UNIT(#j)
+             if ( bodylines.EE_PER(#i) = 0 or bodylines.EE_PER(#j) = 0 )  
+                  let bodylines.EE_PER(#i)  = bodylines.EE_PER(#i)  + bodylines.EE_PER(#j)
+             end-if
+             let bodylines.EARN_EE(#i) = bodylines.EARN_EE(#i) + bodylines.EARN_EE(#j)
+             let bodylines.DED_EE(#i)  = bodylines.DED_EE(#i)  + bodylines.DED_EE(#j)
+             if ( bodylines.ER_PER(#i) = 0 or bodylines.ER_PER(#j) = 0 )
+                  let bodylines.ER_PER(#i)  = bodylines.ER_PER(#i)  + bodylines.ER_PER(#j)
+             end-if
+             let bodylines.DED_ER(#i)  = bodylines.DED_ER(#i)  + bodylines.DED_ER(#j)
+             let bodylines.GPFR_ELEMENT_ORDER(#j) = 0
+             if  bodylines.BASE(#i)    = 0
+             and bodylines.DED_EE(#i)  = 0
+             and bodylines.EARN_EE(#i) = 0
+             and bodylines.DED_ER(#i)  = 0
+                 let bodylines.GPFR_ELEMENT_ORDER(#i) = 0
+                 !do show_bodylines('match zero i ', #i)
+                 break
+             end-if
+             !do show_bodylines('match done i ', #i)
+      end-if
+      FINLOOP2:
+      add 1 to #j
+    end-while
+    end-if
+    add 1 to #i
+ end-while
+end-procedure
+
+!**********************************************************************
+! Aggregate data row by row according to GPFR_RETRO_TYPE
+!
+!**********************************************************************
+begin-procedure aggregate_body
+#debugd do Fin-Debug-Msg('aggregate_body')
+
+!
+! Values for GPFR_RETRO_TYPE:
+!                             10 : Current and Deltas
+!                             20 : Current and Adjustment
+!                             30 : One Line
+!
+ let #i      = 1
+ Let #jstart = 1
+ while #i <= #No_of_Rows
+    !do show_bodylines('aggregate_body i ', #i)
+    if  bodylines.GPFR_ELEMENT_ORDER(#i) <>  0
+    let #j      = #jstart
+    let #jstart = 1
+    while #j <= #No_of_Rows
+      !do show_bodylines('aggregate_body j ', #j)
+      if  (bodylines.GPFR_PYSL_B_A(#j)      <  bodylines.GPFR_PYSL_B_A(#i))
+         break
+      end-if
+      if  (bodylines.GPFR_PYSL_B_A(#j)      =  bodylines.GPFR_PYSL_B_A(#i)
+       and bodylines.GPFR_ELEMENT_ORDER(#j) >  bodylines.GPFR_ELEMENT_ORDER(#i))
+         break
+      end-if
+      if  (bodylines.GPFR_ELEMENT_ORDER(#i) <> bodylines.GPFR_ELEMENT_ORDER(#j))
+          goto FINLOOP
+      end-if
+      if  #jstart = 1
+          let #jstart = #j
+      end-if
+      if  (#i = #j)
+          goto FINLOOP
+      end-if
+      if  (bodylines.RATE(#i)               <> bodylines.RATE(#j))
+      or  (bodylines.EE_PER(#i)             <> bodylines.EE_PER(#j))
+      or  (bodylines.ER_PER(#i)             <> bodylines.ER_PER(#j))
+          goto FINLOOP
+      end-if
+      if  (bodylines.GPFR_PYSL_B_A(#i)      <> bodylines.GPFR_PYSL_B_A(#j))
+      or  (bodylines.DESCR(#i)              <> bodylines.DESCR(#j))
+      or  (bodylines.CURRENCY_CD2(#i)       <> bodylines.CURRENCY_CD2(#j))
+
+          goto FINLOOP
+
+      end-if
+
+      if  (  (bodylines.GPFR_RETRO_TYPE(#i)  = '30'
+                and bodylines.SLICE_BGN_DT(#i) = bodylines.SLICE_BGN_DT(#j)
+                                     and bodylines.SLICE_END_DT(#i) = bodylines.SLICE_END_DT(#j)
+                                     and bodylines.INSTANCE(#i) <> 0
+                                     and bodylines.INSTANCE(#j) <> 0)
+                 or
+                                    (bodylines.GPFR_RETRO_TYPE(#i) = '30'
+                                     and bodylines.INSTANCE(#i) = 0
+                                     and bodylines.INSTANCE(#j) = 0)
+
+
+
+             or (bodylines.GPFR_RETRO_TYPE(#i) = '20'
+                 and bodylines.GPFR_DET_INSTANCES(#i) = 'N'
+                 and bodylines.RETRO(#i) = 1
+                 and bodylines.RETRO(#j) = 1)
+             or (bodylines.GPFR_DET_INSTANCES(#i) = 'N'
+                 and bodylines.GPFR_RETRO_TYPE(#i) <> '20'
+                 and bodylines.SLICE_BGN_DT(#i) = bodylines.SLICE_BGN_DT(#j)
+                                 and bodylines.SLICE_END_DT(#i) = bodylines.SLICE_END_DT(#j))
+                 )
+             let bodylines.BASE(#i)       = bodylines.BASE(#i)   + bodylines.BASE(#j)
+             let bodylines.UNIT(#i)       = bodylines.UNIT(#i)   + bodylines.UNIT(#j)
+             let bodylines.EARN_EE(#i)    = bodylines.EARN_EE(#i)+ bodylines.EARN_EE(#j)
+                                          - bodylines.DED_EE(#i) - bodylines.DED_EE(#j)
+             let bodylines.DED_EE(#i)     = 0
+             if bodylines.EARN_EE(#i)     < 0
+                let bodylines.DED_EE(#i)  = - bodylines.EARN_EE(#i)
+                let bodylines.EARN_EE(#i) = 0
+             end-if
+             let bodylines.DED_ER(#i)     = bodylines.DED_ER(#i) + bodylines.DED_ER(#j)
+             let bodylines.GPFR_ELEMENT_ORDER(#j) = 0
+             if  bodylines.BASE(#i)    = 0
+             and bodylines.DED_EE(#i)  = 0
+             and bodylines.EARN_EE(#i) = 0
+             and bodylines.DED_ER(#i)  = 0
+                 let bodylines.GPFR_ELEMENT_ORDER(#i) = 0
+                 !do show_bodylines('aggregate zero i ', #i)
+                 break
+             end-if
+             !do show_bodylines('aggregate done i ', #i)
+      end-if
+    FINLOOP:
+         add 1 to #j
+    end-while
+    end-if
+    add 1 to #i
+ end-while
+
+end-procedure
+
+!**********************************************************************
+! Sort the body
+!
+!**********************************************************************
+begin-procedure sort_body
+#debugd do Fin-Debug-Msg('sort_body')
+
+   let #last_row = #No_of_Rows
+   let #i = 0
+   while #i < #last_row
+         add   1 to #i
+         let   #swap = 0
+         let   #j    = #i
+         while #j < #last_row
+               add 1 to #j
+               do  compare_body(#i,#j, #swap)
+               if  #swap = 2
+                   break
+               end-if
+               if  #swap = 1
+                   do swap_body(#i,#j)
+               end-if
+         end-while
+   end-while
+end-procedure
+
+!**********************************************************************
+! Get the net-to-be-paid, using the retro method
+!
+!**********************************************************************
+begin-procedure get_net_val
+#debugd do Fin-Debug-Msg('get_net_val')
+
+   let #sum_net_val      = 0
+   let $sql-statement    = 'GPFRPSL.sqr,Select,get_net_val'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.CURRENCY_CD             &CURRENCY_CD_ac
+A.CURRENCY_CD2            &CURRENCY_CD2_ac
+SUM(A.CALC_RSLT_VAL)      &net_val_ac
+   if &CURRENCY_CD2_ac <> &CURRENCY_CD_ac
+      do ConvertCurrency(&net_val_ac, &CURRENCY_CD2_ac, &CURRENCY_CD_ac,
+                         $BaseRtType, $PYMT_DT, #Converted, 'F')
+   else
+      let #Converted     =  &net_val_ac
+   end-if
+   let #sum_net_val      =  #sum_net_val + #Converted
+FROM PS_GPFR_PS_ACU_TMP A
+WHERE  A.JOBINSTANCE     =   #TMPJOBINSTANCE
+   AND A.EMPLID          =   $EMPLID
+   AND A.CAL_RUN_ID      =   $calrunid
+   AND A.EMPL_RCD        =   #EMPL_RCD
+   AND A.GP_PAYGROUP     =   $GP_PAYGROUP
+   AND A.CAL_ID          =   $CAL_ID
+   AND A.RSLT_SEG_NUM    =   #RSLT_SEG_NUM
+   AND A.PIN_NUM         =   A.PIN_NET_NUM
+GROUP BY A.CURRENCY_CD, A.CURRENCY_CD2
+END-SELECT
+
+end-procedure
+
+!**********************************************************************
+! print_pay_slip
+!
+!**********************************************************************
+
+begin-procedure print_pay_slip
+#debugd do Fin-Debug-Msg('print_pay_slip')
+
+  let #PRows = 0
+  let #save_line_after = 0
+  let #save_element_order = 0
+  alter-printer  font=3 point-size=7
+  
+   
+
+  while #PRows <  #No_of_Rows + 1
+    if bodylines.GPFR_ELEMENT_ORDER(#PRows) = 0
+       let #PRows = #PRows + 1
+       goto NOPRINT
+    end-if
+       
+       
+       LET #pin_ee = bodylines.GPFR_PIN_NUM_EE(#PRows)
+       LET #pin_er = bodylines.GPFR_PIN_NUM_ER(#PRows)
+       
+    let $DESCR        = bodylines.DESCR(#PRows)
+    let #Pyl_Instance = bodylines.INSTANCE(#PRows)
+    let $Pyl_Instance = edit(#Pyl_Instance,'99')
+    if #Pyl_Instance <> 0
+      let $DESCR      =  $DESCR || ' - ' ||   $Pyl_Instance
+    end-if
+    let #BASE         = bodylines.BASE(#PRows) + bodylines.UNIT(#PRows)
+    let #RATE         = bodylines.RATE(#PRows)
+    let #EE_PER       = bodylines.EE_PER(#PRows)
+    let #EARN_EE      = bodylines.EARN_EE(#PRows) - bodylines.DED_EE(#PRows)
+    let #DED_EE       = 0
+    if  #EARN_EE      < 0
+       let #DED_EE    = - #EARN_EE
+       let #EARN_EE   = 0
+    end-if
+    let #ER_PER       = bodylines.ER_PER(#PRows)
+    let #DED_ER       = bodylines.DED_ER(#PRows)
+    let $CURRENCY_CD2 = bodylines.CURRENCY_CD2(#PRows)
+    if (#BASE = 0 AND #DED_EE = 0  AND #EARN_EE = 0 AND #DED_ER = 0 )
+        add 1 to #PRows
+        goto NOPRINT
+    end-if
+    if bodylines.RETRO(#PRows) = 1
+       let $ADJUST_IND = bodylines.ADJUST(#PRows)
+       let $SLICE_DT   = bodylines.SLICE_END_DT(#PRows)
+    else
+       let $ADJUST_IND = ' '
+       let $SLICE_DT   = ' '
+    end-if
+
+    let #line_before = bodylines.GPFR_LINES_BEFORE(#PRows) + 1
+    let #line_after  = bodylines.GPFR_LINES_AFTER(#PRows)
+
+!  Addition of a condition for the blank lines
+        let #element_order = bodylines.GPFR_ELEMENT_ORDER(#PRows)
+        if #element_order = #save_element_order
+           let #line_before = 1
+           let #save_line_after = 0
+        end-if
+
+        let #save_element_order = #element_order
+
+     if bodylines.GPFR_PYSL_B_A(#PRows) <> $SAVE_PYSL_B_A
+            and #PRows < #No_of_Rows + 1
+       if $SAVE_PYSL_B_A <> $null
+                do  print_footing_desc
+                do  get_footing
+                do  print_accums
+                new-page
+                let $SAVE_PYSL_B_A = bodylines.GPFR_PYSL_B_A(#PRows)
+                do print_body_heading
+                do get_schedule
+                let #body_line = {bodyline}
+                alter-printer  font=3 point-size=7
+       end-if
+       let $SAVE_PYSL_B_A = bodylines.GPFR_PYSL_B_A(#PRows)
+     end-if
+
+        let #body_line = #body_line + #line_before + #save_line_after
+
+        if $CURRENCY_CD2 <> ' '
+           let $DESCR = substr($DESCR,1,28)
+        end-if
+
+        print $DESCR               (#body_line, 2)
+        print $CURRENCY_CD2        (, 30)
+        if $SLICE_DT <> ' '
+                   if $ADJUST_IND = 'Y'
+                PRINT 'Rétro'       (, 34)              !Retro
+                   else
+                PRINT $SLICE_DT     (, 34)   edit mm/yyyy  
+                   end-if
+         end-if
+
+        print #BASE                (, 42)   edit B,999,999.99
+        print #RATE                (, 55)   edit B,999,999.99
+
+        if #EE_PER  < 100
+          do PS_SQR_Trunc (#EE_PER, 2, #EE_PER_trunc)
+          if #EE_PER < 10 and #EE_PER <> #EE_PER_trunc
+              print #EE_PER        (, 67)   edit 9.999
+          else
+              print #EE_PER        (, 67)   edit B9.99
+          end-if
+        else
+          print #EE_PER            (, 68)   edit 999
+        end-if
+
+        print #DED_EE              (, 72)   edit B,999,999.99
+        print #EARN_EE             (, 85)   edit B,999,999.99
+
+        if #ER_PER  < 100
+          do PS_SQR_Trunc (#ER_PER, 2, #ER_PER_trunc)
+          if #ER_PER < 10 and #ER_PER <> #ER_PER_trunc
+              print #ER_PER        (, 97)   edit 9.999
+          else
+              print #ER_PER        (, 97)   edit B9.99
+          end-if
+        else
+          print #ER_PER            (, 98)   edit 999
+        end-if
+
+        print #DED_ER              (,103)   edit B,999,999.99
+#debugd show '---------------------' $EMPLID '----' #PIN_NUM  !Simplified Payslip
+#debugd show $DESCR '    ' #BASE  '    '  #RATE  '    '   #EE_PER  '    '  #DED_EE  '    '  #EARN_EE  '    ' #ER_PER  '    ' #DED_ER   !Simplified Payslip
+                                                                                                         
+        let #save_line_after = #line_after
+              
+        add 1 to #PRows
+
+        if #body_line > {maxbodyline}
+          and #PRows < #No_of_Rows + 1
+                print 'Page suivante...'  (88, 122)
+                new-page
+                do print_body_heading
+                let #body_line = {bodyline}
+                alter-printer  font=3 point-size=7
+        end-if
+
+  NOPRINT:
+
+  end-while
+
+  
+
+
+end-procedure
+
+!*****************************************************************
+!   Heading Information                                          *
+!*****************************************************************
+begin-procedure get_heading_info
+#debugd do Fin-Debug-Msg('get_heading_info')
+
+  if $ANC_PYE_CALC_STAT  <> $PYE_CALC_STAT
+     let $ANC_PYE_CALC_STAT = $PYE_CALC_STAT
+     let $BROUILLON         = ' '
+     if  $PYE_CALC_STAT <> '70'
+     and $PYE_CALC_STAT <> '75'
+        move 'PYE_CALC_STAT'    to $FieldName
+        move $PYE_CALC_STAT     to $FieldValue
+        do Read-Translate-Table
+        let $BROUILLON  = $XlatShortName
+     end-if
+  end-if
+
+!Personal data
+   let $sql-statement = 'GPFRPSL.sqr,Select gpfr_pers_nm_vw person_address'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.NAME          &name
+B.ADDRESS1      &addr1
+B.ADDRESS2      &addr2
+B.ADDRESS3      &addr3
+B.ADDRESS4      &addr4
+B.CITY          &city
+B.POSTAL        &postal
+  let   $empl_name     = rtrim(&name,   ' ')
+  let   $empl_addr1    = rtrim(&addr1,  ' ')
+  let   $empl_addr2    = rtrim(&addr2,  ' ')
+  let   $empl_addr3    = rtrim(&addr3,  ' ')
+  let   $empl_addr4    = rtrim(&addr4,  ' ')
+  let   $city_postal   = rtrim(&postal, ' ') || ' ' || &city
+FROM    PS_GPFR_PERS_NM_VW A, PS_PERSON_ADDRESS B
+WHERE   A.EMPLID = B.EMPLID
+AND     A.EMPLID = $EMPLID
+AND     B.ADDRESS_TYPE='HOME'
+END-SELECT
+
+!National ID
+   let $sql-statement = 'GPFRPSL.sqr,Select pers_nid'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.NATIONAL_ID          &national_id
+A.SSN_KEY_FRA          &SSN_key_FRA
+  let   $national_id_fra =  RTRIM (&national_id, ' ') || ' ' ||  &SSN_key_FRA
+FROM       PS_PERS_NID A
+   WHERE   A.EMPLID           = $EMPLID
+     AND   A.COUNTRY          = 'FRA'
+     AND   A.NATIONAL_ID_TYPE = 'PR'
+END-SELECT
+
+! JOB and CONTRACT DATA
+   let $sql-statement = 'GPFRPSL.sqr,Select job'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.JOBCODE             &JOBCODE
+A.SETID_JOBCODE       &SETID_JOBCODE
+A.DEPTID              &DEPTID
+A.SETID_DEPT          &SETID_DEPT
+A.CONTRACT_NUM        &CONTRACT_NUM
+A.LABOR_AGREEMENT     &labor_agreement
+A.EMPL_CTG            &EMPL_CTG
+A.VALUE_1_FRA         &VALUE_1_FRA
+A.VALUE_2_FRA         &VALUE_2_FRA
+A.VALUE_3_FRA         &VALUE_3_FRA
+A.VALUE_4_FRA         &VALUE_4_FRA
+A.VALUE_5_FRA         &VALUE_5_FRA
+C.CONTRACT_BEGIN_DT   &CONTRACT_BEGIN_DT
+C.CONTRACT_END_DT     &CONTRACT_END_DT
+   let $EMPL_CTG          = &EMPL_CTG
+   let $VALUE_1_FRA       = &VALUE_1_FRA
+   let $VALUE_2_FRA       = &VALUE_2_FRA
+   let $VALUE_3_FRA       = &VALUE_3_FRA
+   let $VALUE_4_FRA       = &VALUE_4_FRA
+   let $VALUE_5_FRA       = &VALUE_5_FRA
+   let $contract_begin_dt = &CONTRACT_BEGIN_DT
+   let $contract_end_dt   = &CONTRACT_END_DT
+   do Format-DateTime($contract_begin_dt, $contract_begin_dt_out, {DEFDMY}, '', '')
+   if {PT-DBType}='SYBASE' or {PT-DBType}='MICROSFT'
+      let $tmp_datemask={Native-DateTimeMask}
+   else
+      let $tmp_datemask={Native-DateMask}
+   end-if
+   if &CONTRACT_END_DT <= strtodate($SEG_END_DATE,$tmp_datemask)
+      do Format-DateTime($contract_end_dt  , $contract_end_dt_out  , {DEFDMY}, '', '')
+   else
+      let $contract_end_dt_out=' '
+   end-if
+
+   if  $ANC_JOBCODE_LABEL             <> &JOBCODE
+   or  $ANC_SETID_JOBCODE_LABEL       <> &SETID_JOBCODE
+   or  $ANC_SEG_END_DATE_JOBCODE      <> $SEG_END_DATE
+       let $ANC_JOBCODE_LABEL         =  &JOBCODE
+       let $ANC_SETID_JOBCODE_LABEL   =  &SETID_JOBCODE
+       let $ANC_SEG_END_DATE_JOBCODE  =  $SEG_END_DATE
+       Let #FoundLabel   = 0
+       if  #RelatedLabel = 0
+           do JobCodeLabel
+           do JobCodeRelated
+       else
+           do JobCodeRelated
+           do JobCodeLabel
+       end-if
+   end-if
+   if  $ANC_DEPTID_LABEL             <> &DEPTID
+   or  $ANC_SETID_DEPTID_LABEL       <> &SETID_DEPT
+   or  $ANC_SEG_END_DATE_DEPTID      <> $SEG_END_DATE
+       let $ANC_DEPTID_LABEL         =  &DEPTID
+       let $ANC_SETID_DEPTID_LABEL   =  &SETID_DEPT
+       let $ANC_SEG_END_DATE_DEPTID  =  $SEG_END_DATE
+       Let #FoundLabel   = 0
+       if  #RelatedLabel = 0
+           do DeptIdLabel
+           do DeptIdRelated
+       else
+           do DeptIdRelated
+           do DeptIdLabel
+       end-if
+   end-if
+FROM    PS_JOB A, PS_CONTRACT_DATA C
+WHERE   A.EMPLID   = $EMPLID
+    AND A.EMPL_RCD = #EMPL_RCD
+    AND A.EFFDT    <= $SEG_END_DATE
+    AND A.EFFDT    = (SELECT MAX(B.EFFDT) FROM PS_JOB B
+                       WHERE B.EMPLID    = A.EMPLID
+                         AND B.EMPL_RCD  = A.EMPL_RCD
+                         AND B.EFFDT     <= $SEG_END_DATE )
+    AND C.EMPLID       = A.EMPLID
+    AND C.CONTRACT_NUM = A.CONTRACT_NUM
+END-SELECT
+
+!RSLT PIN
+        let $company    = ''
+        let $estabid    = ''
+        let $observ_id1 = ''
+        let $observ_id2 = ''
+        let #hours_edt  = 0
+   let $sql-statement = 'GPFRPSL.sqr,Select company code'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.PIN_NUM         &pin_num_key
+A.CHR_PIN_VAL     &chr_pin_val
+A.CALC_RSLT_VAL   &calc_rslt_val_e1
+     #debugd show 'emplid: ' $EMPLID 
+     #debugd show ' GPFR_PS_ACU_TMP: &pin_num_key=' &pin_num_key ' (' &chr_pin_val '/' &calc_rslt_val_e1 ')'
+     if &pin_num_key    = #pin_val_company
+        let $company    = rtrim(&chr_pin_val, ' ')
+     end-if
+     if &pin_num_key    = #pin_val_estabid
+        let $estabid    = rtrim(&chr_pin_val, ' ')
+     end-if
+     if &pin_num_key    = #pin_val_obsrv
+        let $observ_id1 = rtrim(&chr_pin_val, ' ')
+     end-if
+     if &pin_num_key    = #pin_val_obsrv2
+       let $observ_id2  = rtrim(&chr_pin_val, ' ')
+     end-if
+     if &pin_num_key    = #pin_val_hours
+       let #hours_edt   = &calc_rslt_val_e1
+     end-if
+FROM   PS_GPFR_PS_ACU_TMP  A
+WHERE  A.JOBINSTANCE       =   #TMPJOBINSTANCE
+   AND A.EMPLID            =   $EMPLID
+   AND A.CAL_RUN_ID        =   $calrunid
+   AND A.EMPL_RCD          =   #EMPL_RCD
+   AND A.GP_PAYGROUP       =   $GP_PAYGROUP
+   AND A.CAL_ID            =   $CAL_ID
+   AND A.RSLT_SEG_NUM      =   #RSLT_SEG_NUM
+   AND A.PIN_NUM           in (#pin_val_company, #pin_val_estabid,
+                               #pin_val_obsrv,   #pin_val_obsrv2, #pin_val_hours )
+END-SELECT
+   #debugd show ' GPFR_PS_ACU_TMP: ' #TMPJOBINSTANCE ' ' $EMPLID ' ' $calrunid ' ' #EMPL_RCD ' ' $GP_PAYGROUP ' ' $CAL_ID ' ' #RSLT_SEG_NUM
+   #debugd show #pin_val_company ' ' #pin_val_estabid ' ' #pin_val_obsrv ' ' #pin_val_obsrv2 ' ' #pin_val_hours
+        if $company   = ''
+   let $sql-statement = 'GPFRPSL.sqr,Select company code (2)'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.PIN_NUM         &pin_num_key2
+A.CHR_PIN_VAL     &chr_pin_val2
+A.CALC_RSLT_VAL   &calc_rslt_val_e2
+     if  &pin_num_key2  = #pin_val_company
+     and $company       = ''
+         let $company   = rtrim(&chr_pin_val2, ' ')
+     end-if
+     if  &pin_num_key2  = #pin_val_estabid
+     and $estabid       = ''
+         let $estabid   = rtrim(&chr_pin_val2, ' ')
+     end-if
+     if  &pin_num_key2  = #pin_val_hours
+     and #hours_edt     = 0
+         let #hours_edt = &calc_rslt_val_e2
+     end-if
+FROM PS_GP_RSLT_PIN     A
+   , PS_GPFR_PS_SEG_TMP B
+   , PS_GP_PYE_PRC_STAT C
+   , PS_GP_PYE_SEG_STAT D
+WHERE       B.JOBINSTANCE       = #TMPJOBINSTANCE
+        AND B.EMPLID            = $EMPLID
+        AND B.CAL_RUN_ID        = $calrunid
+        AND B.EMPL_RCD          = #EMPL_RCD
+        AND B.GP_PAYGROUP       = $GP_PAYGROUP
+        AND B.CAL_ID            = $CAL_ID
+        AND B.RSLT_SEG_NUM      = #RSLT_SEG_NUM
+        AND A.PIN_NUM          in (#pin_val_company, #pin_val_estabid, #pin_val_hours )
+        AND B.CALC_ACTION       = 'V'
+        AND B.EMPLID            = C.EMPLID
+        AND B.CAL_RUN_ID        = C.CAL_RUN_ID
+        AND B.EMPL_RCD          = C.EMPL_RCD
+        AND B.GP_PAYGROUP       = C.GP_PAYGROUP
+        AND B.CAL_ID            = C.CAL_ID
+        AND C.EMPLID            = D.EMPLID
+        AND C.ORIG_CAL_RUN_ID   = D.CAL_RUN_ID
+        AND C.EMPL_RCD          = D.EMPL_RCD
+        AND C.GP_PAYGROUP       = D.GP_PAYGROUP
+        AND C.CAL_ID            = D.CAL_ID
+        AND C.PRIOR_VER_NUM     = D.RSLT_VER_NUM
+        AND C.PRIOR_REV_NUM     = D.RSLT_REV_NUM
+        AND B.SEG_END_DT        = D.SEG_END_DT
+        AND A.EMPLID            = D.EMPLID
+        AND A.CAL_RUN_ID        = D.CAL_RUN_ID
+        AND A.EMPL_RCD          = D.EMPL_RCD
+        AND A.GP_PAYGROUP       = D.GP_PAYGROUP
+        AND A.CAL_ID            = D.CAL_ID
+        AND A.RSLT_SEG_NUM      = D.RSLT_SEG_NUM
+        AND A.EMPLID            = $EMPLID
+END-SELECT
+     #debugd show 'emplid: ' $EMPLID 
+     #debugd show 'Company is blank: ' $company
+     #debugd show #TMPJOBINSTANCE ' ' $EMPLID ' ' $calrunid ' ' #EMPL_RCD ' ' $GP_PAYGROUP ' ' $CAL_ID
+     #debugd show #RSLT_SEG_NUM ' ' #pin_val_company ' ' #pin_val_estabid ' ' #pin_val_hours
+        end-if
+
+!COMPANY
+   if  $ANC_COMPANY_LABEL             <> $company
+   or  $ANC_SEG_END_DATE_COMPANY      <> $SEG_END_DATE
+       let $ANC_COMPANY_LABEL         =  $company
+       let $ANC_SEG_END_DATE_COMPANY  =  $SEG_END_DATE
+       do CompanyLabel
+   end-if
+
+!ESTAB_TBL
+   if  $ANC_ESTABID       <> $estabid
+   let $ANC_ESTABID       =  $estabid
+   let $sql-statement = 'GPFRPSL.sqr,Select estab table'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCR               &estab_descr
+AA.SIREN_CD_FRA        &siret
+AA.NIC_CODE_FRA        &nic_code
+AA.APE_INDSTRY_CD_FRA  &ape
+AA.URSSAF_CD_FRA       &urssaf_cd
+AA.URSSAF_NM_FRA       &urssaf_nm
+        let $estab_descr  = &estab_descr
+        let $siret        = &siret
+        let $nic_code     = &nic_code
+        let $ape          = &ape
+        let $URSSAF_CD    = &urssaf_cd
+        let $URSSAF_NM    = &urssaf_nm
+FROM    PS_ESTAB_TBL A, PS_ESTAB_TBL_FRA AA
+WHERE   A.ESTABID    = $estabid
+    AND AA.ESTABID = A.ESTABID
+    AND A.EFF_STATUS = 'A'
+    AND A.EFFDT     <= $SEG_END_DATE
+    AND A.EFFDT      = (SELECT MAX(B.EFFDT) FROM PS_ESTAB_TBL B
+                         WHERE B.ESTABID = A.ESTABID
+                           AND B.EFFDT  <= $SEG_END_DATE )
+    AND AA.EFFDT = A.EFFDT
+END-SELECT
+   end-if
+
+! Observation for the payslip
+   let $GPFR_OBSERVATION1_B = ''
+   let $GPFR_OBSERVATION2_B = ''
+   let $GPFR_OBSERVATION3_B = ''
+   let $GPFR_OBSERVATION4_B = ''
+   if $observ_id1 <> ''
+   let $sql-statement = 'GPFRPSL.sqr,Select observations'
+BEGIN-SELECT ON-ERROR=SQL-Error
+B.GPFR_OBSERVATION1                 &GPFR_OBSERVATION1_B
+B.GPFR_OBSERVATION2                 &GPFR_OBSERVATION2_B
+B.GPFR_OBSERVATION3                 &GPFR_OBSERVATION3_B
+B.GPFR_OBSERVATION4                 &GPFR_OBSERVATION4_B
+   let $GPFR_OBSERVATION1_B = rtrim(&GPFR_OBSERVATION1_B, ' ')
+   let $GPFR_OBSERVATION2_B = rtrim(&GPFR_OBSERVATION2_B, ' ')
+   let $GPFR_OBSERVATION3_B = rtrim(&GPFR_OBSERVATION3_B, ' ')
+   let $GPFR_OBSERVATION4_B = rtrim(&GPFR_OBSERVATION4_B, ' ')
+FROM  PS_GPFR_PYSL_OBSRV B
+WHERE B.GPFR_OBSERV_ID   = $observ_id1  !SAS
+END-SELECT
+   end-if
+! Observation for the annex
+   let $GPFR_OBSERVATION1_A = ''
+   let $GPFR_OBSERVATION2_A = ''
+   let $GPFR_OBSERVATION3_A = ''
+   let $GPFR_OBSERVATION4_A = ''
+   if $observ_id2 <> ''
+   let $sql-statement = 'GPFRPSL.sqr,Select observations for annex'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.GPFR_OBSERVATION1                 &GPFR_OBSERVATION1_A
+A.GPFR_OBSERVATION2                 &GPFR_OBSERVATION2_A
+A.GPFR_OBSERVATION3                 &GPFR_OBSERVATION3_A
+A.GPFR_OBSERVATION4                 &GPFR_OBSERVATION4_A
+   let $GPFR_OBSERVATION1_A = rtrim(&GPFR_OBSERVATION1_A, ' ')
+   let $GPFR_OBSERVATION2_A = rtrim(&GPFR_OBSERVATION2_A, ' ')
+   let $GPFR_OBSERVATION3_A = rtrim(&GPFR_OBSERVATION3_A, ' ')
+   let $GPFR_OBSERVATION4_A = rtrim(&GPFR_OBSERVATION4_A, ' ')
+FROM  PS_GPFR_PYSL_OBSRV A
+WHERE A.GPFR_OBSERV_ID   =  $observ_id2
+END-SELECT
+   end-if
+
+!URSSAF
+   if  $ANC_URSSAF_CD       <> $URSSAF_CD
+   let $ANC_URSSAF_CD       =  $URSSAF_CD
+   let $URSSAF_S_DESCR      =  ''
+   let $sql-statement = 'GPFRPSL.sqr,Select URSSAF description'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCRSHORT         &URSSAF_S_DESCR
+       let $URSSAF_S_DESCR   =   rtrim(&URSSAF_S_DESCR, ' ')
+FROM    PS_URSSAF_TBL_FRA A
+WHERE   A.URSSAF_CD_FRA    = $URSSAF_CD
+END-SELECT
+   end-if
+
+!LABOR AGREEMENT
+   if  $ANC_LABOR_AGREEMENT <> &LABOR_AGREEMENT
+   let $ANC_LABOR_AGREEMENT =  &LABOR_AGREEMENT
+   let $LABOR_DESCR         =    ''
+   let $sql-statement = 'GPFRPSL.sqr,Select labor agreement'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCR            &LABOR_DESCR
+        let $LABOR_DESCR =    rtrim(&LABOR_DESCR, ' ')
+FROM    PS_EMPL_CTG  A
+WHERE   A.LABOR_AGREEMENT   = &LABOR_AGREEMENT
+END-SELECT
+   let $sql-statement = 'GPFRPSL.sqr,Select labor agreement rel-lang.'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCR            &LABOR_DESCR_LNG
+        let $LABOR_DESCR =    rtrim(&LABOR_DESCR_LNG, ' ')
+FROM    PS_EMPL_CTG_LNG  A
+WHERE   A.LABOR_AGREEMENT   = &LABOR_AGREEMENT
+    AND A.LANGUAGE_CD       = $language_cd
+END-SELECT
+   end-if
+
+!EMPL_CTG_L1
+
+   if  $ANC_LABOR_AGREEMENT_C <> &LABOR_AGREEMENT
+   or  $ANC_EMPL_CTG          <> $EMPL_CTG
+   let $ANC_LABOR_AGREEMENT_C =  &LABOR_AGREEMENT
+   let $ANC_EMPL_CTG          =  $EMPL_CTG
+   let $DESCR1_FRA            = ''
+   let $DESCR2_FRA            = ''
+   let $DESCR3_FRA            = ''
+   let $DESCR4_FRA            = ''
+   let $DESCR5_FRA            = ''
+   let $sql-statement = 'GPFRPSL.sqr,Select empl_ctg_l1'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCR1_FRA            &DESCR1_FRA
+A.DESCR2_FRA            &DESCR2_FRA
+A.DESCR3_FRA            &DESCR3_FRA
+A.DESCR4_FRA            &DESCR4_FRA
+A.DESCR5_FRA            &DESCR5_FRA
+        let $DESCR1_FRA = rtrim(&DESCR1_FRA, ' ')
+        let $DESCR2_FRA = rtrim(&DESCR2_FRA, ' ')
+        let $DESCR3_FRA = rtrim(&DESCR3_FRA, ' ')
+        let $DESCR4_FRA = rtrim(&DESCR4_FRA, ' ')
+        let $DESCR5_FRA = rtrim(&DESCR5_FRA, ' ')
+FROM    PS_EMPL_CTG_L1  A
+WHERE    A.LABOR_AGREEMENT   = &LABOR_AGREEMENT
+     AND A.EMPL_CTG          = $EMPL_CTG
+END-SELECT
+
+   let $sql-statement = 'GPFRPSL.sqr,Select empl_ctg_l1 rel-lang.'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCR1_FRA            &DESCR1_LNG
+A.DESCR2_FRA            &DESCR2_LNG
+A.DESCR3_FRA            &DESCR3_LNG
+A.DESCR4_FRA            &DESCR4_LNG
+A.DESCR5_FRA            &DESCR5_LNG
+        let $DESCR1_FRA = rtrim(&DESCR1_LNG, ' ')
+        let $DESCR2_FRA = rtrim(&DESCR2_LNG, ' ')
+        let $DESCR3_FRA = rtrim(&DESCR3_LNG, ' ')
+        let $DESCR4_FRA = rtrim(&DESCR4_LNG, ' ')
+        let $DESCR5_FRA = rtrim(&DESCR5_LNG, ' ')
+FROM    PS_EMPL_CTG_L1_LNG A
+WHERE   A.LABOR_AGREEMENT   = &LABOR_AGREEMENT
+    AND A.EMPL_CTG          = $EMPL_CTG
+    AND A.LANGUAGE_CD       = $language_cd
+END-SELECT
+   end-if
+
+!ACCOUNTING INFO
+   if  $ANC_GP_PAYGROUP_RT <> $GP_PAYGROUP
+   or  $ANC_CAL_ID_RT      <> $CAL_ID
+   let $ANC_GP_PAYGROUP_RT =  $GP_PAYGROUP
+   let $ANC_CAL_ID_RT      =  $CAL_ID
+   let $RUN_TYPE           =  ''
+   let $sql-statement = 'GPFRPSL.sqr,Select accounting info.'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.RUN_TYPE               &RUN_TYPE
+   let $RUN_TYPE = rtrim(&RUN_TYPE, ' ') 
+FROM   PS_GP_CALENDAR  A
+WHERE   A.GP_PAYGROUP       = $GP_PAYGROUP
+    AND A.CAL_ID            = $CAL_ID
+END-SELECT
+   end-if
+
+!gp_net_dist_dtl
+
+   let $PAYMENT_MTHD  = ''
+   let #ACCOUNT_ID    = 0
+   if $RUN_TYPE <> ''
+     let $sql-statement = 'GPFRPSL.sqr,Select gp_net_dist_dtl'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.PAYMENT_MTHD           &PAYMENT_MTHD
+A.ACCOUNT_ID             &ACCOUNT_ID
+     let $PAYMENT_MTHD = &PAYMENT_MTHD
+     let #ACCOUNT_ID   = &ACCOUNT_ID
+FROM   PS_GP_NET_DIST_DTL  A
+WHERE       A.EMPLID     = $EMPLID
+        AND A.EMPL_RCD   = #EMPL_RCD
+        AND A.RUN_TYPE   = $RUN_TYPE
+        AND A.EFFDT     <= $SEG_END_DATE
+        AND A.EFFDT = (SELECT MAX(B.EFFDT) FROM PS_GP_NET_DIST_DTL B
+                        WHERE B.EMPLID   = A.EMPLID
+                          AND B.EMPL_RCD = A.EMPL_RCD
+                          AND B.RUN_TYPE = A.RUN_TYPE
+                          AND B.EFFDT   <= $SEG_END_DATE )
+END-SELECT
+   end-if
+
+!payment_mthd
+  if $ANC_PAYMENT_MTHD      <> $PAYMENT_MTHD
+     let $ANC_PAYMENT_MTHD  =  $PAYMENT_MTHD
+     let $PAYMENT_MTHD_NM   =  ''
+     if  $PAYMENT_MTHD      <> ''
+         move 'PAYMENT_MTHD'     to $FieldName
+         move $PAYMENT_MTHD      to $FieldValue
+         do Read-Translate-Table
+         let $PAYMENT_MTHD_NM    =  rtrim($XlatLongName, ' ')
+     end-if
+  end-if
+
+!BANK ACCOUNT INFO
+   let  $BANK_CD         =  ''
+   let  $BRANCH_EC_CD    =  ''
+   let  $ACCOUNT_EC_ID   =  ''
+   let  $CHECK_DIGIT     =  ''
+   if   #ACCOUNT_ID      <> 0
+   let $sql-statement    = 'GPFRPSL.sqr,Select bank account info'
+BEGIN-SELECT ON-ERROR=SQL-Error LOOPS = 1
+A.BANK_CD                   &BANK_CD
+A.BRANCH_EC_CD              &BRANCH_EC_CD
+A.ACCOUNT_EC_ID             &ACCOUNT_EC_ID
+A.CHECK_DIGIT               &CHECK_DIGIT
+   let  $BANK_CD         =  rtrim(&BANK_CD, ' ')
+   let  $BRANCH_EC_CD    =  rtrim(&BRANCH_EC_CD, ' ')
+   let  $ACCOUNT_EC_ID   =  rtrim(&ACCOUNT_EC_ID, ' ')
+   let  $CHECK_DIGIT     =  rtrim(&CHECK_DIGIT, ' ')
+FROM   PS_PYE_BANKACCT  A
+WHERE       A.EMPLID     = $EMPLID
+        AND A.ACCOUNT_ID = #ACCOUNT_ID
+        AND A.EFF_STATUS = 'A'
+END-SELECT
+   end-if
+end-procedure
+
+!********************************************************************
+!   Job Label
+!********************************************************************
+begin-procedure JobCodeLabel
+#debugd do Fin-Debug-Msg('JobCodeLabel')
+
+   if #FoundLabel = 0
+   let $sql-statement = 'GPFRPSL.sqr,Select job code Label'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCR                     &JOBCODE_NAME
+        let $JOBCODE_NAME = rtrim(&JOBCODE_NAME, ' ')
+        let #FoundLabel   = 1
+FROM    PS_JOBCODE_TBL A
+WHERE   A.JOBCODE    = &JOBCODE
+    AND A.SETID      = &SETID_JOBCODE
+    AND A.EFF_STATUS = 'A'
+    AND A.EFFDT     <= $SEG_END_DATE
+    AND A.EFFDT      = (SELECT MAX(B.EFFDT) FROM PS_JOBCODE_TBL B
+                         WHERE B.JOBCODE    = A.JOBCODE
+                           AND B.SETID      = A.SETID
+                           AND B.EFFDT     <= $SEG_END_DATE )
+END-SELECT
+   end-if
+end-procedure
+
+begin-procedure JobCodeRelated
+#debugd do Fin-Debug-Msg('JobCodeRelated')
+
+   if #FoundLabel = 0
+   let $sql-statement = 'GPFRPSL.sqr,Select job code rel-lang'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCR                     &JOBCODE_LNG
+        let $JOBCODE_NAME = rtrim(&JOBCODE_LNG, ' ')
+        let #FoundLabel   = 1
+FROM    PS_JOBCODE_LANG A
+WHERE   A.JOBCODE    = &JOBCODE
+    AND A.SETID      = &SETID_JOBCODE
+    AND A.EFFDT     <= $SEG_END_DATE
+    AND A.EFFDT      = (SELECT MAX(B.EFFDT) FROM PS_JOBCODE_TBL B
+                         WHERE B.JOBCODE    = A.JOBCODE
+                           AND B.SETID      = A.SETID
+                           AND B.EFF_STATUS = 'A'
+                           AND B.EFFDT     <= $SEG_END_DATE )
+    AND A.LANGUAGE_CD = $language_cd
+END-SELECT
+   end-if
+end-procedure
+
+!********************************************************************
+!   Department Label
+!********************************************************************
+begin-procedure DeptIdLabel
+#debugd do Fin-Debug-Msg('DeptIdLabel')
+
+   if #FoundLabel = 0
+   let $sql-statement = 'GPFRPSL.sqr,Select department'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCR                     &DEPT_NAME
+        let $DEPT_NAME    = rtrim(&DEPT_NAME, ' ')
+        let #FoundLabel   = 1
+FROM    PS_DEPT_TBL A
+WHERE   A.DEPTID     = &DEPTID
+    AND A.SETID      = &SETID_DEPT
+    AND A.EFF_STATUS = 'A'
+    AND A.EFFDT     <= $SEG_END_DATE
+    AND A.EFFDT      = (SELECT MAX(B.EFFDT) FROM PS_DEPT_TBL B
+                         WHERE B.DEPTID     = A.DEPTID
+                           AND B.SETID      = A.SETID
+                           AND B.EFFDT     <= $SEG_END_DATE )
+END-SELECT
+   end-if
+end-procedure
+
+begin-procedure DeptIdRelated
+#debugd do Fin-Debug-Msg('DeptIdRelated')
+
+   if #FoundLabel = 0
+   let $sql-statement = 'GPFRPSL.sqr,Select department rel-lang.'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCR                     &DEPT_LNG
+        let $DEPT_NAME    = rtrim(&DEPT_LNG, ' ')
+        let #FoundLabel   = 1
+FROM    PS_DEPT_TBL_LANG A
+WHERE   A.DEPTID     = &DEPTID
+    AND A.SETID      = &SETID_DEPT
+    AND A.EFFDT     <= $SEG_END_DATE
+    AND A.EFFDT      = (SELECT MAX(B.EFFDT) FROM PS_DEPT_TBL B
+                         WHERE B.DEPTID     = A.DEPTID
+                           AND B.SETID      = A.SETID
+                           AND B.EFF_STATUS = 'A'
+                           AND B.EFFDT     <= $SEG_END_DATE )
+    AND A.LANGUAGE_CD = $language_cd
+END-SELECT
+   end-if
+end-procedure
+
+!********************************************************************
+!   Company Label
+!********************************************************************
+begin-procedure CompanyLabel
+#debugd do Fin-Debug-Msg('CompanyLabel')
+
+   let $sql-statement = 'GPFRPSL.sqr,Select company table'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCR             &descr_c
+A.ADDRESS1          &address1
+A.ADDRESS2          &address2
+A.ADDRESS3          &address3
+A.ADDRESS4          &address4
+A.POSTAL            &postal_c
+A.CITY              &city_c
+        let $descr_c       = rtrim(&descr_c , ' ')
+        let $address1      = rtrim(&address1, ' ')
+        let $address2      = rtrim(&address2, ' ')
+        let $address3      = rtrim(&address3, ' ')
+        let $address4      = rtrim(&address4, ' ')
+        let $city_postal_c = rtrim(&postal_c, ' ') || ' ' || rtrim(&city_c, ' ')  !Simplified Payslip
+FROM    PS_COMPANY_TBL A
+WHERE   A.COMPANY  = $company
+    AND A.EFF_STATUS = 'A'
+    AND A.EFFDT     <= $SEG_END_DATE
+    AND A.EFFDT      = (SELECT MAX(B.EFFDT) FROM PS_COMPANY_TBL B
+                         WHERE B.COMPANY = A.COMPANY
+                           AND B.EFFDT  <= $SEG_END_DATE )
+END-SELECT
+   if #RelatedLabel = 1
+   let $sql-statement = 'GPFRPSL.sqr,Select company rel-lang.'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DESCR                      &DESCR_COMPANY_LANG
+        let $descr_c       = rtrim(&DESCR_COMPANY_LANG, ' ')
+FROM    PS_COMPNY_TBL_LANG A
+WHERE   A.COMPANY    = $company
+    AND A.EFFDT     <= $SEG_END_DATE
+    AND A.EFFDT      = (SELECT MAX(B.EFFDT) FROM PS_COMPANY_TBL B
+                         WHERE B.COMPANY    = A.COMPANY
+                           AND B.EFF_STATUS = 'A'
+                           AND B.EFFDT     <= $SEG_END_DATE )
+    AND A.LANGUAGE_CD = $language_cd
+END-SELECT
+   end-if
+     #debugd show 'emplid: ' $EMPLID 
+     #debugd show 'Company address: ' $descr_c ' ' $address1 ' ' $address2 ' ' $address3 ' ' $address4 ' ' $city_postal_c
+end-procedure
+
+!********************************************************************
+!   PROCEDURE TO OBTAIN SCHEDULE
+!********************************************************************
+begin-procedure get_schedule
+#debugd do Fin-Debug-Msg('get_schedule')
+
+   do get_gp_pygrp_dtl
+   let $ROTATION_ID='1'
+   let $sql-statement = 'GPFRPSL.sqr,Select schedule assignment'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.USE_DFLT_WS           &USE_DFLT_WS
+A.SCHEDULE_ID           &SCHEDULE_ID
+A.ROTATION_ID           &ROTATION_ID
+    if  &USE_DFLT_WS          <> 'Y'
+    and isblank(&SCHEDULE_ID) =   0
+        let $SCHEDULE_ID = &SCHEDULE_ID
+        let $ROTATION_ID = &ROTATION_ID
+    end-if
+FROM   PS_SCH_ASSIGN  A
+   WHERE       A.EMPLID    = $EMPLID
+           AND A.EMPL_RCD  = #EMPL_RCD
+           AND A.EFFDT    <= $SEG_END_DATE
+           AND A.EFFDT = (SELECT MAX(B.EFFDT) FROM PS_SCH_ASSIGN B
+                           WHERE B.EMPLID   = A.EMPLID
+                             AND B.EMPL_RCD = A.EMPL_RCD
+                             AND B.EFFDT   <= $SEG_END_DATE )
+END-SELECT
+
+     
+   let #sched_line_no = {bodyline}
+   alter-printer  font=3 point-size=6
+   do get_sch_clnd_tbl
+
+end-procedure
+
+!*******************************************************************
+begin-procedure get_gp_pygrp_dtl
+#debugd do Fin-Debug-Msg('get_gp_pygrp_dtl')
+
+   if  $ANC_GP_PAYGROUP_CAL  <> $GP_PAYGROUP
+   or  $ANC_SEG_END_DATE_CAL <> $SEG_END_DATE
+      or  $ANC_SCHEDULE_ID  <> $SCHEDULE_ID
+   let $ANC_GP_PAYGROUP_CAL  =  $GP_PAYGROUP
+   let $ANC_SEG_END_DATE_CAL =  $SEG_END_DATE
+   let $sql-statement = 'GPFRPSL.sqr,Select pygrp dtl'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.SCHEDULE_ID              &SCHEDULE_ID_PYGRP
+        let $SCHEDULE_ID = &SCHEDULE_ID_PYGRP
+  let  $ANC_SCHEDULE_ID  = $SCHEDULE_ID
+ FROM PS_GP_PYGRP_DTL  A
+WHERE A.GP_PAYGROUP = $GP_PAYGROUP
+  AND A.EFF_STATUS  = 'A'
+  AND A.EFFDT      <= $SEG_END_DATE
+  AND A.EFFDT       = (SELECT MAX(B.EFFDT) FROM PS_GP_PYGRP_DTL B
+                        WHERE B.GP_PAYGROUP = A.GP_PAYGROUP
+                          AND B.EFFDT      <= $SEG_END_DATE )
+END-SELECT
+   end-if
+
+end-procedure
+
+!********************************************************************
+begin-procedure  get_sch_clnd_tbl
+#debugd do Fin-Debug-Msg('get_sch_clnd_tbl')
+
+   let $sql-statement = 'GPFRPSL.sqr,Select sch clnd tbl'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.DUR            &DUR
+A.SCHED_HRS      &SCHED_HRS
+         do  print_sched  
+FROM  PS_GPFR_PS_SCH_TMP  A
+WHERE   A.JOBINSTANCE = #TMPJOBINSTANCE
+  AND   A.SCHEDULE_ID = $SCHEDULE_ID
+    AND   A.ROTATION_ID = $ROTATION_ID
+  AND ( A.DUR BETWEEN $SEG_BEG_DATE AND $SEG_END_DATE )
+ORDER BY A.DUR
+END-SELECT
+
+end-procedure
+
+!**********************************************************
+begin-procedure get_abs_B
+#debugd do Fin-Debug-Msg('get_abs_B')
+
+   let $gpfr_pysl_abs_b = ' '
+   let $sql-statement = 'GPFRPSL.sqr,Select,get_abs_B'
+BEGIN-SELECT ON-ERROR=SQL-Error
+T.GP_ELN_ATTR2
+   let $gpfr_pysl_abs_b = &T.GP_ELN_ATTR2
+   #debugd show 'Absence found on ' &DUR
+FROM PS_GP_RSLT_ABS A, PS_GP_ELN_PIN_ATTR T
+  WHERE A.CAL_RUN_ID            = $calrunid
+        AND A.EMPLID            = $EMPLID
+        AND A.EMPL_RCD          = #EMPL_RCD
+        AND A.GP_PAYGROUP       = $GP_PAYGROUP
+        AND A.RSLT_SEG_NUM      = #RSLT_SEG_NUM
+        AND A.ABSENCE_DATE      = &DUR
+        AND A.PIN_TAKE_NUM      = T.PIN_NUM
+        AND T.GP_ELN_ATTR2      <> ' '
+END-SELECT
+
+end-procedure
+
+begin-procedure get_abs_A
+#debugd do Fin-Debug-Msg('get_abs_A')
+
+   let $gpfr_pysl_abs_a = ' '
+   let $sql-statement = 'GPFRPSL.sqr,Select,get_abs_A'
+BEGIN-SELECT ON-ERROR=SQL-Error
+T.GP_ELN_ATTR1
+   let $gpfr_pysl_abs_a = &T.GP_ELN_ATTR1
+FROM PS_GP_RSLT_ABS A, PS_GP_ELN_PIN_ATTR T
+  WHERE A.CAL_RUN_ID            = $calrunid
+        AND A.EMPLID            = $EMPLID
+        AND A.EMPL_RCD          = #EMPL_RCD
+        AND A.GP_PAYGROUP       = $GP_PAYGROUP
+        AND A.RSLT_SEG_NUM      = #RSLT_SEG_NUM
+        AND A.ABSENCE_DATE      = &DUR
+        AND A.PIN_TAKE_NUM      = T.PIN_NUM
+        AND T.GP_ELN_ATTR1   <> ' '
+END-SELECT
+
+end-procedure
+
+!********************************************************************
+begin-procedure print_body_heading
+#debugd do Fin-Debug-Msg('print_body_heading')
+
+              
+              
+        print-image company_logo (1,1)
+
+        alter-printer  font=3 point-size=10
+
+!company
+
+let $company_addr = ' '
+let $Estab_addr = ' '
+let $EE_addr = ' '
+
+        print $descr_C            ( 2, 35) bold
+                 let $company_addr = $descr_C
+        if isblank($address1)      = 0
+           print   $address1      (+1, 35)
+                 let $company_addr = $company_addr ||';'||$address1
+        end-if
+        if isblank($address2)      = 0
+           print   $address2      (+1, 35)
+                 let $company_addr = $company_addr ||';'||$address2
+        end-if
+        if isblank($address3)      = 0
+           print   $address3      (+1, 35)
+                 let $company_addr = $company_addr ||';'||$address3
+        end-if
+        if isblank($address4)      = 0
+           print   $address4      (+1, 35)
+                 let $company_addr = $company_addr ||';'||$address4
+        end-if
+        if isblank($city_postal_c) = 0
+           print   $city_postal_c (+1, 35)
+                 let $company_addr = $company_addr ||';'||$city_postal_c
+        end-if
+              
+!period info
+
+        print $BROUILLON          (2, 109)
+        graphic (3,104,26) box 5
+
+        if $save_pysl_b_a = 'B' or $SAVE_PYSL_B_A = $null
+                 let $simp_save_pysl_b_a = 'B'
+          print 'Bulletin de paie' (4 ,105)   bold
+        else
+          print 'Annexe'           (4 ,105)   bold
+                let $simp_save_pysl_b_a = 'A'
+        end-if
+
+! Dates must be formatted for Informix
+        do Format-DateTime($seg_beg_date, $seg_beg_date_out, {DEFDMY}, '', '')
+        do Format-DateTime($seg_end_date, $seg_end_date_out, {DEFDMY}, '', '')
+
+        print 'Paie du'           (+1,105)
+        print  $seg_beg_date_out  (  ,116)
+        print  'au'               (+1,112)
+        print  $seg_end_date_out  (  ,116)
+
+!establishment
+
+        print 'Siret'             (9,35)
+        print $siret              ( ,43)
+        print $nic_code           ( ,56)
+        print 'Ape'               ( ,65)
+        print $ape                ( ,71)
+        print 'Organisme S.S.'    (+1,35)
+        print $URSSAF_CD          (  ,55)
+        print '/'                 (  ,61)
+        print $URSSAF_NM          (  ,63)
+        print '/'                 (  ,91)
+        print $URSSAF_S_DESCR     (  ,93)
+        print $LABOR_DESCR        (+1,35)
+              
+              let $Estab_addr = 'Siret'||' '||$siret||' '||$nic_code||' '||'Ape'||' '||$ape ||';'||'Organisme S.S.' ||' '||$URSSAF_CD||' '||'/'||' '||$URSSAF_NM ||' '||'/'||$URSSAF_S_DESCR||';'||$LABOR_DESCR 
+              
+
+!employee misc.
+
+        print 'No. S.S.'           (14,5)
+        print $NATIONAL_ID_FRA     (,20)
+        print 'Matricule'          (+1, 5)
+        print $EMPLID              (, 20)
+        print 'Entrée'             (+1,5)
+        print $contract_begin_dt_out (,20)
+        print 'Sortie'             (+1,5)
+        print $contract_end_dt_out (,20)
+        print 'Section'            (+1 ,5)
+        print $DEPT_NAME           (,20)
+        print 'Emploi'             (+1, 5)
+        print $JOBCODE_NAME        (, 20)
+        print 'Heures'             (+1,5)
+        print #hours_edt           (,20)
+        print 'Catégorie'          (+1, 5)
+        print $EMPL_CTG            (,20)
+        print $DESCR1_FRA          (+1, 5)
+        print $VALUE_1_FRA         (,20)
+        print $DESCR2_FRA          (+1, 5)
+        print $VALUE_2_FRA         (,20)
+        print $DESCR3_FRA          (+1, 5)
+        print $VALUE_3_FRA         (,20)
+        print $DESCR4_FRA          (+1, 5)
+        print $VALUE_4_FRA         (,20)
+        print $DESCR5_FRA          (+1, 5)
+        print $VALUE_5_FRA         (,20)
+
+!employee address
+
+        graphic (14,64,61) box 10
+        print      $empl_name      (16, 65)
+              let $EE_addr = $EE_addr||$empl_name 
+        let $empl_name=''
+              
+        if isblank($empl_addr1)  = 0
+           print   $empl_addr1     (+1, 65)
+                 let $EE_addr = $EE_addr ||';'||$empl_addr1
+           let $empl_addr1=''
+        end-if
+
+        if isblank($empl_addr2)  = 0
+          print    $empl_addr2     (+1, 65)
+                let $EE_addr = $EE_addr ||';'||$empl_addr2
+          let $empl_addr2=''
+        end-if
+
+        if isblank($empl_addr3)  = 0
+          print    $empl_addr3     (+1, 65)
+                let $EE_addr = $EE_addr ||';'||$empl_addr3
+          let $empl_addr3=''
+        end-if
+
+        if isblank($empl_addr4)  = 0
+          print    $empl_addr4     (+1 ,65)
+                let $EE_addr = $EE_addr ||';'||$empl_addr4
+          let $empl_addr4=''
+        end-if
+
+        if isblank($city_postal) = 0
+           print   $city_postal    (+1, 65)
+                 let $EE_addr = $EE_addr ||';'||$city_postal
+           let $city_postal=''
+        end-if
+  #Debugd Show ' Classic payslip: Company ' $company_addr ' Establishment ' $Estab_addr ' Employee ' $EE_addr
+
+
+!body heading
+
+     alter-printer  font=3 point-size=7
+
+      graphic (28,1,128) box 2
+      graphic (31,1,128) box 45
+
+
+      graphic (27,41,2) vert-line
+      graphic (  ,54,2) vert-line
+      graphic (  ,67,2) vert-line
+      graphic (  ,72,2) vert-line
+      graphic (  ,84,2) vert-line
+      graphic (  ,97,2) vert-line
+      graphic ( ,115,2) vert-line
+
+
+      graphic (30,41,45) vert-line
+      graphic ( ,54,45) vert-line
+      graphic ( ,67,45) vert-line
+      graphic ( ,72,45) vert-line
+      graphic ( ,84,45) vert-line
+      graphic ( ,97,45) vert-line
+      graphic ( ,102,45) vert-line
+      graphic ( ,115,45) vert-line
+
+      graphic (28,97,18) horz-line
+      graphic ( ,102,1) vert-line
+
+
+        print 'Elément'                 (28,5)  bold
+        print 'Rappel'                  (, 33)  bold
+        print 'Quantité'                (, 43)  bold
+        print 'Valeur'                  (, 56)  bold
+        print 'Taux'                    (, 68)  bold
+        print 'A déduire'               (, 73)  bold
+        print 'A Payer'                 (, 86)  bold
+        print 'Charges patronales'      (, 97)  bold
+        print 'Calendrier'              (, 118) bold
+
+        print 'ou base'                 (+1,44) bold
+        print 'unitaire'                (, 55)  bold
+        print 'Taux'                    (, 98)  bold
+        print 'Montant'                 (, 106) bold
+        print ' '                       (+1)
+              
+              
+
+end-procedure
+
+!**********************************************************
+begin-procedure print_sched
+#debugd do Fin-Debug-Msg('print_sched')
+
+     let #sched_line_no = #sched_line_no + 1
+     let $edit_sch      = edit(&DUR, 'DD') || ' ' || edit(&DUR, 'DY')
+        let $abs_code = ''
+     if  &sched_hrs <> 0
+         let #sched_min = 60 * mod(&sched_hrs, 1)
+         let #sched_hr  = floor(&sched_hrs)
+         let $edit_sch  = $edit_sch || edit(#sched_hr, '99') || 'H' || edit(#sched_min, '09')
+     end-if
+    
+    if $payslip_option = 'C' or  $payslip_option = 'B'
+       print $edit_sch (#sched_line_no, 116)
+       end-if
+        
+     if $save_pysl_b_a = 'B' or $save_pysl_b_a = $null
+        do get_abs_b
+        if $GPFR_PYSL_ABS_B <> ' '
+               if $payslip_option = 'C' or  $payslip_option = 'B'
+           print $GPFR_PYSL_ABS_B (, 126)
+               end-if
+                 let $abs_code = $GPFR_PYSL_ABS_B
+        end-if
+     else
+        do get_abs_a
+        if $GPFR_PYSL_ABS_A <> ' '
+              
+              if $payslip_option = 'C' or  $payslip_option = 'B'
+           print $GPFR_PYSL_ABS_A (, 126)
+              end-if
+                 let $abs_code = $GPFR_PYSL_ABS_A
+        end-if
+     end-if
+         if $work_sched <> ' '
+           let $work_sched = $work_sched||';'||$edit_sch||' '||$abs_code!absence data
+         else
+           let $work_sched = $edit_sch||' '|| $abs_code 
+         end-if
+end-procedure
+
+!***************************************************************
+begin-procedure  print_footing_desc
+#debugd do Fin-Debug-Msg('print_footing_desc')
+
+!print accumulators' heading
+
+        alter-printer  font=3 point-size=6
+        graphic (80,1,128) box 3
+        print 'Cumuls'   (80,2) bold
+        print 'Mensuel'  (+1,2) bold
+        print 'Annuel'   (+1,2) bold
+
+
+!print bank info
+
+     if $save_pysl_b_a = 'B' or $save_pysl_b_a = $null
+        alter-printer  font=3 point-size=10
+        graphic (77,1,98) box 2
+        let $edit_line = 'Mode de règlement : Le ' || $pymt_dt_out
+        if isblank($PAYMENT_MTHD_NM) = 0
+           let $edit_line = $edit_line || ' par ' || $PAYMENT_MTHD_NM
+        end-if
+        print $edit_line                  (77,  2)
+              
+              let $payment_info = $edit_line
+              
+        if $BANK_CD       <> ''
+        or $BRANCH_EC_CD  <> ''
+        or $ACCOUNT_EC_ID <> ''
+        or $CHECK_DIGIT   <> ''
+           let $edit_line = 'Compte ' || $BANK_CD ||' '|| $BRANCH_EC_CD ||' '|| $ACCOUNT_EC_ID ||' '|| $CHECK_DIGIT
+           print $edit_line               (+1,  2)
+                 let $bank_info = $edit_line
+        end-if
+        
+                            
+!print net pay
+
+       graphic (77,104,25) box 2
+       print 'NET A PAYER'               (77,105) bold
+       print #sum_net_val                (+1, 106) edit $9,999,999.99 bold
+          
+          let #net_info = #sum_net_val 
+
+!print observation
+
+       alter-printer  font=3 point-size=6
+       graphic (84,1,63)  box 4
+       if isblank($observ_id1) = 0
+          if isblank($GPFR_OBSERVATION1_B) = 0
+             print   $GPFR_OBSERVATION1_B         (84, 2)
+                      let $observation = $GPFR_OBSERVATION1_B
+          end-if
+          if isblank($GPFR_OBSERVATION2_B) = 0
+             print   $GPFR_OBSERVATION2_B         (+1, 2)
+                     let $observation = $observation||';'||$GPFR_OBSERVATION2_B 
+          end-if
+          if isblank($GPFR_OBSERVATION3_B) = 0
+             print   $GPFR_OBSERVATION3_B         (+1, 2)
+                      let $observation = $observation||';'||$GPFR_OBSERVATION3_B 
+          end-if
+          if isblank($GPFR_OBSERVATION4_B) = 0
+             print   $GPFR_OBSERVATION4_B         (+1, 2)
+                      let $observation = $observation||';'||$GPFR_OBSERVATION4_B 
+          end-if
+       end-if
+    else
+       alter-printer  font=3 point-size=6
+       graphic (84,1,63)  box 4
+       if isblank($observ_id2) = 0
+          if isblank($GPFR_OBSERVATION1_A) = 0
+             print   $GPFR_OBSERVATION1_A         (84, 2)
+                      let $observation = $GPFR_OBSERVATION1_A
+          end-if
+          if isblank($GPFR_OBSERVATION2_A) = 0
+             print   $GPFR_OBSERVATION2_A         (+1, 2)
+                      let $observation = $observation||';'||$GPFR_OBSERVATION2_A
+          end-if
+          if isblank($GPFR_OBSERVATION3_A) = 0
+             print   $GPFR_OBSERVATION3_A         (+1, 2)
+                      let $observation = $observation||';'||$GPFR_OBSERVATION3_A
+          end-if
+          if isblank($GPFR_OBSERVATION4_A) = 0
+             print   $GPFR_OBSERVATION4_A         (+1, 2)
+                      let $observation = $observation||';'||$GPFR_OBSERVATION4_A
+          end-if
+       end-if
+    end-if
+
+       let $observation_info = $observation
+       
+!print accum 11/14
+
+       graphic (84,68,61) box 4
+
+       print 'Congés payés'        (84, 69)
+       print 'Exercice en cours'   (+1, 69)
+       print 'Exercice précédent'  (+1, 69)
+
+       graphic (+1,68,61) box 1
+       print 'Repos compensateur exerçable' (,69)
+
+
+
+!constant
+
+      alter-printer  font=4 point-size=8
+      print 'Document à conserver sans limitation de durée'  (88, ) center
+         
+end-procedure
+
+!************************************************************************
+begin-procedure get_footing
+#debugd do Fin-Debug-Msg('get_footing')
+
+   clear-array name=ACCUMLINES
+   if  $ANC_PAYSLIPID     <> $PAYSLIPID
+   or  $ANC_SAVE_PYSL_B_A <> $SAVE_PYSL_B_A
+   let $ANC_PAYSLIPID     =  $PAYSLIPID
+   let $ANC_SAVE_PYSL_B_A =  $SAVE_PYSL_B_A
+       clear-array name=ACCUMTITLE
+       ! read the accumulator setup
+       let $sql-statement = 'GPFRPSL.sqr,Select,S_GPFR_PAY_SLIP_2'
+BEGIN-SELECT ON-ERROR=SQL-Error
+D.GPFR_COLUMN_NO        &GPFR_COLUMN_NO
+D.DESCR1_FRA            &DESCR_ACUM
+D.PIN_NUM               &GPFR_PIN_NUM_CUR
+D.GPFR_PIN_NUM          &GPFR_PIN_NUM_YTD
+        let ACCUMTITLE.DESCR1_FRA    (&GPFR_COLUMN_NO) = rtrim(&DESCR_ACUM, ' ')
+        let ACCUMTITLE.PIN_NUM_CUR   (&GPFR_COLUMN_NO) = &GPFR_PIN_NUM_CUR
+        let ACCUMTITLE.PIN_NUM_YTD   (&GPFR_COLUMN_NO) = &GPFR_PIN_NUM_YTD
+FROM PS_GPFR_PAY_SLIP_2 D
+WHERE D.GPFR_PAY_SLIP_ID = $PAYSLIPID
+  AND D.GPFR_PYSL_B_A    = $SAVE_PYSL_B_A
+ORDER BY D.GPFR_COLUMN_NO
+END-SELECT
+
+       if #RelatedLabel = 1
+         let $sql-statement = 'GPFRPSL.sqr,Select,PS_GPFR_PS2_LNG'
+begin-select ON-ERROR=SQL-Error
+D.GPFR_COLUMN_NO        &GPFR_COLUMN_NO_LNG
+D.DESCR1_FRA            &DESCR_ACUM_LNG
+         let ACCUMTITLE.DESCR1_FRA(&GPFR_COLUMN_NO_LNG) = rtrim(&DESCR_ACUM_LNG, ' ')
+FROM PS_GPFR_PS2_LNG D
+WHERE D.LANGUAGE_CD = $language_cd
+end-select
+       end-if
+   end-if
+
+   ! read the results
+   let $sql-statement = 'GPFRPSL.sqr,Select,get_footing '
+BEGIN-SELECT ON-ERROR=SQL-Error
+D.GPFR_ELEMENT_ORDER    &GPFR_COLUMN_NO_2
+A.PIN_NUM               &ACCUM_PIN_2
+A.CURRENCY_CD           &CURRENCY_CD_2ar
+A.CURRENCY_CD2          &CURRENCY_CD2_2ar
+SUM(A.CALC_RSLT_VAL)    &RSLT_ACUM_2
+    if &CURRENCY_CD2_2ar <> &CURRENCY_CD_2ar
+       do ConvertCurrency(&RSLT_ACUM_2, &CURRENCY_CD2_2ar, &CURRENCY_CD_2ar,
+                          $BaseRtType, $PYMT_DT, #Converted, 'F')
+    else
+       let #Converted = &RSLT_ACUM_2
+    end-if
+    if ACCUMTITLE.PIN_NUM_CUR(&GPFR_COLUMN_NO_2)    = &ACCUM_PIN_2
+       let ACCUMLINES.AMOUNT_CUR(&GPFR_COLUMN_NO_2) = ACCUMLINES.AMOUNT_CUR(&GPFR_COLUMN_NO_2) + #Converted
+    end-if
+    if ACCUMTITLE.PIN_NUM_YTD(&GPFR_COLUMN_NO_2)    = &ACCUM_PIN_2
+       let ACCUMLINES.AMOUNT_YTD(&GPFR_COLUMN_NO_2) = ACCUMLINES.AMOUNT_YTD(&GPFR_COLUMN_NO_2) + #Converted
+    end-if
+FROM PS_GPFR_PS_ACU_TMP A,
+     PS_GPFR_PS_PIN_TMP D
+WHERE A.JOBINSTANCE      = #TMPJOBINSTANCE
+AND   A.EMPLID           = $EMPLID
+AND   A.CAL_RUN_ID       = $calrunid
+AND   A.EMPL_RCD         = #EMPL_RCD
+AND   A.GP_PAYGROUP      = $GP_PAYGROUP
+AND   A.CAL_ID           = $CAL_ID
+AND   A.RSLT_SEG_NUM     = #RSLT_SEG_NUM
+AND   A.JOBINSTANCE      = D.JOBINSTANCE
+AND   A.GP_PAYGROUP      = D.GP_PAYGROUP
+AND   A.PIN_NUM          = D.PIN_NUM
+AND   D.GPFR_PAY_SLIP_ID = $PAYSLIPID
+AND   D.GPFR_PYSL_B_A    = $SAVE_PYSL_B_A
+GROUP BY D.GPFR_ELEMENT_ORDER, A.PIN_NUM, A.CURRENCY_CD, A.CURRENCY_CD2
+END-SELECT
+
+end-procedure
+
+begin-procedure  print_accums
+#debugd do Fin-Debug-Msg('print_accums')
+
+    alter-printer  font=3 point-size=6
+    let #i = 1
+        while #i < {MaxRowsAcu}
+           let #column_no  = #i
+           let $descr2      = ACCUMTITLE.DESCR1_FRA(#i)
+       if isblank($descr2) = 0
+           let #amount_cur = ACCUMLINES.AMOUNT_CUR(#i)
+           let #amount_ytd = ACCUMLINES.AMOUNT_YTD(#i)
+                 let #pin_num_cur  = ACCUMTITLE.PIN_NUM_CUR(#i)
+                 let #pin_num_ytd  = ACCUMTITLE.PIN_NUM_YTD(#i)
+                
+  
+                 
+       if #column_no >= 1 and #column_no <= 10
+              let #pos_column = #column_no + 1
+          use-column #pos_column
+            if $descr2 <> 'Simplified'
+                print $descr2          (80,2,11)
+          print #amount_cur     (+1,2) edit b999,999.99
+          print #amount_ytd     (+1,2) edit b999,999.99
+          use-column 0
+                   end-if
+           end-if
+
+       if #column_no >= 11 and #column_no <= 13
+              let #pos_column = #column_no - 2
+          use-column #pos_column
+          print $descr2          (84,2)
+          print #amount_cur     (+1,2) edit b999,999.99
+          print #amount_ytd     (+1,2) edit b999,999.99
+          use-column 0
+           end-if
+
+       if #column_no >= 14
+              if #amount_cur <> 0
+             do Format-DateTime($PRD_END_DT3, $PRD_END_DT_OUT, {DEFDMY}, '', '')
+             print #amount_cur     (87,96) edit b99,99
+             print 'jours avant le'    (,104)
+             print $PRD_END_DT_OUT (,118)
+                  end-if
+           end-if
+
+           end-if
+           add 1 to #i
+        end-while
+          let $descr2 = ''
+end-procedure
+
+!***********************************************************************
+
+begin-procedure Add_rows
+#debugd do Fin-Debug-Msg('Add_rows')
+
+      add 1 to #Rows
+      if #Rows >= {MAXROWS}
+
+         let #message_nbr=2
+         do get_message_catalog
+         show $message_text {MAXROWS} $message_key
+
+         let #message_nbr=3
+         do get_message_catalog
+         show $message_text $message_key
+
+      end-if
+
+end-procedure
+
+!***********************************************************************
+
+begin-procedure Get_message_catalog
+#debugd do Fin-Debug-Msg('Get_message_catalog')
+
+   let $sql-statement = 'GPFRPSL.sqr,Select message catalog'
+
+  let $curr_language_cd = $language_cd
+  let #MessageSetNbr    = 17145
+  let #MessageNbr       = #message_nbr
+
+  do Read-MsgCatalog-Table
+
+  let $message_key  = ' (' || $MessageLangCd          || ','  ||
+                         to_char(#MessageSetNbr)     || ','  ||
+                         to_char(#message_nbr)       || ') '
+
+  let $message_text   = ' ' || rtrim($MessageText, ' ') || ' '
+
+end-procedure
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Init                                             *
+! Initialize variables that we'll use for ePay processing              *
+!***********************************************************************
+begin-procedure GP-ePay-Init
+#debugd do Fin-Debug-Msg('GP-ePay-Init')
+
+   let $sql-statement = 'GPFRPSL.sqr, GP-ePay-Init '
+
+  Do Check-ePay-installed ($ePay_Installed)
+
+    If $ePay_Installed = 'Y'
+     Move 'GPFRPSL' to $ReportID
+
+      let #eV4 =  To_number($prcs_process_instance)
+
+      !* have the Output Working Directory from the Process parameters table
+      do Get-Output-Wrk-Directory(#eV4, $PRCSOUTPUTDIR, $PRCSNAME) 
+
+      !* have the URL id from the Payslip option table
+      do Get-ePay-URLid ('FRA', $eV18)
+
+      !* Global ePay variable settings used in GP-ePay procedures in this SQR
+      let $eV1 = $prcs_oprid
+      let $eV2 = $prcs_run_cntl_id
+      let $eV3 = $ReportID          !used for proc name instaed of prcsname from output wrk dir
+
+      ! Open the file for writing epay control data
+      ! Let $GP_PSLP_CTLFILE   = $eV3 || '.txt'
+      ! Let $FILELAYOUT = 'GP_SS_PSLP_TMP'
+      ! Do Open-ePay-Guide-DataFile($PRCSOUTPUTDIR,$GP_PSLP_CTLFILE)
+
+      ! when we do not pass a control file
+       Let $GP_PSLP_CTLFILE = ' '
+       Let $FILELAYOUT = ' '
+
+    End-If
+
+end-procedure !GP-ePay-Init
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Guide                                            *
+! Insert one row per payslip into the temporary guide table for ePay   *
+!***********************************************************************
+
+begin-procedure GP-ePay-Guide
+#debugd do Fin-Debug-Msg('GP-ePay-Guide')
+
+let $sql-statement = 'GPFRPSL.sqr,GP-ePay-Guide'
+
+ If $ePay_Installed = 'Y'
+
+   do Get-RUN-TYPE  ! not an ePay procedure
+   let $eV5  = rtrim($Emplid, ' ')
+   let $eV5  = ltrim($eV5, ' ')
+   let $eV6 = rtrim($calrunid,' ')
+   let $eV6 = ltrim($eV6,' ')
+   let $eV7  = 'GPFRA'
+   let $CAL_ID = rtrim($CAL_ID, ' ')
+   let $GP_PAYGROUP = rtrim($GP_PAYGROUP, ' ')
+   String $CAL_ID $GP_PAYGROUP #EMPL_RCD #RSLT_SEG_NUM by '_' into $epayslip
+   let $eV8  = rtrim($epayslip, ' ')! || '_' || $eV5 ! gp epay payslip id
+   let $eV9  = &pymt_dt
+   let $eV10  = &PRD_END_DT
+   let $eV11 = &seg_bgn_dt
+   let #eV12 = #sum_net_val    ! net pay
+   let $eV13 = rtrim($estab_descr, ' ')   ! payslip description
+   if $eV13 = ''
+     let $eV13 = 'No DESCRIPTION'
+   end-if
+   let $eV14 = rtrim($eRUN_TYPE, ' ')
+   let $eV15 = 'ORIG'    ! payslip status ORIGINAL
+   let $eV16 = $eV5 || '_' || $eV6 || '_' ||$eV7 || '_' ||$eV8 || '.pdf'   ! sysfilename of the payslip pdf
+   let $eV17 = $eV16                                                              !userfilename  - what the payee sees filename as
+   let #eV19 = #page-count - 1                                                 !begin page number of payslip in output report
+   let #eV20 = #page-count - 1                                                 !end page number of payslip in output report
+
+   !Input:OPRID, RUN_CNTL_ID, PROCNAME, DATAINST, EMPLID, CAL_RUN_ID, SRCPRODUCT,
+   !GP_PSLP_ID,PYMT_DT,PRD_END_DT,PRD_BGN_DT,#NET_PAY,Payslip DESCR,RUN_TYPE,
+   !PSLP_STATUS,ATTACHSYSFILENAME, ATTACHUSERFILE,FILEURLID, BGNPGNBR,ENDPGNBR
+
+  !do Insert-ePay-Guide-Data($eV1,$eV2,$eV3,#eV4,$eV5,$eV6,$eV7,$eV8,$eV9,$eV10,$eV11,#eV12,$eV13,$eV14,$eV15,$eV16,$eV17,$eV18,#eV19,#eV20) 
+   if $payslip_option <> 'C'       ! classic payslip is for reconciliation purpose, enabling it in self service is not required  
+    
+    do Insert-ePay-Guide-Data($eV1,$eV2,$eV3,#eV4,$eV5,$eV6,$eV7,$eV8,$eV9,$eV10,$eV11,#eV12,$eV13,$eV14,$eV15, $file_name_burst_fld,$eV17,$eV18,0,0) 
+   end-if
+!   do Write-ePay-Guide-Data($eV1,$eV2,$eV3,#eV4,$eV5,$eV6,$eV7,$eV8,$eV9,$eV10,$eV11,#eV12,$eV13,$eV14,$eV15,$eV16,$eV17,$eV18,#eV19,#eV20)
+ End-If
+
+end-procedure ! GP-ePay-Guide
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Control                                          *
+! Insert one row per report into the epay run control table            *
+!***********************************************************************
+begin-procedure GP-ePay-Control
+#debugd do Fin-Debug-Msg('GP-ePay-Control')
+
+let $sql-statement = 'GPFRPSL.sqr,GP-ePay-Control '
+
+ If $ePay_Installed = 'Y'
+   let $rptid = lower($ReportID)
+   let $eCV7  = $rptid || '_' || $prcs_process_instance || '.PDF'
+   let $eCV8  = rtrim($PRCSOUTPUTDIR, ' ')
+
+   ! Input:OPRID,RUN_CNTL_ID,PROCNAME,SPLIT_IND,ATCH_IND,CTLFILE,SOURCEFILE,
+   ! SOURCELOC,WORKINGLOC,FILELAYOUT,DATAINST,FILEURLID,CLEANUP
+ if $payslip_option <> 'C'
+  do Insert-ePay-RunControl($eV1,$eV2,$eV3,'N', 'Y', $GP_PSLP_CTLFILE, $eCV7,$eCV8,' ',$FILELAYOUT,#eV4,$eV18,'N')  
+ end-if
+ End-If
+
+end-procedure !GP-ePay-Control
+
+!***********************************************************************
+! Get-RUN-TYPE                                                         *
+!***********************************************************************
+begin-procedure Get-RUN-TYPE
+#debugd do Fin-Debug-Msg('Get-RUN-TYPE')
+
+let $RUN_TYPE           =  ''
+let $sql-statement = 'GPFRPSL.sqr,Select , Get-RUN-TYPE'
+BEGIN-SELECT ON-ERROR=SQL-Error
+A.RUN_TYPE               &eRUN_TYPE
+   let $eRUN_TYPE = rtrim(&eRUN_TYPE, ' ')
+      
+FROM   PS_GP_CALENDAR  A
+WHERE   A.GP_PAYGROUP       = $GP_PAYGROUP
+    AND A.CAL_ID            = $CAL_ID
+END-SELECT
+end-procedure
+
+!--------------------------------------------------------------------!
+! Debug Msg                                                          !
+!--------------------------------------------------------------------!
+begin-procedure Fin-Debug-Msg($procedure_name)
+   display ' '
+   display '----------------------------------'
+   display $procedure_name
+   #debugt date-time () {Native-DateTime} &SysDateTime
+   #debugt move &SysDateTime to $SysDateTime
+   #debugt show 'TIMING, ' $procedure_name ', ' $SysDateTime
+   display ' '
+
+end-procedure ! Fin-Debug-Msg
+
+
+
+
+
+
+
+!***********************************************************************
+!***********************************************************************
+#Include 'stdapi.sqc'     !Routines to update run status
+#Include 'readmsgc.sqc'   !Read the Message Catalog Table
+#Include 'reset1.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'   !Get-Current-DateTime procedure
+#Include 'datetime.sqc'   !Routines for date and time formatting
+#Include 'number.sqc'     !Routines to format numbers
+#Include 'useprntr.sqc'
+#Include 'sqrtrans.sqc'
+#Include 'datemath.sqc'
+#Include 'readxlat.sqc'   !Read Translate Table
+#Include 'hrsecty.sqc'    !Read SQR Security Parameters
+#Include 'gpsspslp.sqc'
+#Include 'gpfrspsl.sqc'
+!***********************************************************************
+
+
+

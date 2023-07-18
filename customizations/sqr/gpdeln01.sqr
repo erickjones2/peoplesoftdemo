@@ -1,0 +1,1090 @@
+
+!***********************************************************************
+!  GPDELN01:   Payroll Loans                                           *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:03:36:16                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !set environment
+
+#define col0         1   ! ee
+#define col1        10   ! rcd
+#define col2        16   ! name
+#define col2a       48   ! monat
+#define col2b       51   ! jahr    
+#define col2c       43   ! monat header (Monat/Jahr)
+#define col3        55   ! instance header 
+#define col3a       54   ! instance 
+#define col3c       61   ! alt/neu
+#define col4        66   ! acct
+#define col5        87   ! invest#
+#define col6        110  ! Tilgung
+#define col6a       112  ! Tilgung hdr
+
+#define col10       122  ! Zinsen
+#define col10a      125  ! Zinsen hdr
+
+#define col11       134  ! Restschuld
+#define col12       146  ! Restschuld Vorjahr
+#define col13a      142  ! summe
+#define col13       158  ! Geldwerter Vorteil
+#define col14       170  ! stopped at 
+#define col15       181  !
+
+begin-Program
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Report
+  do Process-Main
+  do Stdapi-Term
+end-Program
+
+#include 'setup32.sqc'
+
+!****************************************************************************
+begin-heading 10
+uppercase $ReportTitle
+#include 'stdhdgtr.sqc'
+print $SubTitle          (-1,1) center
+
+! !!!position            (+1,1)
+
+print 'Firma:'           (+1, {col0})
+
+print $PyentDescr        (, {col1})
+print $PyentAddr         (+1, {col1})
+print $AMOUNT_SPEC1      (,1)  center
+let $ZipCity = $PyentZip || ' ' || $PyentCity
+print $ZipCity           (+1, {col1})
+
+
+Do Loan-Detail-Heading
+
+end-heading
+
+!****************************************************************************
+begin-procedure Init-Report
+  do Stdapi-Init
+  let $Location_Crit     = ''
+  let $Location1_Crit    = ''
+  let #sumRemBal         = 0
+  let #new_page          = 1
+
+
+  display $prcs_process_instance 
+
+  let #ReportProcessInstance = 0
+ 
+  if $prcs_process_instance  = ''
+     do ask-input
+  else
+     do Get-Report-Parameters
+     let #ReportProcessInstance = $prcs_process_instance 
+
+  end-if
+
+  do Get-Values
+  do Init_Report_Translation ($ReportID, $language_cd)
+  
+  
+  move 'GPDELN01' to $ReportID
+  do ConvertToComponents($Ctl_Curr_Pay_End_Dt,$YYYY,$mm,$dd)
+    
+  do Get-Translate-Value
+  let $ReportTitle   = 'Aufstellung von Arbeitgeberdarlehen für ' ||
+                   $Month_Name || ' ' ||$YYYY
+ 
+  let $Ctl_Curr_PayE = $Ctl_Curr_Pay_End_Dt
+
+! initialize variable header field
+  let $monat_hdr       = 'Monat/Jahr'
+  let $tilgung_hdr     = ' Tilgung'
+  let $zinsen_hdr      = ' Zinsen'
+  let $taxadvance_hdr1 = ' Geldwerter'
+  let $taxadvance_hdr2 = ' Vorteil'
+
+  
+  !print $Print_Title (+2,{Col3})
+  
+! print additional header
+  do format-datetime($Ctl_Curr_PayE,$Ctl_Curr_Pay_End_Dt1,{DEFDATE},'','')
+  do format-datetime($Ctl_Curr_PayE,$Ctl_Curr_Pay_End_Dt2,{DEFCMP},'','')
+  let $Sticht = '2002'  || '01' ||  '01'
+  do Format-DateTime($Sticht, $Sticht1, {DEFCMP},'','native')
+  do Format-DateTime($Sticht1, $Stichtag, {DEFCMP},'','')
+
+  if $Ctl_Curr_Pay_End_Dt2 >= $Stichtag
+      let $AMOUNT_SPEC1 = 'Betragsangaben in EURO'
+      let $ToCurrency = 'EUR'
+      let $Eur = ' EUR '
+  else
+      let $AMOUNT_SPEC1 = 'Betragsangaben in DM'
+      let $ToCurrency = 'DEM'
+      let $Eur = ' DM '
+  end-if
+
+  let $Print_Title = ' Report ID : ' || $ReportID || ' ReportTitle : ' || $ReportTitle 
+  
+  display 'init report'
+  display $Print_Title  
+  
+  
+  end-procedure Init-Report
+
+
+!****************************************************************************
+begin-procedure Ask-Input
+
+input $Ctl_Curr_Pay_End_Dt  'Enter Pay End Date' type=date
+input $Ctl_PayEntity 'Pay Entity ' type=char
+let $Month_Year     = $MONTH_YEAR
+end-procedure Ask-Input
+
+
+!****************************************************************************
+
+begin-procedure Get-Values
+
+let $language_cd              = $PRCS_LANGUAGE_CD
+let $Ctl_Curr_Pay_End_Dt      = &GPDE_RUN_CNTL.GPDE_AL_CPAY_ENDDT
+let $ctl_curr_pay_entity = rtrim(&GPDE_RUN_CNTL.PAY_ENTITY,' ')
+
+do Get-PayEntity-Address
+
+end-procedure Get-Values
+!****************************************************************************
+
+Begin-Procedure Process-Main
+
+do clean-up
+do Prepare-Data
+do Prepare-LN-WRK
+
+PRINT ' ' ()
+    let $subtitle = 'Laufende Darlehen'
+    do Get-Loans-CurrentAndRetro
+    PRINT ' ' (+2,1)
+
+    
+New-Page
+
+    let $subtitle = 'Ausgesetzte Darlehen'
+    do Get-Loans-Stopped
+    PRINT ' ' (+2,1)
+
+
+do clean-up    
+    
+End-Procedure Process-Main
+
+
+!*********************************************************************
+Begin-Procedure clean-up
+
+begin-sql
+DELETE FROM PS_GPDE_RP_LN_WRK  WHERE PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+
+begin-sql
+DELETE FROM PS_GPDE_RP_LN_DRV WHERE PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+
+end-procedure clean-up
+
+
+!*********************************************************************
+Begin-Procedure Prepare-LN-WRK
+
+
+! ------------ get current calculation data including retro as 'C'
+! 'N' is similar to 'C' but means, that no old version exists
+
+begin-sql
+INSERT INTO PS_GPDE_RP_LN_WRK (
+PROCESS_INSTANCE 
+,EMPLID      
+,CAL_RUN_ID         
+,EMPL_RCD 
+,GP_PAYGROUP 
+,CAL_ID             
+,ORIG_CAL_RUN_ID    
+,RSLT_SEG_NUM 
+,GPDE_BL_TYPE 
+,INSTANCE 
+,GPDE_LN_YEAR 
+,GPDE_LN_MONTH 
+,PAY_ENTITY 
+,PRD_END_DT                                             
+,GPDE_AL_CPAY_ENDDT                                     
+,CURRENCY_CD 
+,GPDE_LN_DED_AMT 
+,GPDE_LN_DED_AMTINT 
+,GPDE_LN_TAXED_AMT 
+,GPDE_LN_REM_BAL 
+,GPDE_LN_REM_BAL_PY 
+)
+SELECT 
+D1.PROCESS_INSTANCE,
+L1.EMPLID,
+L1.CAL_RUN_ID,
+L1.EMPL_RCD,
+L1.GP_PAYGROUP,
+L1.CAL_ID,
+L1.ORIG_CAL_RUN_ID,
+L1.RSLT_SEG_NUM,
+D1.GPDE_BL_TYPE,
+L1.INSTANCE, 
+L1.GPDE_LN_YEAR, 
+L1.GPDE_LN_MONTH, 
+L1.PAY_ENTITY,
+L1.PRD_END_DT,
+L1.GPDE_AL_CPAY_ENDDT,
+L1.CURRENCY_CD, 
+L1.GPDE_LN_DED_AMT, 
+L1.GPDE_LN_DED_AMTINT, 
+L1.GPDE_LN_TAXED_AMT, 
+L1.GPDE_LN_REM_BAL, 
+L1.GPDE_LN_REM_BAL_PY 
+FROM PS_GPDE_LN_RSLT L1
+,PS_GPDE_RP_LN_DRV D1
+WHERE L1.PAY_ENTITY = $Ctl_PayEntity
+AND L1.EMPLID = D1.EMPLID
+AND L1.CAL_RUN_ID = D1.CAL_RUN_ID
+AND L1.EMPL_RCD = D1.EMPL_RCD
+AND L1.GP_PAYGROUP = D1.GP_PAYGROUP
+AND L1.CAL_ID = D1.CAL_ID
+AND L1.ORIG_CAL_RUN_ID = D1.ORIG_CAL_RUN_ID
+AND L1.RSLT_SEG_NUM = D1.RSLT_SEG_NUM
+AND L1.GPDE_AL_CPAY_ENDDT = D1.GPDE_AL_CPAY_ENDDT
+AND D1.GPDE_BL_TYPE IN  ('C','N')
+AND D1.PROCESS_INSTANCE = #ReportProcessInstance
+
+end-sql
+
+
+
+! ------------ get previous (=before) row for each current calculation row as 'B'
+
+begin-sql
+INSERT INTO PS_GPDE_RP_LN_WRK (
+PROCESS_INSTANCE 
+,EMPLID      
+,CAL_RUN_ID         
+,EMPL_RCD 
+,GP_PAYGROUP 
+,CAL_ID             
+,ORIG_CAL_RUN_ID    
+,RSLT_SEG_NUM 
+,GPDE_BL_TYPE 
+,INSTANCE 
+,GPDE_LN_YEAR 
+,GPDE_LN_MONTH 
+,PAY_ENTITY 
+,PRD_END_DT                                             
+,GPDE_AL_CPAY_ENDDT                                     
+,CURRENCY_CD 
+,GPDE_LN_DED_AMT 
+,GPDE_LN_DED_AMTINT 
+,GPDE_LN_TAXED_AMT 
+,GPDE_LN_REM_BAL 
+,GPDE_LN_REM_BAL_PY 
+)
+SELECT 
+D1.PROCESS_INSTANCE,
+L1.EMPLID,
+L1.CAL_RUN_ID,
+L1.EMPL_RCD,
+L1.GP_PAYGROUP,
+L1.CAL_ID,
+L1.ORIG_CAL_RUN_ID,
+L1.RSLT_SEG_NUM,
+D1.GPDE_BL_TYPE,
+L1.INSTANCE, 
+L1.GPDE_LN_YEAR, 
+L1.GPDE_LN_MONTH, 
+L1.PAY_ENTITY,
+L1.PRD_END_DT,
+L1.GPDE_AL_CPAY_ENDDT,
+L1.CURRENCY_CD, 
+-L1.GPDE_LN_DED_AMT, 
+-L1.GPDE_LN_DED_AMTINT, 
+-L1.GPDE_LN_TAXED_AMT, 
+L1.GPDE_LN_REM_BAL, 
+L1.GPDE_LN_REM_BAL_PY 
+FROM PS_GPDE_LN_RSLT L1
+,PS_GPDE_RP_LN_DRV D1
+WHERE L1.PAY_ENTITY = $Ctl_PayEntity
+AND L1.EMPLID = D1.EMPLID
+AND L1.CAL_RUN_ID = D1.CAL_RUN_ID
+AND L1.EMPL_RCD = D1.EMPL_RCD
+AND L1.GP_PAYGROUP = D1.GP_PAYGROUP
+AND L1.CAL_ID = D1.CAL_ID
+AND L1.ORIG_CAL_RUN_ID = D1.ORIG_CAL_RUN_ID
+AND L1.RSLT_SEG_NUM = D1.RSLT_SEG_NUM
+AND L1.GPDE_AL_CPAY_ENDDT = D1.GPDE_AL_CPAY_ENDDT
+AND D1.GPDE_BL_TYPE IN  ('B')
+AND D1.PROCESS_INSTANCE = #ReportProcessInstance
+
+
+end-sql
+
+end-Procedure Prepare-LN-WRK
+!*********************************************************************
+
+
+
+
+
+!*********************************************************************
+Begin-Procedure Prepare-Data
+
+!-------------------------------------------------------
+! NOTICE: the driver is generic (does not depend on Loans)
+! it can be copied and reused for all delta reports.
+!-------------------------------------------------------
+! create a helper table with a row for the current and previous calculation.
+! we will use this later to find our rows from the KUG WA table
+!
+! GPDE_BL_TYPE
+! 'C'   current calculation
+! 'B'   before current calculation
+! 'R'   raw data, discarded later
+! 'N'   current calculation with no previous data
+!
+!
+! Find the current and the previous version for each calculation period
+! -- when the emplid ever had KUG in our PAY-entity
+! ==> raw driver
+begin-sql
+INSERT INTO PS_GPDE_RP_LN_DRV (
+ PROCESS_INSTANCE
+ ,EMPLID 
+ ,CAL_RUN_ID 
+ ,EMPL_RCD 
+ ,GP_PAYGROUP 
+ ,CAL_ID 
+ ,ORIG_CAL_RUN_ID 
+ ,RSLT_SEG_NUM 
+ ,PRD_END_DT 
+ ,PAY_ENTITY 
+ ,GPDE_AL_CPAY_ENDDT 
+ ,GPDE_BL_TYPE
+)
+SELECT
+ #ReportProcessInstance
+ ,A.EMPLID 
+ ,A.CAL_RUN_ID 
+ ,A.EMPL_RCD 
+ ,A.GP_PAYGROUP 
+ ,A.CAL_ID 
+ ,A.ORIG_CAL_RUN_ID 
+ ,A.RSLT_SEG_NUM 
+ ,A.PRD_END_DT 
+ ,A.PAY_ENTITY 
+ ,A.GPDE_AL_CPAY_ENDDT 
+ ,'R'
+  FROM PS_GPDE_RP_0001 A 
+where A.PAY_ENTITY = $Ctl_PayEntity
+AND (A.GPDE_AL_CPAY_ENDDT = (SELECT MAX(A2.GPDE_AL_CPAY_ENDDT) 
+      from PS_GPDE_RP_0001 A2
+      WHERE A2.EMPLID = A.EMPLID
+        AND A2.EMPL_RCD = A.EMPL_RCD 
+        AND A2.CAL_ID = A.CAL_ID
+        AND A2.GPDE_AL_CPAY_ENDDT < $Ctl_Curr_Pay_End_DT
+    )
+    OR A.GPDE_AL_CPAY_ENDDT = $Ctl_Curr_Pay_End_DT
+)
+ AND A.EMPLID IN (SELECT DISTINCT EMPLID FROM PS_GPDE_LN_RSLT WHERE PAY_ENTITY=$Ctl_PayEntity)
+end-sql
+
+! mark rows from the current calculation
+! these will always be printed if a KUG WA row exists.
+begin-sql
+UPDATE PS_GPDE_RP_LN_DRV SET GPDE_BL_TYPE='C' 
+WHERE GPDE_AL_CPAY_ENDDT = $Ctl_Curr_Pay_End_DT
+AND PROCESS_INSTANCE = #ReportProcessInstance
+
+end-sql
+
+
+! mark rows from previous periods only when:
+!   -- a row exists for the same calendar which is marked 'C'
+!
+begin-sql
+UPDATE PS_GPDE_RP_LN_DRV SET GPDE_BL_TYPE='B' 
+WHERE EXISTS (
+    SELECT 'X' FROM PS_GPDE_RP_LN_DRV DRV2
+    WHERE 0=0
+        AND DRV2.EMPLID = PS_GPDE_RP_LN_DRV.EMPLID 
+        AND DRV2.EMPL_RCD = PS_GPDE_RP_LN_DRV.EMPL_RCD 
+        AND DRV2.CAL_ID = PS_GPDE_RP_LN_DRV.CAL_ID 
+        AND DRV2.PRD_END_DT = PS_GPDE_RP_LN_DRV.PRD_END_DT 
+        AND DRV2.PAY_ENTITY = PS_GPDE_RP_LN_DRV.PAY_ENTITY 
+        AND DRV2.GPDE_BL_TYPE = 'C'
+        AND DRV2.PROCESS_INSTANCE = #ReportProcessInstance
+)
+AND GPDE_BL_TYPE='R' 
+AND PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+! Mark rows which are new and have no corresponding old row
+! these should be printed without "neu" label
+!
+begin-sql
+UPDATE PS_GPDE_RP_LN_DRV SET GPDE_BL_TYPE='N' 
+WHERE NOT EXISTS (
+    SELECT 'X' FROM PS_GPDE_RP_LN_DRV DRV2
+    WHERE 0=0
+        AND DRV2.EMPLID = PS_GPDE_RP_LN_DRV.EMPLID 
+        AND DRV2.EMPL_RCD = PS_GPDE_RP_LN_DRV.EMPL_RCD 
+        AND DRV2.CAL_ID = PS_GPDE_RP_LN_DRV.CAL_ID 
+        AND DRV2.PRD_END_DT = PS_GPDE_RP_LN_DRV.PRD_END_DT 
+        AND DRV2.PAY_ENTITY = PS_GPDE_RP_LN_DRV.PAY_ENTITY 
+        AND DRV2.GPDE_BL_TYPE = 'B'
+        AND DRV2.PROCESS_INSTANCE = #ReportProcessInstance
+)
+AND GPDE_BL_TYPE='C' 
+AND PROCESS_INSTANCE = #ReportProcessInstance
+end-sql
+
+
+
+begin-sql
+DELETE FROM PS_GPDE_RP_LN_DRV WHERE PROCESS_INSTANCE = #ReportProcessInstance 
+AND GPDE_BL_TYPE='R' 
+end-sql
+
+
+End-Procedure Prepare-Data
+
+
+
+!*********************************************************************
+Begin-Procedure Get-Loans-CurrentAndRetro
+
+    let $sel_by_payentity = ''
+    if $ctl_curr_pay_entity <> ' ' and $ctl_curr_pay_entity <> ''
+       let $sel_by_payentity_t = ' and T.PAY_ENTITY = ''' || $ctl_curr_pay_entity || ''' '
+       let $sel_by_payentity_u = ' and U.PAY_ENTITY = ''' || $ctl_curr_pay_entity || ''' '
+       let $sel_by_payentity_rc = ' and RC.PAY_ENTITY = ''' || $ctl_curr_pay_entity || ''' '
+    end-if
+
+    do Initialize-Sums    
+
+
+begin-SELECT
+RB.EMPLID                       &RB.EMPLID
+RB.EMPL_RCD                     &RB.EMPL_RCD
+RB.INSTANCE                     &RB.INSTANCE
+RB.CURRENCY_CD                  &RB.CURRENCY_CD
+RB.GPDE_LN_DED_BEG_DT           &RB.GPDE_LN_DED_BEG_DT
+RB.GPDE_LN_AMT                  &RB.GPDE_LN_DED_AMT
+RB.GPDE_LN_INTEREST             &RB.GPDE_LN_INTEREST
+RB.GPDE_LN_ACTIVE               &RB.GPDE_LN_ACTIVE
+RB.ENTERED_DT                   &RB.ENTERED_DT
+RB.GPDE_LN_ACCT                 &RB.GPDE_LN_ACCT
+RB.GPDE_LN_INVEST               &RB.GPDE_LN_INVEST
+ 
+    do Initialize
+ 
+    let $EMPLID                          = &RB.EMPLID
+    let #EMPL_RCD                        = &RB.EMPL_RCD
+    let #INSTANCE                        = &RB.INSTANCE
+    let $ACCT                            = &RB.GPDE_LN_ACCT
+    let $INVEST                          = &RB.GPDE_LN_INVEST
+    let $ACTIVE                          = &RB.GPDE_LN_ACTIVE
+    if  $ACTIVE = 'N' 
+        let $STOPPED_DT                      = &RB.ENTERED_DT
+        do format-datetime($STOPPED_DT,$STOPPED_DT_fmt,{DEFDATE},'','')
+    end-if
+
+
+! set flag to print emplid, name and Loans header if group change
+    let #same_empl = 0
+    let #same_instance = 0
+
+    if $prev_empl = &RB.EMPLID and #prev_empl_rcd = &RB.EMPL_RCD 
+       let #same_empl = 1
+       if #prev_instance = &RB.INSTANCE 
+          let #same_instance = 1
+       end-if
+    end-if
+    
+    do Get-EE-Name($EMPLID,$FULL_NAME)
+    do Get-RSLT
+
+    let $prev_empl = &RB.EMPLID
+    let #prev_emplrcd = &RB.EMPL_RCD
+    let #prev_instance = &RB.INSTANCE
+ 
+FROM  PS_GPDE_LN_SETUP RB 
+ WHERE GPDE_LN_DED_BEG_DT <= $Ctl_Curr_Pay_End_DT
+and exists (select 1 
+     from PS_GPDE_RP_LN_WRK wrk 
+     where wrk.EMPLID = RB.EMPLID 
+     and wrk.EMPL_RCD = RB.EMPL_RCD 
+     and wrk.INSTANCE = RB.INSTANCE
+     and wrk.PROCESS_INSTANCE = #ReportProcessInstance)
+
+order by RB.EMPLID, RB.EMPL_RCD, RB.INSTANCE
+
+   
+end-SELECT
+
+ 
+end-procedure Get-Loans-currentAndRetro
+
+
+!*********************************************************************
+Begin-Procedure Get-RSLT
+
+
+let #loc_counter = 0
+
+begin-Select
+U.EMPLID               &U.EMPLID
+U.EMPL_RCD             &U.EMPL_RCD
+U.INSTANCE             &U.INSTANCE
+U.GPDE_LN_YEAR         &U.GPDE_LN_YEAR
+U.GPDE_LN_MONTH        &U.GPDE_LN_MONTH
+U.CAL_RUN_ID           &U.CAL_RUN_ID
+U.GPDE_LN_DED_AMT      &U.GPDE_LN_DED_AMT
+U.GPDE_LN_DED_AMTINT   &U.GPDE_LN_DED_AMTINT
+U.GPDE_LN_TAXED_AMT    &U.GPDE_LN_TAXED_AMT
+U.GPDE_LN_REM_BAL      &U.GPDE_LN_REM_BAL
+U.GPDE_LN_REM_BAL_PY   &U.GPDE_LN_REM_BAL_PY
+U.PAY_ENTITY           &U.PAY_ENTITY
+U.GPDE_BL_TYPE        &U.GPDE_BL_TYPE
+
+
+
+   let #DED_TX = &U.GPDE_LN_TAXED_AMT
+   let #REM_BAL = &U.GPDE_LN_REM_BAL
+   let #REM_BAL_PY = &U.GPDE_LN_REM_BAL_PY
+   let #DED_AMT = &U.GPDE_LN_DED_AMT
+   let #DED_INT = &U.GPDE_LN_DED_AMTINT
+   let #MONTH = &U.GPDE_LN_MONTH
+   let #YEAR = &U.GPDE_LN_YEAR
+   let $type = &U.GPDE_BL_TYPE
+
+   if $type <> 'B'
+      let $alt_neu = 'neu'
+   else
+      let $alt_neu = 'alt'
+   end-if
+
+   do Build-Sums
+   do Print-Loan-Det
+
+   let #same_empl = 1
+   let #same_instance = 1
+   let #new_page = 0
+   let #loc_counter = #loc_counter + 1
+
+   from PS_GPDE_RP_LN_WRK U
+   where U.EMPLID = $EMPLID
+ and U.EMPL_RCD = #EMPL_RCD
+ and U.INSTANCE = #INSTANCE
+ AND U.PROCESS_INSTANCE = #ReportProcessInstance
+order by U.EMPLID, U.GPDE_LN_YEAR, U.GPDE_LN_MONTH, U.INSTANCE, U.GPDE_BL_TYPE
+ 
+end-Select
+
+
+if #loc_counter > 1 
+   do Print-Loan-Totals
+end-if
+do Initialize-Sums
+
+end-procedure Get-RSLT
+
+
+!*********************************************************************
+
+Begin-Procedure Get-Loans-Stopped
+
+   do Initialize-Sums
+
+
+!initialize unwanted title-header parts
+
+   let $monat_hdr = ' '
+   let $monat_hdr       = ' '
+   let $tilgung_hdr     = ' '
+   let $zinsen_hdr      = ' '
+   let $taxadvance_hdr1 = ' '
+   let $taxadvance_hdr2 = ' '
+
+
+begin-SELECT
+BST.EMPLID                       &BST.EMPLID
+BST.EMPL_RCD                     &BST.EMPL_RCD
+BST.INSTANCE                     &BST.INSTANCE
+BST.CURRENCY_CD                  &BST.CURRENCY_CD
+BST.GPDE_LN_DED_BEG_DT           &BST.GPDE_LN_DED_BEG_DT
+BST.GPDE_LN_AMT                  &BST.GPDE_LN_DED_AMT
+BST.GPDE_LN_INTEREST             &BST.GPDE_LN_INTEREST
+BST.GPDE_LN_ACTIVE               &BST.GPDE_LN_ACTIVE
+BST.ENTERED_DT                   &BST.ENTERED_DT
+BST.GPDE_LN_ACCT                 &BST.GPDE_LN_ACCT
+BST.GPDE_LN_INVEST               &BST.GPDE_LN_INVEST
+RC.GPDE_LN_REM_BAL               &RC.GPDE_LN_REM_BAL
+RC.GPDE_LN_REM_BAL_PY            &RC.GPDE_LN_REM_BAL_PY
+ 
+    do Initialize
+    
+    let $EMPLID                          = &BST.EMPLID
+    let #EMPL_RCD                        = &BST.EMPL_RCD
+    let #INSTANCE                        = &BST.INSTANCE
+    let $ACCT                            = &BST.GPDE_LN_ACCT
+    let $INVEST                          = &BST.GPDE_LN_INVEST
+    let $ACTIVE                          = &BST.GPDE_LN_ACTIVE
+    let $STOPPED_DT                      = &BST.ENTERED_DT
+    do format-datetime($STOPPED_DT,$STOPPED_DT_fmt,{DEFDATE},'','')
+
+    do Get-EE-Name($EMPLID,$FULL_NAME)
+   
+    let #REM_BAL = &RC.GPDE_LN_REM_BAL
+    let #REM_BAL_PY = &RC.GPDE_LN_REM_BAL_PY
+    
+    do Build-Sums
+    do Print-Loan-Det-stopped
+ 
+ FROM  PS_GPDE_LN_SETUP BST
+    , PS_GPDE_LN_RSLT RC
+ WHERE 
+             BST.GPDE_LN_ACTIVE = 'N'
+   AND BST.EMPLID = RC.EMPLID
+   AND BST.EMPL_RCD = RC.EMPL_RCD
+   AND BST.INSTANCE = RC.INSTANCE
+   AND BST.ENTERED_DT <=  $Ctl_Curr_Pay_End_Dt
+   [$sel_by_payentity_rc]
+   and RC.GPDE_LN_YEAR = 
+     (select max(sub.GPDE_LN_YEAR) from PS_GPDE_LN_RSLT sub
+     where sub.EMPLID = BST.EMPLID
+     and sub.EMPL_RCD = BST.EMPL_RCD
+     and sub.INSTANCE = BST.INSTANCE
+     and sub.GPDE_LN_ACTIVE = 'Y')
+  and RC.GPDE_LN_MONTH =     
+     (select max(sub2.GPDE_LN_MONTH) from PS_GPDE_LN_RSLT sub2
+     where sub2.EMPLID = BST.EMPLID
+     and sub2.EMPL_RCD = BST.EMPL_RCD
+     and sub2.INSTANCE = BST.INSTANCE
+     and sub2.GPDE_LN_YEAR = (
+        (select max(sub3.GPDE_LN_YEAR) from PS_GPDE_LN_RSLT sub3
+         where sub3.EMPLID = BST.EMPLID
+         and sub3.EMPL_RCD = BST.EMPL_RCD
+         and sub3.INSTANCE = BST.INSTANCE
+  )))
+  and RC. GPDE_AL_CPAY_ENDDT =  (select max(sub.GPDE_AL_CPAY_ENDDT) 
+                          from PS_GPDE_LN_RSLT sub
+                          where sub.EMPLID = RC.EMPLID and
+                                sub.EMPL_RCD = RC.EMPL_RCD and
+                                sub.INSTANCE = RC.INSTANCE and 
+                                sub.GPDE_AL_CPAY_ENDDT <=  $Ctl_Curr_Pay_End_Dt
+)
+
+
+   end-SELECT
+    
+    do Print-Loan-Totals-stopped 
+    
+End-Procedure Get-Loans-Stopped
+
+
+
+!****************************************************************************
+begin-procedure Build-Sums
+
+   let #sumDedAmt = #sumDedAmt + #DED_AMT
+   let #sumDedInt = #sumDedInt + #DED_INT
+   let #sumRemBal = #sumRemBal + #REM_BAL
+   let #sumRemBalPY = #sumRemBalPY + #REM_BAL_PY
+   let #sumTX = #sumTX + #DED_TX
+   
+end-procedure Build-Sums
+
+
+!*********************************************************************
+Begin-Procedure Print-Loan-Det
+
+
+! group change  --> print employee information
+print ''                                (+1,{col0})
+
+if #same_empl = 0  OR #new_page = 1 
+   print ''                                (+1,{col0})
+   print $EMPLID                           (,{col0})
+   do Format-Number(#EMPL_RCD,$number,'9999')
+   print $number                           (,{col1})
+   print $FULL_NAME                        (,{col2})
+end-if
+
+ do Format-Number(#MONTH,$MONTH_fmt, '99')
+ do Format-Number(#YEAR,$YEAR_fmt, '9999')
+ let $MON_YEAR = $MONTH_fmt || '/' || substr($YEAR_fmt,3,5)
+ print $MON_YEAR                         (,{col2a})
+  
+do Format-Number(#INSTANCE,$number,'9999')
+print $number                              (,{col3a})
+
+! print alt/neu
+print $alt_neu                             (,{col3c})
+
+
+if (#same_instance = 0 or #same_empl = 0) or #new_page = 1
+   let $ACCT = substr($ACCT,1,20)
+   print $ACCT                            (,{col4})
+   let $INVEST = substr($INVEST,1,20)
+   print $INVEST                          (,{col5})
+end-if
+
+ do Format-Number(#DED_AMT,$number,'999,999.99')
+ print $number                             (,{col6})
+ do Format-Number(#DED_INT,$number,'999,999.99')
+ print $number                             (,{col10})
+
+
+! do not print for old retro rows
+if $type <> 'B'
+   do Format-Number(#REM_BAL,$number,'999,999.99')
+   print $number                             (,{col11})
+   do Format-Number(#REM_BAL_PY,$number,'999,999.99')
+   print $number                          (,{col12})
+end-if
+
+do Format-Number(#DED_TX,$number,'999,999.99')
+print $number                             (,{col13})
+
+print $STOPPED_DT_fmt                     (,{col14})
+
+end-procedure Print-Loan-Det
+
+
+
+
+
+!*********************************************************************
+Begin-Procedure Print-Loan-Det-stopped
+
+
+! group change or new page, --> print employee information
+
+print $EMPLID                           (+2,{col0})
+do Format-Number(#EMPL_RCD,$number,'9999')
+print $number                           (,{col1})
+print $FULL_NAME                        (,{col2})
+
+do Format-Number(#INSTANCE,$number,'9999')
+print $number                              (,{col3a})
+
+let $ACCT = substr($ACCT,1,20)
+print $ACCT                            (,{col4})
+
+let $INVEST = substr($INVEST,1,20)
+print $INVEST                          (,{col5})
+
+do Format-Number(#REM_BAL,$number,'999,999.99')
+print $number                             (,{col11})
+do Format-Number(#REM_BAL_PY,$number,'999,999.99')
+print $number                          (,{col12})
+
+
+print $STOPPED_DT_fmt                     (,{col14})
+
+
+end-procedure Print-Loan-Det-stopped
+
+
+!****************************************************************************
+begin-procedure Print-Loan-Totals
+ !
+
+    print '-'                                  (+1,110,60)FILL
+    print 'Summe pro Darlehen'                 (+1, 90)
+
+    do Format-Number(#sumDedAmt,$number,'999,999.99')
+    print $number                              (,{col6})
+
+    do Format-Number(#sumDedInt,$number,'999,999.99')
+    print $number                              (,{col10})
+
+    do Format-Number(#sumTX,$number,'999,999.99')
+    print $number                              (,{col13})
+    print ' '                                  (+1,{col0})
+
+
+end-Procedure Print-Loan-Totals
+
+
+
+
+!****************************************************************************
+begin-procedure Print-Loan-Totals-stopped 
+ !
+print '-'                                  (+1,1,181)FILL
+print 'Summen'                             (+1, {col0})
+
+
+if $type = ' '
+do Format-Number(#sumRemBal,$number,'999,999.99')
+print $number                              (,{col11})
+
+do Format-Number(#sumRemBalPY,$number,'999,999.99')
+print $number                              (,{col12})
+end-if
+
+
+
+
+end-Procedure Print-Loan-Totals-stopped
+
+!****************************************************************************
+begin-procedure Initialize
+
+let $EMPLID                          = ' '
+let #EMPL_RCD                        = 0
+let $NAME                            = ' '
+let #INSTANCE                        = 0
+let $ACCT                            = ' '
+let $INVEST                          = ' '
+let $ACTIVE                          = ' '
+let #DED_AMT                         = 0
+let #DED_INT                         = 0
+let #DED_TX                          = 0
+let #REM_BAL                         = 0
+let #REM_BAL_PY                      = 0
+let $STOPPED_DT_fmt                  = ' '
+let #MONTH                           = 0
+let #YEAR                            = 0
+let $PERIOD_fmt                      = ' '
+let $type                            = ' '
+let $alt_neu                         = ' '
+
+
+End-Procedure Initialize
+
+
+!*********************************************************************
+Begin-Procedure Initialize-Sums
+
+!initialize sums
+let #sumDedAmt                       = 0
+let #sumDedInt                       = 0
+let #sumRemBal                       = 0
+let #sumRemBalPY                     = 0
+let #sumTX                           = 0
+
+!let $prev_empl = ' '
+!let #prev_emplrcd = 0
+let #prev_instance = 0
+let #loc_counter = 0
+
+end-procedure Initialize-Sums
+
+!*********************************************************************
+Begin-Procedure Loan-Detail-Heading
+
+!print $subtitle                              (+2,{col0}
+
+print '-'                                     (+2,1,181)FILL
+
+print ' Restschuld'                           (+1,{col12})
+print $taxadvance_hdr1                        (,{col13})
+
+print 'Lfd.'                                  (,{col3})
+
+print 'Ausgesetzt'                            (,{col14})
+
+
+print 'Pers.-Nr.'                             (+1,{col0})
+print ' RCD'                                  (,{col1})
+print 'Name, Vorname'                         (,{col2})
+
+print $monat_hdr                              (,{col2c})
+!print 'Jahr'                                 (,{col2b})
+
+print ' Nr'                                   (,{col3})
+print 'Vertrags Nr.'                          (,{col4})
+print 'Investment Nr.'                        (,{col5})
+
+print $tilgung_hdr                            (,{col6a})
+print $zinsen_hdr                             (,{col10a})
+print ' Restschuld'                           (,{col11})
+print ' Vorjahre'                             (,{col12})
+print $taxadvance_hdr2                        (,{col13})
+print 'Ab'                                    (,{col14})
+print '-'                                     (+1,1,181)FILL
+
+let #new_page = 1
+
+
+End-Procedure Loan-Detail-Heading
+
+!**********************************************************************
+begin-procedure Get-EE-Name($IN_EMPLID,:$Full_Name)
+
+ do Get_Type_Options($IN_NAME_TYPE)
+
+Begin-Select
+NMLK.NAME                
+NMLK.FIRST_NAME          
+NMLK.LAST_NAME
+NMLK.NAME_PREFIX
+NMLK.NAME_TITLE
+NMLK.NAME_ROYAL_PREFIX
+NMLK.NAME_ROYAL_SUFFIX
+FROM PS_NAMES NMLK , PS_PERSON NM1LK
+WHERE NMLK.EMPLID    = $IN_EMPLID AND   NMLK.NAME_TYPE = $IN_NAME_TYPE
+AND   NMLK.EMPLID    = NM1LK.EMPLID AND   NMLK.EFFDT     =
+(SELECT MAX(NM2LK.EFFDT) FROM PS_NAMES NM2LK WHERE NM2LK.EMPLID    = NMLK.EMPLID AND
+                     NM2LK.NAME_TYPE = NMLK.NAME_TYPE AND NM2LK.EFFDT    <= NMLK.EFFDT)
+end-SELECT
+  move '' to $Full_Name
+  
+  let $Name              = rtrim(&NMLK.NAME,' ')
+  let $NAME_PREFIX       = rtrim(&NMLK.NAME_PREFIX,' ')
+  let $NAME_TITLE        = rtrim(&NMLK.NAME_TITLE, ' ')
+  let $NAME_ROYAL_PREFIX = rtrim(&NMLK.NAME_ROYAL_PREFIX, ' ')
+  let $NAME_ROYAL_SUFFIX = rtrim(&NMLK.NAME_ROYAL_SUFFIX, ' ')
+
+  let $field = rtrim($Name,' ')
+  find ',' in $Name 0 #locn
+  extract $LastName from $Name 0 #locn
+  add 2 to #locn
+  let $Name = substr($Name,#locn,50 - #locn)
+  find ',' in $Name 0 #locn
+  if #locn <> -1
+    extract $FirstName from $Name 0 #locn
+    add 1 to #locn
+    extract $PrefixName from $Name #locn 50
+  else
+    let $Firstname = $Name
+    let $PrefixName = ''
+  end-if
+  let $Full_Name = rtrim ($FirstName, ' ')
+  if rtrim ($NAME_ROYAL_SUFFIX, ' ') <> ''
+    concat ' ' with $Full_Name
+    concat $NAME_ROYAL_SUFFIX with $Full_Name
+  end-if
+  if rtrim ($NAME_ROYAL_PREFIX, ' ') <> ''
+    concat ' ' with $Full_Name
+    concat $NAME_ROYAL_PREFIX with $Full_Name
+  end-if
+  concat ' ' with $Full_Name
+  concat $LastName with $Full_Name
+  let $FirstName = rtrim(&NMLK.FIRST_NAME,' ')
+  let $LastName  = rtrim(&NMLK.LAST_NAME,' ')
+
+  let $Full_Name = substr($Full_Name,1,30)
+
+end-procedure Get-EE-Name
+
+
+!****************************************************************************************
+begin-procedure Get_Type_Options(:$Name_Type)
+
+let $Name_Type       = ''
+begin-select distinct
+INST.NAME_TYPE
+INST.ADDRESS_TYPE
+INST.PHONE_TYPE
+INST.E_ADDR_TYPE
+INST.GPDE_BIRTH_NM_TYPE
+   let $Name_Type      = &INST.NAME_TYPE
+from PS_GPDE_AL_INSTALL INST
+end-select
+
+end-procedure
+
+!**********************************************************************
+begin-procedure Get-Translate-Value
+
+  move 'MONTHCD' to $FieldName
+
+  move $mm to $FieldValue
+
+  do Read-Translate-Table
+  let $Month_Name = $XlatShortName
+  show 'Month Name = ' $Month_Name
+
+  do Init_Report_Translation ($ReportID,$curr_Language_Cd)
+  do Append_Report_Translation ('GPDELN01')
+  
+  do Get_Field_Information ('GPDELN01 ','EMPLID',    $EMPLID_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','EMPL_RCD',     $EMPL_RCD_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','INSTANCE',    $INSTANCE_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','DESCR50',    $DESCR50_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','CURRENCY_CD',      $CURRENCY_CD_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_AMT',  $GPDE_LN_AMT_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_INTEREST',     $GPDE_LN_INTEREST_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_PAYOUT_DT',      $GPDE_LN_PAYOUT_DT_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_CALC_TYPE',      $GPDE_LN_CALC_TYPE_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_DED_BEG_DT.FLD',      $GPDE_LN_DED_BEG_DT_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_DED_END_DT',     $GPDE_LN_DED_END_DT_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_DED_AMT',     $GPDE_LN_DED_AMT_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_ACTIVE', $GPDE_LN_DED_ACTIVE_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','ENTERED_DT',  $ENTERED_DT_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_STOP_DESCR',     $GPDE_LN_STOP_DESCR_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_PMT_PDS',        $GPDE_LN_PMT_PDS_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_ACCT',         $GPDE_LN_ACCT_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_INVEST',       $GPDE_LN_INVEST_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_YEAR',        $GPDE_LN_YEAR_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_MONTH',     $GPDE_LN_MONTH_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_DED_AMTINT',        $GPDE_LN_DED_AMTINT_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','CAL_RUN_ID',      $CAL_RUN_ID_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GP_PAYGROUP',    $GP_PAYGROUP_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','CAL_ID',       $CAL_ID_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','ORIG_CAL_RUN_ID',       $ORIG_CAL_RUN_ID_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','RSLT_SEG_NUM', $RSLT_SEG_NUM_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_TAXED_AMT',     $GPDE_LN_TAXED_AMT_lbl,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_REM_BAL',   $GPDE_LN_REM_BAL,#DW)
+  do Get_Field_Information ('GPDELN01 ','GPDE_LN_REM_BAL_PY',   $GPDE_LN_REM_BAL_PY,#DW)
+
+end-procedure Get-Translate-Value
+
+!****************************************************************************
+#include 'gpdeut06.sqc'  !get run control parameter values
+#include 'gpdeut04.sqc'  !get pay entity information
+#include 'curdttim.sqc'  !get-current-datetime procedure
+#include 'datetime.sqc'  !routines for date and time formatting
+#include 'validdt.sqc'   !validate date routine
+#include 'readxlat.sqc'  !read-translate-table procedure
+#include 'number.sqc'    !routines to format numbers
+#include 'stdapi.sqc'    !routines to update run status
+#include 'datemath.sqc'
+#include 'sqrtrans.sqc'
+
+
+
+
+
+

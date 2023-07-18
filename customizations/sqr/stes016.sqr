@@ -1,0 +1,540 @@
+!----------------------------------------------------------------------
+! Report Name: STES016 - Stock Purchase Disposition Reconciliation
+!----------------------------------------------------------------------
+!
+!
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:02:51:02                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!
+!----------------------------------------------------------------------
+! Program Descr:
+!----------------------------------------------------------------------
+! Prompts:       Stock ID, Stock Plan ID, From Date, Thru Date,
+!                Process Group,
+! Options:       None
+! Tables:        PS_ST_ESPP_PURCH
+!                PS_ST_ESPP_DISPOSN
+!                PS_ST_PERSON_NAME
+!                PS_ST_ESPP_PLAN
+! Sorts:         Stock Plan
+!                Process Group
+!                Disqualified Disposition
+!                Sent to Payroll Date
+!----------------------------------------------------------------------
+
+#include 'setenv.sqc'
+
+
+!----------------------------------------------------------------------
+Begin-Setup
+
+ #include 'ptpsl177.sqc'               ! Landscape 177 Columns
+
+End-Setup
+
+!----------------------------------------------------------------------
+! Procedure: Begin-Program
+! Descr:     Main Report procedure.
+!----------------------------------------------------------------------
+Begin-Program
+
+  do Init-Report
+  do Create-Array
+  do Build-Where-Clause
+  do Expand-Process-Group        !stprcgrp.sqc
+  let $WherePayrollDate = ' and B.ST_PR_DT IS NULL'
+  let $WhereOrder       = ' order by 1,10,17,11'
+  let $ProcessNull = 'Y'
+  do Main-Process
+  let $WherePayrollDate = ' and B.ST_PR_DT IS NOT NULL'
+  let $ProcessNull = 'N'
+  let $WhereOrder       = ' order by 2,10,17,11'
+  do Main-Process
+  if #ArrayCount > 1
+    do Print-Summary
+  end-if
+  do Reset
+  do Successful-EOJ
+
+ let $CurrentTime = datenow()
+ show 'Process ended at:   ' $SysDateTime      !standard output info to sqr.log
+
+End-Program
+
+!----------------------------------------------------------------------
+! Procedure: Begin-Heading
+! Descr:     Prints at the beginning of each page
+!----------------------------------------------------------------------
+Begin-Heading 09
+
+  #include 'stdhdg01.sqc'
+
+  print $StockIdLbl                                        (03,001,008)
+  print ':'                                                (  ,   ,001)
+  print $RC_Stock_ID                                       (  ,013,010)
+
+  print $FromLbl                                           (  ,073,004)
+  print ':'                                                (  ,   ,001)
+  print $FromDate                                          (  , +1,010)
+
+  print $ThruLbl                                           (  , +2,004)
+  print ':'                                                (  ,   ,001)
+  print $ThruDate                                          (  , +1,010)
+
+  print $StockPlanLbl                                      (04,001,010)
+  print ':'                                                (  ,   ,001)
+  print $RC_Stock_Plan                                     (  ,013,010)
+
+  print $PrcsGrpLbl                                        (  ,080,   )
+  print ':'                                                (  ,   ,001)
+  print $PrcsGrp                                           (  , +1,010)
+
+  print $DispTypelbl                                       (05,001,   )
+  print ':'                                                (  ,   ,001)
+  print $DisqualType                                       (  ,013,   )
+
+  print $SentLbl                                           (06,001,015)
+  print ':'                                                (  ,   ,001)
+  if $ProcessNull = 'Y'
+    print $NoLbl                                           (  ,020,002)
+  else
+    print $YesLbl                                          (  ,020,003)
+  end-if
+
+  print $NameLbl                                           (08,001,030)
+  print $GrantFmvlbl                                       (  ,032,009)
+  print $PurchFmvLbl                                       (  ,046,012)
+  print $DispPriceLbl                                      (  ,061,017)
+  print $Ordinarylbl                                       (  ,165,008)
+  print $PyDtLbl                                           (  ,128,020)
+  print $EmpIdLbl                                          (09,001,006)
+  print $GrantDtLbl                                        (  ,032,010)
+  print $PurchDtLbl                                        (  ,046,013)
+  print $DisposnDtLbl                                      (  ,061,016)
+  print $ShareDispLbl                                      (  ,087,015)
+  print $OrdIncLbl                                         (  ,111,015)
+  print $SourceLbl                                         (  ,128,022)
+  print '-'                                                (10,001,150) fill
+
+End-Heading
+
+!----------------------------------------------------------------------
+! Procedure: Init-Report
+! Descr:     Report initialization procedure.  Set titles, parameters.
+!            This is called from the Begin-Program procedure.
+!----------------------------------------------------------------------
+Begin-Procedure Init-Report
+
+  let $ReportID      = 'STES016'
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Define-Prcs-Vars
+  do Get-Run-Control-Parms
+  do Get-Report-Language
+  let $AsOfDate   = $AsOfToday
+  let #ArrayCount = 1
+
+  if $prcs_process_instance = ''
+  else
+    do Get-SQR-Parms                   ! Get Run Control Values
+  end-if
+
+  let $RC_Stock_ID           = rtrim($RC_Stock_ID,' ')
+  let $RC_Stock_Plan         = rtrim($RC_Stock_Plan,' ')
+  let $RC_FromDate           = rtrim($RC_FromDate,' ')
+  let $RC_ThruDate           = rtrim($RC_ThruDate,' ')
+  let $RC_PrcsGrp            = rtrim($RC_PrcsGrp,' ')
+  let $RC_Emplid             = rtrim($RC_Emplid,' ')
+
+  show 'Stock ID:      ' $RC_Stock_ID
+  show 'From Date:     ' $RC_FromDate
+  show 'Thru Date:     ' $RC_ThruDate
+  if $RC_Stock_Plan <> ''
+    show 'Stock Plan:    ' $RC_Stock_Plan
+  end-if
+  if $RC_PrcsGrp <> ''
+    show 'Prcs Group:    ' $RC_PrcsGrp
+  end-if
+  if $RC_Emplid <> ''
+    show 'Emplid:    ' $RC_Emplid
+  end-if
+
+  do Format-DateTime ($RC_FromDate, $FromDate, {DEFDATE}, '', '')
+  do Format-DateTime ($RC_ThruDate, $ThruDate, {DEFDATE}, '', '')
+
+  show ' '
+  let $CurrentTime = datenow()
+  show 'Process started at: ' $CurrentTime      !standard output info to sqr.log
+
+End-Procedure
+
+!----------------------------------------------------------------------
+! Procedure: Report-Translation
+! Descr:     This procedure is used to read language-dependent text from
+!            the database.
+!----------------------------------------------------------------------
+Begin-Procedure Report-Translation
+
+  do Init_Report_Translation ('STOCK',$language_cd)
+  do Append_Report_Translation ('STES016')
+  do Append_Report_Translation ('STOP020')
+
+  do Get_Field_Information ('STOCK','TOTAL',            $TotalLbl,       #DW)
+  do Get_Field_Information ('STOCK','GRAND_TOTAL',      $GrndTotLbl,     #DW)
+  do Get_Field_Information ('STOCK','STOCK_ID',         $StockIdLbl,     #DW)
+  do Get_Field_Information ('STOCK','PROCESS_GRP',      $PrcsGrpLbl,     #DW)
+  do Get_Field_Information ('STOCK','STOCK_PLAN',       $StockPlanLbl,   #DW)
+  do Get_Field_Information ('STOCK','NAME',             $NameLbl,        #DW)
+  do Get_Field_Information ('STOCK','EMPLID',           $EmpIdLbl,       #DW)
+  do Get_Field_Information ('STOCK','GRANT_PRICE',      $GrantPriceLbl,  #DW)
+  do Get_Field_Information ('STOCK','GRANT_DT',         $GrantDtLbl,     #DW)
+  do Get_Field_Information ('STOCK','DISPOSITION_PRICE',$DispPriceLbl,   #DW)
+  do Get_Field_Information ('STOCK','SHARES_DISPOSED',  $ShareDispLbl,   #DW)
+  do Get_Field_Information ('STOCK','FROM',             $FromLbl,        #DW)
+  do Get_Field_Information ('STOCK','THRU',             $ThruLbl,        #DW)
+  do Get_Field_Information ('STOCK','PURCHASE_FMV',     $PurchFmvLbl,    #DW)
+  do Get_Field_Information ('STOCK','PURCHASE_PRICE',   $PurchPriceLbl,  #DW)
+  do Get_Field_Information ('STOCK','PURCHASE_DT',      $PurchDtlbl,     #DW)
+  do Get_Field_Information ('STOCK','DISPOSITION_DT',   $DisposnDtLbl,   #DW)
+  do Get_Field_Information ('STOCK','ST_ORD_INCOME',    $OrdIncLbl,      #DW)
+  do Get_Field_Information ('STOCK','GRANT_FMV',        $GrantFMVlbl,    #DW)
+
+  do Get_Field_Information ('STES016','STES016',        $ReportTitle,    #DW)
+  do Get_Field_Information ('STES016','DISP_TYPE',      $DispTypelbl,    #DW)
+  do Get_Field_Information ('STES016','QUALIFIED',      $Qualifiedlbl,   #DW)
+  do Get_Field_Information ('STES016','DISQUALIFIED',   $DisQualifiedlbl,#DW)
+  do Get_Field_Information ('STES016','SUMMARY',          $SumLbl,        #DW)
+
+  do Get_Field_Information ('STOP020','ST_PR_DT',         $PyDtLbl,       #DW)
+  do Get_Field_Information ('STOP020','ST_SEND_SRC',      $SourceLbl,     #DW)
+  do Get_Field_Information ('STOP020','YES',              $YesLbl,        #DW)
+  do Get_Field_Information ('STOP020','NO',               $NoLbl,         #DW)
+  do Get_Field_Information ('STOP020','SENT_TO_PR',       $SentLbl,       #DW)
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Create-Array
+! Descr:   Creates array used for computing
+!-----------------------------------------------------------------------
+Begin-Procedure Create-Array
+
+  create-array name  = ProcessGroup         -
+               size  = 100                  -
+               field = PrcsGrp:char         -
+               field = SentToPayroll:char   -
+               field = SharesDisp:number    -
+               field = OrdIncome:number
+
+End-Procedure
+
+!----------------------------------------------------------------------
+! Section: Build-Where-Clause
+! Descr:   Construct portions of where clause, to be used in the main select,
+!          based on report parameters choosen.
+!----------------------------------------------------------------------
+
+Begin-Procedure Build-Where-Clause
+
+  let $SQLQuote              = ''''
+
+  if $RC_Stock_Plan <> ''
+    let $WhereStockPlan      = ' and A.STOCK_PLAN = '        || $SQLQuote || $RC_Stock_Plan || $SQLQuote
+  else
+    let $WhereStockPlan      = ''
+  end-if
+
+  if $RC_FromDate <> ''
+    let $WhereFromDate       = ' and B.DISPOSITION_DT  >= ' || $SQLQuote || $RC_FromDate || $SQLQuote
+  else
+    let $WhereFromDate       = ''
+  end-if
+
+  if $RC_ThruDate <> ''
+    let $WhereThruDate       = ' and B.DISPOSITION_DT  <= ' || $SQLQuote || $RC_ThruDate || $SQLQuote
+  else
+    let $WhereThruDate       = ''
+  end-if
+
+  if $RC_PrcsGrp <> ''
+    let $WherePrcsGrp        = ' and B.PROCESS_GRP2 = '      || $SQLQuote || $RC_PrcsGrp || $SQLQuote
+  else
+    let $WherePrcsGrp        = ''
+  end-if
+
+  if $RC_Emplid <> ''
+    let $WhereEmplID         = ' and A.EMPLID  = '          || $SQLQuote || $RC_Emplid || $SQLQuote
+  end-if
+
+End-Procedure
+
+!----------------------------------------------------------------------
+! Section: Main-Process
+!----------------------------------------------------------------------
+Begin-Procedure Main-Process
+
+Begin-Select
+
+B.PROCESS_GROUP
+B.PROCESS_GRP2
+A.EMPLID
+A.STOCK_PLAN
+A.GRANT_DT
+A.GRANT_FMV
+A.PURCHASE_FMV
+A.PURCHASE_PRICE
+A.PERIOD_END_DT
+B.DISQUAL_DISPOSN
+B.DISPOSITION_DT
+B.DISPOSITION_PRICE
+B.SHARES_DISPOSED
+B.ST_ORD_INCOME
+B.ST_SEND_SRC
+B.ST_PR_DT
+C.NAME
+
+  if $ProcessNull = 'Y'
+    let $PrcsGrp    = rtrim(&b.process_group,' ')
+  else
+    let $PrcsGrp    = rtrim(&b.process_grp2,' ')
+  end-if
+  let $DisqualDisposn    = rtrim(&b.disqual_disposn,' ')
+  print $PrcsGrp                            () on-break print=never level=1 procedure=PrcsGrp-Change
+  print $DisqualDisposn                     () on-break print=never level=2 procedure=Disq-Change
+
+  let $Print             = 'Y'
+  let $Emplid            = rtrim(&a.emplid,' ')
+  let $StockPlan         = rtrim(&a.stock_plan,' ')
+  let $GrantDt           = rtrim(&a.grant_dt,' ')
+  let #GrantFMV          = &a.grant_fmv
+  let #PurchaseFMV       = &a.purchase_fmv
+  let #PurchasePrice     = &a.purchase_price
+  let $PeriodEndDt       = rtrim(&a.period_end_dt,' ')
+  let $DispositionDt     = rtrim(&b.disposition_dt,' ')
+  let #DispositionPrice  = &b.disposition_price
+  let #SharesDisposed    = &b.shares_disposed
+  let $Name              = rtrim(&c.name,' ')
+  let #OrdIncome         = &b.st_ord_income
+  let $SendSource        = rtrim(&b.st_send_src,' ')
+  let $PayrollDt         = rtrim(&b.st_pr_dt,' ')
+  do Format-DateTime ($GrantDt       , $GrantDt       , {DEFDATE}, '', '')
+  do Format-DateTime ($PeriodEndDt   , $PeriodEndDt   , {DEFDATE}, '', '')
+  do Format-DateTime ($DispositionDt , $DispositionDt , {DEFDATE}, '', '')
+  if $ProcessNull = 'Y'
+    let $SendSourceXlat = ''
+  else
+    do Format-DateTime ($PayrollDt , $PayrollDt, {DEFDATE}, '', '')
+    move $SendSource to $FieldValue
+    move 'ST_SEND_SRC'  to $Fieldname
+    do Read-Translate-Table
+    let $SendSourceXlat = $Xlatlongname
+  end-if
+
+  if $DisqualDisposn = 'N'
+    let $DisqualType = $Qualifiedlbl
+  else
+    let $DisqualType = $DisQualifiedlbl
+    let #DShares    = #DShares    + #SharesDisposed
+    let #DOrdIncome = #DOrdIncome + #OrdIncome
+  end-if
+
+  do Print-Detail
+
+  let #DisqShares    = #DisqShares    + #SharesDisposed
+  let #DisqOrdIncome = #DisqOrdIncome + #OrdIncome
+  let #PrcsShares    = #PrcsShares    + #SharesDisposed
+  let #PrcsOrdIncome = #PrcsOrdIncome + #OrdIncome
+
+from PS_ST_ESPP_PURCH   A,
+     PS_ST_ESPP_DISPOSN B,
+     PS_ST_PERSON_NAME  C
+where A.STOCK_ID           = $RC_Stock_ID
+  and A.STOCK_ID           = B.STOCK_ID
+  and A.STOCK_PLAN_TYPE    = B.STOCK_PLAN_TYPE
+  and A.STOCK_PLAN_TYPE    = 'E'
+  and A.STOCK_PLAN         = B.STOCK_PLAN
+  and A.EMPLID             = B.EMPLID
+  and A.OFFERING_ID        = B.OFFERING_ID
+  and A.PERIOD_END_DT      = B.PERIOD_END_DT
+  and A.PROCESS_GROUP      = B.PROCESS_GROUP
+  and A.EMPLID             = C.EMPLID
+  and B.DISPOSITION_STATUS = 'C'
+  and B.ST_ORD_INCOME      > 0
+  and B.REVERSAL_DT       is null
+  [$WhereFromDate]
+  [$WhereThruDate]
+  [$WhereStockPlan]
+  [$WherePrcsGrp]
+  [$WhereEmplID]
+  [$WherePayrollDate]
+  [$WhereOrder]
+
+End-Select
+
+  if $Print = 'Y'
+    do PrcsGrp-Change
+  end-if
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Populate-Array
+! Descr:   
+!-----------------------------------------------------------------------
+Begin-Procedure Populate-Array
+
+  if $ProcessNull = 'Y'
+    let $SentToPayroll = $NoLbl
+  else
+    let $SentToPayroll = $YesLbl
+  end-if
+
+  put $PrcsGrp $SentToPayroll #DShares #DOrdIncome into ProcessGroup(#ArrayCount) PrcsGrp SentToPayroll SharesDisp OrdIncome
+  add 1 to #ArrayCount
+
+End-Procedure
+
+!----------------------------------------------------------------------
+! Section: Print-Detail
+! Descr:   Prints the report
+!----------------------------------------------------------------------
+Begin-Procedure Print-Detail
+
+  print $Name                                              (+2,001,030)
+  print #GrantFMV                                          (  ,032,012) edit $9999.999999
+  print #PurchaseFMV                                       (  ,046,012) edit $9999.999999
+  print #DispositionPrice                                  (  ,061,012) edit $9999.999999
+  print #SharesDisposed                                    (  ,080,022) edit 999,999,999,999.999999
+  print #OrdIncome                                         (  ,104,022) edit $$9,999,999,999.999999
+  print $PayrollDt                                         (  ,128,010)
+  print $Emplid                                            (+1,001,030)
+  print $GrantDt                                           (  ,032,010)
+  print $PeriodEndDt                                       (  ,046,010)
+  print $DispositionDt                                     (  ,061,010)
+  print $SendSourceXlat                                    (  ,128,022)
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: PrcsGrp-Change
+! Descr:     Prints Totals for each process group and advances a new page
+!-----------------------------------------------------------------------
+Begin-Procedure PrcsGrp-Change
+
+  next-listing need=4
+  let $ChangeLbl = $DispTypelbl || ' ' || $TotalLbl || ':'
+  print '-'                                                (+1,001,150) fill
+  print $ChangeLbl                                         (+1,032,   )
+  print #DisqShares                                        (  ,080,022) edit 999,999,999,999.999999
+  print #DisqOrdIncome                                     (  ,104,022) edit $$9,999,999,999.999999
+  print '-'                                                (+1,001,150) fill
+  let #DisqShares    = 0
+  let #DisqOrdIncome = 0
+
+  next-listing need=4
+  let $ChangeLbl = $PrcsGrpLbl || ' ' || $TotalLbl || ':'
+  print '-'                                                (+1,001,150) fill
+  print $ChangeLbl                                         (+1,032,   )
+  print #PrcsShares                                        (  ,080,022) edit 999,999,999,999.999999
+  print #PrcsOrdIncome                                     (  ,104,022) edit $$9,999,999,999.999999
+  print '-'                                                (+1,001,150) fill
+  do Populate-Array
+  let #TotalShares    = #TotalShares    + #PrcsShares
+  let #TotalOrdIncome = #TotalOrdIncome + #PrcsOrdIncome
+  let #PrcsShares     = 0
+  let #PrcsOrdIncome  = 0
+  let #DShares        = 0
+  let #DOrdIncome     = 0
+  new-page
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Disq-Change
+! Descr:     
+!-----------------------------------------------------------------------
+Begin-Procedure Disq-Change
+
+  next-listing need=4
+  let $ChangeLbl = $DispTypelbl || ' ' || $TotalLbl || ':'
+  print '-'                                                (+1,001,150) fill
+  print $ChangeLbl                                         (+1,032,   )
+  print #DisqShares                                        (  ,080,022) edit 999,999,999,999.999999
+  print #DisqOrdIncome                                     (  ,104,022) edit $$9,999,999,999.999999
+  print '-'                                                (+1,001,150) fill
+  let #DisqShares    = 0
+  let #DisqOrdIncome = 0
+  new-page
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Print-Summary
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Summary
+
+  next-listing need=4
+  print '-'                                                (+2,001,150) fill
+  print $GrndTotLbl                                        (+1,032,   )
+  print ':'                                                (  ,   ,001)
+  print #TotalShares                                       (  ,080,022) edit 999,999,999,999.999999
+  print #TotalOrdIncome                                    (  ,104,022) edit $$9,999,999,999.999999
+  print '-'                                                (+1,001,150) fill
+
+  print $SumLbl                                            (+2,001,   ) bold underline
+  print $PrcsGrpLbl                                        (+1,001,013) underline
+  print $SentLbl                                           (  ,016,015) underline
+  print $ShareDispLbl                                      (  ,040,015) underline
+  print $OrdIncLbl                                         (  ,064,015) underline
+  let #Row = 1
+  while #Row < #ArrayCount
+    get $PrcsGrp $SentToPayroll #SharesDisp #OrdIncome from ProcessGroup(#Row) PrcsGrp SentToPayroll SharesDisp OrdIncome
+    print $PrcsGrp                                         (+1,001,010)
+    print $SentToPayroll                                   (  ,016,015)
+    print #SharesDisp                                      (  ,033,022) edit 999,999,999,999.999999
+    print #OrdIncome                                       (  ,057,022) edit $$9,999,999,999.999999
+    add 1 to #Row
+  end-while
+
+End-Procedure
+
+#include 'curdttim.sqc'                !Procedures: Get-Current-DateTime
+#include 'datetime.sqc'                !Procedures: Init-Datetime
+#include 'eoj.sqc'                     !End of Report Format
+#include 'number.sqc'                  !Procedures: Init-Number
+#include 'prcsapi.sqc'                 !Process Scheduler API
+#include 'prcsdef.sqc'                 !Update Process Open_Trans variable declaration
+#include 'reset.sqc'                   !Reset printer procedure
+#include 'strunctl.sqc'                !Stock Admin's Run Control Record
+#include 'getrplng.sqc'                !Gets the report language
+#include 'sqlerr.sqc'                  !SQL error processing
+#include 'getprimj.sqc'                !Get primary job
+#include 'askftd.sqc'                  !Prompt for from thru date range
+#include 'stprcgrp.sqc'                !Creates temp table with all combos for process groups
+#include 'sqrtrans.sqc'
+#include 'readxlat.sqc'
+#include 'datemath.sqc'

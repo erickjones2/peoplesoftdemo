@@ -1,0 +1,4156 @@
+!***********************************************************************
+!  TAX960ST :  Create State W-2 Files for Selected States              *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  32103682                                            !
+!                                                                      *
+!***********************************************************************
+!***********************************************************************
+! Modified for Education & Government                                  *
+! HP00001       Retirement Contributions for Massachusetts             *
+!***********************************************************************
+
+#include 'setenv.sqc'  !Set environment
+#include 'setup31.sqc' !Printer and page-size initialization
+
+Begin-Program
+
+  display ''
+  display 'Creating Selected W-2 State Files in SSA Format'
+
+  Let $t1 = datenow()
+  Show 'Report Started at : ' $t1
+
+  Move 0 to $Zero_fill 099999999999999
+
+  do Init-Report
+  do Process-Main
+
+  do Stdapi-Term
+
+  If $Bulk_filing = 'N' and $E.W2_State = 'PA' and #ReportingCoFileCtrl > 1
+     Move 'ZZZ' To $REPORTING_CO_ANT
+     MOVE $A.W2_Reporting_Co  TO $E_Save_REPORTING_CO
+     Do Close-Bulk-File
+  End-If
+
+  Display ''
+  Let $t2 = datenow()
+  Show 'Report Ended at : ' $t2
+
+End-Program
+
+
+Begin-Procedure Init-Report
+  do Get-EandG                                                          !HP00001
+  do Get-FederalProduct                                                 !FED0001
+  do Init-DateTime
+  do Init-Number
+  do Get-Calendar-Year-Id
+  do Stdapi-Init
+  do Delete-Temp-Name-Table
+  do Get-Tax-Reporting-Run-Controls
+  do Initialization
+
+  If $Prcs_Process_Instance = ''
+    Display 'Report cannot be run outside of PeopleSoft, please use process scheduler.'
+    Stop
+  End-if
+
+  let $Bulk_filing = 'N'
+  let $File-opened = 'N'
+  let $Bulk-file-opened = 'N'
+
+  do Read-States
+
+
+End-Procedure
+
+Begin-Procedure Populate-Headings
+  let $ReportID2 = 'TAX960' ||$E.W2_State
+  let $ReportID3 = 'W2' ||$E.W2_State
+  let $ReportID = 'TAX960ST'
+  Let $Program = 'ST'
+  move $E.W2_State to $State
+  do Get-ee-State-Code
+  move &S.NUMERIC_CD to $StateNumCd
+  move &S.NUMERIC_CD to $StateNumCdA
+  let $StateName = rtrim(&S.DESCR, ' ')
+  let $ReportTitle = ' W-2 File Summary Report'
+
+  show $StateName ' W-2 File Records'
+  show ' '
+
+  if $Bulk-file-opened = 'Y' and
+     $Bulk_filing = 'Y'
+     do Close-Bulk-File
+  end-if
+
+  if $Bulk_filing = 'Y'
+     do File-Create
+  end-if
+
+  If $E_Before_W2_State = 'PA' And $Bulk_filing = 'N'
+     Move 'ZZZ' To $REPORTING_CO_ANT
+     MOVE $A.W2_Reporting_Co  TO $E_Save_REPORTING_CO
+     Do CheckFileSize
+  End-If
+
+End-Procedure
+
+
+Begin-Procedure Initialization
+
+  do Get-Current-DateTime
+  move '1' to $MMLZero
+  do Format-DateTime($AsOfToday, $960Date, {DEFYMD},'','')
+
+  let $DateCreated = substr($960Date, 1,4) || substr($960Date, 6,2) || substr($960Date, 9,2)
+  let $TimeCreated = substr($ReportTime, 1,2) || substr($ReportTime, 4,2) || substr($ReportTime, 7,2) || '00'
+
+  move $960Date to $AsOfYear xxxx   !extract the current year
+  move $AsOfYear  to #AsOfYear
+  move #AsOfYear  to #saveAsOfYear
+  subtract 1    from #AsOfYear
+
+  If &TX.Balance_Year <> #AsOfYear
+    display ''
+    display 'Please note : Current Year is not one greater than Tax Reporting Year.'
+    display 'Current Year is    ' noline
+    display  #saveAsOfYear  9999
+    display 'Tax Reporting Year ' noline
+    display &TX.Balance_Year
+    display ''
+  End-if
+
+
+Begin-Select
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+End-Select
+End-Procedure
+
+Begin-Procedure CheckFileSize
+
+   Let #FileSize = ((#RecordLength * #TotRecordsPA ) / 1024)/1024
+   Move #FileSize To $FileSize
+   If #FileSize > 5.00
+      If $Bulk_filing = 'N'
+         Move 'Y' To $BulkSizeExceeds
+         IF $REPORTING_CO_ANT <> $E_Save_REPORTING_CO
+            Display 'PA currently has a limitation of 5MB when filing via e-TIDES; '
+            Display 'because the file exceeds this limit, the file ' NOLINE
+            Display 'for company ' NOLINE
+            Display  $E_Save_REPORTING_CO NOLINE
+            Display  ' must be submitted on CD.'
+            Display '  '
+            Move $E_Save_REPORTING_CO to $REPORTING_CO_ANT
+         End-If
+      Else
+         Display 'PA currently has a limitation of 5MB when filing via e-TIDES; '
+         Display 'because the file exceeds this limit, the file must be submitted on CD.'
+         Display ' '
+
+         Print 'PA currently has a limitation of 5MB when filing via e-TIDES; ' (+2,3)
+         Print 'because the file exceeds this limit, the file must be submitted on CD.' (+1,3)
+      End-If
+   End-If
+End-Procedure
+
+
+Begin-Procedure File-Create
+
+  do Close-File
+  if #FileExtension = 0
+     let $File-opened = 'N'
+  end-if
+  move &TX.Company       to $XCompany  !TX.Company is the Transmitter
+  move &TX.Balance_Year to $CalYear 9999
+  let $AsOfDate = $CalYear || '1231'
+  do Format-DateTime($AsOfDate, $AsOfDate, {DEFCMP}, '', 'native')
+  let $EffDate = $CalYear || '1231'
+  do Format-DateTime($EffDate, $EffDate, {DEFCMP}, '', 'native')
+  do Get-Transmitter-Data
+  if  $E.W2_State = 'AL' or
+      $E.W2_State = 'CO' or
+      $E.W2_State = 'CT' or
+      $E.W2_State = 'DC' or
+      $E.W2_State = 'DE' or
+      $E.W2_State = 'GA' or
+      $E.W2_State = 'HI' or
+      $E.W2_State = 'IA' or
+      $E.W2_State = 'ID' or
+      $E.W2_State = 'IL' or
+      $E.W2_State = 'IN' or
+      $E.W2_State = 'KS' or
+      $E.W2_State = 'LA' or
+      $E.W2_State = 'MA' or
+      $E.W2_State = 'ME' or
+      $E.W2_State = 'MN' or
+      $E.W2_State = 'MT' or
+      $E.W2_State = 'NC' or
+      $E.W2_State = 'NE' or
+      $E.W2_State = 'NJ' or
+      $E.W2_State = 'PA' or
+      $E.W2_State = 'SC' or
+      $E.W2_State = 'UT' or
+      $E.W2_State = 'VA' or
+      $E.W2_State = 'VT' or
+      $E.W2_State = 'WI' or
+      $E.W2_State = 'OH' or
+      $E.W2_State = 'OK' or
+      $E.W2_State = 'OR'
+    do Check-Disk
+  else
+    move &RC960.Reporting_Medium to $FileType
+  end-if
+  let $File-opened = 'Y'
+  do Open-File
+  do Write-Transmitter-Records
+
+End-Procedure
+
+Begin-Procedure Bulk-File-Create
+  do Close-Bulk-File
+  move &TX.Company       to $XCompany  !TX.Company is the Transmitter
+  move &TX.Balance_Year to $CalYear 9999
+  let $AsOfDate = $CalYear || '1231'
+  do Format-DateTime($AsOfDate, $AsOfDate, {DEFCMP}, '', 'native')
+  let $EffDate = $CalYear || '1231'
+  do Format-DateTime($EffDate, $EffDate, {DEFCMP}, '', 'native')
+  do Get-Transmitter-Data
+  if  $E.W2_State = 'AL' or
+      $E.W2_State = 'CO' or
+      $E.W2_State = 'CT' or
+      $E.W2_State = 'DC' or
+      $E.W2_State = 'DE' or
+      $E.W2_State = 'GA' or
+      $E.W2_State = 'HI' or
+      $E.W2_State = 'IA' or
+      $E.W2_State = 'ID' or
+      $E.W2_State = 'IL' or
+      $E.W2_State = 'IN' or
+      $E.W2_State = 'KS' or
+      $E.W2_State = 'LA' or
+      $E.W2_State = 'MA' or
+      $E.W2_State = 'ME' or
+      $E.W2_State = 'MN' or
+      $E.W2_State = 'MT' or
+      $E.W2_State = 'NC' or
+      $E.W2_State = 'NE' or
+      $E.W2_State = 'NJ' or
+      $E.W2_State = 'PA' or
+      $E.W2_State = 'SC' or
+      $E.W2_State = 'UT' or
+      $E.W2_State = 'VA' or
+      $E.W2_State = 'VT' or
+      $E.W2_State = 'WI' or
+      $E.W2_State = 'OH' or
+      $E.W2_State = 'OK' or
+      $E.W2_State = 'OR'
+    do Check-Disk
+  else
+    move &RC960.Reporting_Medium to $FileType
+  end-if
+  do Open-Bulk-File
+  do Build-Temp-Name-Table
+  do Write-Transmitter-Records
+
+End-Procedure
+
+Begin-Procedure Build-Temp-Name-Table
+begin-SQL on-error=Insert-Name-Error
+  INSERT INTO PS_R_TAX960ST (STATE, COMPANY)
+         VALUES ($State, &A.W2_Reporting_Co)
+end-SQL
+
+End-Procedure
+
+
+Begin-Procedure Get-Transmitter-Data
+  Let $XmitterFound = 'N'
+Begin-Select
+X.DESCR
+X.FEDERAL_EIN
+X.CITY
+X.STATE
+X.POSTAL
+X.COUNTRY
+
+  Let $XmitterFound = 'Y'
+
+FROM  PS_W2_COMPANY X
+WHERE COMPANY = $XCompany
+  AND X.CALENDAR_YEAR = &TX.Balance_Year
+End-Select
+
+  If $XmitterFound = 'N'
+    Show 'W2 COMPANY DATA NOT SETUP FOR COMPANY : ' $XCompany '  BALANCE YEAR : ' &TX.Balance_Year
+    Stop
+  End-if
+
+  move $XCompany to $Trans_Company
+  move &TX.Balance_Year to #Trans_Balance_Year
+  do Get-X-Address
+
+  if rtrim(&RC960.CONTACT_NAME_SSA, ' ') = ''
+    Show 'Electronic Parameters must be set up on SETUP Menu.'
+    Show 'Re-execute after establishing Electronic Parameters.'
+    Stop
+  End-if
+
+  move &RC960.EMAIL_ADDR_MMREF to $RC960.EMAIL_ADDR
+  uppercase $RC960.EMAIL_ADDR
+  Let $RC960.CONTACT_NAME_SSA = translate(&RC960.CONTACT_NAME_SSA,',','')
+  move &RC960.Reporting_Medium to $FileType
+  move &RC960.Diskette_Type    to $DisketteType
+  Let #RecordLength = 512      !Determines file size calculation
+                               !in conjuction with #Tot_Record_Count
+                               !PA requires file size <= 5MB
+  do Calculate-Diskette-Capacity
+  #ifdef TAXTEST
+     move 5 to #MaxRecordsPerDiskette
+  #endif
+
+End-Procedure
+
+Begin-Procedure Write-Transmitter-Records
+  move &X.Federal_EIN       to $FedEIN  099999999
+  move &RC960.EMPLR_PIN     to $EmprPIN ! 09999999999999999
+!  let  $EmprPIN = rpad(rtrim(&RC960.EMPLR_PIN, ' '),17,'0')
+
+  move '99'  to $SoftwareCd
+
+  If &RC960.RESUB_INDICATOR = 'Y'
+    Let $RS_Ind = '1'
+  Else
+    Let $RS_Ind = '0'
+  End-if
+
+  If &RC960.PHONE_EXTN <> 0
+    move &RC960.PHONE_EXTN to $Phone_Extn
+  Else
+    move '    ' to $Phone_Extn
+  End-if
+
+  move &RC960.RESUB_TLCN      to $TLCN
+  move &X.Descr        to $Xmitr_Name
+  move &X.City         to $City
+  let  $StateCd = rtrim(&X.State, ' ')
+  move &X.Postal       to $Zip
+  move &X.Country      to $Country
+  do Foreign-Address-Test('Format 3',25)
+
+  uppercase $Xmitr_Name
+
+  If $ForeignAddrInd = 'X'
+     Let $US_Zip      = ' '
+     Let $US_ZipXtnsn = ' '
+     Let $US_State    = ' '
+     Let $Frgn_Zip    = $Zip
+     Let $Frgn_State  = $StateName
+  Else
+     Let $US_Zip      = $Zip
+     Let $US_ZipXtnsn = $ZipExtsn
+     Let $US_State    = $StateCd
+     Let $Frgn_Zip    = ' '
+     Let $Frgn_State  = ' '
+     Let $Country-2Char   = ' '
+  End-if
+
+  MOVE &RC960.Telephone_Nbr TO $Nbr_Aux
+  DO Format-Telephone-Nbr
+  LET $RC960.Telephone_Nbr =  $Nbr_Aux
+
+
+  !Unique State Requirements - Different from SSA format
+  ! Decide to write the RA record
+
+  Evaluate $E.W2_State
+    when = 'AL'
+    when = 'VA'
+      break
+    when = 'IL'
+      let $TaxForm = 'ILEFW2***'
+      do Write-Header-Record
+      do Write-RA-Record
+      add 2 to #RecordCount
+      add 2 to #Tot_Record_Count
+      break
+    when = 'MA'
+      do Write-RA-Record-for-MA
+
+      add 1 to #RecordCount
+      add 1 to #Tot_Record_Count
+      break
+    when = 'PA'
+      do Write-RA-Record-for-PA
+
+      add 1 to #RecordCount
+      add 1 to #Tot_Record_Count
+      Add 1 To #Record_CutPA
+      break
+
+    when-other
+      do Write-RA-Record
+
+      add 1 to #RecordCount
+      add 1 to #Tot_Record_Count
+      break
+  end-evaluate
+
+  let $RA_ContactName = $RC960.Contact_Name_SSA
+  let $RA_PhoneNbr    = $Nbr_Aux
+  let $RA_PhoneExtn   = $Phone_Extn
+  let $RA_EmailAddr   = $RC960.Email_Addr
+  let $RA_ContactFax  = &RC960.CONTACT_FAX
+
+End-Procedure
+
+Begin-Procedure Process-Main
+
+  move '0' to $StatutoryEe
+  move 0   to #RetirePlan
+  move '0' to $DeceasedFlag
+  move 0   to #Third_Party_Sick_Ind
+
+Begin-Select
+E.W2_STATE         () on-break print=never before=Before-State  level=1
+                                           AFTER=After-State  level=1 save=$E_save_W2_State
+A.W2_REPORTING_CO  () on-break print=never before=Before-W2-Reporting-Co-Chg  level=2
+                                           AFTER=After-W2-Reporting-Co-Chg  level=2
+A.EMPLOYMENT_TYPE
+A.EMPLOYER_KIND
+A.SAME_CONTACT
+A.CONTACT_NAME_SSA
+A.TELEPHONE_NBR
+A.PHONE_EXTN
+A.EMAIL_ADDR_MMREF
+A.CONTACT_FAX
+E.COMPANY
+E.EMPLID           () on-break print=never before=Before-EmplID   level=3
+                                           AFTER=AFTER-EMPLID  level=3
+E.SEQUENCE_NUMBER
+E.TAXFORM_ID
+E.EMPLOYER_ID_SWT
+E.SSN
+E.YE_FNAME
+E.YE_MIDDLE_NAME
+E.YE_LNAME
+E.YE_SUFFIX
+E.CITY
+E.STATE
+E.POSTAL
+E.COUNTRY
+E.STATUTORY_EE
+E.PENSION_PLAN
+E.DECEASED
+E.THIRDPARTY_SICKPAY
+EE.PROCESS_FLAG
+
+  move &E.Company         to $E.Company
+  move &E.TaxForm_ID      to $E.TaxForm_ID
+  move &E.Sequence_Number to #E.Sequence_Number
+  move &E.Employer_ID_SWT to $E.Employer_ID_SWT
+
+  If &E.Statutory_Ee = 'Y'
+    move '1' to $StatutoryEe
+  End-if
+
+  If &E.Pension_Plan = 'Y'
+    move 1 to #RetirePlan
+  End-if
+
+  If &E.Deceased = 'Y'
+    move '1' to $DeceasedFlag
+  End-if
+
+  If &E.ThirdParty_SickPay = 'Y'
+     move 1 to #Third_Party_Sick_Ind
+  End-if
+
+  IF $E.W2_State = 'IN'
+     do Check-IN-Flags
+     do Load-Fed-Amounts-IN
+     do Load-State-Amounts-IN
+  else
+     do Load-Fed-Amounts
+     do Load-State-Amounts
+  end-if
+
+  !Unique State Requirements - Different from SSA format
+  !    State requires local/county/district wages and taxes
+
+  evaluate $E.W2_State
+    when = 'WI'
+      do Load-WI-EIC
+      break
+    when = 'IN'
+      do Load-Local-Amounts-IN
+      break
+    when = 'OH'
+      do Load-Local-Amounts
+      break
+    when = 'MA'
+      do Load-MA-PFML 
+      break
+!    when = 'KY'
+!      do Load-KY-Local
+!      break
+!    when = 'MA'
+!      if $PublicSector= 'Y'  or                                         !HP00001
+!         $FederalProduct = 'Y'                                          !HP00001
+!          do Gather-FRMALOC-Amounts                                     !HP00001
+!      else                                                              !HP00001
+!          move 0 to #FRMALOC-Retire-Fund
+!      end-if                                                            !HP00001
+!      break
+!    when = 'NJ'
+    when = 'MD'
+      do Gather-Local-Amounts
+      break
+    when = 'MO'
+      do Load-Local-Amounts-MO
+      break
+    when = 'MI'
+      if &TX.Balance_Year >= 2017
+         do Load-Local-Amounts-MI
+      end-if
+      break
+  end-evaluate
+
+FROM  PS_W2_COMPANY A, PS_YE_EE EE, PS_YE_DATA E
+WHERE A.CALENDAR_YEAR    = &TX.Balance_Year
+  AND A.W2_REPORTING_CO <> ' '
+  AND A.TAXFORM_ID      =  'W'
+  AND A.COMPANY          = E.COMPANY
+  AND A.CALENDAR_YEAR    = E.CALENDAR_YEAR
+  AND A.TAXFORM_ID       = E.TAXFORM_ID
+  [$E.SelectedStates]
+  AND E.TAXFORM_ID       = 'W'
+  AND E.COMPANY          = EE.COMPANY
+  AND E.EMPLID           = EE.EMPLID
+  AND E.TAXFORM_ID       = EE.TAXFORM_ID
+  AND E.CALENDAR_YEAR    = EE.CALENDAR_YEAR
+  AND EE.PROCESS_FLAG   <> 'V'
+
+ORDER BY  E.W2_STATE, A.W2_REPORTING_CO, E.SSN, E.EMPLID
+
+end-select
+
+  If #Count-T <> 0
+    do Write-T-Record
+  End-if
+
+  If #Count-U <> 0
+    do Write-U-Record
+  End-if
+
+End-Procedure
+
+Begin-Procedure  Check-IN-Flags
+
+Begin-Select
+E1.STATUTORY_EE
+E1.PENSION_PLAN
+E1.DECEASED
+E1.THIRDPARTY_SICKPAY
+
+  If &E1.Statutory_Ee = 'Y'
+    move '1' to $StatutoryEe
+  End-if
+
+  If &E1.Pension_Plan = 'Y'
+    move 1 to #RetirePlan
+  End-if
+
+  If &E1.Deceased = 'Y'
+    move '1' to $DeceasedFlag
+  End-if
+
+  If &E1.ThirdParty_SickPay = 'Y'
+     move 1 to #Third_Party_Sick_Ind
+  End-if
+
+FROM PS_W2_COMPANY A1, PS_YE_EE EE1, PS_YE_DATA E1
+WHERE A1.CALENDAR_YEAR    = &TX.Balance_Year
+  AND A1.W2_REPORTING_CO <> ' '
+  AND A1.TAXFORM_ID      =  'W'
+  AND E1.EMPLID           = &E.EMPLID
+  AND A1.COMPANY          = E1.COMPANY
+  AND A1.CALENDAR_YEAR    = E1.CALENDAR_YEAR
+  AND A1.TAXFORM_ID       = E1.TAXFORM_ID
+  AND E1.W2_STATE         = 'IN'
+  AND E1.TAXFORM_ID       = 'W'
+  AND E1.COMPANY          = EE1.COMPANY
+  AND E1.EMPLID           = EE1.EMPLID
+  AND E1.TAXFORM_ID       = EE1.TAXFORM_ID
+  AND E1.CALENDAR_YEAR    = EE1.CALENDAR_YEAR
+  AND EE1.PROCESS_FLAG   <> 'V'
+end-select
+
+End-Procedure
+
+Begin-Procedure  Before-W2-Reporting-Co-Chg
+  Move $A.W2_REPORTING_CO To $E_Save_REPORTING_CO
+  Add 1 to #ReportingCoFile
+  if $Bulk_filing = 'N'
+     do Bulk-File-Create
+     let $Bulk-file-opened = 'Y'
+  end-if
+
+  move '  ' to $RESp
+  move &A.W2_Reporting_Co to $Company
+  move &A.W2_Reporting_Co to $A.W2_Reporting_Co
+
+  move &A.EMPLOYMENT_TYPE to $EMPLOYMENT_TYPE
+  move &A.EMPLOYER_KIND   to $EMPLOYER_KIND
+
+  if &A.SAME_CONTACT = 'Y'
+     let $RE_ContactName  = $RA_ContactName
+     let $RE_PhoneNbr     = $RA_PhoneNbr
+     let $RE_PhoneExtn    = $RA_PhoneExtn
+     let $RE_EmailAddr    = $RA_EmailAddr
+     let $RE_ContactFax   = $RA_ContactFax
+  else
+     MOVE &A.TELEPHONE_NBR TO $Nbr_Aux
+     DO Format-Telephone-Nbr
+     let $RE_ContactName  = translate(&A.CONTACT_NAME_SSA,',','')
+     let $RE_PhoneNbr     = $Nbr_Aux
+     if &A.PHONE_EXTN <> 0
+        move &A.PHONE_EXTN to $RE_PhoneExtn
+     else
+        let $RE_PhoneExtn = ' '
+     end-if
+     let $RE_EmailAddr    = &A.EMAIL_ADDR_MMREF
+     uppercase $RE_EmailAddr
+     let $RE_ContactFax   = &A.CONTACT_FAX
+  end-if
+
+  do Get-W2-Co-Information
+
+  move $A.W2_Reporting_Co to $Co_Company
+  move &TX.Balance_Year to #Co_Balance_Year
+  do Get-A-Address
+
+  If $A.Busi_Term_Ind = 'Y'
+     Let $A.Busi_Term_Ind = '1'
+  Else
+     Let $A.Busi_Term_Ind = '0'
+  End-if
+
+  do Get-Third-Party-Amount
+
+  do Get-Third-Party-Sick
+
+  move 0 to #Count-S
+  move 0 to #Count-T
+  move 0 to #Count-U
+  move 'N' to $E-Written
+
+  If $E-Written = 'N'
+    do Write-E-Record
+  End-if
+
+end-procedure
+
+Begin-Procedure  After-W2-Reporting-Co-Chg
+
+  If #Count-T <> 0
+!    or $E.W2_STATE = 'MD'
+       or $E.W2_State = 'PA'
+      do Write-T-Record
+  End-if
+
+  If #Count-U <> 0
+    do Write-U-Record
+  End-if
+
+  !Unique State Requirements - For Report Purposes Only
+  !  StateEIN has been cleared for the RS Record, but is
+  !    required for the report.  Modifications to show on
+  !       TAX960ST here.
+
+  Evaluate  $E.W2_State
+    when = 'DE'
+      move $FedEIN to $StateEIN
+      move $FedEIN to $RptStateEIN
+      break
+
+    WHEN = 'IA'
+       DO Iowa-Specific
+       DO Validate-BEN
+       MOVE #Count-S        TO $Count-S   0999999
+       MOVE #State_Wages-T  to $State_Wages-T   099999999999999
+       MOVE #State_Tax-T    TO $State_Tax-T     099999999999999
+       Do Write-RV-Rec-for-IA
+       MOVE 0 TO $Count-S
+       break
+
+    when = 'ID'
+      move ' ' to $ID-Filing-Cycle
+      move '00000000000' to $ID-967-LN3
+      move '00000000000' to $ID-967-LN5
+      move '00000000000' to $ID-967-LN6
+      move '00000000000' to $ID-967-LN11
+      move '00000000000' to $Idaho-AmtDue1
+      move '00000000000' to $Idaho-AmtDue2
+      move '00000000000' to $Idaho-AmtDue3
+      let $Idaho-AmtDue1-Sign = ' '
+      let $Idaho-AmtDue2-Sign = ' '
+      let $Idaho-AmtDue3-Sign = ' '
+
+      do Get-Idaho-Form967-for-RV
+      let $ErName-Idaho-RV = substr($ErName,1,4)
+
+      move $StateEIN to #StateEIN-Idaho-RV
+      move #StateEIN-Idaho-RV to $StateEIN-Idaho-RV 099999999
+
+      let $Idaho-RV-TaxPeriod = '12' || $CalYear
+      let #Idaho-Wages-Tot = #State_Wages-T / 100
+      let #Idaho-Wages-Tot = round(#Idaho-Wages-Tot,0)
+      let #Idaho-Tax-Tot = #State_Tax-T / 100
+      let #Idaho-Tax-Tot = round(#Idaho-Tax-Tot,0)
+
+      let #Tot_Amount = #Idaho-Wages-Tot * 100
+      move  #Tot_Amount to $Idaho-Wages-Tot 09999999999
+
+      let #Tot_Amount = #Idaho-Tax-Tot * 100
+      move  #Tot_Amount to $Idaho-Tax-Tot     09999999999
+
+      move #Count-S     to $Count-S           0999999
+
+      if $ID-Filing-Cycle <> ' '
+            let #Idaho-AmtDue1 = (#Idaho-Tax-Tot - #ID-967-LN3-3B) * 100
+      else
+            display
+         'Idaho 967 Filing Cycle has not been specified for company ' noline
+            display $Company
+            let #Idaho-AmtDue1 = #Idaho-Tax-Tot * 100
+      end-if
+
+      if #Idaho-AmtDue1 < 0
+         ! get rid of minus sign in front of number
+         let #IDAmtDue1NoSign = #Idaho-AmtDue1 * -1
+         move #IDAmtDue1NoSign to $Idaho-AmtDue1 09999999999
+         let $Idaho-AmtDue1-Sign ='-'
+      else
+         move #Idaho-AmtDue1 to $Idaho-AmtDue1   09999999999
+         let  $Idaho-AmtDue1-Sign =' '
+      end-if
+
+      let #Idaho-AmtDue2 = ((#Idaho-AmtDue1 / 100)
+                         + &ID.ID_967_LINE5
+                         + &ID.ID_967_LINE6) * 100
+      if #Idaho-AmtDue2 < 0
+         ! get rid of minus sign in front of number
+         let #IDAmtDue2NoSign = #Idaho-AmtDue2 * -1
+         move #IDAmtDue2NoSign to $Idaho-AmtDue2 09999999999
+         let $Idaho-AmtDue2-Sign ='-'
+      else
+         move #Idaho-AmtDue2 to $Idaho-AmtDue2   09999999999
+         let  $Idaho-AmtDue2-Sign =' '
+      end-if
+
+      let #Idaho-AmtDue3 = ((#Idaho-AmtDue2 / 100)
+                           + &ID.ID_967_LINE11) * 100
+      if #Idaho-AmtDue3 < 0
+         ! get rid of minus sign in front of number
+         let #IDAmtDue3NoSign = #Idaho-AmtDue3 * -1
+         move #IDAmtDue3NoSign to $Idaho-AmtDue3 09999999999
+         let $Idaho-AmtDue3-Sign ='-'
+      else
+         move #Idaho-AmtDue3 to $Idaho-AmtDue3   09999999999
+         let $Idaho-AmtDue3-Sign =' '
+      end-if
+
+      do Write-RV-Record-for-ID       !taxmmref.sqc
+      add 1 to #RecordCount
+      add 1 to #Tot_Record_Count
+      break
+
+    when = 'IN'
+      move $StateEmplIN to $StateEIN
+      add #Count-S         to #Count-F
+      ! The following moves are for RV record. RV must follow RT,(or RU if any)
+      move #Count-S     to $Count-S           0999999999999
+      move #State_Tax-T to $State_Tax-T-forIN 0999999999999
+      move #Local_Tax-T to $Local_Tax-T       0999999999999
+      do Write-RV-Record-for-IN
+      add  1 to #RecordCount
+      add  1 to #Tot_Record_Count
+      break
+
+    WHEN = 'OK'
+       MOVE #Count-S        TO $Count-S   0999999
+       MOVE #State_Wages-T  to $State_Wages-T   099999999999999
+       MOVE #State_Tax-T    TO $State_Tax-T     099999999999999
+       Do Write-RV-Rec-for-OK
+       MOVE 0 TO $Count-S
+       break
+
+    when = 'PA'
+      move $RESp to $StateEIN
+      break
+    when = 'CT'
+    when = 'MA'
+    when = 'RI'
+      do Blank-T-Record
+      move #Count-S        to $Count-T                    0999999
+      move #Count-S        to #Count-T
+      if $E.W2_State = 'RI'
+        move #State_Wages-T  to $SS_Wages-T               099999999999999
+        move #State_Tax-T    to $SS_Tips-T                099999999999999
+      else
+        move #State_Wages-T  to $Fed_Wages-T              099999999999999
+        move #State_Tax-T    to $Fed_Tax-T                099999999999999
+      end-if
+!      if $E.W2_State = 'MA'
+!        move #FRMALOC-Retire-Fund-T to $SS_Tips-T         099999999999999
+!        move #MA-Fed-Wages-T        to $Adv_EIC-T         099999999999999
+!        move #SS-Med-T              to $Med_Tax-T         099999999999999
+!      end-if
+      if $E.W2_State = 'CT'
+        add 1 to #Tot_Record_Count
+        do Write-RT-Rec-for-CT
+      else
+        do Write-RT-Rec
+      end-if
+      add #Count-S         to #Count-F
+      do Zero-S-Record
+      move 0               to #SS-Med-T
+      move 0               to #FRMALOC-Retire-Fund-T
+      move 0               to #MA-Fed-Wages-T
+      move 0               to #Count-S
+      break
+
+  end-evaluate
+
+
+  print $RptStateEIN   (+2,3)                             !State Tax ID
+
+  if $E.W2_State = 'CT' or
+     $E.W2_State = 'MA' or
+     $E.W2_State = 'RI'
+    do Format-Number(#Count-T, $out, 'B99,999')             !Count
+    print $out  (,23)
+
+  else
+    do Format-Number(#Count-S, $out, 'B99,999')             !Count
+    print $out  (,23)
+  end-if
+
+  let #out = #State_Wages-T / 100
+  if $E.W2_State = 'WI' and &TX.Balance_Year >= 2017
+     do Format-Number(#out, $out, '99,999,999,999.99')    !State wages
+  else
+     do Format-Number(#out, $out, 'B9,999,999,999.99')    !State wages
+  end-if
+  print $out  (,35)
+  add #State_Wages-T to #Tot_State_Wages-T
+
+  let #out = #State_Tax-T / 100
+  do Format-Number(#out, $out, 'B99,999,999.99')          !State tax
+  print $out  (,58)
+  add #State_Tax-T to #Tot_State_Tax-T
+
+
+  evaluate $E.W2_State
+    when = 'ID'
+     do Print-Idaho-Form967
+    break
+    when = 'IN'
+    when = 'OH'
+    when = 'MI'
+     do Print-Local
+    break
+    when = 'MD'
+     move #State_Wages-T  to $State_Wages-V   099999999999
+     do Print-MW508-Parameters
+     if rtrim($ErAddress1, ' ') = ''
+          move $ErAddress2 to $ErAddress1
+          move '        ' to $ErAddress2
+     end-if
+     do Write-RV-Record-for-MD
+     add 1 to #RecordCount
+     add 1 to #Tot_Record_Count
+    break
+    when = 'MN'
+     move #Count-S        to $S-Count-V       0000009
+     move #State_Wages-T  to $State_Wages-V   099999999999999
+     move #State_Tax-T    to $State_Tax-V     099999999999999
+     do Write-RV-Record-for-MN
+     add 1 to #RecordCount
+     add 1 to #Tot_Record_Count
+    break
+    when = 'PA'
+     move #Count-S        to $S-Count-V       0000009
+     move #State_Wages-T  to $State_Wages-V   099999999999999
+     move #State_Tax-T    to $State_Tax-V     099999999999999
+     do Write-RV-Record-for-PA
+     add 1 to #RecordCount
+     add 1 to #Tot_Record_Count
+    break
+
+    when = 'MO'
+     Do Missouri-Specific
+     move #Count-S        to $S-Count-V       000009
+     move #State_Wages-T  to $State_Wages-V   099999999999999
+     move #State_Tax-T    to $State_Tax-V     099999999999
+     do Write-RV-Record-for-MO
+     add 1 to #RecordCount
+     add 1 to #Tot_Record_Count
+    break
+
+    when = 'IL'                                         ! States use same format
+    when = 'NE'
+     move #Count-S        to $S-Count-V       0000009
+     move #State_Wages-T  to $State_Wages-V   099999999999999
+     move #State_Tax-T    to $State_Tax-V     099999999999999
+     do Write-RV-Record
+     add 1 to #RecordCount
+     add 1 to #Tot_Record_Count
+    break
+
+    when = 'OR'
+     let #out = #ORSTTW-T / 100
+     do Format-Number(#out, $out, 'B9,999,999.99')      !OR Statewide Transit Tax Wages
+     print $out  (,80)
+     let #out = #ORSTTT-T / 100
+     do Format-Number(#out, $out, 'B9,999,999.99')      !OR Statewide Transit Tax Wages
+     print $out  (,108)
+     move #Count-S        to $S-Count-V       0000009
+     move #State_Wages-T  to $State_Wages-V   099999999999999
+     move #State_Tax-T    to $State_Tax-V     099999999999999
+     move #ORSTTW-T       to $ORSTTW-V        099999999999999
+     move #ORSTTT-T       to $ORSTTT-V        099999999999999
+     do Write-RV-Rec-for-OR
+     add 1 to #RecordCount
+     add 1 to #Tot_Record_Count
+    break
+
+    when = 'WV'
+      move '000000000000' to $FirstQ-WV-RV
+      move '000000000000' to $SecondQ-WV-RV
+      move '000000000000' to $ThirdQ-WV-RV
+      move '000000000000' to $FourthQ-WV-RV
+
+      move 0 to #WV_AmountDue
+      do Get-WV-FormIT103-for-RV
+      move  #WV_AmountDue to $WV-AmtDue 099999999999
+      
+      move #Count-S       to $S-Count-V       000000000009
+      let #State_Tax-V = #State_Tax-V / 100
+      move #State_Tax-V   to $StateTax-T      099999999999
+      
+      if #WV_AmountDue <> #State_Tax-V
+         display 'The Sum of entered Qarterly Amounts is not equal to ' noline
+         display 'the Total of Reported Tax Whithheld for Company ' noline
+         display $E.Company
+      end-if
+      
+      do Write-RV-Record-for-WV       !taxmmref.sqc
+      move 0 to #Count-S
+      move 0 to #State_Tax-V
+      break
+
+  end-evaluate
+
+  if $E_save_W2_State = $E.W2_state and
+     $Bulk_filing = 'N'
+     do Bulk-After-Co-Change
+  end-if
+
+  do Zero-T-Record
+
+End-Procedure
+
+
+Begin-Procedure Print-Local
+
+  if $E.W2_State = 'IN'
+
+    let $Local_Desc = ' Total all counties:'
+  end-if
+
+  if $E.W2_State = 'OH'
+
+    let $Local_Desc = ' Total School Dist: '
+  end-if
+
+  if $E.W2_State = 'MI'
+    if #Local_Wages-T <> 0 or #Local_Tax-T <> 0
+       let $Local_Desc = 'Detroit Wages/Taxes:'
+    else
+       let $Local_Desc = ' '
+    end-if
+  end-if
+
+  print $Local_Desc (,74)
+  let #out = #Local_Wages-T / 100                   !Local Wages
+  do Format-Number(#out, $out, 'B99,999,999.99')    !
+  print $out  (,95)
+  add #Local_Wages-T to #Tot_Local_Wages-T
+
+  let #out = #Local_Tax-T / 100                     !Local Taxes
+  do Format-Number(#out, $out, 'B9,999,999.99')     !
+  print $out  (,111)
+  add #Local_Tax-T to #Tot_Local_Tax-T
+
+  if $E.W2_State <> 'MI'
+     do Print-Temp-Table
+     do Delete-Temp-Table
+  end-if
+
+End-Procedure
+
+Begin-Procedure Print-MW508-Parameters
+
+  print 'FORM MW508 Parameters:'                   (+2,3)
+
+  print '(line 1) Total number of W-2 forms:' (+1,3)
+  do Format-Number(#RE_RS_Count, $out, 'B99,999')
+  print $out  (,67)
+
+  print '(line 2) Total Maryland withholding tax reported for the year:' (+1,3)
+  let #out = #MW508_Ln2 / 100
+  do Format-Number(#out, $out,'999,999,999,999.99')
+  print $out  (,69)
+
+  print '(line 3a) Total state/local tax shown on W-2 forms:' (+1,3)
+  let #out = #MW508_Ln3 / 100
+  do Format-Number(#out, $out,'999,999,999,999.99')
+  print $out  (,69)
+
+  print '(line 3c)Total amount of withholding tax paid this year:' (+1,3)
+  let #out = #MW508_Ln3A / 100
+  do Format-Number(#out, $out,'999,999,999,999.99')
+  print $out  (,69)
+
+  print '(line 3d)Total eligible business tax credits:' (+1,3)
+  let #out = #MW508_Ln8 / 100
+  do Format-Number(#out, $out,'999,999,999,999.99')
+  print $out  (,69)
+
+  print '(line 4) Amount of Withholding Tax due:' (+1,3)
+  let #out = #MW508_Ln4 / 100
+  do Format-Number(#out, $out,'999,999,999,999.99')
+  print $out  (,69)
+
+  print '(line 5) Overpayment:' (+1,3)
+  let #out = #MW508_Ln5 / 100
+  do Format-Number(#out, $out,'999,999,999,999.99')
+  print $out  (,69)
+
+  print '(line 6) Amount of overpayment to be applied as a credit:' (+1,3)
+  let #out = #MW508_Ln6 / 100
+  do Format-Number(#out, $out,'999,999,999,999.99')
+  print $out  (,69)
+
+  print '(line 7) Amount of overpayment to be refunded:' (+1,3)
+  let #out = #MW508_Ln7 / 100
+  do Format-Number(#out, $out,'999,999,999,999.99')
+  print $out  (,69)
+
+  print 'Total Gross Maryland Payroll for the calendar year:' (+1,3)
+  let #out = #State_Wages-T / 100
+  do Format-Number(#out, $out,'999,999,999,999.99')
+  print $out  (,69)
+
+  print 'NAICS Code                                : ' (+2,3)
+  let #out = #MW508_Naics
+  do Format-Number(#out, $out,'099999')
+  print $out  (,50)
+
+  print 'Will you be submitting additional W-2’s?  : ' (+1,3)
+  let $out = $MW508_Add_W2
+  print $out  (,50)
+
+  print 'Will you be submitting additional 1099’s? :    N' (+1,3)
+
+  print 'Is this a complete filing?                : ' (+1,3)
+  let $out = $MW508_Ind
+  print $out  (,50)
+
+End-Procedure
+
+
+Begin-Procedure Get-Third-Party-Amount
+   Let #Third_party_tax = 0
+
+
+Begin-Select
+TRD_PTY.THIRD_PARTY_TAX
+
+   add &TRD_PTY.THIRD_PARTY_TAX to #Third_party_tax
+
+FROM  PS_RC_THIRD_PARTY   TRD_PTY,  PS_W2_COMPANY  TRD_W2_CPNY
+WHERE TRD_PTY.OPRID               = $Prcs_OprID
+  AND TRD_PTY.RUN_CNTL_ID         = $Prcs_Run_Cntl_ID
+  AND TRD_PTY.COMPANY             = TRD_W2_CPNY.COMPANY
+  AND TRD_W2_CPNY.CALENDAR_YEAR   = &TX.Balance_Year
+  AND TRD_W2_CPNY.TAXFORM_ID      = 'W'
+  AND TRD_W2_CPNY.W2_REPORTING_CO = &A.W2_REPORTING_CO
+End-Select
+
+   Let #Third_party_tax = #Third_party_tax * 100
+   Move #Third_party_tax to $Third_party_tax 099999999999999
+
+End-Procedure
+
+Begin-Procedure Get-Third-Party-Sick
+   Let $Thrd_Pty_Sick = '0'
+Begin-Select
+TSI.COUNTRY
+
+   Let $Thrd_Pty_Sick = '1'
+
+FROM PS_INSTALLATION TSI
+WHERE EXISTS (SELECT 'X'
+              FROM  PS_YE_EE TSE, PS_YE_DATA TS, PS_W2_COMPANY TSC
+              WHERE TSC.W2_REPORTING_CO   = &A.W2_Reporting_Co
+                AND TSC.COMPANY           = TS.COMPANY
+                AND TSC.CALENDAR_YEAR     = TS.CALENDAR_YEAR
+                AND TS.CALENDAR_YEAR      = &TX.Balance_Year
+                AND TS.SEQUENCE_NUMBER    = 1
+                AND TS.COMPANY            = TSE.COMPANY
+                AND TS.EMPLID             = TSE.EMPLID
+                AND TS.TAXFORM_ID         = TSE.TAXFORM_ID
+                AND TS.CALENDAR_YEAR      = TSE.CALENDAR_YEAR
+                AND TSE.PROCESS_FLAG      <> 'V'
+                AND TS.THIRDPARTY_SICKPAY = 'Y')
+End-Select
+
+End-Procedure
+
+Begin-Procedure Before-State
+ MOVE $E.W2_STATE To $E_Before_W2_State
+Begin-Select
+RC960.REPORTING_MEDIUM
+RC960.DISKETTE_TYPE
+RC960.EMPLR_PIN
+RC960.RESUB_INDICATOR
+RC960.RESUB_TLCN
+RC960.CONTACT_NAME_SSA
+RC960.TELEPHONE_NBR
+RC960.PHONE_EXTN
+RC960.EMAIL_ADDR_MMREF
+RC960.CONTACT_FAX
+RC960.NOTIFY_METHOD
+
+FROM PS_TAX960_PARM RC960
+
+End-Select
+
+  move &E.W2_State        to $E.W2_State
+  MOVE &RC960.Telephone_Nbr TO $RC960.Telephone_Nbr
+  move 1 to #FileCount
+
+Begin-Select
+F1.BULK_FILING
+
+   move &F1.Bulk_filing to $Bulk_filing
+
+FROM PS_RC_TAX960ST F1
+WHERE F1.OPRID            = $Prcs_OprID
+  AND F1.RUN_CNTL_ID      = $Prcs_Run_Cntl_ID
+  AND F1.STATE            = $E.W2_State
+End-Select
+
+
+  if &RC960.REPORTING_MEDIUM <> 'X'
+     move 'Y' to $Bulk_filing
+  end-if
+
+  if $E.W2_state = 'OR' and not isnull($E_Before_W2_State)
+     let $Col6Hdr1=' '
+     let $Col5Hdr2=' '
+     let $Col7Hdr2=' '
+     New-Page
+  end-if
+  
+  do Populate-Headings
+  print 'State: ' (+3,1)
+  print &S.DESCR   (,8)
+
+
+End-Procedure
+
+
+Begin-Procedure Before-EmplID
+
+  #ifdef TAXDISPLAY
+    Show 'Processing EMPLID : ' &E.EMPLID
+  #endif
+
+  Let $FirstTime = 'Y'
+  Let $Indiana-multi-localities = 'Y'
+  let $Loc_Mag_Cd = ''
+  let $State-Reportable = 'N'
+
+  move &E.SSN to $S123 xxx
+  if $S123 = &Temp_SSN_Mask or RTRIM(&E.SSN, ' ') = ''
+     if $E.W2_State = 'NE'
+        move 'I        ' to $E.SSN
+     else
+        move '000000000' to $E.SSN
+     end-if
+
+  else
+     move &E.SSN to $E.SSN
+  end-if
+
+  move &E.YE_Fname  to $FirstName
+  move &E.YE_Middle_name to $MiddleName
+  move &E.YE_Lname  to $LastName
+  move &E.YE_Suffix to $Suffix
+  move '         '  to $Phila-SSN
+  move '     '      to $TaxingEntityCd
+
+  uppercase $FirstName
+  uppercase $MiddleName
+  uppercase $LastName
+  uppercase $Suffix
+
+  move &E.Emplid       to $E.Emplid
+  move &E.City         to $E.City
+  let  $E.StateCd = rtrim(&E.State, ' ')
+  move &E.Postal       to $E.Zip
+  move &E.Country      to $E.Country
+
+  do Populate-EE-Address
+
+  End-Procedure
+
+  Begin-Procedure Populate-EE-Address
+
+  If rtrim($E.City,' ') = ''
+     if ($E.Country = 'USA') OR ($E.Country = 'CAN')
+        Show 'City is blank in YE data for employee "' $E.Emplid '" in the personal data.'
+        Show 'Fix it and run the load program (Tax910ld.sqr) again.'
+        Stop
+     end-if
+  End-if
+
+
+  move $E.City         to $City
+  move $E.StateCd      to $StateCd
+  move $E.Zip          to $Zip
+  move $E.Country      to $Country
+  do Foreign-Address-Test('Format 3',25)
+  If $ForeignAddrInd = 'X'
+     Let $US_Zip      = ' '
+     Let $US_ZipXtnsn = ' '
+     Let $US_State    = ' '
+     Let $Frgn_Zip    = $Zip
+     Let $Frgn_State  = $StateName
+  else
+     Let $US_Zip      = $Zip
+     Let $US_ZipXtnsn = $ZipExtsn
+     Let $US_State    = $StateCd
+     Let $Frgn_Zip    = ' '
+     Let $Frgn_State  = ' '
+     Let $Country-2Char   = ' '
+  End-if
+
+  move &A.W2_Reporting_Co to $W2.W2_Reporting_Co
+  move $E.Emplid          to $W2.EMPLID
+  move &TX.Balance_Year   to #W2.Balance_Year
+  do Get-W2-Address
+  uppercase $E.City
+End-Procedure
+
+Begin-Procedure Load-Fed-Amounts
+
+Begin-Select
+D.BOX
+D.W2_AMOUNT
+
+  do Assign-Year-End-Variables
+  let $D.Box = &D.Box
+  move $D.Box to $Box xx
+  let $Pos3 = substr($D.Box, 3,1)
+  if $Box = $YE_Box12_StartPos  or
+     $Box = $YE_Other
+    and $Pos3 > ' '
+    let $D.Box = &D.Box
+    let $D.Box = rpad($D.Box,4,' ')
+  else
+    let $D.Box = RTRIM(&D.Box,' ')
+  end-if
+  let #Amount = &D.W2_Amount * 100
+  if #Amount < 0  and $D.Box <> $YE_Adv_EIC
+    display 'EMPLID ' noline
+    display $E.Emplid noline
+    display '  W2 Box ID ' noline
+    display &D.BOX noline
+    display ' Amount ' noline
+    display #Amount  noline
+    display ' Amount set to Zero '
+    move 0 to #Amount
+  end-if
+
+    do Evaluate-Box
+
+FROM  PS_YE_AMOUNTS D
+WHERE D.COMPANY         = &E.Company
+  AND D.CALENDAR_YEAR   = &TX.Balance_Year
+  AND D.EMPLID          = &E.Emplid
+  AND D.TAXFORM_ID      = &E.TaxForm_ID
+  AND D.SEQUENCE_NUMBER = 1
+  AND D.STATE           = '$U'
+End-Select
+End-Procedure
+
+Begin-Procedure Load-Fed-Amounts-IN
+
+Begin-Select
+DF.BOX
+DF.W2_AMOUNT
+
+  do Assign-Year-End-Variables
+  let $D.Box = &DF.Box
+  move $D.Box to $Box xx
+  let $Pos3 = substr($D.Box, 3,1)
+  if $Box = $YE_Box12_StartPos  or
+     $Box = $YE_Other
+    and $Pos3 > ' '
+    let $D.Box = &DF.Box
+    let $D.Box = rpad($D.Box,4,' ')
+  else
+    let $D.Box = RTRIM(&DF.Box,' ')
+  end-if
+  let #Amount = &DF.W2_Amount * 100
+  if #Amount < 0  and $D.Box <> $YE_Adv_EIC
+    display 'EMPLID ' noline
+    display $E.Emplid noline
+    display '  W2 Box ID ' noline
+    display &DF.BOX noline
+    display ' Amount ' noline
+    display #Amount  noline
+    display ' Amount set to Zero '
+    move 0 to #Amount
+  end-if
+
+    do Evaluate-Box
+
+FROM  PS_YE_AMOUNTS DF , PS_W2_COMPANY W2CF
+WHERE W2CF.W2_REPORTING_CO = $A.W2_Reporting_Co
+  AND W2CF.CALENDAR_YEAR   = &TX.Balance_Year
+  AND W2CF.TAXFORM_ID      = $E.TaxForm_ID
+  AND DF.EMPLID            = &E.Emplid
+  AND DF.COMPANY           = W2CF.COMPANY
+  AND DF.CALENDAR_YEAR     = W2CF.CALENDAR_YEAR
+  AND DF.TAXFORM_ID        = W2CF.TAXFORM_ID
+  AND DF.SEQUENCE_NUMBER   = 1
+  AND DF.STATE             = '$U'
+End-Select
+End-Procedure
+
+
+begin-procedure Load-State-Amounts
+
+  do Assign-Year-End-Variables
+  let $State-Reportable = 'N'
+begin-SELECT
+DS.BOX
+DS.W2_AMOUNT
+  let #Amount = &DS.W2_Amount * 100
+
+  let $DS.Box = RTRIM(&DS.Box,' ')
+
+  do Evaluate-State-Box
+
+  let $State-Reportable = 'Y'
+
+FROM  PS_YE_AMOUNTS DS
+WHERE DS.COMPANY         = $E.Company
+  AND DS.CALENDAR_YEAR   = &TX.Balance_Year
+  AND DS.EMPLID          = $E.Emplid
+  AND DS.TAXFORM_ID      = $E.TaxForm_ID
+  AND DS.SEQUENCE_NUMBER = #E.Sequence_Number
+  AND DS.BOX    IN ('16','17')
+end-SELECT
+
+end-procedure
+
+begin-procedure Load-State-Amounts-IN
+
+  do Assign-Year-End-Variables
+  let $State-Reportable = 'N'
+begin-SELECT
+DSI.BOX
+DSI.W2_AMOUNT
+  let #Amount = &DSI.W2_Amount * 100
+
+  let $DS.Box = RTRIM(&DSI.Box,' ')
+
+  do Evaluate-State-Box
+
+  let $State-Reportable = 'Y'
+
+FROM  PS_YE_AMOUNTS DSI, PS_W2_COMPANY W2CO
+WHERE W2CO.W2_REPORTING_CO = $A.W2_Reporting_Co
+  AND W2CO.CALENDAR_YEAR   = &TX.Balance_Year
+  AND W2CO.TAXFORM_ID      = $E.TaxForm_ID
+  AND DSI.EMPLID            = $E.Emplid
+  AND DSI.COMPANY           = W2CO.COMPANY
+  AND DSI.CALENDAR_YEAR     = W2CO.CALENDAR_YEAR
+  AND DSI.TAXFORM_ID        = W2CO.TAXFORM_ID
+  AND DSI.SEQUENCE_NUMBER   = #E.Sequence_Number
+  AND DSI.BOX    IN ('16','17')
+end-SELECT
+
+end-procedure
+
+begin-procedure Load-MA-PFML
+let #MAPFML = 0
+begin-SELECT
+MAW2.W2_AMOUNT
+  
+  let #MAPFML = &MAW2.W2_Amount * 100
+  let $State-Reportable = 'Y'
+  
+FROM  PS_YE_AMOUNTS MAW2
+WHERE MAW2.COMPANY         = $E.Company
+  AND MAW2.CALENDAR_YEAR   = &TX.Balance_Year
+  AND MAW2.EMPLID          = $E.Emplid
+  AND MAW2.TAXFORM_ID      = $E.TaxForm_ID
+  AND MAW2.SEQUENCE_NUMBER = #E.Sequence_Number
+  AND MAW2.BOX             = '14Q'
+end-SELECT
+end-procedure
+
+begin-procedure Load-WI-EIC
+
+  move 0 to #State_EIC
+
+begin-SELECT
+WI.W2_AMOUNT
+
+  let #State_EIC = &WI.W2_Amount * 100
+
+FROM  PS_YE_AMOUNTS WI
+WHERE WI.COMPANY         = $E.Company
+  AND WI.CALENDAR_YEAR   = &TX.Balance_Year
+  AND WI.EMPLID          = $E.Emplid
+  AND WI.TAXFORM_ID      = $E.TaxForm_ID
+  AND WI.SEQUENCE_NUMBER = #E.Sequence_Number
+  AND WI.BOX             = '14I'
+end-SELECT
+
+end-procedure
+
+begin-procedure Load-State-Amounts-NOT-WI
+
+  !keep the WI information to write it after any NON-Winsconsin RS record
+  Let #State_Wages_Aux = #State_Wages
+  Let #State_Tax_Aux =  #State_Tax
+
+
+
+  Let #State_Wages = 0
+  Let #State_Tax = 0
+  Let  #Amount = 0
+  Let $E.W2_State_Aux = $E.W2_State
+  Let $StateNumCd_Aux = $StateNumCd
+
+  do Assign-Year-End-Variables
+!The SQL statement checks if there are entries for the EE
+!in the States that have reciprocity agreements with WI
+!Note that MD uses Rule 5 so this special reporting does not apply
+begin-SELECT
+NTW.BOX
+NTW.W2_AMOUNT
+NTW.STATE      () on-break print=never AFTER=Write-WI-RS  save=$NTW_State
+
+  let #Amount = &NTW.W2_Amount * 100
+  let $DS.Box = RTRIM(&NTW.Box,' ')
+
+  Do Evaluate-State-Box
+
+
+FROM  PS_YE_AMOUNTS NTW
+WHERE NTW.COMPANY         = $E.Company
+  AND NTW.EMPLID          = $E.Emplid
+  AND NTW.CALENDAR_YEAR   = &TX.Balance_Year
+  AND NTW.TAXFORM_ID      = $E.TaxForm_ID
+  AND NTW.BOX   IN ('16','17')
+  AND NTW.STATE IN ('IL', 'IN', 'KY','MI','MN')
+  ORDER BY NTW.STATE, NTW.BOX
+end-SELECT
+
+  Let #State_Wages = 0
+  Let #State_Tax = 0
+  Let  #Amount = 0
+
+  Let  #State_Wages   = #State_Wages_Aux
+  Let  #State_Tax     = #State_Tax_Aux
+  Let  $E.W2_State    = $E.W2_State_Aux
+  Let  $StateNumCd    = $StateNumCd_Aux
+
+
+end-procedure
+
+begin-Procedure Write-WI-RS
+
+     Let $E.W2_State = rtrim($NTW_State, ' ')
+
+     Do Get-ee-State-Code
+     Let $StateCdTmp = $StateNumCdA
+     MOVE &S.NUMERIC_CD To $StateNumCd
+     MOVE &S.NUMERIC_CD To $StateNumCdA
+     Do Write-RS-Record
+
+     Let $StateNumCdA = $StateCdTmp
+     !These State Amounts do not have to be considered
+     !because they do not belong to WI
+     !The amounts were added in TAXMMREF.
+     !They have to be reversed here in order to avoid
+     !impacting other States
+     !Also, the RS records written here do not have to be considered.
+
+     LET #State_Wages-T  = #State_Wages-T -  #State_Wages
+     LET #State_Tax-T    = #State_Tax-T   -  #State_Tax
+     LET #Local_Wages-T  = #Local_Wages-T -  #Local_Wages
+     LET #Local_Tax-T    = #Local_Tax-T   -  #Local_Tax
+     LET #State_Wages-F  = #State_Wages-F -  #State_Wages
+     LET #State_Tax-F    = #State_Tax-F   -  #State_Tax
+     LET #Local_Wages-F  = #Local_Wages-F -  #Local_Wages
+     LET #Local_Tax-F    = #Local_Tax-F   -  #Local_Tax
+
+     LET #Count-S    =  #Count-S -1
+     LET #S-Count-F  =  #S-Count-F -1
+     Let #State_Wages = 0
+     Let #State_Tax = 0
+     Let #Amount = 0
+
+
+end-procedure
+
+begin-procedure Gather-Local-Amounts
+
+begin-SELECT
+GL.BOX
+GL.W2_AMOUNT
+
+  let #Amount = &GL.W2_Amount * 100
+  let $GL.Box = rtrim(&GL.BOX, ' ')
+
+  evaluate $GL.Box
+    when = $YE_Local_Wages         !Local wages
+      add  #Amount to #Local_Wages
+      break
+    when = $YE_Local_Tax           !Local withheld
+      add  #Amount to #Local_Tax
+      break
+  end-evaluate
+
+FROM  PS_YE_AMOUNTS GL
+WHERE GL.COMPANY         = $E.COMPANY
+  AND GL.CALENDAR_YEAR   = &TX.Balance_Year
+  AND GL.EMPLID          = $E.Emplid
+  AND GL.TAXFORM_ID      = $E.TaxForm_ID
+  AND GL.SEQUENCE_NUMBER = #E.Sequence_Number
+  AND GL.STATE           = $State
+  AND GL.BOX    IN ('18','19')
+end-SELECT
+end-procedure
+
+begin-procedure Load-KY-Local
+begin-SELECT
+KY.W2_AMOUNT
+KY.LOCALITY
+KY1.KEDFA_CD
+
+  let #Amount = &KY.W2_Amount * 100
+  let $KY.Locality = RTRIM(&KY.Locality, ' ')
+  let $KEDFA-Cd = RTRIM(&KY1.KEDFA_CD, ' ')
+
+  if $KY.Locality <> ''
+    evaluate $KEDFA-CD
+      when = '1'
+        add  #Amount to #KY_KREDA
+        break
+      when = '2'
+        add  #Amount to #KY_KJDA
+        break
+      when = '3'
+        add  #Amount to #KY_KIRA
+        break
+      when = '4'
+        add  #Amount to #KY_KIDA
+        break
+    end-evaluate
+  end-if
+
+FROM  PS_YE_AMOUNTS KY, PS_RC_TAX960KY KY1
+WHERE KY.COMPANY         = $E.COMPANY
+  AND KY.CALENDAR_YEAR   = &TX.Balance_Year
+  AND KY.EMPLID          = $E.Emplid
+  AND KY.TAXFORM_ID      = $E.TaxForm_ID
+  AND KY.SEQUENCE_NUMBER = #E.Sequence_Number
+  AND KY.STATE           = 'KY'
+  AND KY.BOX             = '17'
+  AND KY.LOCALITY        = KY1.LOCALITY
+end-SELECT
+end-procedure
+
+begin-Procedure Gather-FRMALOC-Amounts                                  !HP00001
+                                                                        !HP00001
+  move 0 to #FRMALOC-Retire-Fund                                        !HP00001
+                                                                        !HP00001
+  move 'N' to $Ded_Processed                                            !HP00001
+  move ' ' to $Prev_PlanType                                            !HP00001
+  move ' ' to $Prev_DedCd                                               !HP00001
+  move ' ' to $Prev_DedClass                                            !HP00001
+  move ' ' to $Prev_BenefitPlan                                         !HP00001
+  move 0   to #Prev_BenefitRcdNbr                                       !HP00001
+                                                                        !HP00001
+begin-SELECT                                                            !HP00001
+                                                                        !HP00001
+FRMALOC.PLAN_TYPE                                                       !HP00001
+FRMALOC.DEDCD                                                           !HP00001
+FRMALOC.DED_CLASS                                                       !HP00001
+FRMALOC.BENEFIT_PLAN                                                    !HP00001
+FRMALOC.BENEFIT_RCD_NBR                                                 !HP00001
+FRMALOC.DED_YTD                                                         !HP00001
+MA.DEDCD                                                                !HP00001
+MA.DED_CLASS                                                            !HP00001
+                                                                        !HP00001
+  if    &FRMALOC.PLAN_TYPE        <> $Prev_PlanType                     !HP00001
+     or &FRMALOC.DEDCD            <> $Prev_DedCd                        !HP00001
+     or &FRMALOC.DED_CLASS        <> $Prev_DedClass                     !HP00001
+     or &FRMALOC.BENEFIT_PLAN     <> $Prev_BenefitPlan                  !HP00001
+     or &FRMALOC.BENEFIT_RCD_NBR  <> #Prev_BenefitRcdNbr                !HP00001
+                                                                        !HP00001
+      let $Prev_PlanType      = &FRMALOC.PLAN_TYPE                      !HP00001
+      let $Prev_DedCd         = &FRMALOC.DEDCD                          !HP00001
+      let $Prev_DedClass      = &FRMALOC.DED_CLASS                      !HP00001
+      let $Prev_BenefitPlan   = &FRMALOC.BENEFIT_PLAN                   !HP00001
+      let #Prev_BenefitRcdNbr = &FRMALOC.BENEFIT_RCD_NBR                !HP00001
+      let $Ded_Processed      = 'N'                                     !HP00001
+  end-if                                                                !HP00001
+                                                                        !HP00001
+  if $Ded_Processed        = 'N'                                        !HP00001
+                                                                        !HP00001
+      let #Amount = &FRMALOC.DED_YTD * 100                              !HP00001
+                                                                        !HP00001
+      if (rtrim(&MA.DEDCD, ' ') = ''                                    !HP00001
+          or &MA.DEDCD = &FRMALOC.DEDCD)                                !HP00001
+         and (rtrim(&MA.DED_CLASS, ' ')  = ''                           !HP00001
+              or &MA.DED_CLASS = &FRMALOC.DED_CLASS)                    !HP00001
+                                                                        !HP00001
+          add #Amount to #FRMALOC-Retire-Fund                           !HP00001
+          move 'Y'    to $Ded_Processed                                 !HP00001
+      end-if                                                            !HP00001
+  end-if                                                                !HP00001
+                                                                        !HP00001
+FROM  PS_DEDUCTION_BAL FRMALOC, PS_RC_TAX960MA MA                       !HP00001
+WHERE FRMALOC.EMPLID        = &E.EMPLID                                 !HP00001
+  AND FRMALOC.COMPANY       = &E.COMPANY                                !HP00001
+  AND FRMALOC.BALANCE_YEAR  = &TX.Balance_Year                          !HP00001
+  AND FRMALOC.BALANCE_ID    = $Calendar_Year_Id                         !HP00001
+  AND FRMALOC.PLAN_TYPE     = MA.PLAN_TYPE                              !HP00001
+  AND MA.OPRID               = $Prcs_OprID                              !HP00001
+  AND MA.RUN_CNTL_ID         = $Prcs_Run_Cntl_ID                        !HP00001
+  AND FRMALOC.BALANCE_PERIOD    =                                       !HP00001
+      (SELECT MAX(BALANCE_PERIOD)                                       !HP00001
+       FROM   PS_DEDUCTION_BAL                                          !HP00001
+       WHERE  EMPLID            = FRMALOC.EMPLID                        !HP00001
+         AND  COMPANY           = FRMALOC.COMPANY                       !HP00001
+         AND  BALANCE_YEAR      = FRMALOC.BALANCE_YEAR                  !HP00001
+         AND  BALANCE_ID        = FRMALOC.BALANCE_ID                    !HP00001
+         AND  BENEFIT_PLAN      = FRMALOC.BENEFIT_PLAN                  !HP00001
+         AND  BENEFIT_RCD_NBR   = FRMALOC.BENEFIT_RCD_NBR               !HP00001
+         AND  PLAN_TYPE         = FRMALOC.PLAN_TYPE                     !HP00001
+         AND  DEDCD             = FRMALOC.DEDCD                         !HP00001
+         AND  DED_CLASS         = FRMALOC.DED_CLASS)                    !HP00001
+  AND FRMALOC.DED_YTD           <> 0                                    !HP00001
+ORDER BY FRMALOC.PLAN_TYPE, FRMALOC.DEDCD, FRMALOC.DED_CLASS,           !HP00001
+         FRMALOC.BENEFIT_PLAN, FRMALOC.BENEFIT_RCD_NBR                  !HP00001
+                                                                        !HP00001
+end-SELECT                                                              !HP00001
+end-procedure                                                           !HP00001
+
+begin-procedure Load-Local-Amounts
+
+begin-SELECT      !Local Data
+DL.BOX
+DL.W2_AMOUNT
+DL.STATE
+DL.LOCALITY       () on-break print=never after=Report-Local-Amounts
+
+  let $LCL_Status =  nvl (&DL.Locality,'none')
+  if  $LCL_Status = 'none'
+    display 'No Locality identified for local amount.'
+    display 'Processing employee: ' noline
+    display $E.EmplID               noline
+    display '  In company: '        noline
+    display $E.Company
+    STOP
+  end-if
+
+  let #Amount = &DL.W2_Amount * 100
+  let $DL.Locality = RTRIM(&DL.Locality,' ')
+  let $DL.Box = RTRIM(&DL.Box,' ')
+  let $DL.State = RTRIM(&DL.State,' ')
+
+  if $DL.STATE = 'IN' and $DL.LOCALITY = '99990'
+    add #Amount to #STATE_EIC
+    move 0 to #Local_Wages
+    add #Amount to #Local_Tax
+  else
+    evaluate $DL.Box
+      when = $YE_Local_Wages         !Local wages
+        add  #Amount to #Local_Wages
+        break
+      when = $YE_Local_Tax           !Local withheld
+        add  #Amount to #Local_Tax
+        break
+   end-evaluate
+  end-if
+
+FROM  PS_YE_AMOUNTS DL
+WHERE DL.COMPANY         = $E.COMPANY
+  AND DL.CALENDAR_YEAR   = &TX.Balance_Year
+  AND DL.EMPLID          = $E.Emplid
+  AND DL.TAXFORM_ID      = $E.TaxForm_ID
+  AND DL.SEQUENCE_NUMBER = #E.Sequence_Number
+  AND DL.BOX    IN ('18','19')
+ORDER BY DL.LOCALITY DESC
+end-SELECT
+end-procedure                      !Load-Local-Amounts
+
+begin-procedure Load-Local-Amounts-IN
+
+let $Save_Locality = ''
+
+begin-SELECT      !Local Data
+W2CL.W2_REPORTING_CO  () on-break print=never after=Report-Local-Amounts
+DLI.BOX
+DLI.W2_AMOUNT
+DLI.STATE
+DLI.LOCALITY          () on-break print=never after=Warning-multiple-localities
+
+  let $LCL_Status =  nvl (&DLI.Locality,'none')
+  if  $LCL_Status = 'none'
+    display 'No Locality identified for local amount.'
+    display 'Processing employee: ' noline
+    display $E.EmplID               noline
+    display '  In company: '        noline
+    display $E.Company
+    STOP
+  end-if
+
+  let #Amount = &DLI.W2_Amount * 100
+  let $DL.Locality = RTRIM(&DLI.Locality,' ')
+  if  $DL.Locality <> '99990'
+    move $DL.Locality to $Save_Locality
+  end-if
+  let $DL.Box = RTRIM(&DLI.Box,' ')
+  let $DL.State = RTRIM(&DLI.State,' ')
+
+  if $DL.STATE = 'IN' and $DL.LOCALITY = '99990'
+    add #Amount to #STATE_EIC
+  else
+    evaluate $DL.Box
+      when = $YE_Local_Wages         !Local wages
+        add  #Amount to #Local_Wages
+        break
+      when = $YE_Local_Tax           !Local withheld
+        add  #Amount to #Local_Tax
+        break
+   end-evaluate
+  end-if
+
+FROM  PS_YE_AMOUNTS DLI, PS_W2_COMPANY W2CL
+WHERE W2CL.W2_REPORTING_CO = $A.W2_Reporting_Co
+  AND W2CL.CALENDAR_YEAR   = &TX.Balance_Year
+  AND W2CL.TAXFORM_ID      = $E.TaxForm_ID
+  AND DLI.EMPLID            = $E.Emplid
+  AND DLI.COMPANY           = W2CL.COMPANY
+  AND DLI.CALENDAR_YEAR     = W2CL.CALENDAR_YEAR
+  AND DLI.TAXFORM_ID        = W2CL.TAXFORM_ID
+  AND DLI.SEQUENCE_NUMBER   = #E.Sequence_Number
+  AND DLI.BOX    IN ('18','19')
+ORDER BY DLI.BOX, DLI.LOCALITY
+end-SELECT
+end-procedure                      !Load-Local-Amounts-IN
+
+begin-procedure Load-Local-Amounts-MO
+ MOVE '0000000000' TO $OtherStateData
+begin-SELECT      !Local Data
+#ifdef DB2ALL
+DECIMAL(SUM(MOL.W2_AMOUNT),15,3) &MOL.W2_Amount
+#else
+SUM(MOL.W2_AMOUNT) &MOL.W2_Amount
+#endif
+
+  let #Amount = &MOL.W2_Amount * 100
+  move #Amount to $OtherStateData 0999999999
+
+FROM  PS_YE_AMOUNTS MOL
+WHERE MOL.COMPANY         = $E.COMPANY
+  AND MOL.EMPLID          = $E.Emplid
+  AND MOL.CALENDAR_YEAR   = &TX.Balance_Year
+  AND MOL.TAXFORM_ID      = $E.TaxForm_ID
+  AND MOL.SEQUENCE_NUMBER = #E.Sequence_Number
+  AND MOL.BOX    = '19'
+  AND MOL.STATE = 'MO'
+GROUP BY MOL.BOX
+end-SELECT
+end-procedure                      !Load-Local-Amounts-MO
+
+
+
+begin-procedure Load-Local-Amounts-MI
+
+
+begin-SELECT      !Local Data
+DLM.BOX
+DLM.W2_AMOUNT
+DLM.STATE
+DLM.LOCALITY
+
+  let #Amount = &DLM.W2_Amount * 100
+  let $DLM.Locality = RTRIM(&DLM.Locality,' ')
+  let $DLM.Box = RTRIM(&DLM.Box,' ')
+  let $DLM.State = RTRIM(&DLM.State,' ')
+
+  evaluate $DLM.Box
+    when = $YE_Local_Wages         !Local wages
+      add  #Amount to #Local_Wages
+      break
+    when = $YE_Local_Tax           !Local withheld
+      add  #Amount to #Local_Tax
+      break
+  end-evaluate
+
+  let $State-Reportable = 'Y'
+
+FROM  PS_YE_AMOUNTS DLM
+WHERE DLM.COMPANY         = $E.COMPANY
+  AND DLM.CALENDAR_YEAR   = &TX.Balance_Year
+  AND DLM.EMPLID          = $E.Emplid
+  AND DLM.TAXFORM_ID      = $E.TaxForm_ID
+  AND DLM.SEQUENCE_NUMBER = #E.Sequence_Number
+  AND DLM.STATE           = 'MI'
+  AND DLM.LOCALITY        = '22000'
+  AND DLM.BOX    IN ('18','19')
+end-SELECT
+end-procedure                      !Load-Local-Amounts-MI
+
+begin-procedure  Report-Local-Amounts
+  let $Loc_Tax_Cd = ''
+  let $Locality = RTRIM($DL.Locality,' ')
+  if $DL.STATE = 'OH'
+     if (length($Locality)) = 4
+        do  Get-Locality-Mag-CD
+        let $Loc_Tax_Cd = rtrim ($Loc_Tax_Cd,' ')
+     end-if
+  else
+     if &DL.STATE <> 'OH'
+       do  Get-Locality-Mag-CD
+       let $Loc_Tax_Cd = rtrim ($Loc_Tax_Cd,' ')
+     end-if
+  end-if
+  
+  if $Loc_Tax_Cd <> ''
+  
+    let $LocalReportable = 'Y'
+    let $State-Reportable = 'Y'
+    if $DL.STATE = 'IN' and $FirstTime = 'Y'
+       do Update-Temp-Table
+    end-if
+    if $DL.STATE <> 'IN'
+       do Update-Temp-Table
+    end-if
+    evaluate $E.W2_State
+    when = 'IN'
+      move 'D' to $Loc_Tax_Tp
+      break
+    when = 'OH'
+      move 'E' to $Loc_Tax_Tp
+      break
+    end-evaluate
+    let $Local_Save = $Locality
+    let $Loc_Mag_Cd = $Loc_Tax_Cd
+    do Write-S-Record-from-Local
+  else
+     ! For an Indiana employee who has IN EIC, it will only come to this
+     ! procedure after fetching the last YE_AMOUNTS locality row, ie,
+     ! the 99990 row. Therefore need to update temp table with 99990 locality's
+     ! info, then backtrack and do the same for the 'normal' locality.
+     ! The temp table is used to generate the report after output files are written
+
+     if $Locality = '99990'
+       move #Local_Tax to #Save_Local_Tax
+       move #Local_Wages to #Save_Local_Wages
+       move 0 to #Local_Wages
+       move #STATE_EIC to #Local_Tax
+       do Update-Temp-Table
+
+       move $Save_Locality to $Locality
+       do  Get-Locality-Mag-CD             !for previous 'normal' locality
+       let $Loc_Tax_Cd = rtrim ($Loc_Tax_Cd,' ')
+       let $Loc_Mag_Cd = $Loc_Tax_Cd       !for RS record County Code 307-308
+       move #Save_Local_Tax to #Local_Tax
+       move #Save_Local_Wages to #Local_Wages
+       do Update-Temp-Table
+     else
+       move 0 to #Local_Wages
+       move 0 to #Local_Tax
+       move ' ' to $Loc_Mag_Cd
+       move ' ' to $Loc_Tax_Cd
+     end-if
+  end-if
+  move ' ' to $Loc_Tax_Tp
+  move ' ' to $Loc_Tax_Cd
+end-procedure                      !Report-Local-Amounts
+
+Begin-Procedure Warning-multiple-localities
+
+   if $FirstTime = 'N' and
+     $Indiana-multi-localities = 'Y' and
+     $DL.Box = $YE_Local_Wages
+     display ''
+     display 'Employee: '            noline
+     display $E.EmplID               noline
+     display ' ' noline
+     display 'has different Indiana county locals that have been combined for reporting '
+     display ''
+     Let $Indiana-multi-localities = 'N'
+   end-if
+
+end-procedure
+
+
+Begin-Procedure After-EmplID
+
+  !Unique State Requirements - Different from SSA format
+  !  RS record requires specific changes
+  !    Be advised - TAXMMREF contains some State Specific
+  !        RS record code also.
+
+  Move 0 to $Zero_fill 099999999999999
+
+  evaluate $E.W2_State
+    when = 'AL'
+      do RS-CommonClear
+      move 0 to $1099-Income 09999999999
+      let $SupplData1a = '                                            '
+      let $SupplData1 = $1099-Income || $SupplData1a
+      move #Fed_Tax  to $OtherStateData 0999999999
+      move '  '      to $StateNumCdA
+      move '      '  to $Zero_fill
+      move #Local_Wages      to $Local_Wages    09999999999
+      move #Local_Tax        to $Local_Taxes    09999999999
+      break
+    when = 'AR'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      let $SupplData1a = '                                            '
+      move $A.FEDERAL_EIN to $FED_EIN          099999999
+      let $SupplData1 = $FED_EIN || $SupplData1a
+      let $SupplData2a = '                                            '
+      let $SupplData2 = $StateEmplIN || $SupplData2a
+      move '      '  to $StateEIN
+      break
+    when = 'AZ'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      do Clear-Space-Fields
+      break
+    when = 'CO'
+      move &TX.Balance_Year to $ReportingPeriod
+      let $ReportingPeriod = '12' || $ReportingPeriod
+      move '      '  to $Zero_fill
+      move '      '  to $StateEIN
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when = 'CT'
+      move '      '  to $Zero_fill
+      break
+    when = 'DC'
+      move &TX.Balance_Year to $ReportingPeriod
+      let $ReportingPeriod = '12' || $ReportingPeriod
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when = 'DE'
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      move '      '  to $Zero_fill
+      break
+    when = 'GA'
+      move &TX.Balance_Year to $OtherStateData
+      let $OtherStateData = '12/31/' || $OtherStateData
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      move '      '  to $Zero_fill
+      move $StateEmplIN to $StateControlNumber
+      move $StateEmplIN to $SupplData1 ~~~~~~~xx
+      move $ErName        to $RS_ErName        xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx ! length 57
+      move $ErAddress1    to $RS_ErAddress1    xxxxxxxxxxxxxxxxxxxxxx                                    ! length 22
+      move $ErAddress2    to $RS_ErAddress2    xxxxxxxxxxxxxxxxxxxxxx                                    ! length 22
+      move $ErCity        to $RS_ErCity        xxxxxxxxxxxxxxxxxxxxxx                                    ! length 22
+      move $ErUS_State    to $RS_ErUS_State    xx                                                        ! length 2
+      move $ErUS_Zip      to $RS_ErUS_Zip      xxxxx                                                     ! length 5
+      move $ErUS_ZipXtnsn to $RS_ErUS_ZipXtnsn xxxx                                                      ! length 4
+      let $SupplData = $SupplData1 || $RS_ErName || $RS_ErAddress1 || $RS_ErAddress2
+                        || $RS_ErCity || $RS_ErUS_State
+                        || $RS_ErUS_Zip || $RS_ErUS_ZipXtnsn || $FedEIN
+      let $SupplData1 = substr($SupplData, 1, 75)
+      let $SupplData2 = substr($SupplData, 76, 70)
+      let $SupplData2 = rpad($SupplData2,5,' ')
+      move '      '  to $StateEIN
+      break
+    when = 'HI'
+      move ' '       to $Zero_fill
+      break
+    when = 'ID'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when = 'IL'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when = 'IN'
+      if $LocalReportable <> 'Y'
+        do Indiana-Specific
+      end-if
+      break
+    when = 'KS'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      move '00000000000' to $SupplData1
+      break
+    when = 'KY'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      move 0         to $KY_KREDA               09999999999
+      move 0         to $KY_KJDA                09999999999
+      move 0         to $KY_KIRA                09999999999
+      move 0         to $KY_KIDA                09999999999
+      let $SupplData1 = $KY_KREDA || $KY_KJDA || $KY_KIRA || $KY_KIDA
+!      let  #TotalKYTax = #KY_KREDA + #KY_KJDA + #KY_KIRA + #KY_KIDA
+!      let #State_Tax = #State_Tax - #TotalKYTax
+      break
+    when = 'LA'
+      move '      '  to $Zero_fill
+      move '  '      to $StateNumCd
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when = 'MA'
+!      move '  '      to $StateNumCdA
+      move '      '  to $Zero_fill
+      move '      '  to $StateEIN
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+!      move #FRMALOC-Retire-Fund to $FRMALOC-Retire-Fund  09999999999
+!      move #Fed_Wages to $MA-Fed-Wages  09999999999
+!      let #TempHold = #SS_Tax + #Med_Tax
+!      move #TempHold to $TempHold       09999999999
+!      let $Suppldata1 = $TempHold || $FRMALOC-Retire-Fund || $MA-Fed-Wages
+!      add #TempHold  to #SS-Med-T
+!      add #FRMALOC-Retire-Fund to #FRMALOC-Retire-Fund-T
+!      add #Fed_Wages           to #MA-Fed-Wages-T
+      break
+    when = 'MD'
+      move '  '      to $StateNumCdA
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      move '      '  to $Zero_fill
+      move '0000000000' to $OtherStateData
+      do MD-Specific
+      add #Local_Tax to #State_Tax
+      move #Fed_Wages  to $Fed_Wages            09999999999
+      move #Fed_Tax    to $Fed_Tax              09999999999
+      move #Allowances to $Allowances           09
+      let $SupplData1 = $StateAccountNumber || $Fed_Wages || $Fed_Tax || $Allowances
+      move ' ' to $StateEin
+      break
+    when = 'ME'
+!      move &TX.Balance_Year to $ReportingPeriod
+!      let $ReportingPeriod = '12' || $ReportingPeriod
+      move '      '  to $ReportingPeriod
+      move '0000000000' to $OtherStateData
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      move '      '  to $Zero_fill
+      break
+    when = 'MI'
+      move '      '  to $Zero_fill
+      move '  '      to $StateNumCd
+!      move '    '    to $Local_Wages
+!      move '    '    to $Local_Taxes
+      break
+    when = 'MN'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when = 'MO'
+
+      move '      '  to $Zero_fill
+      move '  '      to $StateNumCd
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when = 'MS'
+      move 0 to $1099-Income 09999999999
+      let $SupplData1a = '                                            '
+      move &TX.Balance_Year to  $SupplData1b
+      let $SupplData1c = $SupplData1b || '                '
+      let $SupplData1 = $1099-Income || $SupplData1a || $SupplData1c
+      move #Fed_Tax  to $OtherStateData 0999999999
+      move '00000000000'    to $Zero_fill
+      move '00'             to $WorkWeeks
+      move '00000000000'    to $Local_Wages
+      move '00000000000'    to $Local_Taxes
+      move &TX.Balance_Year to $ReportingPeriod
+      let $ReportingPeriod = '12' || $ReportingPeriod
+      break
+    when = 'MT'
+      move &TX.Balance_Year to $ReportingPeriod
+      let $ReportingPeriod = '12' || $ReportingPeriod
+      move #Local_Wages      to $Local_Wages    09999999999
+      move #Local_Tax        to $Local_Taxes    09999999999
+      break
+    when = 'NC'
+      !do RS-CommonClear
+      !do RW-CommonClear
+      Do RW-Clear-NC
+      move #Local_Wages      to $Local_Wages    09999999999
+      move #Local_Tax        to $Local_Taxes    09999999999
+      break
+    when = 'ND'
+      do Write-W-Record    ! North Dakota requires 'RW' record
+                           ! but wants ee data cleared on 'RS'
+                           ! record - write 'RW' before clear
+      do RS-CommonClear
+      move 0         to $Local_Wages 09999999999
+      move 0         to $Local_Taxes 09999999999
+      move 0         to $Zero_fill   09999999999
+      move '      '  to $StateEIN
+      break
+    when = 'NE'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when = 'NJ'
+      move '      '  to $Zero_fill
+      move '  '      to $StateNumCd
+      move ' '       to $Tax_Type_Cd
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      do NJ-Specific
+!      move #Local_Tax        to $NJPA           0999999999
+      move #OtherD           to $NJD            09999
+      move #OtherE_G         to $DIW            09999
+      move #OtherC_H         to $FLIW           09999
+
+      let $OtherStateData = $FLPTC || $PFLPN || $FLIW
+
+!      let $Tax_Type_Cd = substr($NJPA,8,1)
+!      let $Local_Wages = substr($NJPA,9,2) || '         '
+
+      if &E.Pension_Plan = 'Y'
+        move 'P' to $PPI
+      else
+        move ' ' to $PPI
+      end-if
+      let #DCA = #401K
+      if #DCA > 0
+        move 'D' to $DCI
+      else
+        move ' ' to $DCI
+      end-if
+      move #DCA              to $DCA            099999999
+      let $SupplData1 = $DPTC || $PDPN || $NJD || $DIW || $PPI || $DCI || $DCA
+      break
+    when = 'NM'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      move $StateAccountNumber to $OtherStateData  9999999999
+      break
+    when = 'OH'
+      if $LocalReportable <> 'Y'
+        do Ohio-Specific
+      end-if
+      break
+    when = 'OR'
+      do OR-Specific
+      move ' ' to $Zero_fill
+      move '00000000' to $EmployDate
+      move '00000000' to $SepDate
+      move #State_Tax to $State_Tax 09999999999
+      move ' ' to $Local_Wages
+      move ' ' to $Local_Taxes
+      break
+    when = 'PA'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+!     move ' '       to $StateEIN
+      move ' '       to $StateNumCd
+      break
+    when = 'RI'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when = 'SC'
+      move &TX.Balance_Year to $ReportingPeriod
+      let $ReportingPeriod = '12' || $ReportingPeriod
+      move '00000000' to $EmployDate
+      move '00000000' to $SepDate
+      move '0'        to $Tax_Type_Cd
+      move '    '     to $Local_Wages
+      move '    '     to $Local_Taxes
+      move '0000000'  to $StateControlNumber
+      let $SupplData1 = rpad($SupplData1,75,'0')
+      let $SupplData2 = rpad($SupplData2,75,'0')
+      break
+    when = 'UT'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when = 'VA'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when = 'VT'
+      move '       ' to $Zero_fill
+      move #Local_Wages      to $Local_Wages    09999999999
+      move #Local_Tax        to $Local_Taxes    09999999999
+      break
+    when = 'WI'
+      let $SupplData1 = rpad($SupplData1,75,'0')
+      let $SupplData2 = rpad($SupplData2,75,'0')
+      move '    '       to $Local_Wages
+      move '    '       to $Local_Taxes
+      move '          ' to $OtherStateData
+      break
+    when = 'WV'
+      move '      '  to $Zero_fill
+      move '    '    to $Local_Wages
+      move '    '    to $Local_Taxes
+      break
+    when-other
+      break
+  end-evaluate
+
+  if $State-Reportable = 'Y'
+    evaluate $E.W2_State
+      when = 'AL'
+      when = 'CO'
+      when = 'CT'
+      when = 'LA'
+      when = 'MA'
+      when = 'MD'
+      when = 'ND'
+      when = 'PA'
+      when = 'RI'
+      when = 'VA'
+        if $LocalReportable <> 'Y'
+          do Write-S-Record
+        end-if
+        break
+      when = 'AR'
+      when = 'DE'     
+      when = 'ME'
+      when = 'NC'
+      when = 'NE'
+      when = 'OH'
+      when = 'SC'
+      when = 'UT'
+        if $LocalReportable <> 'Y'
+          do Write-W-Record
+          do Write-S-Record
+        end-if
+        break
+      when = 'IN'
+        if $LocalReportable <> 'Y'
+          do Write-W-Record
+          do Write-O-Record
+          do Write-S-Record
+        end-if
+        break
+      when-other
+        do Write-W-Record
+        do Write-O-Record
+        do Write-S-Record
+        break
+    end-evaluate
+  end-if
+
+  do Zero-W-Record
+  do Zero-O-Record
+  do Zero-S-Record
+  do Clear-Space-Fields
+
+  move 'N' to $WriteORec
+  move '0' to $StatutoryEe
+  move 0   to #RetirePlan
+  move '0' to $DeceasedFlag
+  move 0   to #Third_Party_Sick_Ind
+
+  Let $LocalReportable = 'N'
+
+End-Procedure
+
+Begin-Procedure Clear-Space-Fields
+
+!  These fields are space filled  'RS' Record
+  move '  '          to $WorkWeeks
+  move '        '    to $EmployDate
+  move '        '    to $SepDate
+  move '  '          to $OtherStateData
+  move ''            to $SupplData1
+  move ''            to $SupplData2
+  move '      '      to $ReportingPeriod
+  move ' '           to $Tax_Type_CD
+  move '       '     to $StateControlNumber
+
+End-Procedure
+
+Begin-Procedure RW-Clear-NC
+      IF $EMPLOYMENT_TYPE = 'Q' OR
+         $EMPLOYMENT_TYPE = 'X'
+            move '00000000000'   to #SS_Wages
+            move '00000000000'   to #SS_Tax
+            move '00000000000'   to #SS_Tips
+      END-IF
+
+      IF $EMPLOYMENT_TYPE = 'X'
+         move '00000000000'   to #Med_Wages
+         move '00000000000'   to #Med_Tax
+      END-IF
+
+End-Procedure
+
+Begin-Procedure RS-CommonClear
+
+      move '     '   to $Suffix
+      move '     '   to $E.Address1
+      move '     '   to $E.Address2
+      move '     '   to $E.City
+      move '     '   to $US_State
+      move '     '   to $US_Zip
+      move '     '   to $US_ZipXtnsn
+      move '     '   to $Frgn_State
+      move '     '   to $Frgn_Zip
+      move '     '   to $Country-2Char
+      move ' '       to $Tax_Type_Cd
+      move 0         to $Zero_fill 099999999999999
+End-Procedure
+
+Begin-Procedure Get-Idaho-Form967-for-RV
+
+begin-SELECT
+ID.FILING_CYCLE
+ID.ID_967_LINE3
+ID.ID_967_LINE5
+ID.ID_967_LINE6
+ID.ID_967_LINE11
+
+  move  &ID.FILING_CYCLE  to $ID-Filing-Cycle
+
+  let #LN_Amount = &ID.ID_967_LINE5 * 100
+  move  #LN_Amount  to $ID-967-LN5  09999999999
+
+  let #LN_Amount = &ID.ID_967_LINE6 * 100
+  move  #LN_Amount  to $ID-967-LN6  09999999999
+
+  let #LN_Amount = &ID.ID_967_LINE11 * 100
+  move  #LN_Amount to $ID-967-LN11 09999999999
+
+
+  let #LN_Amount = &ID.ID_967_LINE3 * 100
+  move  #LN_Amount to $ID-967-LN3-3B 09999999999
+  move  &ID.ID_967_LINE3  to #ID-967-LN3-3B
+
+FROM PS_RC_TAX960ID ID
+WHERE ID.OPRID = $Prcs_OprID
+  AND ID.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+  AND ID.COMPANY = $Company
+
+end-SELECT
+
+End-Procedure
+
+Begin-Procedure Print-Idaho-Form967
+
+  evaluate $ID-Filing-Cycle
+    when = 'B'
+       let $Print-Filing-Cycle = 'Semimonthly Filing'
+    break
+    when = 'M'
+       let $Print-Filing-Cycle = 'Monthly Filing'
+    break
+    when = 'Q'
+       let $Print-Filing-Cycle = 'Quarterly Filing'
+    break
+    when = 'Y'
+       let $Print-Filing-Cycle = 'Annual filing'
+    break
+    when = ' '
+       let $Print-Filing-Cycle = 'None'
+    break
+  end-evaluate
+
+  print 'Idaho 967 Parameters for Company:'  (+2,3)
+  print $Company                             (,40)
+  print 'Filing Cycle:'                      (+1,3)
+  print $Print-Filing-Cycle                  (,20)
+
+  print '(Line 3 ) Total payments for calendar year:'      (+1,3)
+  let #out = &ID.ID_967_LINE3
+  do Format-Number(#out, $out,'99,999,999,999')
+  print $out  (,69)
+
+  print '(Line 5 ) Penalty on balance owed:'                         (+1,3)
+  let #out = &ID.ID_967_LINE5
+  do Format-Number(#out, $out,'99,999,999,999')
+  print $out  (,69)
+
+  print '(Line 6 ) Interest on balance owed:'                        (+1,3)
+  let #out = &ID.ID_967_LINE6
+  do Format-Number(#out, $out,'99,999,999,999')
+  print $out  (,69)
+
+  print '(Line 11) Penalty for late filing:'                         (+1,3)
+  let #out = &ID.ID_967_LINE11
+  do Format-Number(#out, $out,'99,999,999,999')
+  print $out  (,69)
+
+End-Procedure
+
+Begin-Procedure Indiana-Specific
+
+  move #Local_Wages      to $Local_Wages    09999999999
+  move #Local_Tax        to $Local_Taxes    09999999999
+  move $StateEmplIN      to $StateControlNumber
+  if $Locality <> '99990'
+     IF $Save_Locality = ''
+        let $Loc_Mag_CD = '00'
+     ELSE
+        let $Loc_Mag_CD = $Loc_Tax_Cd
+     END-IF
+  end-if
+
+End-Procedure
+
+Begin-Procedure MD-Specific
+
+  move 0 to #Allowances
+begin-SELECT
+MD.FWT_ALLOWANCES
+  move &MD.FWT_ALLOWANCES to #Allowances
+FROM  PS_FED_TAX_DATA MD
+WHERE MD.COMPANY = $Company
+  AND MD.EMPLID  = $E.Emplid
+  AND EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM   PS_FED_TAX_DATA
+       WHERE  COMPANY = $Company
+         AND  EMPLID  = $E.Emplid
+         AND  EFFDT  <= $AsOfDate)
+end-SELECT
+
+End-Procedure
+
+Begin-Procedure MD-RE-Rec-Specific
+
+  Let $MW508Found = 'N'
+
+begin-SELECT DISTINCT
+MW.PY_MW508_LN2
+MW.PY_MW508_LN3
+MW.PY_MW508_LN3A
+MW.PY_MW508_LN4
+MW.PY_MW508_LN5
+MW.PY_MW508_LN6
+MW.PY_MW508_LN7
+MW.PY_MW508_LN8
+MW.PY_MW508_NAME
+MW.PY_MW508_TITLE
+MW.TRANS_DT
+MW.TELEPHONE_NBR
+MW.PY_MW508_IND
+MW.PY_MW508_NAICS
+MW.PY_MW508_ADD_W2
+
+  Let $MW508Found = 'Y'
+
+  let  #MW508_Ln2  =  &MW.PY_MW508_LN2  * 100
+  move #MW508_Ln2  to $MW508_Ln2    099999999999
+  let  #MW508_Ln3  =  &MW.PY_MW508_LN3  * 100
+  move #MW508_Ln3  to $MW508_Ln3    099999999999       !the field MW508_LN3 is used for line 3a amount
+  let  #MW508_Ln3A =  &MW.PY_MW508_LN3A * 100
+  move #MW508_Ln3A to $MW508_Ln3A   099999999999       !the field MW508_LN3a is used for line 3c amount
+  let  #MW508_Ln4  =  &MW.PY_MW508_LN4  * 100
+  move #MW508_Ln4  to $MW508_Ln4    099999999999
+  let  #MW508_Ln5  =  &MW.PY_MW508_LN5  * 100
+  move #MW508_Ln5  to $MW508_Ln5    099999999999
+  let  #MW508_Ln6  =  &MW.PY_MW508_LN6  * 100
+  move #MW508_Ln6  to $MW508_Ln6    099999999999
+  let  #MW508_Ln7  =  &MW.PY_MW508_LN7  * 100
+  move #MW508_Ln7  to $MW508_Ln7    099999999999
+  let  #MW508_Ln8  =  &MW.PY_MW508_LN8  * 100
+  move #MW508_Ln8  to $MW508_Ln8    099999999999       !the field MW508_LN8 is used for line 3d amount
+  let  #MW508_Naics =  &MW.PY_MW508_NAICS
+  move #MW508_Naics to $MW508_Naics  099999
+
+
+  move &MW.PY_MW508_NAME  to $MW508_NAME
+  move &MW.PY_MW508_TITLE to $MW508_TITLE
+
+  if isnull(&MW.TRANS_DT)
+     let $MW508_Date = ' '
+  else
+     do Format-DateTime(&MW.TRANS_DT, $MW508_Date, {DEFYMD},'','')
+     let $MW508_Date =
+         substr($MW508_Date, 1, 4) ||
+         substr($MW508_Date, 6, 2) ||
+         substr($MW508_Date, 9, 2)
+  end-if
+
+  do Validate-Phone-Nbr
+
+  move &MW.PY_MW508_IND    to $MW508_Ind
+  move &MW.PY_MW508_ADD_W2 to $MW508_Add_W2
+
+FROM  PS_RC_TAX960MD MW, PS_W2_COMPANY MW1
+WHERE MW1.W2_REPORTING_CO = &A.W2_Reporting_Co
+  AND MW1.CALENDAR_YEAR   = &TX.Balance_Year
+  AND MW1.W2_REPORTING_CO = MW.COMPANY
+  AND MW.OPRID            = $Prcs_OprID
+  AND MW.RUN_CNTL_ID      = $Prcs_Run_Cntl_ID
+end-SELECT
+
+  If $MW508Found = 'N'
+    display 'MW508 DATA NOT SETUP FOR COMPANY:                 ' noline
+    display &A.W2_Reporting_Co
+    display ''
+    move '000000000000'    to $MW508_Ln2
+    move '000000000000'    to $MW508_Ln3
+    move '000000000000'    to $MW508_Ln3A
+    move '000000000000'    to $MW508_Ln8
+    move '000000000000'    to $MW508_Ln4
+    move '000000000000'    to $MW508_Ln5
+    move '000000000000'    to $MW508_Ln6
+    move '000000000000'    to $MW508_Ln7
+    move '                            ' to $MW508_NAME
+    move '               ' to $MW508_TITLE
+    move '        '        to $MW508_Date
+    move '          '      to $MW508_Phone
+    move ' '               to $MW508_Ind
+    move '000000'          to $MW508_Naics
+    move ' '               to $MW508_Add_W2
+
+    move 0                 to #MW508_Ln2
+    move 0                 to #MW508_Ln3
+    move 0                 to #MW508_Ln3A
+    move 0                 to #MW508_Ln8
+    move 0                 to #MW508_Ln4
+    move 0                 to #MW508_Ln5
+    move 0                 to #MW508_Ln6
+    move 0                 to #MW508_Ln7
+    move 0                 to #MW508_Naics
+  End-if
+
+  move 0 to #RE_State_Wages
+  move 0 to #RE_State_Taxes
+  move 0 to #RE_RS_Count
+
+begin-SELECT
+M.BOX
+#ifdef DB2ALL
+DECIMAL(SUM(M.W2_AMOUNT),15,3) &M.W2_Amount
+#else
+SUM(M.W2_AMOUNT) &M.W2_Amount
+#endif
+
+  let #Amount = &M.W2_Amount * 100
+
+  if rtrim(&M.BOX, ' ') = '16'
+     add #Amount to #RE_State_Wages
+  else
+     add #Amount to #RE_State_Taxes
+  end-if
+
+FROM  PS_W2_COMPANY MC, PS_YE_EE ME, PS_YE_AMOUNTS M
+WHERE MC.W2_REPORTING_CO = &A.W2_Reporting_Co
+  AND MC.CALENDAR_YEAR   = &TX.Balance_Year
+  AND MC.TAXFORM_ID      =  'W'
+  AND MC.COMPANY         = ME.COMPANY
+  AND MC.CALENDAR_YEAR   = ME.CALENDAR_YEAR
+  AND MC.TAXFORM_ID      = ME.TAXFORM_ID
+  AND ME.PROCESS_FLAG   <> 'V'
+  AND ME.COMPANY         = M.COMPANY
+  AND ME.EMPLID          = M.EMPLID
+  AND ME.TAXFORM_ID      = M.TAXFORM_ID
+  AND ME.CALENDAR_YEAR   = M.CALENDAR_YEAR
+  AND M.STATE            = 'MD'
+  AND M.BOX  in ('16','17','19')
+GROUP BY M.BOX
+ORDER BY M.BOX
+end-SELECT
+
+  If #MW508_Ln3 <> #RE_State_Taxes
+    display 'Total state/local tax is not correct for company: ' noline
+    display &A.W2_Reporting_Co
+    display 'Total state/local tax specified in MW508 Parameters for Maryland: ' noline
+    let #out = #MW508_Ln3 / 100
+    do Format-Number(#out, $out,'999,999,999,999.99')
+    display  $out
+    display 'Total state/local tax generated by program:                       ' noline
+    let #out = #RE_State_Taxes / 100
+    do Format-Number(#out, $out,'999,999,999,999.99')
+    display  $out
+    display ''
+  End-if
+
+begin-SELECT
+count(DISTINCT ME1.EMPLID) &RS_Count
+
+   let #RE_RS_Count =  &RS_Count
+
+FROM  PS_W2_COMPANY MC1, PS_YE_EE ME1, PS_YE_DATA M1
+WHERE MC1.W2_REPORTING_CO = &A.W2_Reporting_Co
+  AND MC1.CALENDAR_YEAR   = &TX.Balance_Year
+  AND MC1.TAXFORM_ID      =  'W'
+  AND MC1.COMPANY         = ME1.COMPANY
+  AND MC1.CALENDAR_YEAR   = ME1.CALENDAR_YEAR
+  AND MC1.TAXFORM_ID      = ME1.TAXFORM_ID
+  AND ME1.PROCESS_FLAG   <> 'V'
+  AND ME1.COMPANY         = M1.COMPANY
+  AND ME1.EMPLID          = M1.EMPLID
+  AND ME1.TAXFORM_ID      = M1.TAXFORM_ID
+  AND ME1.CALENDAR_YEAR   = M1.CALENDAR_YEAR
+  AND M1.W2_STATE         = 'MD'
+end-SELECT
+
+   move #RE_RS_Count    to $RE_RS_Count       099999
+
+End-Procedure
+
+Begin-Procedure NJ-Specific
+
+  move 0 to   #OtherD
+  move 0 to   #OtherE_G
+  move 0 to   #OtherC_H
+
+  move ' '               to $FLPTCD
+  move '              '  to $PFLPNBR
+  move ' '               to $DPTCD
+  move '              '  to $PDPNBR
+
+  move ' '               to $FLPTC
+  move '              '  to $PFLPN
+  move ' '               to $DPTC
+  move '              '  to $PDPN
+
+begin-SELECT
+NJ.VDI_PLAN
+NJ.VDI_PLAN_NBR
+NJ.PNA_FLI_PLAN
+NJ.PNA_FLI_PLAN_NBR
+
+  if &NJ.VDI_PLAN = 'Y'
+    move 'P' to $DPTCD
+    let  $PDPNBR = rpad(rtrim(&NJ.VDI_PLAN_NBR, ' '),14,' ')
+  end-if
+
+  if &NJ.PNA_FLI_PLAN = 'Y'
+    move 'P' to $FLPTCD
+    let  $PFLPNBR = rpad(rtrim(&NJ.PNA_FLI_PLAN_NBR, ' '),14,' ')
+  end-if
+
+FROM  PS_CO_STATETAX_TBL NJ
+WHERE NJ.COMPANY = $E.Company
+  AND NJ.STATE   = $State
+  AND EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM   PS_CO_STATETAX_TBL
+       WHERE  COMPANY = $E.Company
+         AND  STATE   = $State
+         AND  EFFDT  <= $AsOfDate)
+end-SELECT
+
+begin-SELECT
+NG.BOX
+
+#ifdef DB2ALL
+DECIMAL(SUM(NG.W2_AMOUNT), 15, 3) &NG.W2_Amount
+#else
+SUM(NG.W2_AMOUNT) &NG.W2_Amount
+#end-if
+
+  let #Amount = &NG.W2_Amount * 100
+
+  let $NG.Box = RTRIM(&NG.Box,' ')
+  let $NG.Box = rpad($NG.Box,4,' ')
+
+  evaluate $NG.Box
+      when = $YE_OtherD
+        add  #Amount to #OtherD
+        break
+      when = $YE_OtherE
+        add  #Amount to #OtherE_G
+        break
+      when = $YE_OtherG
+        move $DPTCD  to $DPTC
+        move $PDPNBR to $PDPN
+        add  #Amount to #OtherE_G
+        break
+      when = $YE_OtherC
+        add  #Amount  to #OtherC_H
+        break
+      when = $YE_OtherH
+        move $FLPTCD  to $FLPTC
+        move $PFLPNBR to $PFLPN
+        add  #Amount to #OtherC_H
+        break
+  end-evaluate
+
+FROM  PS_YE_AMOUNTS NG
+WHERE NG.COMPANY
+      IN (SELECT NGC.COMPANY FROM PS_W2_COMPANY NGC
+           WHERE NGC.W2_REPORTING_CO = $A.W2_Reporting_Co
+             AND NGC.CALENDAR_YEAR = &TX.Balance_Year
+             AND NGC.TAXFORM_ID = $E.TaxForm_ID)
+  AND NG.CALENDAR_YEAR   = &TX.Balance_Year
+  AND NG.EMPLID          = $E.Emplid
+  AND NG.TAXFORM_ID      = $E.TaxForm_ID
+  AND NG.SEQUENCE_NUMBER = #E.Sequence_Number
+  AND NG.BOX    IN ('14D','14E','14G','14C','14H')
+GROUP BY NG.BOX
+end-SELECT
+
+End-Procedure
+
+Begin-Procedure Ohio-Specific
+
+  move '      '          to $Zero_fill
+  move #Fed_Wages        to $OtherStateData 0999999999
+  move $Loc_Mag_CD       to $StateControlNumber
+  let $StateControlNumber = lpad($StateControlNumber,7, ' ')
+  let $Local_Tax_Cd = RTRIM($Loc_Tax_Cd,' ')
+  if $Local_Tax_Cd <> ''
+    move #Local_Wages      to $Local_Wages    09999999999
+    move #Local_Tax        to $Local_Taxes    09999999999
+  else
+    move 0                 to $Local_Wages    09999999999
+    move 0                 to $Local_Taxes    09999999999
+    move 0                 to #Local_Wages
+    move 0                 to #Local_Tax
+  end-if
+  if #Local_Wages = 0  and #Local_Tax = 0
+    move 'F'               to $Tax_Type_Cd
+  else
+    move 'E'               to $Tax_Type_Cd
+  end-if
+End-Procedure
+
+Begin-Procedure Iowa-Specific
+
+ Let $BEN-IA-NUM = ' '
+
+begin-SELECT
+IA.BEN_IA_NUM
+
+  MOVE  &IA.BEN_IA_NUM  TO $BEN-IA-NUM
+
+FROM PS_RC_TAX960IA IA
+WHERE IA.OPRID = $Prcs_OprID
+  AND IA.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+  AND IA.COMPANY = $Company
+
+end-SELECT
+
+End-Procedure
+
+
+Begin-Procedure Missouri-Specific
+
+ LET $MO.CONTACT_NAME  = ' '
+ LET $MO.TITLE = ' '
+ LET $MO.TRANS_DT = ' '
+ LET $MO.TELEPHONE_NBR = ' '
+
+begin-SELECT
+MO.CONTACT_NAME
+MO.TITLE
+MO.TRANS_DT
+MO.TELEPHONE_NBR
+
+  MOVE  &MO.CONTACT_NAME  TO $MO.CONTACT_NAME
+  MOVE  &MO.TITLE         TO $MO.TITLE
+  MOVE  &MO.TRANS_DT      TO $MO.TRANS_DT
+  MOVE  &MO.TELEPHONE_NBR TO $MO.TELEPHONE_NBR
+
+  DO Validate-Phone-Nbr-MO
+  DO Format-DateTime(&MO.TRANS_DT, $MO.TRANS_DT, {DEFYMD},'','')
+     let $MO.TRANS_DT =
+         substr($MO.TRANS_DT, 1, 4) ||
+         substr($MO.TRANS_DT, 6, 2) ||
+         substr($MO.TRANS_DT, 9, 2)
+
+FROM PS_RC_TAX960MO MO
+WHERE MO.OPRID = $Prcs_OprID
+  AND MO.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+  AND MO.COMPANY = $Company
+
+end-SELECT
+
+End-Procedure
+
+
+Begin-Procedure OR-Specific
+
+begin-SELECT
+OR1.BOX
+OR1.W2_AMOUNT
+
+  let #Amount = &OR1.W2_Amount * 100
+  let $OR1.Box = RTRIM(&OR1.Box,' ')
+  let $OR1.Box = rpad($OR1.Box,4,' ')
+  
+  evaluate $OR1.Box
+      when = $YE_OtherK
+        add  #Amount to #ORSTTW
+        break
+      when = $YE_OtherL
+        add  #Amount to #ORSTTT
+        break
+  end-evaluate
+
+FROM  PS_YE_AMOUNTS OR1
+WHERE OR1.COMPANY
+      IN (SELECT ORR.COMPANY FROM PS_W2_COMPANY ORR
+           WHERE ORR.W2_REPORTING_CO = $A.W2_Reporting_Co
+             AND ORR.CALENDAR_YEAR = &TX.Balance_Year
+             AND ORR.TAXFORM_ID = $E.TaxForm_ID)
+  AND OR1.CALENDAR_YEAR   = &TX.Balance_Year
+  AND OR1.EMPLID          = $E.Emplid
+  AND OR1.TAXFORM_ID      = $E.TaxForm_ID
+  AND OR1.SEQUENCE_NUMBER = #E.Sequence_Number
+  AND OR1.BOX    IN ('14K','14L')
+  AND OR1.STATE = 'OR'
+ORDER BY OR1.BOX
+end-SELECT
+
+End-Procedure
+
+
+Begin-Procedure Get-WV-FormIT103-for-RV
+
+begin-SELECT
+WV.PY_WV_LINE1
+WV.PY_WV_LINE2
+WV.PY_WV_LINE3
+WV.PY_WV_LINE4
+
+  let #WV_Amount1 = &WV.PY_WV_LINE1
+  move  #WV_Amount1  to $FirstQ-WV-RV  099999999999
+
+  let #WV_Amount2 = &WV.PY_WV_LINE2
+  move  #WV_Amount2  to $SecondQ-WV-RV 099999999999
+
+  let #WV_Amount3 = &WV.PY_WV_LINE3
+  move  #WV_Amount3  to $ThirdQ-WV-RV  099999999999
+
+  let #WV_Amount4 = &WV.PY_WV_LINE4
+  move  #WV_Amount4  to $FourthQ-WV-RV 099999999999
+
+  let #WV_AmountDue =  #WV_Amount1 + #WV_Amount2 + #WV_Amount3 + #WV_Amount4
+
+FROM PS_RC_TAX960WV WV
+WHERE WV.OPRID = $Prcs_OprID
+  AND WV.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+  AND WV.COMPANY = $Company
+
+end-SELECT
+
+End-Procedure
+
+
+Begin-Procedure After-State
+
+!Unique State Requirements - Different from SSA format
+!   State does not require RF record
+
+  let $Col6Hdr1=' '
+  let $Col5Hdr2=' '
+  let $Col7Hdr2=' '
+
+  if $E_save_W2_State = $E.W2_state and
+     $Bulk_filing = 'N'
+     do Bulk-State-End-Totals
+     do Process-Bulk-Totals
+     move 0 to #FileCount
+
+     If $E.W2_state <> 'PA'
+        Move 0 To #Record_CutPA
+     End-If
+
+  else
+
+    evaluate $E.W2_State
+      when = 'AL'
+      when = 'LA'
+      when = 'MD'
+      when = 'VA'
+      when = 'WV'
+        break
+      when-other
+        do Write-F-Record
+        break
+    end-evaluate
+    do State-End-Totals
+    do Process-Totals
+    do Zero-F-Record
+  end-if
+
+  if $E_save_W2_State = 'OR'
+     let $Col6Hdr1='     Statewide Transit'
+     let $Col5Hdr2='                Wages '
+     let $Col7Hdr2='      Tax             '
+     New-Page
+  end-if
+
+  Move #ReportingCoFile To #ReportingCoFileCtrl
+  Move 0 To #ReportingCoFile
+
+End-Procedure
+
+Begin-Procedure Bulk-After-Co-Change
+
+!Unique State Requirements - Different from EFW2
+!   State does not require RF record
+
+
+  evaluate $E.W2_State
+      when = 'AL'
+      when = 'LA'
+      when = 'MD'
+      when = 'VA'
+      when = 'WV'
+      break
+    when-other
+      do Write-F-Record
+      break
+  end-evaluate
+  do Zero-F-Record
+
+End-Procedure
+
+
+Begin-Procedure Write-E-Record
+
+Begin-SELECT
+CP.COMMON_PAY_ID
+
+FROM PS_COMPANY_TBL CP
+WHERE CP.COMPANY = &E.Company
+  AND EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM   PS_COMPANY_TBL
+       WHERE  COMPANY = &E.Company
+         AND  EFFDT  <= $EffDate)
+end-SELECT
+  move $A.Federal_EIN  to $FedEIN   099999999
+  If #A.Other_EIN <> 0
+    move #A.Other_EIN  to $OtherEIN 099999999
+  else
+    move ' '           to $OtherEIN
+  End-if
+  move $A.Descr        to $ErName
+  move $A.City         to $ErCity
+  move $A.State        to $StateCd
+  move $A.Zip          to $Zip
+  move $A.Country      to $Country
+  do Foreign-Address-Test('Format 3',25)
+  move &TX.Employment_Type to $Empl_Type
+  let $Common_Pay_ID = RTRIM(&CP.Common_Pay_ID,' ')
+!  If $Common_Pay_ID > ''
+!    move '2' to $AgentID
+!  else
+    move '   ' to $AgentID
+!  end-if
+
+  uppercase $ErName
+  uppercase $ErCity
+
+  move &E.Employer_ID_SWT  to $Employer-ID-SWT
+  move $E.W2_State  to $W2-State
+
+  do  Validate-SWT-ID-No-Abort
+
+  if $Error-Message-Generated = 'Y'
+     display ''
+     display 'Process continuing for Company: ' noline
+     display  $ErName
+     display $Message
+     display ' '
+     display 'If the EIN format must be changed, correct the EIN format on the Company State Tax Table and rerun the year-end '
+     display 'load before rerunning TAX960ST.SQR.  If the EIN format has changed, please notify PeopleSoft.  The file can be '
+     display 'released to the taxing authority.'
+     display ''
+  end-if
+
+  If $ForeignAddrInd = 'X'
+     Let $ErUS_Zip      = ' '
+     Let $ErUS_ZipXtnsn = ' '
+     Let $ErUS_State    = ' '
+     Let $ErFrgn_Zip    = $Zip
+     Let $ErFrgn_State  = $StateName
+  else
+     Let $ErUS_Zip      = $Zip
+     Let $ErUS_ZipXtnsn = $ZipExtsn
+     Let $ErUS_State    = $StateCd
+     Let $ErFrgn_Zip    = ' '
+     Let $ErFrgn_State  = ' '
+     Let $ErCountry-2Char   = ' '
+  End-if
+
+  !Unique State Requirements - Different from SSA format
+  !  State has specific requirements for RE record
+
+  evaluate $E.W2_State
+    when = 'AL'
+      do RE-GroupClear
+      break
+    when = 'GA'
+      let $StateEmplIN = $StateEIN
+      move $StateEmplIN to $StateEIN
+      break
+    when = 'IN'
+      let $StateEmplIN = substr ($StateEIN, 1, 10)
+      let $Empl_TID_Loc = substr ($StateEIN, 11, 13)
+      break
+    when = 'MA'
+      move ' ' to $Thrd_Pty_Sick
+    when = 'MD'
+      move '000000000000' to $MW508_Zero
+      do MD-RE-Rec-Specific
+      break
+    when = 'MO'
+      if rtrim($ErAddress1, ' ') = ''
+         move $ErAddress2 to $ErAddress1
+         move '        ' to $ErAddress2
+      end-if
+      break
+    !when = 'NC'
+    !  do RE-GroupClear
+    !  break
+    when = 'PA'
+      do RE-GroupClear
+      move ' ' to $OtherEIN
+      let $RESp = $StateEmplIN
+      break
+  end-evaluate
+
+  evaluate $E.W2_State
+    when = 'AL'
+      do Write-RE-Record-for-AL
+      break
+    when = 'MD'
+      do Write-RE-Record-for-MD
+      break
+    when-other
+      do Write-RE-Record
+      break
+  end-evaluate
+
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+  Add 1 To #Record_CutPA
+  move 'Y' to $E-Written
+
+End-Procedure
+
+begin-Procedure RE-GroupClear
+
+      move '    '    to $A.Busi_Term_Ind
+      move '     '   to $ErFrgn_State
+      move '     '   to $ErFrgn_Zip
+      move '     '   to $ErCountry-2Char
+      move '     '   to $Empl_Type
+      move '     '   to $Tax_Jurisdiction
+      move '     '   to $Thrd_Pty_Sick
+      move '     '   to $EMPLOYMENT_TYPE
+end-procedure
+
+begin-Procedure Check-Disk
+
+if $FileType = 'D'
+   if $E.W2_State = 'AL' or
+      $E.W2_State = 'CT' or
+      $E.W2_State = 'ID' or
+      $E.W2_State = 'KS' or
+      $E.W2_State = 'MN' or
+      $E.W2_State = 'MT' or
+      $E.W2_State = 'NJ' or
+      $E.W2_State = 'OR' or
+      $E.W2_State = 'UT' or
+      $E.W2_State = 'WI'
+     display ' '
+     display $E.W2_State           noline
+     display ' does not accept diskettes, tape or cartridge.'
+     display 'Submission for company ' noline
+     display $XCompany                 noline
+     display ' must be electronic.'
+     display ' '
+     move 'T' to $FileType
+  end-if
+end-if
+
+if $FileType = 'D'
+   if $E.W2_State = 'PA'
+         display ' '
+         display $E.W2_State           noline
+         display ' does not accept diskettes.'
+         display 'Submission for company ' noline
+         display $XCompany                 noline
+         display ' will be changed to tape.'
+         display ' '
+         move 'T' to $FileType
+   end-if
+end-if
+
+if $FileType <> 'T'
+   if $E.W2_State = 'NC'
+      display ' '
+      display $E.W2_State           noline
+      display ' does not accept cartridge, diskettes or electronic.'
+      display 'Submission for company ' noline
+      display $XCompany                 noline
+      display ' must be Tape.'
+      display ' '
+      move 'T' to $FileType
+   end-if
+end-if
+
+if $FileType = 'D'
+   if $E.W2_State = 'OH'
+     display ' '
+     display $E.W2_State           noline
+     display ' does not accept diskettes.'
+     display 'Submission for company ' noline
+     display $Company                  noline
+     display ' will be changed to cartridge.'
+     display ' '
+     move 'C' to $FileType
+  end-if
+end-if
+
+if $FileType <> 'X'
+   if $E.W2_State = 'CO' or
+      $E.W2_State = 'DC' or
+      $E.W2_State = 'DE' or
+      $E.W2_State = 'GA' or
+      $E.W2_State = 'HI' or
+      $E.W2_State = 'IA' or
+      $E.W2_State = 'IL' or
+      $E.W2_State = 'IN' or
+      $E.W2_State = 'LA' or
+      $E.W2_State = 'MA' or
+      $E.W2_State = 'ME' or
+      $E.W2_State = 'NE' or
+      $E.W2_State = 'OK' or
+      $E.W2_State = 'SC' or
+      $E.W2_State = 'VA' or
+      $E.W2_State = 'VT'
+     display ' '
+     display $E.W2_State           noline
+     display ' does not accept diskettes, tape or cartridge.'
+     display 'Submission for company ' noline
+     display $XCompany                 noline
+     display ' must be electronic.'
+     display ' '
+     move 'X' to $FileType
+   end-if
+end-if
+
+End-Procedure
+
+Begin-Procedure Write-W-Record
+
+  do Write-RW-Record
+
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+  add 1 to #Count-T
+
+End-Procedure
+
+
+Begin-Procedure Write-O-Record
+  If $WriteORec ='Y'
+
+    do Write-RO-Record
+
+    add 1 to #RecordCount
+    add 1 to #Tot_Record_Count
+    add 1 to #Count-U
+  End-if
+End-Procedure
+
+Begin-procedure Write-S-Record-from-Local
+
+  do Populate-EE-Address
+
+  Evaluate $E.W2_State
+    when = 'IN'
+      if $FirstTime = 'Y'
+        do Write-W-Record
+        do Write-O-Record
+        do Indiana-Specific
+        do Write-S-Record
+        let $FirstTime = 'N'
+      end-if
+      break
+    when = 'NC'
+      if $FirstTime = 'Y'
+        do Write-W-Record
+        let $FirstTime = 'N'
+      end-if
+      do Write-S-Record
+      move 0 to #Fed_Wages
+      move 0 to #Fed_Tax
+      break
+    when = 'OH'
+      do Ohio-Specific
+      if $FirstTime = 'Y'
+        do Find-Fed-Wages-OH
+        do Write-W-Record
+        let $FirstTime = 'N'
+      end-if
+      do Write-S-Record
+      move 0 to #Fed_Wages
+      break
+    when-other
+      break
+  end-evaluate
+  move 0 to #State_Wages     !Only Report once
+  move 0 to #State_Tax
+  move 0   to #Local_Wages
+  move 0   to #Local_Tax
+  move 0 to #State_EIC
+end-procedure
+
+
+Begin-procedure Find-Fed-Wages-OH
+
+  move  0 to #Fed_Wages
+  move  0 to #Fed_Tax
+  move  0 to #SS_Wages
+  move  0 to #SS_Tax
+  move  0 to #Med_Wages
+  move  0 to #Med_Tax
+  move  0 to #SS_Tips
+  move  0 to #Adv_EIC
+  move  0 to #Dep_Care
+  move  0 to #Non_Qual_457_Y
+  move  0 to #Non_Qual_457_N
+  move  0 to #Group_Term_Life
+  move  0 to #401K
+  move  0 to #403B
+  move  0 to #408K6
+  move  0 to #457B
+  move  0 to #501C18D
+  move  0 to #MilBasicQtrs
+  move  0 to #Nonstatutory_Stock_Opt
+  move  0 to #HSA_Employer_Contrib
+  move  0 to #Combat_Pay
+  move  0 to #409A_Def_NQ_Def_Comp
+  move  0 to #Roth_401K
+  move  0 to #Roth_403B
+  move  0 to #ER_Health_Cost
+! move  0 to #RetirePlan
+  move  0 to #Third_Party_Sick_Ind
+
+begin-SELECT
+FW.BOX
+#ifdef DB2ALL
+DECIMAL(SUM(FW.W2_AMOUNT),15,3) &FW.W2_Amount
+#else
+SUM(FW.W2_AMOUNT) &FW.W2_Amount
+#endif
+
+  do Assign-Year-End-Variables
+  let $D.Box = &FW.Box
+  move $D.Box to $Box xx
+  let $Pos3 = substr($D.Box, 3,1)
+  if $Box = $YE_Box12_StartPos  or
+     $Box = $YE_Other
+    and $Pos3 > ' '
+    let $D.Box = &FW.Box
+    let $D.Box = rpad($D.Box,4,' ')
+  else
+    let $D.Box = RTRIM(&FW.Box,' ')
+  end-if
+  let #Amount = &FW.W2_Amount * 100
+  if #Amount < 0  and $D.Box <> $YE_Adv_EIC
+    display 'EMPLID ' noline
+    display $E.Emplid noline
+    display '  W2 Box ID ' noline
+    display &FW.BOX noline
+    display ' Amount ' noline
+    display #Amount  noline
+    display ' Amount set to Zero '
+    move 0 to #Amount
+  end-if
+
+    do Evaluate-Box
+
+FROM  PS_YE_AMOUNTS FW, PS_W2_COMPANY FC
+WHERE FW.CALENDAR_YEAR     = &TX.Balance_Year
+  AND FW.TAXFORM_ID        = $E.TaxForm_ID
+  AND FW.EMPLID            = $E.Emplid
+  AND FW.SEQUENCE_NUMBER   = #E.Sequence_Number
+  AND FW.STATE             = '$U'
+  AND FW.COMPANY           = FC.COMPANY
+  AND FC.W2_REPORTING_CO   = &A.W2_Reporting_Co
+  AND FC.CALENDAR_YEAR     = &TX.Balance_Year
+  AND FC.TAXFORM_ID        = $E.TaxForm_ID
+GROUP BY FW.BOX
+ORDER BY FW.BOX
+end-SELECT
+
+end-procedure
+
+begin-procedure Write-S-Record
+  
+    evaluate $E.W2_State
+    when = 'ME'
+      let $US_ZipXtnsn = ' '
+      break
+    When = 'NJ'
+       Move 'S' To $ProcessedRec
+       Do Validate-SWT-ID-No-Abort
+       Move ' ' To $ProcessedRec
+      Break
+    When = 'WI'
+       IF &TX.Balance_Year >= 2017 AND #State_Wages = 0
+          DO Load-State-Amounts-NOT-WI
+       END-IF
+    When = 'MO'   
+       MOVE '29'    TO $StateNumCd
+       MOVE '     ' TO $TaxingEntityCd     
+    when-other
+      break
+  end-evaluate
+  do Write-RS-Record
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+  Add 1 To #Record_CutPA
+
+end-procedure
+
+
+Begin-Procedure Write-T-Record
+  move #Count-T           to $Count-T 0999999                     !Count
+
+! Unique state requirements
+!    State does not require RT Record
+
+  Evaluate $E.W2_State
+    when = 'DE'  
+    when = 'LA'
+    when = 'MD'
+    when = 'PA'
+      break
+!   when = 'PA'
+!     do Blank-T-Record
+!     move #Count-S        to $S-Count-F       0000009
+!     move #State_Wages-T  to $State_Wages-T   099999999999999
+!     move #State_Tax-T    to $State_Tax-T     099999999999999
+!     let $RTSp = $S-Count-F || $State_Wages-T  || $State_Tax-T
+!     do Write-RT-Rec
+!     add 1 to #RecordCount
+!     add 1 to #Tot_Record_Count
+!     Add 1 To #Record_CutPA
+!     break
+    when-other
+      do Write-RT-Record
+      add 1 to #RecordCount
+      add 1 to #Tot_Record_Count
+      break
+  end-evaluate
+  if $E.W2_State <> 'IN'
+
+    add #Count-T  to    #Count-F !Company count
+  end-if
+
+End-Procedure
+
+
+Begin-Procedure Write-U-Record
+
+  do Write-RU-Record
+
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+
+  do Zero-U-Record
+
+End-Procedure
+
+
+Begin-Procedure Write-F-Record
+
+  Evaluate $E.W2_State
+    when = 'CO'
+      move '      '        to $Count-F
+      break
+    when = 'DE'
+      move '000000000'     to $Count-F
+      break  
+    when = 'IN'
+      move #Count-F to $Count-F   099999999
+      break
+    when = 'CT'
+      move #Count-F to $Count-F   099999999
+      move #State_Wages-F  to $State_Wages-F   0999999999999999
+      move #State_Tax-F    to $State_Tax-F     0999999999999999
+      let $F-Data = $State_Wages-F || $State_Tax-F
+      break
+    when = 'PA'
+      move #S-Count-F      to $S-Count-F       0999999
+      move #State_Wages-F  to $State_Wages-F   099999999999999
+      move #State_Tax-F    to $State_Tax-F     099999999999999
+      let $RFSp = $S-Count-F || $State_Wages-F  || $State_Tax-F
+      move '      '        to $Count-F
+      break
+    When = 'KY'
+      move #Count-F to $Count-F   099999999
+      Do Close-File
+      Do Open-KY-File-ForAppend
+      break
+    when-other
+      move #Count-F to $Count-F   099999999
+      break
+  end-evaluate
+
+  Evaluate $E.W2_State
+    when = 'CT'
+      do Write-RF-Record-for-CT
+      break
+    when-other
+      do Write-RF-Record
+      break
+  end-evaluate
+
+  move 0         to #Count-S
+  do Zero-F-Record
+
+  add 1 to #RecordCount
+  add 1 to #Tot_Record_Count
+  Add 1 To #Record_CutPA
+
+End-Procedure
+
+Begin-Procedure Open-KY-File-ForAppend
+   open $FileID as 10 for-append record=512:fixed_nolf
+   move 1 to #FileExtension
+End-Procedure
+
+
+Begin-Procedure Process-Totals
+
+  print 'Totals for all W-2 Companies: '(+3,3)
+
+  let #out = #Tot_State_Wages-T / 100
+  if $E.W2_State = 'WI' and &TX.Balance_Year >= 2017
+     do Format-Number (#out, $out, '99,999,999,999.99')
+  else
+     do Format-Number (#out, $out, 'B9,999,999,999.99')
+  end-if
+  print $out (,35)
+
+  let #out = #Tot_State_Tax-T / 100
+
+  do Format-Number (#out, $out, 'B9,999,999,999.99')
+  print $out (,55)
+
+  if $E_save_W2_State = 'OR'
+     let #out = #ORSTTW-F / 100
+     do Format-Number(#out, $out, 'B9,999,999.99')      !OR Statewide Transit Tax Wages
+     print $out  (,80)
+     let #out = #ORSTTT-F / 100
+     do Format-Number(#out, $out, 'B9,999,999.99')      !OR Statewide Transit Tax Wages
+     print $out  (,108)
+  else
+     let #out = #Tot_Local_Wages-T / 100
+     do Format-Number(#out, $out, 'B99,999,999.99')
+     print $out  (,95)
+
+     let #out = #Tot_Local_Tax-T / 100
+     do Format-Number(#out, $out, 'B9,999,999.99')
+     print $out  (,111)
+  end-if
+
+  print 'Total File Record Count: '(+2,3)
+  do Format-Number (#Tot_Record_Count, $out, 'B99,999')
+  print $out (,52)
+
+  Let #TotRecordsPA = 0
+  Move #Tot_Record_Count To #TotRecordsPA
+  move 0 to #Tot_State_Wages-T
+  move 0 to #Tot_State_Tax-T
+  move 0 to #Tot_Local_Wages-T
+  move 0 to #Tot_Local_Tax-T
+  move 0 to #ORSTTW-F
+  move 0 to #ORSTTT-F
+  move 0 to #Tot_Record_Count
+
+  If $E.W2_State = 'PA'
+     Do CheckFileSize
+  End-If
+
+End-Procedure
+
+Begin-Procedure Process-Bulk-Totals
+ 
+  print 'Totals for all W-2 Companies: '(+3,3)
+
+  let #out = #Tot_State_Wages-T / 100
+  if $E.W2_State = 'WI' and &TX.Balance_Year >= 2017
+     do Format-Number (#out, $out, '99,999,999,999.99')
+  else
+     do Format-Number (#out, $out, 'B9,999,999,999.99')
+  end-if
+  print $out (,35)
+
+  let #out = #Tot_State_Tax-T / 100
+  do Format-Number (#out, $out, 'B9,999,999,999.99')
+  print $out (,55)
+
+  if $E_save_W2_State = 'OR'
+     let #out = #ORSTTW-F / 100
+     do Format-Number(#out, $out, 'B9,999,999.99')      !OR Statewide Transit Tax Wages
+     print $out  (,80)
+     let #out = #ORSTTT-F / 100
+     do Format-Number(#out, $out, 'B9,999,999.99')      !OR Statewide Transit Tax Wages
+     print $out  (,108)
+  else
+
+     let #out = #Tot_Local_Wages-T / 100
+     do Format-Number(#out, $out, 'B99,999,999.99')
+     print $out  (,95)
+
+     let #out = #Tot_Local_Tax-T / 100
+     do Format-Number(#out, $out, 'B9,999,999.99')
+     print $out  (,111)
+  end-if
+
+  print 'Total File Record Count for all W-2 Companies: '(+2,3)
+  do Format-Number (#Tot_Record_Count, $out, 'B99,999')
+  print $out (,52)
+
+  If $BulkSizeExceeds = 'Y'
+     Print 'PA currently has a limitation of 5MB when filing via e-TIDES. ' (+2,3)
+     Print 'There is (are) Company file(s) that exceed(s) this limit. Please, Refer to .OUT file to check file name(s).' (+1,3)
+     Print 'The listed file(s) in .OUT file, must be submitted on CD.' (+1,3)
+  End-If
+
+
+  move 0 to #Tot_State_Wages-T
+  move 0 to #Tot_State_Tax-T
+  move 0 to #Tot_Local_Wages-T
+  move 0 to #Tot_Local_Tax-T
+  move 0 to #Tot_Record_Count
+  move 0 to #ORSTTW-F
+  move 0 to #ORSTTT-F
+
+End-Procedure
+
+begin-procedure Get-Locality-Mag-CD
+  do Check-Temp-Table
+  if $Code_Found = 'N'
+    do Check-Master-Table
+    move &L2.W2_Mag_Code   to $Loc_Tax_Cd
+  else
+    move &LL.W2_Mag_Code  to $Loc_Tax_Cd
+  end-if
+end-procedure
+
+begin-procedure Check-Temp-Table
+  let $Code_Found = 'N'
+begin-SELECT
+LL.W2_MAG_CODE
+LL.LOCALITY
+  let $Code_Found = 'Y'
+FROM  PS_R_TAX960XX  LL
+WHERE LL.STATE    = $State
+  AND LL.LOCALITY = $Locality
+end-select
+end-procedure
+
+begin-procedure  Check-Master-Table
+
+  move 'N' to $LocalityNameFound
+
+begin-SELECT
+L2.W2_MAG_CODE
+L2.W2_MAG_MEDIA_NAME
+
+FROM  PS_LOCAL_TAX_TBL2 L2
+WHERE L2.STATE     = $State
+  AND L2.LOCALITY  = $Locality
+  AND L2.EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM   PS_LOCAL_TAX_TBL2
+       WHERE  STATE    = L2.STATE
+         AND  LOCALITY = L2.LOCALITY
+         AND  EFFDT   <= $AsOfDate)
+end-SELECT
+
+begin-SELECT
+L.LOCALITY_NAME
+L.LOCALITY
+
+  do Build-Temp-Table
+
+FROM  PS_LOCAL_TAX_TBL L
+WHERE L.STATE    = $State
+  AND L.LOCALITY = $Locality
+  AND EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM   PS_LOCAL_TAX_TBL
+       WHERE  STATE    = L.STATE
+         AND  LOCALITY = L.LOCALITY
+         AND  EFFDT   <= $AsOfDate)
+end-SELECT
+end-procedure
+
+begin-procedure  Build-Temp-Table
+begin-SQL on-error=Insert-Error
+  INSERT INTO PS_R_TAX960XX (STATE,
+                             LOCALITY,
+                             W2_MAG_CODE,
+                             LOCALITY_NAME,
+                             W2_MAG_MEDIA_NAME,
+                             WAGES,
+                             TAXES)
+          VALUES ($State,
+                  $Locality,
+                  &L2.W2_Mag_Code,
+                  &L.Locality_Name,
+                  &L2.W2_MAG_MEDIA_NAME,
+                  0,0)
+end-SQL
+end-procedure
+
+begin-procedure Insert-Error
+  display 'Error on insert to temporary local table '
+
+  Evaluate $E.W2_State
+    when = 'OH'
+      display 'Ohio School District requires Mag Media code, it may be blank'
+      break
+  end-evaluate
+end-procedure
+
+begin-procedure Insert-Name-Error
+  display 'Error on insert to temporary Name table '
+end-procedure
+
+begin-procedure Delete-Temp-Table
+begin-SQL on-error=Ignore
+  DELETE FROM PS_R_TAX960XX
+end-SQL
+end-procedure
+
+begin-procedure Delete-Temp-Name-Table
+begin-SQL on-error=Ignore
+  DELETE FROM PS_R_TAX960ST
+end-SQL
+end-procedure
+
+begin-procedure Ignore
+! dummy procedure to avoid SQL error message on delete of empty table
+end-procedure
+
+begin-procedure  Update-Temp-Table
+begin-SQL on-error=Update-Error
+  UPDATE  PS_R_TAX960XX
+  SET     WAGES = WAGES + #Local_Wages, TAXES = TAXES + #Local_Tax
+  WHERE   STATE    = $State     AND
+          LOCALITY = $Locality
+
+end-SQL
+end-procedure
+
+begin-procedure Update-Error
+  display 'Error on update of temporary local table '
+end-procedure
+
+begin-procedure  Print-Temp-Table
+  let #LnSp = 2
+begin-SELECT
+LCL.LOCALITY
+LCL.LOCALITY_NAME
+LCL.WAGES
+LCL.TAXES
+LCL.W2_MAG_CODE
+
+  let $LCL.W2_Mag_Code = ltrim (&LCL.W2_Mag_Code,' ')
+  let $LCL.Locality = rtrim (&LCL.Locality,' ')
+  if $LCL.Locality = '99990'
+    let #LnSp = 2
+  end-if
+  if &LCL.W2_Mag_Code <> ''
+
+    let $Local_Desc = substr (&LCL.Locality_Name,1,18)
+    print $Local_Desc (+#LnSp,74)
+    let #LnSp = 1
+
+    let #out = &LCL.Wages / 100                       !County Wages
+    do Format-Number(#out, $out, 'B99,999,999.99')    !
+    print $out  (,95)
+
+    let #out = &LCL.Taxes / 100                       !County Taxes
+    do Format-Number(#out, $out, 'B9,999,999.99')     !
+    print $out  (,111)
+
+  end-if
+
+FROM PS_R_TAX960XX LCL
+ORDER BY LCL.LOCALITY
+
+end-select
+end-procedure
+
+begin-procedure Foreign-Address-Test($Format,#MaxLength)
+  Let $_StateName = ''
+
+  If $_Country = 'USA'
+    move ' ' to $_ForeignAddrInd
+  else
+    move 'X' to $_ForeignAddrInd
+
+    If $_Country <> $priorCountry
+      do Get-Country-Code
+      move $Country to $priorCountry
+      move &_Descr   to $CountryName
+      move &_COUNTRY_CD_1042 to $_Country-2Char
+    End-if
+
+    if $_StateCd = ''
+      Show '      Note: No state code for this record.  Country - ' $_Country
+    else
+      do Get-State-Code
+      move &_STATE.DESCR to $_StateName
+      uppercase $_StateName
+    End-if
+
+    Evaluate $Format
+      when = 'Format 1'
+        let #Length = LENGTH(RTRIM($CountryName,' '))
+        let $_City = SUBSTR(RTRIM($_City,' '),1,(#MaxLength - #Length - 4) )
+        let $_City = $_City || ' ' || $_StateCd || ' ' || $CountryName
+        move ' ' to $_StateCd
+      when = 'Format 2'
+        let $_StateCd = $_StateCd || ' ' || $CountryName
+        uppercase $_StateCd
+      when = 'Format 3'
+        let $_StateCd = $_StateCd
+        uppercase $_StateCd
+    End-evaluate
+  End-if
+  uppercase $_City
+  let $EditZip = RTRIM($_Zip, ' ')
+  let #DashPosition = INSTR($EditZip,'-',1)
+  if #DashPosition <> 6
+    move $_Zip to $_ZipExtsn ~~~~~xxxx
+  else
+    move $_Zip to $_ZipExtsn ~~~~~~xxxx
+  end-if
+End-Procedure
+
+Begin-Procedure Get-Country-Code
+  Let $Record_found = 'N'
+Begin-Select
+COUNTRY_2CHAR
+DESCR
+  Let $Record_found = 'Y'
+FROM  PS_COUNTRY_TBL
+WHERE COUNTRY = $Country
+End-Select
+
+ If $Record_found = 'N'
+   Show ' Two Character Country code for ' $Country ' doesn''t exist in Country table.'
+   Stop
+ End-if
+
+  Let $Record_found = 'N'
+Begin-Select
+COUNTRY_CD_1042
+  Let $Record_found = 'Y'
+FROM  PS_CNTRY_1042_TBL
+WHERE COUNTRY = $Country
+End-Select
+
+ If $Record_found = 'N'
+   Show ' Two Character Country code for ' $Country ' doesn''t exist in Country 1042 table.'
+   Stop
+ End-if
+End-Procedure
+
+Begin-Procedure Get-State-Code
+  Let $Record_found = 'N'
+Begin-Select
+STATE.NUMERIC_CD
+STATE.DESCR
+  Let $Record_found = 'Y'
+FROM  PS_STATE_NAMES_TBL  STATE
+WHERE STATE.COUNTRY = $Country
+  AND STATE.STATE   = $StateCd
+End-Select
+
+ If $Record_found = 'N'
+   Show ' State code State : ' $StateCd ', Country : ' $Country ' doesn''t exist in State table.'
+   Stop
+ End-if
+End-Procedure
+
+
+Begin-Procedure Get-ee-State-Code
+
+  Let $Record_found = 'N'
+Begin-Select
+S.NUMERIC_CD
+S.DESCR
+  Let $Record_found = 'Y'
+FROM  PS_STATE_NAMES_TBL  S
+WHERE  S.STATE   = $E.W2_State
+   AND S.COUNTRY = 'USA'
+End-Select
+
+ If $Record_found = 'N'
+   Show ' State code State : ' $E.W2_State ', Country : ' $Country ' doesn''t exist in State table.'
+   Stop
+ End-if
+End-Procedure
+
+Begin-Procedure State-End-Totals
+
+  display ''
+  If $FileType = 'D'
+    display 'Upon successful conclusion of this program, following diskette'
+    display 'file(s) will have been created:'
+    move 1 to #i
+    while #i <= #FileExtension
+     move #i to $i 099
+     #ifdef OS400
+       let $FileExtension = '(D' || $i || ')'
+       let $FileID = '{IMPORTPREFIX}' || $ReportID2 || $i
+     #else
+       let $FileID = '{IMPORTPREFIX}' || $ReportID2 || '.' || $i
+     #endif
+       display $FileID
+       add 1 to #i
+    end-while
+  else
+    display 'Upon successful conclusion of this program, one file will have'
+    display 'been created:'
+    display ''
+    let $FileID =  '{IMPORTPREFIX}' || $ReportID2 || '{IMPORTSUFFIX}'
+    display $FileID            noline
+    display ' contains W-2 file.'
+  end-if
+  display ''
+  do Delete-Temp-Table
+
+End-Procedure
+
+Begin-Procedure Bulk-State-End-Totals
+  display ''
+  display 'Upon successful conclusion of this program, one file will have'
+  display 'been created for each W-2 Company:'
+  display ''
+
+Begin-Select
+STATE
+COMPANY   &Company
+
+  let $FileID = '{IMPORTPREFIX}' || $ReportID3 ||  &Company
+  display $FileID
+
+FROM  PS_R_TAX960ST
+WHERE  STATE   = $E.W2_State
+End-Select
+
+  display ''
+  display 'contains W-2 file(s).'
+  display ''
+  do Delete-Temp-Table
+
+End-Procedure
+
+
+begin-procedure Validate-Phone-Nbr
+
+    let $PhoneNbr = rtrim(&MW.TELEPHONE_NBR, ' ')
+
+       while INSTR($PhoneNbr,'-',1) <> 0
+         let #Hyphen = INSTR($PhoneNbr,'-',1)
+         if #Hyphen > 0
+           let $PhoneNbr = SUBSTR($PhoneNbr,1,(#Hyphen - 1)) ||
+                           SUBSTR($PhoneNbr,(#Hyphen + 1),15)
+         end-if
+       end-while
+       while INSTR($PhoneNbr,' ',1) <> 0
+         let #Spaces = INSTR($PhoneNbr,' ',1)
+         if #Spaces > 0
+           let $PhoneNbr = SUBSTR($PhoneNbr,1,(#Spaces - 1)) ||
+                           SUBSTR($PhoneNbr,(#Spaces + 1),15)
+         end-if
+       end-while
+       while INSTR($PhoneNbr,'(',1) <> 0
+         let #LeftBr  = INSTR($PhoneNbr,'(',1)
+         if #LeftBr  > 0
+           let $PhoneNbr = SUBSTR($PhoneNbr,1,(#LeftBr - 1)) ||
+                           SUBSTR($PhoneNbr,(#LeftBr + 1),15)
+         end-if
+       end-while
+       while INSTR($PhoneNbr,')',1) <> 0
+         let #RightBr  = INSTR($PhoneNbr,')',1)
+         if #RightBr  > 0
+           let $PhoneNbr = SUBSTR($PhoneNbr,1,(#RightBr - 1)) ||
+                           SUBSTR($PhoneNbr,(#RightBr + 1),15)
+         end-if
+       end-while
+
+       let $Phone_Nbr_Test  = ltrim ($PhoneNbr, ' ')
+
+       let $PhoneNbrErr = 'N'
+
+       if (length($PhoneNbr)) <> 10
+         do Invalid-Phone-Nbr
+       end-if
+
+       do  Is-String-Numeric ($Phone_Nbr_Test, #Rtrn_Value)
+       if #Rtrn_Value = 0
+         do Invalid-Phone-Nbr
+       end-if
+
+       move $Phone_Nbr_Test to $MW508_Phone
+
+end-procedure
+
+begin-procedure Invalid-Phone-Nbr
+    if $PhoneNbrErr = 'N'
+       display 'Invalid MW508 Phone Number ' noline
+       display &MW.TELEPHONE_NBR  noline
+       display ' For Company: ' noline
+       display  &A.W2_Reporting_Co
+       display 'The phone number must have 10 digits ' noline
+       display 'and the only acceptable special characters are: '
+       display 'space, -, (, and ).'
+       display ''
+       let $PhoneNbrErr = 'Y'
+    end-if
+end-procedure
+
+Begin-Procedure Validate-Phone-Nbr-MO
+      move $MO.TELEPHONE_NBR To $TELEPHONE-NBR-AUX
+      let $valid_chars = '0123456789'
+
+      let $invalid_chars = translate($TELEPHONE-NBR-AUX, $valid_chars, '')
+      let #invalid = length($invalid_chars)
+
+      If #invalid
+        let $MO.TELEPHONE_NBR = translate($TELEPHONE-NBR-AUX, $invalid_chars, '')
+        move 0  to #invalid
+      end-if
+      Let $MO.TELEPHONE_NBR = Substr($MO.TELEPHONE_NBR,1,10)
+End-Procedure
+
+begin-procedure Read-States
+
+move 'AND E.W2_STATE IN (''' to $E.SelectedStates
+move ' ' to $SelectedState
+
+begin-SELECT
+F.STATE
+
+  move &F.STATE    to $SelectedState
+
+  let $E.SelectedStates = $E.SelectedStates ||$SelectedState || ''','''
+  if rtrim($SelectedState, ' ') <> ''
+    move 'Y' to $State-Selected
+  end-if
+
+FROM PS_RC_TAX960ST F
+WHERE F.OPRID               = $Prcs_OprID
+  AND F.RUN_CNTL_ID         = $Prcs_Run_Cntl_ID
+end-SELECT
+
+  if $State-Selected <> 'Y'
+    Display 'States must be selected on the Run Control Page.  Processing stopped.'
+    Stop
+  End-if
+
+    let $E.SelectedStates = SUBSTR($E.SelectedStates,1,LENGTH($E.SelectedStates) - 2)
+    let $E.SelectedStates = $E.SelectedStates || ')'
+
+end-procedure
+
+begin-procedure Get-W2-Co-Information
+
+begin-SELECT
+A1.DESCR
+A1.FEDERAL_EIN
+A1.CITY
+A1.STATE
+A1.POSTAL
+A1.COUNTRY
+A1.OTHER_EIN
+A1.BUSI_TERM_IND
+A1.EMPLOYMENT_TYPE
+A1.EMPLOYER_KIND
+A1.SAME_CONTACT
+A1.CONTACT_NAME_SSA
+A1.TELEPHONE_NBR
+A1.PHONE_EXTN
+A1.EMAIL_ADDR_MMREF
+A1.CONTACT_FAX
+
+   move &A1.Descr           to $A.Descr
+   move &A1.Federal_EIN     to $A.Federal_EIN
+   move &A1.City            to $A.City
+   let  $A.State = rtrim(&A1.State, ' ')
+   move &A1.Postal          to $A.Zip
+   move &A1.Country         to $A.Country
+   move &A1.Other_EIN       to #A.Other_EIN
+   move &A1.Busi_Term_Ind   to $A.Busi_Term_Ind
+
+   move &A1.EMPLOYMENT_TYPE to $EMPLOYMENT_TYPE
+   move &A1.EMPLOYER_KIND   to $EMPLOYER_KIND
+
+   if &A1.SAME_CONTACT = 'Y'
+      let $RE_ContactName  = $RA_ContactName
+      let $RE_PhoneNbr     = $RA_PhoneNbr
+      let $RE_PhoneExtn    = $RA_PhoneExtn
+      let $RE_EmailAddr    = $RA_EmailAddr
+      let $RE_ContactFax   = $RA_ContactFax
+   else
+      MOVE &A1.TELEPHONE_NBR TO $Nbr_Aux
+      DO Format-Telephone-Nbr
+      let $RE_ContactName  = translate(&A1.CONTACT_NAME_SSA,',','')
+      let $RE_PhoneNbr     = $Nbr_Aux
+      if &A1.PHONE_EXTN <> 0
+         move &A1.PHONE_EXTN to $RE_PhoneExtn
+      else
+         let $RE_PhoneExtn = ' '
+      end-if
+      let $RE_EmailAddr    = &A1.EMAIL_ADDR_MMREF
+      uppercase $RE_EmailAddr
+      let $RE_ContactFax   = &A1.CONTACT_FAX
+   end-if
+
+FROM PS_W2_COMPANY A1
+WHERE A1.COMPANY          = $A.W2_Reporting_Co
+  AND A1.CALENDAR_YEAR    = &TX.Balance_Year
+  AND A1.TAXFORM_ID       =  'W'
+
+end-SELECT
+end-procedure
+
+begin-procedure Open-Bulk-File
+
+  let $FileID = '{IMPORTPREFIX}' || $ReportID3 || &A.W2_Reporting_Co
+
+  if $Reportid = 'TAX960ST' and $State = 'AL'
+    open $FileID as 10 for-writing record=512:fixed_nolf
+  else
+    open $FileID as 10 for-writing record=512:fixed
+  end-if
+  add 1 to #FileCount
+  add 1 to #FileExtension
+
+end-procedure
+
+begin-procedure Close-Bulk-File
+
+if $File-opened = 'Y' or
+   $Bulk-File-opened  = 'Y'
+   If $E.W2_State = 'PA'
+     Let #TotRecordsPA = 0
+     Move #Record_CutPA To #TotRecordsPA
+     Move 0             To #Record_CutPA
+     Do CheckFileSize
+   End-If
+   close 10
+   let $Bulk-File-opened  = 'N'
+   move 0 to #FileExtension
+end-if
+end-procedure
+
+Begin-Procedure Format-Telephone-Nbr
+  LET $Nbr_Aux = RTRIM($Nbr_Aux,' ')
+  LET $InValid_Chars = '()-/. '
+  LET $Nbr_Aux = Translate($Nbr_Aux, $InValid_Chars, '')
+End-procedure
+
+#Include 'geteandg.sqc'  !Get-EandG procedure                           !HP00001
+#Include 'getfed.sqc'    !Get-Federalproduct procedure                  !FED0001
+#Include 'getfrmat.sqc'  !Get-Diskette-Format procedure
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Update Process API
+#include 'stw2smry.sqc'  !report page heading and column headings
+#Include 'taxmmref.sqc'  !Electronic record layout for W-2 File
+#Include 'w2.sqc'        !Assign-Year-End-Variables
+#Include 'w2box.sqc'     !Evaluate-Box and Evaluate-State-Box
+#Include 'w2addr.sqc'    !Get-W2-Address procedure
+#Include 'validein.sqc'  !Validate state EIN procedures

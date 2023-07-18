@@ -1,0 +1,4105 @@
+!***************************************************************************
+!  GPBRDI02: DIRF REPORT                                                   *
+!                                                                          *
+!***************************************************************************
+!                                                                          *
+!                                                                          *
+!                                                                          *
+!                                                                          *
+! This software and related documentation are provided under a             *
+! license agreement containing restrictions on use and                     *
+! disclosure and are protected by intellectual property                    *
+! laws. Except as expressly permitted in your license agreement            *
+! or allowed by law, you may not use, copy, reproduce,                     *
+! translate, broadcast, modify, license, transmit, distribute,             *
+! exhibit, perform, publish or display any part, in any form or            *
+! by any means. Reverse engineering, disassembly, or                       *
+! decompilation of this software, unless required by law for               *
+! interoperability, is prohibited.                                         *
+! The information contained herein is subject to change without            *
+! notice and is not warranted to be error-free. If you find any            *
+! errors, please report them to us in writing.                             *
+!                                                                          *
+!                                                                          *
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.                  *
+! All Rights Reserved.                                                     *
+!***************************************************************************
+!                                                                          *
+!       $Release:  HR92                                                    *
+!           $Bug:  31661215                                                *
+!                                                                          *
+!***************************************************************************
+#Include 'setenv.sqc'    !Set environment
+!#Include 'setup32.sqc'  !printer and page-size initialization
+
+!Define Columns for Report
+#define c1    1          !Titles
+
+#define c2    4          !Labels
+#define c3   50          !Values
+
+#define c4   80          !Labels 2
+#define c5  110          !Values 2
+
+Begin-Setup
+    #include 'setupdb.sqc'
+    Declare-Printer   THIS_REPORT
+        Type=HPLASERJET
+        Font=3
+        Point-Size=1
+        Symbol-Set=0U     ! ASCII symbol set
+    End-Declare
+
+    Declare-Layout THIS_REPORT
+        Orientation   = Portrait
+        Top-margin    = 0.5
+        Left-margin   = 0.5
+        Right-margin  = 0.5
+        !Max-Lines    = 250
+        Char-Width    = 4      ! 7.2
+        Line-Height   = 10
+    End-Declare
+
+
+    Declare-Report THIS_REPORT
+        Printer-Type=HPLASERJET
+        LayOut=THIS_REPORT
+    End-Declare
+
+End-Setup
+
+Begin-Program
+    Do Init-Report
+    Do Select-Parameters
+    Do OpenFile
+
+    Do SetUpArrays
+
+    Do GetDIRF
+    Do WriteDIRF
+
+    Do GetRESPO
+    Do WriteRESPO
+
+    Do GetDECPJ
+    !Do WriteDECPJ
+
+    Do GetEmployees
+    ! Allow the procedure to run twice so the parameter 
+    ! 'Indicador de plano privado de assistência à saúde - coletivo empresarial'
+    ! in DIRF 2017 file is properly figured out and written in DECPJ register.
+    Do HealthProviders_main
+
+    Do CheckHealthInfo
+    Do WriteDECPJ
+
+    #debug show '-------------------------------------------------------'
+
+
+    Let $IDEmplType = '0561'
+    Let $Gath_code = '0561'
+    Let $PayrollType = '10'
+
+    #debug show '------0561------------------'
+    #debug show '$IDEmplType  : ' $IDEmplType
+    #debug show '$Gath_code   : ' $Gath_code
+    #debug show '$PayrollType : ' $PayrollType
+
+    Do GetIDREC
+
+    Let $IDEmplType = '0588'
+    Let $Gath_code = '0588'
+    Let $PayrollType = '10'
+
+    #debug show '------0588------------------'
+    #debug show '$IDEmplType  : ' $IDEmplType
+    #debug show '$Gath_code   : ' $Gath_code
+    #debug show '$PayrollType : ' $PayrollType
+
+    Do GetIDREC
+    Do GetAutonomous
+
+
+    Let $IDEmplType = '0561'
+    Let $Gath_code = '3562'
+    Let $PayrollType = '30'
+
+    #debug show '------ 3562 ------------------'
+    #debug show '$IDEmplType  : ' $IDEmplType
+    #debug show '$Gath_code   : ' $Gath_code
+    #debug show '$PayrollType : ' $PayrollType
+
+    Do GetIDREC
+
+    Do HealthProviders_main
+    Do HealthProviders_WriteData
+
+    !Do HealthProviders
+
+    Do CreateINFRecords
+
+    Write 1 From 'FIMDIRF'      '|'
+
+    Do CleanWrkTBL
+
+    Close 1
+    show ' '
+    show ' '
+    Show 'DIRF File : ' $MyFile
+
+    #ifdef UNIX
+        Do ConvertUnixToDOSWin($MyFile)
+    #endif
+
+    Do Stdapi-Term
+End-Program
+
+Begin-Procedure Init-Report
+    Move    'GPBRDI02' to $ReportID
+    Display $ReportID
+    Let $WarningR01 = 'Correto'
+    Let $WarningR02 = 'Correto'
+    Let $WarningR03 = 'Correto'
+
+    Move    'Declaração do Imposto de Renda Retido na Fonte.' to $ReportTitle1
+    Display $ReportTitle1
+    Display ' '
+    Let $timeBegan = datenow()
+    Display 'Relate Começou: ' noline
+    Display $timeBegan
+    Display ' '
+    show 'Version: PUM22'
+    Alter-Locale MONEY-SIGN = 'R$'
+
+    Move '1' to $ReportDateType
+    Move '1' to $Reportyear4
+    Do Init-DateTime
+    Do Init-Number
+    Do Stdapi-Init
+    Do Get-Current-DateTime
+End-Procedure Init-Report
+
+!***************************************************************************
+Begin-Procedure Select-Parameters
+#debug show 'Procedure: Select-Parameters'
+!***************************************************************************
+
+Do Convert-from-DTU-Date('1900-01-01', $nullDate)
+
+Move #prcs_process_instance to $Instance 0000000000
+
+#ifdef debug
+    show '  $Prcs_OprID            [' $Prcs_OprID ']'
+    show '  $Prcs_Run_Cntl_ID      [' $Prcs_Run_Cntl_ID ']'
+    show '  #prcs_process_instance [' #prcs_process_instance ']'
+    show '  $Instance              [' $Instance ']'
+#endif
+Let $EstabList  = ''
+Let $EstabList2 = ''
+
+Begin-Select
+RC.COMPANY
+RC.ESTAB_ASOC_BRA
+RC.GPBR_YEAR_CD
+RC.GPBR_YEAR_REFER
+RC.GPBR_EVENT_TYPE
+RC.DATE_VALUE
+RC.GPBR_STAT_DECLAR
+RC.GPBR_DEC_TYPE
+RC.GPBR_LAST_REC_NBR
+RC.GPBR_CTRL_REPORT
+RC.GPBR_OVR_ESTABID
+RC.ESTABID
+RC.GPBR_OVR_COMPANY
+RC.GPBR_CRES_ID
+RC.GPBR_OVR_DIRF
+RC.GPBR_DRESP_ID
+RC.GPBR_ID_CODE
+
+    Let $Company       = Rtrim(&RC.COMPANY, ' ')
+    Let $EstabRpt      = Rtrim(&RC.ESTAB_ASOC_BRA, ' ')
+    Let $CalendarYear  = Rtrim(&RC.GPBR_YEAR_CD, ' ')
+    Let $ReferenceYear = Rtrim(&RC.GPBR_YEAR_REFER, ' ')
+    Let $R01-EventType = Rtrim(&RC.GPBR_EVENT_TYPE, ' ')
+    Let $R01-EventDate = Rtrim(&RC.DATE_VALUE, ' ')
+    If $R01-EventDate <> ''
+        Do Convert-To-DTU-Date ($R01-EventDate, $R01-EventDate)
+        Do Dtu-parse-date ($R01-EventDate, #yr, #mo, #dy)
+        Move #dy to $dy 00
+        Move #mo to $mo 00
+        Move #yr to $yr 0000
+        Let $R01-EventDate = $yr || $mo || $dy
+    Else
+        Let $R01-EventDate = ''
+    End-if
+
+    Let $DecStatus     = Rtrim(&RC.GPBR_STAT_DECLAR, ' ')
+    Let $DecType       = Rtrim(&RC.GPBR_DEC_TYPE, ' ')
+    Let $LastRecNbr    = Rtrim(&RC.GPBR_LAST_REC_NBR, ' ')
+    Let $ControlReport = Rtrim(&RC.GPBR_CTRL_REPORT, ' ')
+    Let $DirfIdCode    = Rtrim(&RC.GPBR_ID_CODE, ' ')
+
+    Let $CalBeginDt = $CalendarYear  || '-01-01'
+    Let $CalEndDt   = $CalendarYear  || '-12-31'
+    Let $RefBeginDt = $ReferenceYear || '-01-01'
+    Let $RefEndDt   = $ReferenceYear || '-12-31'
+
+    Do Convert-from-DTU-Date($CalBeginDt ,$CalBeginDt1)
+    Do Convert-from-DTU-Date($CalEndDt   ,$CalEndDt1)
+    Do Convert-from-DTU-Date($RefBeginDt ,$RefBeginDt1)
+    Do Convert-from-DTU-Date($RefEndDt   ,$RefEndDt1)
+
+    !-------- Check Overrides-----
+    Let $OVR-EstabID   = Rtrim(&RC.GPBR_OVR_ESTABID, ' ')
+    Let $OVR-Company   = Rtrim(&RC.GPBR_OVR_COMPANY, ' ')
+    Let $OVR-Dirf      = Rtrim(&RC.GPBR_OVR_DIRF, ' ')
+
+
+    !HQ Establishment
+    If $OVR-EstabID = 'Y'
+        !Get From Run Control Overrides
+        Let $EstabID  = Rtrim(&RC.ESTABID, ' ')
+    Else
+        !Get from DIRF Paremeters BRA page
+        Do GetEstabResp
+    End-if
+
+    Do GetHQData
+
+    !Company Responsible
+    If $OVR-Company = 'Y'
+        !Get from Run Control Overrides
+        Let $CRespID  = Rtrim(&RC.GPBR_CRES_ID, ' ')
+    Else
+        !Get from DIRF Paremeters BRA page
+      Do GetCompanyResp
+    End-If
+
+    Do GetCompanyRespData
+
+    !DIRF Responsible
+    If $OVR-Dirf = 'Y'
+        !Get from Run Control Overrides
+        Let $DRespID     = Rtrim(&RC.GPBR_DRESP_ID, ' ')
+    Else
+        !Get from Establishemt BRA page using HQ Establishment
+        Do GetDirfResp
+    End-If
+    Do GetDirfRespData
+
+
+
+
+    #ifdef debug
+      show '************ PARAMETERS ***************'
+      show '  $Company              [' $Company ']'
+      show '  $EstabRpt             [' $EstabRpt ']'
+      show '  $EstabID              [' $EstabID '] - Establishment Responsible'
+      show '    $EstabID_CNPJ           [' $EstabID_CNPJ ']'
+      show '    $DIRF_Name              [' $Legal_Name '] [' $DIRF_Name ']'
+      show '    $NatureCompany          [' $NatureCompany ']'
+      show '  $CRespID              [' $CRespID '] - Company Responsible'
+      show '    $CRespID_CPF            [' $CRespID_CPF ']'
+      show '  $DRespID              [' $DRespID '] - DIRF Responsible'
+      show '    $DRespID_CPF            [' $DRespID_CPF ']'
+      show '    $DRespID_Name           [' $DRespID_Name ']'
+      show '    $DRespID_DDD            [' $DRespID_DDD ']'
+      show '    $DRespID_Phone          [' $DRespID_Phone ']'
+      show '    $DRespID_Ext            [' $DRespID_Ext ']'
+      show '    $DRespID_Fax            [' $DRespID_Fax ']'
+      show '    $DRespID_Email          [' $DRespID_Email ']'
+      show '  $DecType              [' $DecType ']'
+      show '  $LastRecNbr           [' $LastRecNbr ']'
+      show '  Calendar Date  Begin: [' $CalBeginDt ']-[' $CalBeginDt1 ']'
+      show '                 End:   [' $CalEndDt   ']-[' $CalEndDt1   ']'
+      show '  Reference Date Begin: [' $RefBeginDt ']-[' $RefBeginDt1 ']'
+      show '                 End:   [' $RefEndDt   ']-[' $RefEndDt1   ']'
+
+      show '***************************************'
+      show '  $DecStatus        [' $DecStatus ']'
+      show '  $ControlReport    [' $ControlReport ']'
+      show '  $R01-CPFResp      [' $R01-CPFResp ']'
+      show '  $R01-CNPJResDec   [' $R01-CNPJResDec ']'
+      show '  $R01-CPFRespDec   [' $R01-CPFRespDec ']'
+      show '  $R01-NameRespDec  [' $R01-NameRespDec ']'
+      show '  $R01-Tel1RespDec  [' $R01-Tel1RespDec ']'
+      show '  $R01-Tel2RespDec  [' $R01-Tel2RespDec ']'
+      show '  $R01-RamRespDec   [' $R01-RamRespDec ']'
+      show '  $R01-FaxRespDec   [' $R01-FaxRespDec ']'
+      show '  $R01-EmailRespDec [' $R01-EmailRespDec ']'
+    #endif
+
+FROM PS_GPBR_RC_ANNDIRF RC
+WHERE RC.OPRID = $Prcs_OprID
+AND RC.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+End-Select
+
+#Debug show ' '
+#Debug show ' ------ Estabs to report -----'
+#debug Show '    EstabRpt  :' $EstabRpt
+
+If $EstabRpt <> ''
+
+Let $EstabList = '''' || $EstabRpt || ''', '
+Begin-Select DISTINCT
+BR1.ESTABID
+
+    #debug Show '     EstabIDs  :' &BR1.ESTABID
+
+    Let $Est = Rtrim(&BR1.ESTABID, ' ')
+    Let $EstabList = $EstabList || '''' || $Est || ''', '
+
+
+FROM PS_ESTAB_TBL_BRA BR1
+WHERE BR1.ESTAB_ASOC_BRA = $EstabRpt
+AND BR1.EFFDT = (SELECT MAX(A.EFFDT)
+             FROM PS_ESTAB_TBL_BRA A
+             WHERE A.ESTABID = BR1.ESTABID
+             AND A.EFFDT <= $CalEndDt1)
+End-Select
+
+    Let $EstabList = Rtrim($EstabList, ', ')
+
+    Let $EstabList2 = 'AND HA.ESTABID IN (' || $EstabList || ')'
+    Let $EstabList  = 'AND A.ESTABID IN (' || $EstabList || ')'
+
+Else
+    Let $EstabList  = ''
+    Let $EstabList2 = ''
+End-if
+#debug show '    $EstabList  :' $EstabList
+#debug show '    $EstabList2 :' $EstabList2
+
+
+End-Procedure Select-Parameters
+
+!***************************************************************************
+Begin-Procedure GetEstabResp
+#debug show 'Procedure: GetEstabResp'
+!***************************************************************************
+Begin-Select
+ER.GPBR_ESTAB_DIRF
+
+  Let $EstabID       = Rtrim(&ER.GPBR_ESTAB_DIRF, ' ')
+
+FROM PS_GPBR_PARM_DIRF ER
+WHERE ER.COMPANY = $Company
+AND ER.EFFDT = (SELECT MAX(ER2.EFFDT)
+                FROM PS_GPBR_PARM_DIRF ER2
+                WHERE ER2.COMPANY = ER.COMPANY
+                AND ER2.EFFDT <= $CalEndDt1)
+End-Select
+End-Procedure GetEstabResp
+
+!***************************************************************************
+Begin-Procedure GetCompanyResp
+#debug show 'Procedure: GetCompanyResp'
+!***************************************************************************
+Begin-Select
+CR.GPBR_CRES_ID
+
+  Let $CRespID       = Rtrim(&CR.GPBR_CRES_ID, ' ')
+
+FROM PS_GPBR_PARM_DIRF CR
+WHERE CR.COMPANY = $Company
+AND CR.EFFDT = (SELECT MAX(CR2.EFFDT)
+                FROM PS_GPBR_PARM_DIRF CR2
+                WHERE CR2.COMPANY = CR.COMPANY
+                AND CR2.EFFDT <= $CalEndDt1)
+End-Select
+End-Procedure GetCompanyResp
+
+!***************************************************************************
+Begin-Procedure GetDirfResp
+#debug show 'Procedure: GetDirfResp'
+!***************************************************************************
+Begin-Select
+DR.DIRF_RESP_ID_BRA
+
+  Let $DRespID     = Rtrim(&DR.DIRF_RESP_ID_BRA, ' ')
+
+FROM PS_ESTAB_TBL_BRA DR
+WHERE DR.ESTABID = $EstabId
+AND DR.EFFDT = (SELECT MAX(DR2.EFFDT)
+                FROM PS_ESTAB_TBL_BRA DR2
+                WHERE DR2.ESTABID = DR.ESTABID
+                AND DR2.EFFDT <= $CalEndDt1)
+End-Select
+End-Procedure GetDirfResp
+
+!***************************************************************************
+Begin-Procedure GetDirfRespData
+#debug show 'Procedure: GetDirfRespData'
+!***************************************************************************
+!Get National ID*******************************************
+Begin-Select
+DRN.NATIONAL_ID
+
+  Let $DRespID_CPF   = Rtrim(&DRN.NATIONAL_ID, ' ')
+
+FROM PS_PERS_NID DRN
+WHERE DRN.COUNTRY        = 'BRA'
+AND DRN.NATIONAL_ID_TYPE = 'CPF'
+AND DRN.EMPLID           = $DRespID
+End-Select
+If $DRespID_CPF = ''
+    show 'Faltam informações:  Responsável pelo preenchimento: ' $DRespID ' sem CPF'
+End-If
+
+!Get Name *************************************************
+
+Let $DRespID_Name = ''
+
+Begin-Select
+DNM.NAME_DISPLAY
+
+    Let $DRespID_Name = Upper(Rtrim(&DNM.NAME_DISPLAY, ' '))
+
+FROM PS_NAMES DNM
+WHERE DNM.EMPLID = $DRespID
+AND DNM.NAME_TYPE = 'LEG'
+AND DNM.EFFDT = (SELECT MAX(DNM2.EFFDT)
+                 FROM PS_NAMES DNM2
+                 WHERE DNM2.EMPLID = DNM.EMPLID
+                 AND DNM2.NAME_TYPE = DNM.NAME_TYPE
+                 AND DNM2.EFFDT <= $CalEndDt1)
+End-Select
+
+If $DRespID_Name = ''
+Begin-Select
+LDNM.NAME_DISPLAY
+
+    Let $DRespID_Name = Upper(Rtrim(&LDNM.NAME_DISPLAY, ' '))
+
+FROM PS_NAMES LDNM
+WHERE LDNM.EMPLID = $DRespID
+AND LDNM.NAME_TYPE = 'PRI'
+AND LDNM.EFFDT = (SELECT MAX(DNM2.EFFDT)
+                 FROM PS_NAMES DNM2
+                 WHERE DNM2.EMPLID   = LDNM.EMPLID
+                 AND DNM2.NAME_TYPE  = LDNM.NAME_TYPE
+                 AND DNM2.EFFDT     <= $CalEndDt1)
+End-Select
+end-if
+
+If $DRespID_Name = ''
+    show 'Faltam informações:  Responsável pelo preenchimento: ' $DRespID ' sem nome principal'
+End-If
+
+
+!Get Phone (DDD, Phone and Extension) *********************
+Let $FullPhoneBus = ''
+Let $FullPhoneFax = ''
+
+Begin-Select
+DTB.PHONE_TYPE
+DTB.PHONE
+
+  If &DTB.PHONE_TYPE = 'BUSN'
+    Let $FullPhoneBus = Rtrim(&DTB.PHONE, ' ')
+  End-If
+  If &DTB.PHONE_TYPE = 'FAX'
+    Let $FullPhoneFax = Rtrim(&DTB.PHONE, ' ')
+  End-If
+
+FROM PS_ESTAB_PHONE DTB
+WHERE DTB.ESTABID = $EstabID
+AND DTB.EFFDT = (SELECT MAX(STB2.EFFDT)
+                 FROM PS_ESTAB_PHONE STB2
+                 WHERE STB2.ESTABID = DTB.ESTABID
+                 AND STB2.PHONE_TYPE = STB2.PHONE_TYPE
+                 AND STB2.EFFDT <= $CalEndDt1)
+End-Select
+
+if $FullPhoneBus = ''
+    show 'Faltam informações: Estabelecimento ' $EstabID ' sem telefone de negócio'
+Else
+    Do GetPhoneBRA ($FullPhoneBus, $PhoneDDI, $PhoneDDD, $Phone, $PhoneRamal)
+
+    #debug show '$FullPhoneBus  [' $FullPhoneBus ']'
+    #debug show '$PhoneDDI      [' $PhoneDDI ']'
+    #debug show '$PhoneDDD     *[' $PhoneDDD ']'
+    #debug show '$Phone        *[' $Phone ']'
+    #debug show '$PhoneRamal   *[' $PhoneRamal ']'
+
+    Let $DRespID_DDD   = $PhoneDDD
+    Let $DRespID_Phone = $Phone
+    Let $DRespID_Ext   = $PhoneRamal
+End-If
+
+if $FullPhoneFax = ''
+    show 'Faltam informações: Estabelecimento ' $EstabID ' sem telefone de Fax'
+Else
+    Do GetPhoneBRA ($FullPhoneFax, $PhoneDDI, $PhoneDDD, $Phone, $PhoneRamal)
+
+    #debug show '$FullPhoneFax  [' $FullPhoneFax ']'
+    #debug show '$PhoneDDI      [' $PhoneDDI ']'
+    #debug show '$PhoneDDD      [' $PhoneDDD ']'
+    #debug show '$Phone        *[' $Phone ']'
+    #debug show '$PhoneRamal    [' $PhoneRamal ']'
+
+    Let $DRespID_Fax  = $Phone
+
+End-If
+
+!Get PEmail *********************
+Begin-Select
+DRE.EMAIL_ADDR
+
+  Let $DRespID_Email = Rtrim(&DRE.EMAIL_ADDR,' ')
+
+FROM PS_EMAIL_ADDRESSES DRE
+WHERE EMPLID = $DRespID
+AND E_ADDR_TYPE = 'BUSN'
+End-Select
+
+If $DRespID_Email = ''
+    show 'Faltam informações: DIRF Responsável: ' $DRespID ' sem E-mail do negócio'
+End-If
+
+End-Procedure GetDirfRespData
+
+!***************************************************************************
+Begin-Procedure GetHQData
+#debug show 'Procedure: GetHQData'
+!***************************************************************************
+Let $EstabID_CNPJ = ''
+
+!Get Establishment CNPJ************************************
+Begin-Select
+A1.ESTAB_ID_BRA
+
+    Let $EstabID_CNPJ = Rtrim(&A1.ESTAB_ID_BRA, ' ')
+
+FROM PS_ESTAB_ID_BRA A1
+WHERE A1.ESTABID = $EstabID
+AND A1.ESTAB_ID_TYPE_BRA = 'CNPJ'
+AND A1.EFFDT = (SELECT MAX(A2.EFFDT)
+                FROM PS_ESTAB_ID_BRA A2
+                WHERE A2.ESTABID = A1.ESTABID
+                AND A2.ESTAB_ID_TYPE_BRA = A1.ESTAB_ID_TYPE_BRA
+                AND A2.EFFDT <= $CalEndDt1)
+End-Select
+
+If $EstabID_CNPJ = ''
+    show 'Faltam informações: ' $EstabID ' sem CNPJ'
+End-If
+
+!Get Declarer Name ************************************
+
+Begin-Select
+NM.LEGAL_ENT_TYPE_BRA
+
+    Let $Legal_Name = Rtrim(&NM.LEGAL_ENT_TYPE_BRA, ' ')
+
+FROM PS_ESTAB_TBL_BRA NM
+WHERE NM.ESTABID = $EstabID
+AND NM.EFFDT     = (SELECT MAX(NM2.EFFDT)
+                    FROM PS_ESTAB_TBL_BRA NM2
+                    WHERE NM2.ESTABID = NM.ESTABID
+                    AND NM2.EFFDT <= $CalEndDt1)
+End-Select
+
+If $Legal_Name = 'COM'
+!Get Name from Company
+If $curr_language_cd <> $Psoptions_Language_Cd
+Begin-Select
+CL.DESCR
+
+   if rtrim(&CL.Descr,' ') <> ''
+      let $DIRF_Name      = Upper(Rtrim(&CL.Descr,' '))
+   end-if
+
+FROM  PS_COMPNY_TBL_LANG CL
+WHERE CL.COMPANY     = $Company
+  AND CL.LANGUAGE_CD = $curr_language_cd
+  AND CL.EFFDT       = (SELECT MAX(CL_ED.EFFDT) FROM PS_COMPNY_TBL_LANG CL_ED
+                          WHERE  CL_ED.COMPANY     = CL.COMPANY
+                            AND  CL_ED.LANGUAGE_CD = CL.LANGUAGE_CD
+                            AND  CL_ED.EFFDT      <= $CalEndDt1)
+End-Select
+
+Else
+
+Begin-Select
+CO.DESCR
+
+    Let $DIRF_Name = Upper(Rtrim(&CO.DESCR, ' '))
+
+FROM PS_COMPANY_TBL CO
+WHERE CO.COMPANY = $Company
+AND CO.EFFDT     =
+    (SELECT MAX(CO1.EFFDT)
+    FROM PS_COMPANY_TBL CO1
+    WHERE CO1.COMPANY = CO.COMPANY
+    AND CO1.EFFDT    <= $CalEndDt1)
+End-Select
+
+End-If
+
+Else
+!Get name from Establishment
+If $curr_language_cd <> $Psoptions_Language_Cd
+Begin-Select
+E_LG.DESCR
+
+  Let $DIRF_Name = Upper(Rtrim(&E_LG.DESCR , ' '))
+
+FROM PS_ESTAB_TBL_LANG E_LG
+WHERE E_LG.EFFDT = (SELECT MAX(E_LG_ED.EFFDT) FROM PS_ESTAB_TBL_LANG E_LG_ED
+                     WHERE E_LG.ESTABID     = E_LG_ED.ESTABID
+                       AND E_LG.LANGUAGE_CD = E_LG_ED.LANGUAGE_CD
+                       AND E_LG_ED.EFFDT   <= $CalEndDt1)
+ AND E_LG.ESTABID     = $EstabID
+ AND E_LG.LANGUAGE_CD = $curr_language_cd
+End-Select
+
+Else
+
+Begin-Select
+E.DESCR
+
+    Let $DIRF_Name = Upper(Rtrim(&E.DESCR, ' '))
+
+FROM PS_ESTAB_TBL E
+WHERE E.ESTABID = $EstabID
+AND E.EFFDT     =
+    (SELECT MAX(ES.EFFDT)
+    FROM PS_ESTAB_TBL ES
+    WHERE ES.ESTABID = E.ESTABID
+    AND ES.EFFDT    <= $CalEndDt1)
+End-Select
+
+End-If
+
+End-If
+
+!Get Nature of Declarer ************************************
+
+Begin-Select
+N.NATURE_DCLARER_BRA
+
+   Let $Nature = Rtrim(&N.NATURE_DCLARER_BRA, ' ')
+
+FROM PS_COMPANY_TBL_BRA N
+WHERE N.COMPANY = $Company
+AND N.EFFDT = (SELECT MAX(N2.EFFDT)
+        FROM PS_COMPANY_TBL_BRA N2
+        WHERE N2.COMPANY = N.COMPANY
+        AND N2.EFFDT <= $CalEndDt1)
+End-Select
+
+Move $CalendarYear to #Calendar_year
+
+Evaluate $Nature
+  When = '00'
+    Let $NatureCompany = '0'
+    Break
+  When = '01'
+    Let $NatureCompany = '1'
+    Break
+  When = '02'
+    Let $NatureCompany = '2'
+    Break
+  When = '03'
+    Let $NatureCompany = '3'
+    Break
+  When = '04'
+    If #Calendar_year < 2004
+        Let $NatureCompany = '8'
+    Else
+        Let $NatureCompany = '4'
+    End-If
+    Break
+  When = '05'
+    If #Calendar_year < 2004
+        Let $NatureCompany = '8'
+    Else
+        Let $NatureCompany = '5'
+    End-If
+    Break
+  When = '06'
+    If #Calendar_year < 2004
+        Let $NatureCompany = '8'
+    Else
+        Let $NatureCompany = '6'
+    End-If
+    Break
+  When = '07'
+    If #Calendar_year < 2004
+        Let $NatureCompany = '8'
+    Else
+        Let $NatureCompany = '7'
+    End-If
+    Break
+  When = '08'
+    Let $NatureCompany = '8'
+    Break
+  When = '09'
+    Let $NatureCompany = '9'
+    Break
+  When-other
+    #debug show 'Faltam informações:  Empresa ' $Company ' sem Natureza do Declarante '
+    Break
+End-Evaluate
+
+
+End-Procedure GetHQData
+
+!***************************************************************************
+Begin-Procedure GetCompanyRespData
+#debug show 'Procedure: GetCompanyRespData'
+!***************************************************************************
+!Get National ID*******************************************
+Begin-Select
+CR.NATIONAL_ID
+
+  Let $CRespID_CPF   = Rtrim(&CR.NATIONAL_ID, ' ')
+
+FROM PS_PERS_NID CR
+WHERE CR.COUNTRY        = 'BRA'
+AND CR.NATIONAL_ID_TYPE = 'CPF'
+AND CR.EMPLID           = $CRespID
+End-Select
+If $CRespID_CPF = ''
+    #debug show 'Faltam informações:  Responsável Empresa: ' $CRespID ' sem CPF'
+End-If
+
+End-Procedure GetCompanyRespData
+
+!***************************************************************************
+Begin-Procedure OpenFile
+#debug show 'Procedure: Open-File'
+!***************************************************************************
+    Let $MyFile = '{FILEPREFIX}' || 'dirf_' || $instance || '.txt' || '{FILESUFFIX}'
+    Open $MyFile as 1 for-writing record=1000
+    #debug show 'Open file [' $MyFile ']'
+
+
+    If #filestat != 0
+      Display 'Error opening file :' noline
+      Display $MyFile
+    End-If
+End-Procedure OpenFile
+
+!***************************************************************************
+Begin-Procedure GetDIRF
+#debug show 'Procedure: Get_DIRF'
+!***************************************************************************
+
+
+End-PRocedure GetDIRF
+
+!***************************************************************************
+Begin-Procedure WriteDIRF
+#debug show 'Procedure: Write_DIRF'
+!***************************************************************************
+
+If $DecType = 'O'
+    Let $DecType = 'N'
+    Let $LastRecNbr = ''
+Else
+    Let $DecType = 'S'
+End-If
+
+Write 1 From 'DIRF'         '|' -
+             $ReferenceYear '|' -
+             $CalendarYear  '|' -
+             $DecType       '|' -
+             $LastRecNbr    '|' -
+             $DirfIdCode    '|'      ! Layout string ID
+End-Procedure WriteDIRF
+
+!***************************************************************************
+Begin-Procedure GetRESPO
+#debug show 'Procedure: GetRESPO'
+!***************************************************************************
+
+End-Procedure GetRESPO
+
+
+!***************************************************************************
+Begin-Procedure WriteRESPO
+#debug show 'Procedure: WriteRESPO'
+!***************************************************************************
+Do CleanString ($DRespID_Name, $DRespID_Name)
+
+Write 1 From 'RESPO'           '|' -
+             $DRespID_CPF      '|' -
+             $DRespID_Name     '|' -
+             $DRespID_DDD      '|' -
+             $DRespID_Phone    '|' -
+             $DRespID_Ext      '|' -
+             $DRespID_Fax      '|' -
+             $DRespID_Email    '|'
+
+End-Procedure WriteRESPO
+
+!***************************************************************************
+Begin-Procedure GetDECPJ
+#debug show 'Procedure: GetDECPJ'
+!***************************************************************************
+
+
+End-Procedure GetDECPJ
+
+!***************************************************************************
+Begin-Procedure WriteDECPJ
+#debug show 'Procedure: WriteDECPJ'
+!***************************************************************************
+
+Do CleanString ($DIRF_Name, $DIRF_Name)
+
+Write 1 From 'DECPJ'           '|' -
+             $EstabID_CNPJ     '|' -
+             $DIRF_Name        '|' -
+             $NatureCompany    '|' -
+             $CRespID_CPF      '|' -
+             'N'               '|'-
+             'N'               '|'-
+             'N'               '|'-
+             'N'               '|'-
+             $IndHealthProv    '|'-
+             'N'               '|'-
+             'N'               '|'-
+             'N'               '|'-
+             '|'
+
+End-Procedure WriteDECPJ
+
+
+!***************************************************************************
+Begin-Procedure GetEmployees
+#debug show 'Procedure: GetEmployees'
+!***************************************************************************
+#debug show '  $CalBeginDt1  :' $CalBeginDt1
+#debug show '  $CalEndDt1    :' $CalEndDt1
+!Fill work table
+Begin-SQL
+INSERT INTO PS_GPBR_DIRF_WRK
+(PROCESS_INSTANCE,
+ EMPLID,
+ EMPL_RCD,
+ NATIONAL_ID,
+ PYMT_DT,
+ CAL_RUN_ID,
+ RSLT_REV_NUM,
+ RSLT_VER_NUM,
+ RSLT_SEG_NUM,
+ CAL_ID,
+ COMPANY,
+ EMPL_CLASS,
+ SEFIP_CATEGORY_BRA,
+ GPBR_LEG_EMPL_TYPE)
+SELECT
+#prcs_process_instance,
+A.EMPLID,
+A.EMPL_RCD,
+' ',
+PRC.PYMT_DT,
+A.CAL_RUN_ID,
+PRC.RSLT_REV_NUM,
+PRC.RSLT_VER_NUM,
+A.RSLT_SEG_NUM,
+A.CAL_ID,
+A.COMPANY,
+' ',
+' ',
+' '
+
+FROM PS_GP_SEG_GUIDE_WA A,
+PS_GP_PYE_PRC_STAT PRC
+WHERE A.COMPANY = $Company
+[$EstabList]
+AND A.CAL_RUN_ID = PRC.CAL_RUN_ID
+AND PRC.RSLT_REV_NUM = 1
+AND PRC.RSLT_VER_NUM = (SELECT MAX(PRC2.RSLT_VER_NUM)
+                        FROM PS_GP_PYE_PRC_STAT PRC2
+                        WHERE PRC2.EMPLID = PRC.EMPLID
+                        AND PRC2.EMPL_RCD = PRC.EMPL_RCD
+                        AND PRC2.GP_PAYGROUP = PRC.GP_PAYGROUP
+                        AND PRC2.CAL_ID        = PRC.CAL_ID
+                        AND PRC2.ORIG_CAL_RUN_ID = PRC.ORIG_CAL_RUN_ID)
+AND PRC.CAL_ID = A.CAL_ID
+AND PRC.EMPLID = A.EMPLID
+AND PRC.EMPL_RCD = A.EMPL_RCD
+AND PRC.CAL_RUN_ID = A.CAL_RUN_ID
+AND PRC.GP_PAYGROUP = A.GP_PAYGROUP
+AND PRC.CALC_TYPE = 'P'
+AND PRC.PYMT_DT >= $CalBeginDt1
+AND PRC.PYMT_DT <= $CalEndDt1
+End-SQL
+
+
+!****UPDATE EMPL_CLASS field
+
+Begin-SQL
+UPDATE PS_GPBR_DIRF_WRK SET EMPL_CLASS = (
+SELECT S.EMPL_CLASS
+FROM PS_JOB S
+WHERE S.EMPLID = PS_GPBR_DIRF_WRK.EMPLID
+AND S.EMPL_RCD = PS_GPBR_DIRF_WRK.EMPL_RCD
+AND S.EFFDT = (SELECT MAX(S2.EFFDT)
+               FROM PS_JOB S2
+               WHERE S2.EMPLID = S.EMPLID
+               AND S2.EMPL_RCD = S.EMPL_RCD
+               AND S2.EFFDT <= PS_GPBR_DIRF_WRK.PYMT_DT)
+AND S.EFFSEQ = (SELECT MAX(S3.EFFSEQ)
+                FROM PS_JOB S3
+               WHERE S3.EMPLID = S.EMPLID
+               AND S3.EMPL_RCD = S.EMPL_RCD
+               AND S3.EFFDT = S.EFFDT)
+)
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS(SELECT 'X'
+           FROM PS_JOB SA
+           WHERE SA.EMPLID = PS_GPBR_DIRF_WRK.EMPLID
+           AND SA.EMPL_RCD = PS_GPBR_DIRF_WRK.EMPL_RCD
+           AND SA.EFFDT = (SELECT MAX(SA2.EFFDT)
+                           FROM PS_JOB SA2
+                           WHERE SA2.EMPLID = SA.EMPLID
+                           AND SA2.EMPL_RCD = SA.EMPL_RCD
+                           AND SA2.EFFDT <= PS_GPBR_DIRF_WRK.PYMT_DT)
+           AND SA.EFFSEQ = (SELECT MAX(SA3.EFFSEQ)
+                           FROM PS_JOB SA3
+                           WHERE SA3.EMPLID = SA.EMPLID
+                           AND SA3.EMPL_RCD = SA.EMPL_RCD
+                           AND SA3.EFFDT = SA.EFFDT)
+           )
+End-SQL
+
+
+!****UPDATE SEFIP_CATEGORY_BRA field
+Begin-SQL
+UPDATE PS_GPBR_DIRF_WRK SET SEFIP_CATEGORY_BRA = (
+SELECT JR.SEFIP_CATEGORY_BRA
+FROM PS_JOB_JR JR
+WHERE JR.EMPLID = PS_GPBR_DIRF_WRK.EMPLID
+AND JR.EMPL_RCD = PS_GPBR_DIRF_WRK.EMPL_RCD
+AND JR.EFFDT = (SELECT MAX(JR2.EFFDT)
+               FROM PS_JOB JR2
+               WHERE JR2.EMPLID = JR.EMPLID
+               AND JR2.EMPL_RCD = JR.EMPL_RCD
+               AND JR2.EFFDT <= PS_GPBR_DIRF_WRK.PYMT_DT)
+AND JR.EFFSEQ = (SELECT MAX(JR3.EFFSEQ)
+                FROM PS_JOB JR3
+               WHERE JR3.EMPLID = JR.EMPLID
+               AND JR3.EMPL_RCD = JR.EMPL_RCD
+               AND JR3.EFFDT = JR.EFFDT)
+)
+
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS(SELECT 'X'
+           FROM PS_JOB SA
+           WHERE SA.EMPLID = PS_GPBR_DIRF_WRK.EMPLID
+           AND SA.EMPL_RCD = PS_GPBR_DIRF_WRK.EMPL_RCD
+           AND SA.EFFDT = (SELECT MAX(SA2.EFFDT)
+                           FROM PS_JOB SA2
+                           WHERE SA2.EMPLID = SA.EMPLID
+                           AND SA2.EMPL_RCD = SA.EMPL_RCD
+                           AND SA2.EFFDT <= PS_GPBR_DIRF_WRK.PYMT_DT)
+           AND SA.EFFSEQ = (SELECT MAX(SA3.EFFSEQ)
+                           FROM PS_JOB SA3
+                           WHERE SA3.EMPLID = SA.EMPLID
+                           AND SA3.EMPL_RCD = SA.EMPL_RCD
+                           AND SA3.EFFDT = SA.EFFDT)
+           )
+
+End-SQL
+
+!****UPDATE NATIONAL_ID field
+Begin-SQL
+UPDATE PS_GPBR_DIRF_WRK SET NATIONAL_ID = (
+    SELECT NID.NATIONAL_ID
+    FROM PS_PERS_NID NID
+    WHERE NID.EMPLID = PS_GPBR_DIRF_WRK.EMPLID
+    AND NID.COUNTRY = 'BRA'
+    AND NID.NATIONAL_ID_TYPE = 'CPF'
+    )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS (SELECT 'X'
+                   FROM PS_PERS_NID NID2
+                   WHERE NID2.EMPLID = PS_GPBR_DIRF_WRK.EMPLID
+                   AND NID2.COUNTRY = 'BRA'
+                   AND NID2.NATIONAL_ID_TYPE = 'CPF')
+End-SQL
+
+
+!Set employees to Code 0561
+Begin-SQL
+UPDATE PS_GPBR_DIRF_WRK SET GPBR_LEG_EMPL_TYPE = '0561'
+
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND SEFIP_CATEGORY_BRA NOT IN ('02','13','15', '17', '18', '24', '25')
+End-SQL
+
+!Set employees to Code 0588
+Begin-SQL
+UPDATE PS_GPBR_DIRF_WRK SET GPBR_LEG_EMPL_TYPE = '0588'
+
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND SEFIP_CATEGORY_BRA IN ('02','13','15', '17', '18', '24', '25')
+End-SQL
+
+
+
+!*************************** External Autonomous *********************************
+
+!***** GET CNPJ
+#Debug Show '    **** Get CNPJ ****'
+Let $EstabRptCNPJ = ''
+
+Begin-Select
+EC.ESTAB_ID_BRA
+
+    Let $EstabRptCNPJ = Rtrim(&EC.ESTAB_ID_BRA, ' ')
+
+FROM PS_ESTAB_ID_BRA EC
+WHERE EC.ESTABID = $EstabRpt
+AND EC.EFFDT = (SELECT MAX(EC2.EFFDT)
+                FROM PS_ESTAB_ID_BRA EC2
+                WHERE EC2.ESTABID = EC.ESTABID
+                AND EC2.EFFDT <= $CalEndDt1)
+AND EC.COUNTRY = 'BRA'
+AND EC.ESTAB_ID_TYPE_BRA = 'CNPJ'
+End-Select
+
+#debug show '    $EstabRptCNPJ  :' $EstabRptCNPJ
+
+
+
+
+End-Procedure GetEmployees
+
+
+
+!***************************************************************************
+Begin-Procedure GetIDREC
+#debug show 'Procedure: GetIDREC'
+#debug show '$IDEmplType  : ' $IDEmplType
+#debug show '$Gath_code   : ' $Gath_code
+#debug show '$PayrollType : ' $PayrollType
+!***************************************************************************
+
+Let $WrtHdr = 'Y'
+
+Begin-Select DISTINCT
+W.EMPLID
+!W.EMPL_RCD
+W.NATIONAL_ID
+N.NAME_DISPLAY
+
+    Let $CPF      = Rtrim(&W.NATIONAL_ID, ' ')
+    Let $Name     = upper(Rtrim(&N.NAME_DISPLAY, ' '))
+    Let $Emplid   = Rtrim(&W.EMPLID, ' ')
+    !Let #Empl_rcd = &W.EMPL_RCD
+    Let #CntINFPC = 0
+    Let #CntINFPA = 0
+
+    If $WrtHdr = 'Y'
+        !Write 1 From 'IDREC' '|' $IDEmplType '|'
+        Write 1 From 'IDREC' '|' $Gath_code '|'
+        Let $WrtHdr = 'N'
+    End-If
+
+    Let $IllnessDate = ''
+    Do GetIllness
+
+
+    if $CPF = ''
+        #debug show 'Faltam informações: Sem CPF Empregado ' $Emplid ' ' $Name
+    End-If
+
+    Do CleanString ($Name, $Name)
+
+    ! Write 1 From 'BPFDEC'        '|' -
+    !             $CPF            '|' -
+    !             $Name           '|' -
+    !             $IllnessDate    '|'
+
+    Let $PrintHdrEmployee = 'Y'
+    Do ProcessIncomes
+
+    !Do ProcessHProviders
+
+
+FROM PS_GPBR_DIRF_WRK W, PS_NAMES N
+WHERE N.EMPLID = W.EMPLID
+AND N.NAME_TYPE = 'PRI'
+AND N.EFFDT = (SELECT MAX(N2.EFFDT)
+               FROM PS_NAMES N2
+               WHERE N2.EMPLID = N.EMPLID
+               AND N2.NAME_TYPE = N.NAME_TYPE
+               AND N2.EFFDT <= $CalEndDt1)
+AND W.PROCESS_INSTANCE = #prcs_process_instance
+AND W.GPBR_LEG_EMPL_TYPE = $IDEmplType
+ORDER BY W.NATIONAL_ID, W.EMPLID
+End-Select
+
+End-Procedure GetIDREC
+
+
+!***************************************************************************
+Begin-Procedure GetAutonomous
+#debug show 'Procedure: GetAutonomous'
+!***************************************************************************
+move $CalendarYear to #CalYear
+Begin-Select
+PA.GPBR_BATCH_CODE
+PA.NID_CPF_BRA
+PA.NAME_DISPLAY
+PA.GPBR_REFERENCE
+
+    Let $CPF         = Rtrim (&PA.NID_CPF_BRA, ' ')
+    Let $Name        = upper(Rtrim(&PA.NAME_DISPLAY, ' '))
+    Let $IllnessDate = ''
+
+    If $WrtHdr = 'Y'
+        Write 1 From 'IDREC' '|' $IDEmplType '|'
+        Let $WrtHdr = 'N'
+    End-If
+
+    Do CleanString ($Name, $Name)
+
+    Write 1 From 'BPFDEC'        '|' -
+                 $CPF            '|' -
+                 $Name           '|' -
+                 $IllnessDate    '|' -
+                 'N'             '|' -
+                 'N'             '|'
+    Do AutIncomes
+
+
+FROM PS_GPBR_AU_DIRF_PA PA
+WHERE PA.COMPANY = $Company
+AND PA.GPBR_CNPJ = $EstabRptCNPJ
+AND PA.CALENDAR_YEAR = #CalYear
+
+End-Select
+End-Procedure GetAutonomous
+
+!***************************************************************************
+Begin-Procedure AutIncomes
+#debug show 'Procedure: AutIncomes'
+!***************************************************************************
+Let #Idx = 1
+
+#debug show '    #IncomeNbr : ' #IncomeNbr
+
+While #idx <= #IncomeNbr
+    Let $IdRecord  = IncomeTypes.IdRecord(#Idx)
+    Let $XlatValue = IncomeTypes.XlatValue(#Idx)
+    #debug show '    #idx        : ' #IncomeNbr
+
+Begin-Select
+AU.GPBR_AMT_01
+AU.GPBR_AMT_02
+AU.GPBR_AMT_03
+AU.GPBR_AMT_04
+AU.GPBR_AMT_05
+AU.GPBR_AMT_06
+AU.GPBR_AMT_07
+AU.GPBR_AMT_08
+AU.GPBR_AMT_09
+AU.GPBR_AMT_10
+AU.GPBR_AMT_11
+AU.GPBR_AMT_12
+AU.GPBR_AMT_13
+
+    Clear-Array name = Results
+    Let #L = 1
+
+    Let Results.amount(1) = &AU.GPBR_AMT_01
+    Let Results.amount(2) = &AU.GPBR_AMT_02
+    Let Results.amount(3) = &AU.GPBR_AMT_03
+    Let Results.amount(4) = &AU.GPBR_AMT_04
+    Let Results.amount(5) = &AU.GPBR_AMT_05
+    Let Results.amount(6) = &AU.GPBR_AMT_06
+    Let Results.amount(7) = &AU.GPBR_AMT_07
+    Let Results.amount(8) = &AU.GPBR_AMT_08
+    Let Results.amount(9) = &AU.GPBR_AMT_09
+    Let Results.amount(10) = &AU.GPBR_AMT_10
+    Let Results.amount(11) = &AU.GPBR_AMT_11
+    Let Results.amount(12) = &AU.GPBR_AMT_12
+    Let Results.amount(13) = &AU.GPBR_AMT_13
+
+    Let $PrintRslts = 'N'
+    While #L <= 13
+        Let #a = Results.amount(#L)
+
+        !Avoid negative values
+        If #a < 0
+            Let #a = 0
+        End-if
+
+        If #a <> 0
+            Let $PrintRslts = 'Y'
+        End-If
+
+        Let #a = round(#a * 100, 0)
+        Move #a to $v B99999999999999
+        !Avoid negative values
+        !If #a < 0
+        !    Let $v = ''
+        !End-If
+        Let $v = ltrim($v, ' ')
+
+        Let Results.value(#L) = $v
+
+        Let #L = #L + 1
+    End-While
+
+    Let $Val01 = Results.value(1)
+    Let $Val02 = Results.value(2)
+    Let $Val03 = Results.value(3)
+    Let $Val04 = Results.value(4)
+    Let $Val05 = Results.value(5)
+    Let $Val06 = Results.value(6)
+    Let $Val07 = Results.value(7)
+    Let $Val08 = Results.value(8)
+    Let $Val09 = Results.value(9)
+    Let $Val10 = Results.value(10)
+    Let $Val11 = Results.value(11)
+    Let $Val12 = Results.value(12)
+    Let $Val13 = Results.value(13)
+
+
+    If $PrintRslts <> 'N'
+    Write 1 From $IdRecord    '|' -
+                 $Val01       '|' -
+                 $Val02       '|' -
+                 $Val03       '|' -
+                 $Val04       '|' -
+                 $Val05       '|' -
+                 $Val06       '|' -
+                 $Val07       '|' -
+                 $Val08       '|' -
+                 $Val09       '|' -
+                 $Val10       '|' -
+                 $Val11       '|' -
+                 $Val12       '|' -
+                 $Val13       '|'
+    End-If
+
+
+
+
+FROM PS_GPBR_AU_DIRF_ER AU
+WHERE AU.COMPANY = $Company
+AND AU.GPBR_CNPJ = $EstabRptCNPJ
+AND AU.CALENDAR_YEAR = #CalYear
+AND AU.NID_CPF_BRA = $CPF
+AND AU.GPBR_SECTYPE_DIRF = $XlatValue
+End-Select
+
+
+    Let #Idx = #Idx + 1
+End-While
+
+End-Procedure AutIncomes
+
+
+!***************************************************************************
+Begin-Procedure GetIllness
+#debug show 'Procedure: GetIllness'
+!***************************************************************************
+
+Begin-Select
+A.EFFDT
+
+    !aaaammdd
+    Let $IDate = &A.EFFDT
+
+    if $IDate <> ''
+        Do Convert-To-DTU-Date($IDate, $IDate)
+        Do DTU-Parse-Date($IDate, #Y, #M, #D)
+        Move #Y To $Y '0000'
+        Move #M To $M '00'
+        Move #D To $D '00'
+
+        Let $IllnessDate = $Y || $M || $D
+
+    End-If
+
+
+FROM PS_DISABILITY_BRA A
+WHERE A.EMPLID = $Emplid
+AND A.DISABLED_TYPE_BRA <> '0'
+AND A.EFFDT = (SELECT MAX(D.EFFDT)
+               FROM PS_DISABILITY_BRA D
+               WHERE D.EMPLID = A.EMPLID
+               AND D.EFFDT <= $CalEndDt1)
+End-Select
+
+
+End-Procedure GetIllness
+
+!***************************************************************************
+Begin-Procedure ProcessIncomes
+#debug show 'Procedure: ProcessIncomes'
+!***************************************************************************
+
+Let #Idx = 1
+
+While #Idx <= #IncomeNbr
+    #debug show '    #Idx'  #Idx
+    Let $IdRecord  = IncomeTypes.IdRecord(#Idx)
+    Let $XlatValue = IncomeTypes.XlatValue(#Idx)
+    Let $13th      = IncomeTypes.13th(#Idx)
+
+    #debug show '      $IdRecord :' $IdRecord
+    #debug show '      $XlatValue:' $XlatValue
+    #debug show '      $13th     :' $13th
+    #debug show '      $PayrollType:' $PayrollType
+
+    Clear-Array name = Results
+
+    let #Result_AmtRIO = 0
+
+    !Let $PayrollType = '10'
+    Do FillPayrollArray
+
+    If $SQLInStr <> ''
+        Do GetRslts
+    End-If
+
+    If $13th = 'Y' and $PayrollType <> '30'
+        Let $PayrollType_old = $PayrollType
+        Let $PayrollType = '20'
+        Do FillPayrollArray
+        If $SQLInStr <> ''
+            Do GetRslts
+        End-if
+        Let $PayrollType = $PayrollType_old
+    End-if
+
+    !Format number values:
+    !  * remove decimal point
+    !  * remove left blank spaces
+    !  * remove zero values
+    !  * Avoid print records with all values in zero
+
+
+    If #Idx = 11
+    
+        Let $PrintRslts = 'N'
+
+       !Avoid negative values
+        If #Result_AmtRIO < 0
+            Let #Result_AmtRIO = 0
+        End-if
+
+        If #Result_AmtRIO <> 0
+            Let $PrintRslts = 'Y'
+        End-If
+        
+        
+        Let $StrPinNM = ' '
+
+Begin-Select DISTINCT
+GPP.PIN_NM    &PinName 
+
+     Let $StrPinNM = $StrPinNM  || &PinName  || ','
+
+FROM PS_GPBR_DIRF_R_WRK WRK,
+     PS_GP_PIN GPP
+WHERE WRK.PROCESS_INSTANCE = #prcs_process_instance
+  AND WRK.COMPANY          = $Company
+  AND WRK.EMPLID           = $Emplid
+  AND GPP.PIN_NUM          = WRK.PIN_NUM
+End-Select
+
+        Let $StrPinNM = ltrim(rtrim($StrPinNM, ' '),' ')
+        Let $StrPinNM = Rtrim($StrPinNM, ',')
+        Let $StrPinNM = Substr($StrPinNM,1,60)
+   
+        Let #Result_AmtRIO = round(#Result_AmtRIO * 100, 0)
+        Move #Result_AmtRIO to $v B999999999999
+
+        Let $v = ltrim($v, ' ')
+        
+        If length($v) > 13
+            show 'Empregado :' $Emplid
+            show 'Registro  :' $IdRecord
+            show 'Erro: campo numérico foi detectado mais de 13 posições'
+        End-if
+
+        If $PrintRslts <> 'N'
+                Write 1 From $IdRecord    '|' -
+                             $v           '|' -
+                             $StrPinNM    '|'
+        End-If
+                          
+    else 
+    
+    Let $PrintRslts = 'N'
+    Let #L = 1
+    While #L <= 13
+        Let #a = Results.amount(#L)
+
+        !Avoid negative values
+        If #a < 0
+            Let #a = 0
+        End-if
+
+        If #a <> 0
+            ! Write INFPC and INFPA before RTPP and RTPA registers
+            If $PrintRslts = 'N'
+                Evaluate $IdRecord
+                #debug show 'Tipo de Registro: ' $IdRecord
+                When = 'RTPP'
+                   Do Write_INFPC
+                   Break
+                When = 'RTPA'
+                   Do Write_INFPA
+                End-Evaluate
+            End-If
+
+            Let $PrintRslts = 'Y'
+        End-If
+
+        Let #a = round(#a * 100, 0)
+        !Move #a to $v B99999999999999
+        Move #a to $v B999999999999
+        !Avoid negative values
+        !If #a < 0
+        !    Let $v = ''
+        !End-If
+        Let $v = ltrim($v, ' ')
+
+        If length($v) > 13
+            show 'Empregado :' $Emplid
+            show 'Registro  :' $IdRecord
+            show 'Erro: campo numérico foi detectado mais de 13 posições'
+        End-if
+
+        Let Results.value(#L) = $v
+
+        Let #L = #L + 1
+    End-While
+
+    Let $Val01 = Results.value(1)
+    Let $Val02 = Results.value(2)
+    Let $Val03 = Results.value(3)
+    Let $Val04 = Results.value(4)
+    Let $Val05 = Results.value(5)
+    Let $Val06 = Results.value(6)
+    Let $Val07 = Results.value(7)
+    Let $Val08 = Results.value(8)
+    Let $Val09 = Results.value(9)
+    Let $Val10 = Results.value(10)
+    Let $Val11 = Results.value(11)
+    Let $Val12 = Results.value(12)
+    Let $Val13 = Results.value(13)
+
+      #debug show '$Emplid      : ' $Emplid
+      #debug show '$PrintRslts : ' $PrintRslts
+      #debug show '$IdRecord   : ' $IdRecord
+
+    If $PrintRslts <> 'N'
+        If $PrintHdrEmployee <> 'N'
+
+                ! Set the new fields in 'BPFDEC' record introduced in DIRF 2018 layout.
+                do Fill-BPFDEC-Alim-PrivPen-Flds
+                
+                Write 1 From 'BPFDEC'         '|' -
+                              $CPF            '|' -
+                              $Name           '|' -
+                              $IllnessDate    '|' -
+                              $BPFDECAlim     '|' -
+                              $BPFDECPrevPriv '|'
+
+           Let $PrintHdrEmployee = 'N'
+
+        End-If
+
+        ! Register 'RTPA' writting was moved to procedure 'Write_RTPA'
+        ! due to the changes in DIRF 2017 layout.
+        If $IdRecord <> 'RTPA'
+                Write 1 From $IdRecord    '|' -
+                             $Val01       '|' -
+                             $Val02       '|' -
+                             $Val03       '|' -
+                             $Val04       '|' -
+                             $Val05       '|' -
+                             $Val06       '|' -
+                             $Val07       '|' -
+                             $Val08       '|' -
+                             $Val09       '|' -
+                             $Val10       '|' -
+                             $Val11       '|' -
+                             $Val12       '|' -
+                             $Val13       '|'
+        End-If
+        End-If                             
+    End-If
+
+    Let #Idx = #Idx + 1
+End-While
+
+
+End-Procedure ProcessIncomes
+
+!***************************************************************************
+Begin-Procedure SetUpArrays
+#debug show 'Procedure: SetUpArrays'
+!***************************************************************************
+
+!*** Create Income Clasification Array
+create-array name=IncomeTypes size = 23
+    field = IdRecord:char
+    field = XlatValue:char
+    field = 13th:char
+
+
+!    Record Xlat 13th
+Put 'RTRT'  'IN' 'Y'  into IncomeTypes(1)
+Put 'RTPO'  'PO' 'Y'  into IncomeTypes(2)
+Put 'RTDP'  'DD' 'Y'  into IncomeTypes(3)
+Put 'RTIRF' 'TX' 'Y'  into IncomeTypes(4)
+Put 'RTPP'  'PP' 'Y'  into IncomeTypes(5)
+Put 'RTPA'  'PA' 'Y'  into IncomeTypes(6)
+Put 'RIDAC' 'PD' 'N'  into IncomeTypes(7)
+Put 'RIIRP' 'TI' 'N'  into IncomeTypes(8)
+Put 'RIAP'  'CV' 'N'  into IncomeTypes(9)
+Put 'RIP65' '65' 'Y'  into IncomeTypes(10)
+Put 'RIO'   'OT' 'N'  into IncomeTypes(11)
+Put 'RIVC'  '  ' 'N'  into IncomeTypes(12)
+Put 'RTRT'  'IP' 'Y'  into IncomeTypes(13)
+Put 'RTPA'  'AP' 'Y'  into IncomeTypes(14)
+Put 'RTIRF' 'RP' 'Y'  into IncomeTypes(15)
+
+!Let #IncomeNbr = 11
+Let #IncomeNbr = 15
+
+Create-array name = Elements size = 2000
+    field = PayrollType:char
+    field = SecType:char
+    field = PinNum:number
+    field = SignNbr:number
+
+Create-array name = Results size = 150
+    field = amount:number
+    field = value:char
+
+!*** Create Income Clasification Array
+Create-array name = HPData size = 3000
+    field = BenefType:char
+    field = Element:number
+    field = HpField:char
+    field = DpField:char
+
+End-Procedure SetUpArrays
+
+!***************************************************************************
+Begin-Procedure FillPayrollArray
+#debug show 'Procedure: FillPayrollArray'
+#debug show '$PayrollType : ' $PayrollType
+!***************************************************************************
+
+Let #Elements = 0
+Let $SQLInStr = ''
+
+Begin-Select
+D.GPBR_PAYROLL_TYPE
+D.GPBR_SECTYPE_DIRF
+D.PIN_NUM
+D.GPBR_SIGN_NBR
+
+    Let #Elements = #Elements + 1
+
+    Let Elements.PayrollType(#Elements) = Rtrim(&D.GPBR_PAYROLL_TYPE, ' ')
+    Let Elements.SecType(#Elements)     = Rtrim(&D.GPBR_SECTYPE_DIRF, ' ')
+    Let Elements.PinNum(#Elements)      = &D.PIN_NUM
+    Let Elements.SignNbr(#Elements)     = &D.GPBR_SIGN_NBR
+
+    Move &D.PIN_NUM to $pin_num '99999999'
+    Let $SQLInStr = $SQLInStr || $pin_num || ', '
+
+FROM PS_GPBR_DIRF_DATA D
+WHERE D.COMPANY = $Company
+AND D.EFFDT     =
+    (SELECT MAX(D2.EFFDT)
+    FROM PS_GPBR_DIRF_DATA D2
+    WHERE D2.COMPANY = D.COMPANY
+    AND D2.EFFDT    <= $CalEndDt1
+    )
+AND D.GPBR_PAYROLL_TYPE = $PayrollType
+AND D.GPBR_SECTYPE_DIRF = $XlatValue
+End-Select
+
+
+#debug show '    $SQLInStr [' $SQLInStr ']'
+Let $SQLInStr = Rtrim($SQLInStr, ' ')
+Let $SQLInStr = Rtrim($SQLInStr, ',')
+#debug show '    $SQLInStr [' $SQLInStr ']'
+
+End-Procedure FillPayrollArray
+
+
+
+!***************************************************************************
+Begin-Procedure GetRslts
+#debug show 'Procedure: GetRslts'
+#debug show '    $Emplid               :' $Emplid
+#debug show '    $Company              :' $Company
+#debug show '    $CalBeginDt1          :' $CalBeginDt1
+#debug show '    $CalEndDt1            :' $CalEndDt1
+#debug show '    $SQLInStr             :' $SQLInStr
+#debug show '    $IDEmplType           :' $IDEmplType
+#debug show '    $PayrollType          :' $PayrollType
+#debug show '    #prcs_process_instance:' #prcs_process_instance
+
+!***************************************************************************
+
+Let #CntPin  = 0
+
+Begin-Select
+B.PYMT_DT
+C.PIN_NUM
+(C.CALC_RSLT_VAL + C.CALC_ADJ_VAL) &Result
+C.USER_FLD2
+
+    #debug show '        ' &B.PYMT_DT ' ' &C.PIN_NUM ' ' &Result
+    
+    Let #PinNumT = &C.PIN_NUM
+
+    If $PayrollType = '20'
+        Let #month = 13
+    Else
+        Let $date = Rtrim(&B.PYMT_DT, ' ')
+        Do Convert-To-DTU-Date($date, $date)
+        Do DTU-Parse-Date ($date,#year, #month, #day)
+    End-If
+    
+    If #Idx = 11 and &Result <> 0
+        Let #CntPin = #CntPin + 1
+        Do Insert_RIO
+    End-If
+    
+    Let #Sign = 1
+    Let #i = 1
+    While #i <= #Elements
+        if &C.PIN_NUM = Elements.PinNum(#i)
+            Let #Sign = Elements.SignNbr(#i)
+            Break
+        End-If
+        Let #i = #i + 1
+    End-While
+
+   If #Idx = 11
+      Let #Result_AmtRIO = #Result_AmtRIO + (&Result * #Sign)
+   else
+      Let Results.amount(#month) = Results.amount(#month) + (&Result * #Sign)
+   end-if
+
+   Let $IDEmplDepend = &C.USER_FLD2
+   Evaluate $IdRecord
+     #debug show 'Tipo de Registro: ' $IdRecord
+     When = 'RTPP'
+       Let #CntINFPC = #CntINFPC + 1
+       Do Insert_INFPC
+       Break
+     When = 'RTPA'
+       Let #CntINFPA = #CntINFPA + 1
+       Do Insert_INFPA
+   End-Evaluate
+
+
+! We need to include the WRK table for employees with more than one Employee Record:
+! * When both employee records are the same type of employee (0561 and 0588) we need to sum payroll results
+!   in one row.
+!
+! * When the employee records belongs to differnt type of employee we need to report each employee record in
+!   different section according to employee type.
+
+FROM PS_GP_SEG_GUIDE_WA A,
+    PS_GP_PYE_PRC_STAT B,
+    PS_GP_RSLT_ERN_DED C,
+    PS_GPBR_DIRF_WRK W1
+
+WHERE A.EMPLID        = $Emplid
+!AND A.EMPL_RCD        = #Empl_rcd
+AND A.COMPANY         = $Company
+AND B.EMPLID          = A.EMPLID
+AND B.CAL_RUN_ID      = A.CAL_RUN_ID
+AND B.EMPL_RCD        = A.EMPL_RCD
+AND B.GP_PAYGROUP     = A.GP_PAYGROUP
+AND B.CAL_ID          = A.CAL_ID
+AND B.ORIG_CAL_RUN_ID = B.ORIG_CAL_RUN_ID
+AND B.RSLT_REV_NUM    = 1
+AND B.RSLT_VER_NUM    =
+    (SELECT MAX(B2.RSLT_VER_NUM)
+    FROM PS_GP_PYE_PRC_STAT B2
+    WHERE B2.EMPLID        = B.EMPLID
+    AND B2.CAL_RUN_ID      = B.CAL_RUN_ID
+    AND B2.EMPL_RCD        = B.EMPL_RCD
+    AND B2.GP_PAYGROUP     = B.GP_PAYGROUP
+    AND B2.CAL_ID          = B.CAL_ID
+    AND B2.ORIG_CAL_RUN_ID = B.ORIG_CAL_RUN_ID
+    AND B2.RSLT_VER_NUM    = B.RSLT_VER_NUM
+    )
+AND B.PYMT_DT        >= $CalBeginDt1
+AND B.PYMT_DT        <= $CalEndDt1
+AND C.EMPLID          = A.EMPLID
+AND C.CAL_RUN_ID      = A.CAL_RUN_ID
+AND C.EMPL_RCD        = A.EMPL_RCD
+AND C.GP_PAYGROUP     = A.GP_PAYGROUP
+AND C.CAL_ID          = A.CAL_ID
+AND C.ORIG_CAL_RUN_ID = A.ORIG_CAL_RUN_ID
+AND C.RSLT_SEG_NUM    = A.RSLT_SEG_NUM
+AND C.PIN_NUM        IN ([$SQLInStr])
+AND W1.EMPLID          = A.EMPLID
+AND W1.EMPL_RCD        = A.EMPL_RCD
+AND W1.COMPANY         = A.COMPANY
+AND W1.PYMT_DT         = B.PYMT_DT
+AND W1.CAL_RUN_ID      = B.CAL_RUN_ID
+AND W1.RSLT_REV_NUM    = B.RSLT_REV_NUM
+AND W1.RSLT_VER_NUM    = B.RSLT_VER_NUM
+AND W1.CAL_ID          = B.CAL_ID
+AND W1.RSLT_SEG_NUM    = C.RSLT_SEG_NUM
+AND W1.GPBR_LEG_EMPL_TYPE = $IDEmplType
+AND W1.PROCESS_INSTANCE = #prcs_process_instance
+End-Select
+
+
+#ifdef debug
+    Let #j = 1
+    While #j <= 13
+        Let #a = Results.amount(#j)
+        Let #a = round(#a * 100, 0)
+        Display '     |'                NoLine
+        Display #j B9                   NoLine
+        Display '|'                     NoLine
+        !Display #a B99999999999999      NoLine
+        Display #a B999999999999        NoLine
+        Display '|'
+        Let #j = #j + 1
+    End-while
+#endif
+End-Procedure GetRslts
+
+!***************************************************************************
+Begin-Procedure CheckHealthInfo
+#debug show 'Procedure: CheckHealthInfo'
+!***************************************************************************
+Let $IndHealthProv = 'N'
+
+Begin-Select
+COUNT(*) &CountRowsE
+
+FROM PS_GPBR_DIRF_E_WRK
+WHERE PROCESS_INSTANCE= #prcs_process_instance
+End-Select
+
+If &CountRowsE > 0
+
+    Let $IndHealthProv = 'S'
+
+End-if
+
+if $IndHealthProv = 'N'
+Begin-Select
+COUNT(*) &CountRowsD
+
+FROM PS_GPBR_DIRF_E_WRK
+WHERE PROCESS_INSTANCE= #prcs_process_instance
+End-Select
+End-if
+
+
+If &CountRowsD > 0
+
+    Let $IndHealthProv = 'S'
+
+End-if
+#debug show '    $IndHealthProv :' $IndHealthProv
+
+End-Procedure CheckHealthInfo
+
+!***************************************************************************
+Begin-Procedure HealthProviders_main
+#debug show 'Procedure: HealthProviders_main'
+!***************************************************************************
+! Delete data inserted in the first execution of this procedure to figure
+! out parameter 'Indicador de plano privado de assistência à saúde - coletivo 
+! empresarial' in 'DECPJ' register to avoid duplicate computing of the
+! amounts withheld to Health Provider in registers 'TPSE' and 'DTPSE'.
+Begin-SQL
+DELETE FROM PS_GPBR_DIRF_E_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+Begin-SQL
+DELETE FROM PS_GPBR_DIRF_D_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+!Get Source Data Paramenter
+
+Let $DataSource = ''
+Let #Len_Dep_Benf = 0
+Let #Len_Prov_Cd = 0
+Begin-Select
+DS.GPBR_HEALTH_SOURCE
+
+    Let $DataSource = Rtrim(&DS.GPBR_HEALTH_SOURCE, ' ')
+
+FROM PS_GPBR_PARM_DIRF DS
+WHERE DS.COMPANY = $Company
+AND DS.EFFDT = (SELECT MAX(DS2.EFFDT)
+                FROM PS_GPBR_PARM_DIRF DS2
+                WHERE DS2.COMPANY = DS.COMPANY
+                AND DS2.EFFDT <= $CalEndDt1)
+End-Select
+
+
+Begin-Select
+FLD.FIELDNAME
+FLD.LENGTH
+
+  If &FLD.FIELDNAME = 'DEPENDENT_BENEF'
+    Let #Len_Dep_Benf = Round(&FLD.LENGTH,0)
+    Let $Len_Dep_Benf = Edit(&FLD.LENGTH, '9')
+  Else
+    Let #Len_Prov_Cd = Round(&FLD.LENGTH,0)
+    Let $Len_Prov_Cd = Edit(&FLD.LENGTH, '99')
+  End-If
+
+FROM PSDBFIELD FLD
+ WHERE FLD.FIELDNAME IN ('DEPENDENT_BENEF', 'HPROV_CD_BRA')
+End-Select
+
+
+! 1 = Other Annual Amt BRA page
+! 2 = Payroll Results
+! 3 = Both
+#debug show '    $DataSource :' $DataSource '  #Len_Dep_Benf ' #Len_Dep_Benf ' #Len_Prov_Cd ' #Len_Prov_Cd
+
+If $DataSource = '2' OR $DataSource = '3'
+
+    Do HealthP_Payroll_GetStrings
+    Do HealthP_PayrollStep01
+
+End-If
+
+If $DataSource = '1' OR $DataSource = '3'
+    Do HealthP_ManualStep01
+End-If
+
+
+
+let $StringA = ''
+let $StringD = ''
+
+#ifdef INFORMIX
+  let $StringA = 'HE.NID_CPF_BRA [1,11]'
+  let $StringD = 'HD.NID_CPF_BRA [1,11]'
+#endif
+#ifdef ORACLE
+  let $StringA = 'SUBSTR(HE.NID_CPF_BRA,1,11)'
+  let $StringD = 'SUBSTR(HD.NID_CPF_BRA,1,11)'
+#endif
+#ifdef MICROSOFT
+  let $StringA = 'SUBSTR(HE.NID_CPF_BRA,1,11)'
+  let $StringD = 'SUBSTR(HD.NID_CPF_BRA,1,11)'
+#endif
+#ifdef DB2ALL
+  let $StringA = 'SUBSTR(HE.NID_CPF_BRA,1,11)'
+  let $StringD = 'SUBSTR(HD.NID_CPF_BRA,1,11)'
+#endif
+#ifdef SYBASE
+  let $StringA = 'SUBSTRING(HE.NID_CPF_BRA,1,11)'
+  let $StringD = 'SUBSTRING(HD.NID_CPF_BRA,1,11)'
+#endif
+
+#debug show '    $StringA : ' $StringA
+#debug show '    $StringD : ' $StringD
+
+!Insert Autonomous Health Provider Data
+Begin-SQL
+INSERT
+INTO PS_GPBR_DIRF_E_WRK
+  (
+    PROCESS_INSTANCE,
+    HPROV_CD_BRA,
+    EMPLID,
+    AMOUNT,
+    HPROV_CNPJ_BRA,
+    DESCR,
+    HPROV_ANS_CD_BRA,
+    NATIONAL_ID,
+    NAME
+  )
+SELECT #prcs_process_instance,
+  HP.HPROV_CD_BRA,
+  [$StringA],
+  HE.AMOUNT,
+  HP.HPROV_CNPJ_BRA,
+  HP.DESCR,
+  HP.HPROV_ANS_CD_BRA,
+  HE.NID_CPF_BRA,
+  PA.NAME_DISPLAY
+FROM PS_GPBR_AU_DIRF_HE HE,
+  PS_HEALTH_PROV_BRA HP,
+  PS_GPBR_AU_DIRF_PA PA
+WHERE HE.COMPANY      = $Company
+AND HE.GPBR_CNPJ      = $EstabRptCNPJ
+AND HE.CALENDAR_YEAR  = #CalYear
+AND HE.HPROV_CNPJ_BRA = HP.HPROV_CNPJ_BRA
+AND HP.EFFDT          =
+  (SELECT MAX(HP1.EFFDT)
+  FROM PS_HEALTH_PROV_BRA HP1
+  WHERE HP1.HPROV_CD_BRA = HP.HPROV_CD_BRA
+  AND HP1.EFFDT         <= $CalEndDt1
+  )
+AND PA.COMPANY         = HE.COMPANY
+AND PA.GPBR_CNPJ       = HE.GPBR_CNPJ
+AND PA.GPBR_BATCH_CODE = HE.GPBR_BATCH_CODE
+AND PA.CALENDAR_YEAR   = HE.CALENDAR_YEAR
+AND PA.NID_CPF_BRA     = HE.NID_CPF_BRA
+End-SQL
+
+
+!INSERT Autonomous Dependents
+Begin-SQL
+INSERT
+INTO PS_GPBR_DIRF_D_WRK
+  (
+    PROCESS_INSTANCE,
+    HPROV_CD_BRA,
+    EMPLID,
+    DEPENDENT_BENEF,
+    AMOUNT,
+    NATIONAL_ID,
+    BIRTHDATE,
+    NAME,
+    RELATIONSHIP
+  )
+SELECT #prcs_process_instance,
+  HP.HPROV_CD_BRA,
+  [$StringD],
+  '00',
+  HD.AMOUNT,
+  HD.NATIONAL_ID,
+  HD.BIRTHDATE,
+  HD.NAME_DISPLAY,
+  HD.GPBR_DEP_RELATION
+FROM PS_GPBR_AU_DIRF_HD HD,
+  PS_HEALTH_PROV_BRA HP
+WHERE HD.COMPANY      = $Company
+AND HD.GPBR_CNPJ      = $EstabRptCNPJ
+AND HD.CALENDAR_YEAR  = #CalYear
+AND HD.HPROV_CNPJ_BRA = HP.HPROV_CNPJ_BRA
+AND HP.EFFDT          =
+  (SELECT MAX(HP1.EFFDT)
+  FROM PS_HEALTH_PROV_BRA HP1
+  WHERE HP1.HPROV_CD_BRA = HP.HPROV_CD_BRA
+  AND HP1.EFFDT         <= $CalEndDt1
+  )
+
+End-SQL
+
+
+!Create Employee Rows for orphan dependents.
+Begin-SQL
+INSERT
+INTO PS_GPBR_DIRF_E_WRK
+    (
+        PROCESS_INSTANCE,
+        HPROV_CD_BRA,
+        EMPLID,
+        AMOUNT,
+        HPROV_CNPJ_BRA,
+        DESCR,
+        HPROV_ANS_CD_BRA,
+        NATIONAL_ID,
+        NAME
+    )
+SELECT DISTINCT D1.PROCESS_INSTANCE,
+    D1.HPROV_CD_BRA,
+    D1.EMPLID,
+    0,
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' '
+FROM PS_GPBR_DIRF_D_WRK D1
+WHERE D1.PROCESS_INSTANCE = #prcs_process_instance
+AND NOT EXISTS (SELECT 'X'
+                FROM PS_GPBR_DIRF_E_WRK D2
+                WHERE D2.PROCESS_INSTANCE = D1.PROCESS_INSTANCE
+                AND D2.HPROV_CD_BRA = D1.HPROV_CD_BRA
+                AND D2.EMPLID = D1.EMPLID)
+End-SQL
+
+
+
+!Update Health Provider CNPJ
+Begin-SQL
+UPDATE PS_GPBR_DIRF_E_WRK
+SET HPROV_CNPJ_BRA =
+    (SELECT H.HPROV_CNPJ_BRA
+    FROM PS_HEALTH_PROV_BRA H
+    WHERE H.HPROV_CD_BRA = PS_GPBR_DIRF_E_WRK.HPROV_CD_BRA
+    AND H.EFFDT          =
+        (SELECT MAX(H2.EFFDT)
+        FROM PS_HEALTH_PROV_BRA H2
+        WHERE H2.HPROV_CD_BRA = H.HPROV_CD_BRA
+        AND H2.EFFDT         <= $CalEndDt1
+        )
+    )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS (SELECT 'X'
+                   FROM PS_HEALTH_PROV_BRA H3
+                   WHERE H3.HPROV_CD_BRA = PS_GPBR_DIRF_E_WRK.HPROV_CD_BRA
+                   AND H3.EFFDT = (SELECT MAX(H3A.EFFDT)
+                                   FROM PS_HEALTH_PROV_BRA H3A
+                                   WHERE H3A.HPROV_CD_BRA = H3.HPROV_CD_BRA
+                                   AND H3A.EFFDT <= $CalEndDt1))
+End-SQL
+
+
+!update Health Provider Description
+Begin-SQL
+UPDATE PS_GPBR_DIRF_E_WRK
+SET DESCR =
+    (SELECT H.DESCR
+    FROM PS_HEALTH_PROV_BRA H
+    WHERE H.HPROV_CD_BRA = PS_GPBR_DIRF_E_WRK.HPROV_CD_BRA
+    AND H.EFFDT          =
+        (SELECT MAX(H2.EFFDT)
+        FROM PS_HEALTH_PROV_BRA H2
+        WHERE H2.HPROV_CD_BRA = H.HPROV_CD_BRA
+        AND H2.EFFDT         <= $CalEndDt1
+        )
+    )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS
+    (SELECT 'X'
+    FROM PS_HEALTH_PROV_BRA H3
+    WHERE H3.HPROV_CD_BRA = PS_GPBR_DIRF_E_WRK.HPROV_CD_BRA
+    AND H3.EFFDT          =
+        (SELECT MAX(H3A.EFFDT)
+        FROM PS_HEALTH_PROV_BRA H3A
+        WHERE H3A.HPROV_CD_BRA = H3.HPROV_CD_BRA
+        AND H3A.EFFDT         <= $CalEndDt1
+        )
+    )
+End-SQL
+
+!Update Health Provider ANS Code
+Begin-SQL
+UPDATE PS_GPBR_DIRF_E_WRK
+SET HPROV_ANS_CD_BRA =
+    (SELECT H.HPROV_ANS_CD_BRA
+    FROM PS_HEALTH_PROV_BRA H
+    WHERE H.HPROV_CD_BRA = PS_GPBR_DIRF_E_WRK.HPROV_CD_BRA
+    AND H.EFFDT          =
+        (SELECT MAX(H2.EFFDT)
+        FROM PS_HEALTH_PROV_BRA H2
+        WHERE H2.HPROV_CD_BRA = H.HPROV_CD_BRA
+        AND H2.EFFDT         <= $CalEndDt1
+        )
+    )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS
+    (SELECT 'X'
+    FROM PS_HEALTH_PROV_BRA H3
+    WHERE H3.HPROV_CD_BRA = PS_GPBR_DIRF_E_WRK.HPROV_CD_BRA
+    AND H3.EFFDT          =
+        (SELECT MAX(H3A.EFFDT)
+        FROM PS_HEALTH_PROV_BRA H3A
+        WHERE H3A.HPROV_CD_BRA = H3.HPROV_CD_BRA
+        AND H3A.EFFDT         <= $CalEndDt1
+        )
+    )
+End-SQL
+
+!Update Employee CPF
+Begin-SQL
+UPDATE PS_GPBR_DIRF_E_WRK SET NATIONAL_ID = (
+    SELECT NID.NATIONAL_ID
+    FROM PS_PERS_NID NID
+    WHERE NID.EMPLID = PS_GPBR_DIRF_E_WRK.EMPLID
+    AND NID.COUNTRY = 'BRA'
+    AND NID.NATIONAL_ID_TYPE = 'CPF'
+    )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS (SELECT 'X'
+                   FROM PS_PERS_NID NID2
+                   WHERE NID2.EMPLID = PS_GPBR_DIRF_E_WRK.EMPLID
+                   AND NID2.COUNTRY = 'BRA'
+                   AND NID2.NATIONAL_ID_TYPE = 'CPF')
+End-SQL
+
+!Update Employee Name
+Begin-SQL
+UPDATE PS_GPBR_DIRF_E_WRK
+SET NAME =
+    (SELECT NM.NAME_DISPLAY
+    FROM PS_NAMES NM
+    WHERE NM.EMPLID = PS_GPBR_DIRF_E_WRK.EMPLID
+    AND NM.NAME_TYPE = 'PRI'
+    AND NM.EFFDT          =
+        (SELECT MAX(NM2.EFFDT)
+        FROM PS_NAMES NM2
+        WHERE NM2.EMPLID = NM.EMPLID
+        AND NM2.NAME_TYPE = NM.NAME_TYPE
+        AND NM2.EFFDT         <= $CalEndDt1
+        )
+    )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS
+    (SELECT 'X'
+    FROM PS_NAMES NM3
+    WHERE NM3.EMPLID = PS_GPBR_DIRF_E_WRK.EMPLID
+    AND NM3.NAME_TYPE = 'PRI'
+    AND NM3.EFFDT          =
+        (SELECT MAX(NM3A.EFFDT)
+        FROM PS_NAMES NM3A
+        WHERE NM3A.EMPLID = NM3.EMPLID
+        AND NM3A.NAME_TYPE = 'PRI'
+        AND NM3A.EFFDT         <= $CalEndDt1
+        )
+    )
+End-SQL
+
+!Update Dependent CPF
+Begin-SQL
+UPDATE PS_GPBR_DIRF_D_WRK
+SET NATIONAL_ID =
+    (SELECT NM.NATIONAL_ID
+    FROM PS_DEP_BENEF_NID NM
+    WHERE NM.EMPLID = PS_GPBR_DIRF_D_WRK.EMPLID
+    AND NM.DEPENDENT_BENEF = PS_GPBR_DIRF_D_WRK.DEPENDENT_BENEF
+    AND NM.COUNTRY = 'BRA'
+    AND NM.NATIONAL_ID_TYPE = 'CPF'
+    )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS
+    (SELECT 'X'
+    FROM PS_DEP_BENEF_NID NM3
+    WHERE NM3.EMPLID = PS_GPBR_DIRF_D_WRK.EMPLID
+    AND NM3.DEPENDENT_BENEF = PS_GPBR_DIRF_D_WRK.DEPENDENT_BENEF
+    AND NM3.COUNTRY = 'BRA'
+    AND NM3.NATIONAL_ID_TYPE = 'CPF'
+    )
+End-SQL
+
+!Update Dependent Birthdate
+Begin-SQL
+UPDATE PS_GPBR_DIRF_D_WRK
+SET BIRTHDATE =
+    (SELECT NM.BIRTHDATE
+    FROM PS_DEPENDENT_BENEF NM
+    WHERE NM.EMPLID = PS_GPBR_DIRF_D_WRK.EMPLID
+    AND NM.DEPENDENT_BENEF = PS_GPBR_DIRF_D_WRK.DEPENDENT_BENEF
+    )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS
+    (SELECT 'X'
+    FROM PS_DEPENDENT_BENEF NM3
+    WHERE NM3.EMPLID = PS_GPBR_DIRF_D_WRK.EMPLID
+    AND NM3.DEPENDENT_BENEF = PS_GPBR_DIRF_D_WRK.DEPENDENT_BENEF
+    )
+End-SQL
+
+!Update Dependent Name
+Begin-SQL
+UPDATE PS_GPBR_DIRF_D_WRK
+SET NAME =
+    (SELECT NM.NAME_DISPLAY
+    FROM PS_DEPENDENT_BENEF NM
+    WHERE NM.EMPLID = PS_GPBR_DIRF_D_WRK.EMPLID
+    AND NM.DEPENDENT_BENEF = PS_GPBR_DIRF_D_WRK.DEPENDENT_BENEF
+    )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS
+    (SELECT 'X'
+    FROM PS_DEPENDENT_BENEF NM3
+    WHERE NM3.EMPLID = PS_GPBR_DIRF_D_WRK.EMPLID
+    AND NM3.DEPENDENT_BENEF = PS_GPBR_DIRF_D_WRK.DEPENDENT_BENEF
+    )
+End-SQL
+
+!Update Dependent RelationShip
+Begin-SQL
+UPDATE PS_GPBR_DIRF_D_WRK
+SET RELATIONSHIP =
+    (SELECT NM.RELATIONSHIP
+    FROM PS_DEPENDENT_BENEF NM
+    WHERE NM.EMPLID = PS_GPBR_DIRF_D_WRK.EMPLID
+    AND NM.DEPENDENT_BENEF = PS_GPBR_DIRF_D_WRK.DEPENDENT_BENEF
+    )
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND EXISTS
+    (SELECT 'X'
+    FROM PS_DEPENDENT_BENEF NM3
+    WHERE NM3.EMPLID = PS_GPBR_DIRF_D_WRK.EMPLID
+    AND NM3.DEPENDENT_BENEF = PS_GPBR_DIRF_D_WRK.DEPENDENT_BENEF
+    )
+End-SQL
+
+!INSERT dummy rows for Employees without dependents
+Begin-SQL
+INSERT
+INTO PS_GPBR_DIRF_D_WRK
+    (
+        PROCESS_INSTANCE,
+        HPROV_CD_BRA,
+        EMPLID,
+        DEPENDENT_BENEF,
+        AMOUNT,
+        NATIONAL_ID,
+        BIRTHDATE,
+        NAME,
+        RELATIONSHIP
+    )
+SELECT M2.PROCESS_INSTANCE,
+    M2.HPROV_CD_BRA,
+    M2.EMPLID,
+    ' ',
+    0,
+    ' ',
+    $nullDate,
+    ' ',
+    ' '
+FROM PS_GPBR_DIRF_E_WRK M2
+WHERE M2.PROCESS_INSTANCE = #prcs_process_instance
+AND NOT EXISTS (SELECT 'X'
+                FROM PS_GPBR_DIRF_D_WRK DEP
+                WHERE M2.PROCESS_INSTANCE = DEP.PROCESS_INSTANCE
+                AND M2.HPROV_CD_BRA = DEP.HPROV_CD_BRA
+                AND M2.EMPLID = DEP.EMPLID)
+End-SQL
+
+End-Procedure HealthProviders_main
+
+!***************************************************************************
+Begin-Procedure HealthProviders_WriteData
+#debug show 'Procedure: HealthProviders_WriteData'
+!***************************************************************************
+Let $WritePSEHdr = 'Y'
+
+Begin-Select DISTINCT
+WE.HPROV_CNPJ_BRA    ()    on-break before=Write_OPSE print=never level=1
+WE.DESCR
+WE.HPROV_ANS_CD_BRA
+WE.NATIONAL_ID       ()    on-break before=Write_TPSE print=never level=2
+WE.NAME
+SUM(WE.AMOUNT) &EE_Amount
+WD.NATIONAL_ID
+WD.BIRTHDATE
+WD.NAME              ()    on-break before=Write_DTPSE print=never level=3
+WD.RELATIONSHIP
+SUM(WD.AMOUNT) &DE_Amount
+WE.EMPLID
+WE.HPROV_CD_BRA
+WD.DEPENDENT_BENEF
+
+
+    #Debug Show &WE.EMPLID ' EE:' &EE_Amount '   DE:' &DE_Amount
+
+    Let $x = Rtrim(&WE.NAME, ' ')
+
+FROM PS_GPBR_DIRF_E_WRK WE,
+PS_GPBR_DIRF_D_WRK WD
+WHERE WE.PROCESS_INSTANCE = #prcs_process_instance
+AND WD.PROCESS_INSTANCE = WE.PROCESS_INSTANCE
+AND WD.HPROV_CD_BRA = WE.HPROV_CD_BRA
+AND WD.EMPLID = WE.EMPLID
+GROUP BY WE.HPROV_CNPJ_BRA, WE.DESCR, WE.HPROV_ANS_CD_BRA, WE.NATIONAL_ID, WE.NAME, WD.NATIONAL_ID, WD.BIRTHDATE,
+WD.NAME, WD.RELATIONSHIP, WE.EMPLID, WE.HPROV_CD_BRA, WD.DEPENDENT_BENEF
+ORDER BY WE.HPROV_CNPJ_BRA, WE.NATIONAL_ID, WD.NATIONAL_ID, WD.BIRTHDATE
+End-Select
+End-Procedure HealthProviders_WriteData
+
+!***************************************************************************
+Begin-Procedure Write_OPSE
+#debug show 'Procedure: Write_OPSE'
+!***************************************************************************
+
+If $WritePSEHdr = 'Y'
+    Write 1 From 'PSE' '|'
+    Let $WritePSEHdr = 'N'
+End-If
+
+Let $Hprov_CNPJ_BRA = Rtrim(&WE.HPROV_CNPJ_BRA, ' ')
+Let $HProv_Descr    = Rtrim(&WE.DESCR, ' ')
+Let $HProv_ANS_CD_BRA = Rtrim(&WE.HPROV_ANS_CD_BRA, ' ')
+
+Do CleanString ($HProv_Descr, $HProv_Descr)
+
+Write 1 From 'OPSE'             '|' -
+             $Hprov_CNPJ_BRA    '|' -
+             $HProv_Descr       '|' -
+             $HProv_ANS_CD_BRA  '|'
+
+End-Procedure Write_OPSE
+
+!***************************************************************************
+Begin-Procedure Write_TPSE
+#debug show 'Procedure: Write_TPSE'
+!***************************************************************************
+Begin-Select
+EMPLID
+SUM(AMOUNT) &EE_Amount2
+
+FROM PS_GPBR_DIRF_E_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND HPROV_CD_BRA = &WE.HPROV_CD_BRA
+AND EMPLID = &WE.EMPLID
+GROUP BY EMPLID
+End-Select
+
+Let $Emp_CPF = Rtrim(&WE.NATIONAL_ID, ' ')
+
+!Get and Clean name
+Do CleanString (&WE.NAME, $Emp_Name)
+
+!Format number value and avoid Negative Values
+Do CleanNumberValues(&EE_Amount2, $Emp_Amount)
+    Write 1 From 'TPSE'      '|' -
+                 $Emp_CPF    '|' -
+                 $Emp_Name   '|' -
+                 $Emp_Amount '|'
+
+End-Procedure Write_TPSE
+
+!***************************************************************************
+Begin-Procedure Write_DTPSE
+#debug show 'Procedure: Write_DTPSE'
+!***************************************************************************
+
+Begin-Select
+SUM(AMOUNT) &D_AMOUNT
+
+FROM PS_GPBR_DIRF_D_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+AND HPROV_CD_BRA = &WE.HPROV_CD_BRA
+AND EMPLID = &WE.EMPLID
+AND DEPENDENT_BENEF = &WD.DEPENDENT_BENEF
+End-Select
+
+
+If &D_AMOUNT > 0
+    Let $Dep_CPF       = Rtrim(&WD.NATIONAL_ID, ' ')
+    Let $Dep_BirthDate = Rtrim(&WD.BIRTHDATE, ' ')
+
+    !Get and Clean name
+    Do CleanString (&WD.NAME, $Dep_Name)
+
+    !Get RealationShip
+    Let $Dep_Relation = Rtrim(&WD.RELATIONSHIP, ' ')
+
+    !Format number value and avoid Negative Values
+    Do CleanNumberValues(&D_AMOUNT, $Dep_Amount)
+
+    If $Dep_BirthDate <> ''
+        Do Convert-To-DTU-Date ($Dep_BirthDate, $Dep_BirthDate)
+        Do DTU-Diff-years($Dep_BirthDate, $CalEndDt, #YearsOld)
+
+        If $Dep_CPF = '' And #YearsOld >= 18
+            #debug show 'Faltam informações: Sem CPF para Dependente ' $Dep_name '. Empregado : ' $Emplid
+        End-If
+
+        Do DTU-Parse-Date ($Dep_BirthDate, #y, #m, #d)
+        Move #y to $y '0000'
+        Move #m to $m '00'
+        Move #d to $d '00'
+
+        Let $DepBDate = $y || $m || $d
+    Else
+        #debug show 'Faltam informações: Sem data de nascimento para Dependente ' $Dep_name '. Empregado : ' $Emplid
+        Let $DepBDate = ''
+    End-If
+
+    !Relationship
+    Evaluate $Dep_Relation
+    When = 'C'
+    When = 'RC'
+        Let $Rel = '04'
+        Break
+    When = 'FC'
+    When = 'OC'
+    When = 'SC'
+        Let $Rel = '06'
+        Break
+    When = 'P'
+    When = 'SA'
+        Let $Rel = '08'
+        Break
+    When = 'SP'
+        Let $Rel = '03'
+        Break
+    When-Other
+        #debug show 'Aviso: Relação de dependência ' $Dep_Relation ' não é válido para DIRF : ' $Dep_name '. Empregado : ' $Emplid
+        Break
+    End-Evaluate
+
+    Do CleanString ($Dep_Name, $Dep_Name)
+
+    Write 1 From 'DTPSE'      '|' -
+                 $Dep_CPF     '|' -
+                 $DepBDate    '|' -
+                 $Dep_Name    '|' -
+                 $Rel         '|' -
+                 $Dep_Amount  '|'
+End-IF
+End-Procedure Write_DTPSE
+
+!***************************************************************************
+Begin-Procedure CleanNumberValues(#NbrValue, :$StrValue)
+#debugx show 'Procedure: CleanNumberValues'
+!***************************************************************************
+If #NbrValue > 0
+    Let #tmp = round(#NbrValue * 100, 0)
+    !Move #tmp to $tmp B99999999999999
+    Move #tmp to $tmp B999999999999
+    Let $StrValue = Ltrim($tmp, ' ')
+Else
+    Let $StrValue = ''
+End-If
+
+End-Procedure CleanNumberValues
+
+!***************************************************************************
+Begin-Procedure HealthP_Payroll_GetStrings
+#debug show 'Procedure: HealthP_Payroll_GetStrings'
+!***************************************************************************
+
+Clear-Array name = HPData
+
+Let $HP_PinNumStr = ''
+Let #c = 0
+Let #HPData_nbr = 0
+Begin-Select
+GS.GPBR_DIRF_HLT_TYPE
+GS.PIN_NUM
+GS.GPBR_HEALTH_FIELD
+GS.GPBR_DEPEND_FIELD
+
+    Let #c = #c + 1
+    Let HPData.BenefType(#c) = Rtrim(&GS.GPBR_DIRF_HLT_TYPE, ' ')
+    Let HPData.Element(#c)   = &GS.PIN_NUM
+    Let HPData.HpField(#c)   = Rtrim(&GS.GPBR_HEALTH_FIELD, ' ')
+    Let HPData.DpField(#c)   = Rtrim(&GS.GPBR_DEPEND_FIELD, ' ')
+
+    Move &GS.PIN_NUM to $pin_num '99999999'
+        Let $HP_PinNumStr = $HP_PinNumStr || $pin_num || ', '
+
+FROM PS_GPBR_HEALTH_INF GS
+WHERE GS.COMPANY = $Company
+AND GS.EFFDT = (SELECT MAX(GS2.EFFDT)
+                FROM PS_GPBR_PARM_DIRF GS2
+                WHERE GS2.COMPANY = GS.COMPANY
+                AND GS2.EFFDT <= $CalEndDt1)
+End-Select
+
+Let #HPData_nbr = #c
+
+Let $HP_PinNumStr = Rtrim($HP_PinNumStr, ' ')
+Let $HP_PinNumStr = Rtrim($HP_PinNumStr, ',')
+#debug show '    $HP_PinNumStr [' $HP_PinNumStr ']'
+#ifdef debug
+    Let #j = 1
+    While #j <= #c
+
+        Let $a = HPData.BenefType(#j)
+        Let #b = HPData.Element(#j)
+        Let $c = HPData.HpField(#j)
+        Let $d = HPData.DpField(#j)
+
+        Display '     |'                NoLine
+        Display $a                      NoLine
+        Display '|'                     NoLine
+        !Display #b B99999999999999      NoLine
+        Display #b B999999999999        NoLine
+        Display '|'                     NoLine
+        Display $c                      NoLine
+        Display '|'                     NoLine
+        Display $d                      NoLine
+        Display '|'
+        Let #j = #j + 1
+    End-while
+#endif
+
+End-Procedure HealthP_Payroll_GetStrings
+
+!***************************************************************************
+Begin-Procedure HealthP_PayrollStep01
+#debug show 'Procedure: HealthP_PayrollStep01'
+!***************************************************************************
+#debug show '   $HP_PinNumStr : ' $HP_PinNumStr
+If $HP_PinNumStr = ''
+
+    Let $HP_PinNumStr = '0'
+End-if
+
+Begin-Select
+HC.EMPLID
+HC.PIN_NUM
+HC.USER_FLD1
+HC.USER_FLD2
+HC.USER_FLD3
+HC.USER_FLD4
+HC.USER_FLD5
+HC.USER_FLD6
+(HC.CALC_RSLT_VAL + HC.CALC_ADJ_VAL) &Amount
+
+    Let #i = 1
+    Let $ProviderField = '0'
+    Let $DepIDField    = '0'
+
+    While #i <= #HPData_nbr
+        Let #Data_pin_num = HPData.Element(#i)
+        if #Data_pin_num = &HC.PIN_NUM
+
+            Let $f1 = &HC.USER_FLD1
+            Let $f2 = &HC.USER_FLD2
+            Let $f3 = &HC.USER_FLD3
+            Let $f4 = &HC.USER_FLD4
+            Let $f5 = &HC.USER_FLD5
+            Let $f6 = &HC.USER_FLD6
+
+
+
+
+            Let $ProviderField = HPData.HpField(#i)
+            Let $HPCode = ''
+            Do GetFieldValue($f1,$f2,$f3,$f4,$f5,$f6,$ProviderField, $HPCode)
+
+            Let $DepIdField       = HPData.DpField(#i)
+            Let $DependID = ''
+            Do GetFieldValue($f1,$f2,$f3,$f4,$f5,$f6,$DepIdField, $DependID)
+
+
+            Let $Type = HPData.BenefType(#i)
+            !10 - Employee
+            !20 - Dependent
+
+            #Debugx show &HC.EMPLID '    ' &HC.PIN_NUM '  ' $f1 ' | ' $f2 ' | ' $f3 ' | ' $f4 ' | ' $f5 ' | ' $f6 ' | '
+            #Debugx show &Amount  '    HeathProvider : ' $HPCode '    Dependent : ' $DependID '    Type : ' $Type
+
+            If $Type = '10'
+                If $HPCode <> '' And $DependID = ''
+                    #debug show '     *Employee : ' &HC.EMPLID '    HeathProvider : ' $HPCode '    Amount : ' &Amount '    Dependent : ' $DependID
+                    Do HealthP_InsertEmpData
+                End-if
+            Else
+
+                if $HPCode <> '' And $DependID <> ''
+                    #debug show '      Employee : ' &HC.EMPLID '    HeathProvider : ' $HPCode '    Amount : ' &Amount '    Dependent : ' $DependID
+                    Do HealthP_InsertDepData
+                End-if
+            End-If
+
+        End-if
+        Let #i = #i + 1
+    End-While
+
+FROM PS_GP_SEG_GUIDE_WA HA,
+    PS_GP_PYE_PRC_STAT HB,
+    PS_GP_RSLT_ERN_DED HC
+
+WHERE HA.COMPANY       = $Company
+[$EstabList2]
+AND HB.EMPLID          = HA.EMPLID
+AND HB.CAL_RUN_ID      = HA.CAL_RUN_ID
+AND HB.EMPL_RCD        = HA.EMPL_RCD
+AND HB.GP_PAYGROUP     = HA.GP_PAYGROUP
+AND HB.CAL_ID          = HA.CAL_ID
+AND HB.ORIG_CAL_RUN_ID = HB.ORIG_CAL_RUN_ID
+AND HB.RSLT_REV_NUM    = 1
+AND HB.RSLT_VER_NUM    =
+    (SELECT MAX(B2.RSLT_VER_NUM)
+    FROM PS_GP_PYE_PRC_STAT B2
+    WHERE B2.EMPLID        = HB.EMPLID
+    AND B2.CAL_RUN_ID      = HB.CAL_RUN_ID
+    AND B2.EMPL_RCD        = HB.EMPL_RCD
+    AND B2.GP_PAYGROUP     = HB.GP_PAYGROUP
+    AND B2.CAL_ID          = HB.CAL_ID
+    AND B2.ORIG_CAL_RUN_ID = HB.ORIG_CAL_RUN_ID
+    AND B2.RSLT_VER_NUM    = HB.RSLT_VER_NUM
+    )
+AND HB.PYMT_DT        >= $CalBeginDt1
+AND HB.PYMT_DT        <= $CalEndDt1
+AND HC.EMPLID          = HA.EMPLID
+AND HC.CAL_RUN_ID      = HA.CAL_RUN_ID
+AND HC.EMPL_RCD        = HA.EMPL_RCD
+AND HC.GP_PAYGROUP     = HA.GP_PAYGROUP
+AND HC.CAL_ID          = HA.CAL_ID
+AND HC.ORIG_CAL_RUN_ID = HA.ORIG_CAL_RUN_ID
+AND HC.RSLT_SEG_NUM    = HA.RSLT_SEG_NUM
+AND HC.PIN_NUM        IN ([$HP_PinNumStr])
+End-Select
+End-Procedure HealthP_PayrollStep01
+
+!***************************************************************************
+Begin-Procedure HealthP_InsertEmpData
+#debug show 'Procedure: HealthP_InsertEmpData'
+!***************************************************************************
+Begin-SQL
+INSERT
+INTO PS_GPBR_DIRF_E_WRK
+    (
+        PROCESS_INSTANCE,
+        HPROV_CD_BRA,
+        EMPLID,
+        AMOUNT,
+        HPROV_CNPJ_BRA,
+        DESCR,
+        HPROV_ANS_CD_BRA,
+        NATIONAL_ID,
+        NAME
+    )
+    VALUES
+    (
+        #prcs_process_instance,
+        $HPCode,
+        &HC.EMPLID,
+        &Amount,
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        ' '
+    )
+End-SQL
+End-Procedure HealthP_InsertEmpData
+
+!***************************************************************************
+Begin-Procedure HealthP_InsertDepData
+#debug show 'Procedure: HealthP_InsertDepData'
+!***************************************************************************
+If (Length($DependID) <= #Len_Dep_Benf ) and (Length($HPCode) <= #Len_Prov_Cd)
+Begin-SQL
+INSERT
+INTO PS_GPBR_DIRF_D_WRK
+    (
+        PROCESS_INSTANCE,
+        HPROV_CD_BRA,
+        EMPLID,
+        DEPENDENT_BENEF,
+        AMOUNT,
+        NATIONAL_ID,
+        BIRTHDATE,
+        NAME,
+        RELATIONSHIP
+    )
+    VALUES
+    (
+        #prcs_process_instance,
+        $HPCode,
+        &HC.EMPLID,
+        $DependID,
+        &Amount,
+        ' ',
+        $nullDate,
+        ' ',
+        ' '
+    )
+End-SQL
+
+Else
+  Let $Strg_Aux = 'Erro: campo "Código de Saúde Provedor" foi detectado mais de ' || $Len_Prov_Cd || ' posições (' || $HPCode || ')'
+  Let $Strg_Aux1 = 'ou campo "Beneficiário/Dependente ID" foi detectado mais de ' || $Len_Dep_Benf || ' posições (' || $DependID || ')  de Empregado ' || &HC.EMPLID
+  show $Strg_Aux ' ' $Strg_Aux1
+End-If
+End-Procedure HealthP_InsertDepData
+
+!***************************************************************************
+Begin-Procedure HealthP_ManualStep01
+#debug show 'Procedure: HealthP_ManualStep01'
+!***************************************************************************
+!Insert Employee Data
+Begin-SQL
+INSERT
+INTO PS_GPBR_DIRF_E_WRK
+    (
+        PROCESS_INSTANCE,
+        HPROV_CD_BRA,
+        EMPLID,
+        AMOUNT,
+        HPROV_CNPJ_BRA,
+        DESCR,
+        HPROV_ANS_CD_BRA,
+        NATIONAL_ID,
+        NAME
+    )
+SELECT #prcs_process_instance,
+    M.HPROV_CD_BRA,
+    M.EMPLID,
+    M.AMOUNT,
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' '
+FROM PS_GPBR_H_EE_AMT M ,
+    PS_GPBR_OTH_EE_AMT C
+WHERE C.EMPLID = M.EMPLID
+AND C.EMPL_RCD = M.EMPL_RCD
+AND C.EFFDT    = M.EFFDT
+AND C.COMPANY  = $Company
+AND C.EFFDT   >= $CalBeginDt1
+AND C.EFFDT   <= $CalEndDt1
+AND EXISTS (SELECT 'X' FROM
+            PS_GPBR_DIRF_WRK
+            WHERE PROCESS_INSTANCE = #prcs_process_instance
+            AND EMPLID = C.EMPLID
+            AND EMPL_RCD = C.EMPL_RCD)
+
+End-SQl
+
+
+!Create a Default Date
+
+Do Convert-from-DTU-Date('1900-01-01', $nullDate)
+
+!Insert Dependent Data
+Begin-SQL
+INSERT
+INTO PS_GPBR_DIRF_D_WRK
+    (
+        PROCESS_INSTANCE,
+        HPROV_CD_BRA,
+        EMPLID,
+        DEPENDENT_BENEF,
+        AMOUNT,
+        NATIONAL_ID,
+        BIRTHDATE,
+        NAME,
+        RELATIONSHIP
+    )
+SELECT #prcs_process_instance,
+M2.HPROV_CD_BRA,
+    M2.EMPLID,
+    M2.DEPENDENT_BENEF,
+    M2.AMOUNT,
+    ' ',
+    $nullDate,
+    ' ',
+    ' '
+FROM PS_GPBR_H_DEP_AMT M2 ,
+    PS_GPBR_OTH_EE_AMT C2
+WHERE C2.EMPLID = M2.EMPLID
+AND C2.EMPL_RCD = M2.EMPL_RCD
+AND C2.EFFDT    = M2.EFFDT
+AND C2.COMPANY  = $Company
+AND C2.EFFDT   >= $CalBeginDt1
+AND C2.EFFDT   <= $CalEndDt1
+AND EXISTS (SELECT 'X' FROM
+            PS_GPBR_DIRF_WRK
+            WHERE PROCESS_INSTANCE = #prcs_process_instance
+            AND EMPLID = C2.EMPLID
+            AND EMPL_RCD = C2.EMPL_RCD)
+End-SQL
+
+End-Procedure HealthP_ManualStep01
+
+!***************************************************************************
+Begin-Procedure GetFieldValue ($v1,$v2,$v3,$v4,$v5,$v6,$Field, :$Val)
+#debugx show 'Procedure: GetFieldValue'
+!***************************************************************************
+
+Evaluate $Field
+    When = '1'
+        Let $Val = Rtrim($v1, ' ')
+    Break
+
+    When = '2'
+        Let $Val = Rtrim($v2, ' ')
+        Break
+
+    When = '3'
+        Let $Val = Rtrim($v3, ' ')
+        Break
+
+    When = '4'
+        Let $Val = Rtrim($v4, ' ')
+        Break
+
+    When = '5'
+        Let $Val = Rtrim($v5, ' ')
+        Break
+
+    When = '6'
+        Let $Val = Rtrim($v6, ' ')
+        Break
+End-Evaluate
+
+
+End-Procedure GetFieldValue
+
+
+!***************************************************************************
+Begin-Procedure HealthProviders
+#debug show 'Procedure: HealthProviders'
+!***************************************************************************
+
+Let $WritePSEHdr = 'Y'
+
+Begin-Select Distinct
+HP.HPROV_CNPJ_BRA
+HP.DESCR
+HP.HPROV_ANS_CD_BRA
+EE.HPROV_CD_BRA
+
+    If $WritePSEHdr = 'Y'
+        Write 1 From 'PSE' '|'
+        Let $WritePSEHdr = 'N'
+    End-If
+
+    Let $HProvCD    = Rtrim(&EE.HPROV_CD_BRA, ' ')
+    Let $HProvCNPJ  = Rtrim(&HP.HPROV_CNPJ_BRA, ' ')
+    Let $HProvDescr = Rtrim(&HP.DESCR, ' ')
+    Let $HProvANS   = Rtrim(&HP.HPROV_ANS_CD_BRA, ' ')
+
+    Write 1 From 'OPSE'      '|' -
+                 $HProvCNPJ  '|' -
+                 $HProvDescr '|' -
+                 $HProvANS   '|'
+
+    !Do EmployeeHealthProv
+
+
+
+FROM PS_GPBR_H_EE_AMT EE,
+PS_GPBR_DIRF_WRK WK,
+PS_HEALTH_PROV_BRA HP
+WHERE WK.EMPLID = EE.EMPLID
+AND WK.EMPL_RCD = EE.EMPL_RCD
+AND EE.EFFDT >= $CalBeginDt1
+AND EE.EFFDT <= $CalEndDt1
+AND PROCESS_INSTANCE = #prcs_process_instance
+AND HP.HPROV_CD_BRA = EE.HPROV_CD_BRA
+AND HP.EFFDT = (SELECT MAX(HP1.EFFDT)
+                FROM PS_HEALTH_PROV_BRA HP1
+                WHERE HP1.HPROV_CD_BRA = HP.HPROV_CD_BRA
+                AND HP1.EFF_STATUS = HP.EFF_STATUS
+                AND HP1.EFFDT <= $CalEndDt1)
+AND HP.EFF_STATUS = 'A'
+ORDER BY HP.HPROV_CNPJ_BRA
+End-Select
+
+End-Procedure HealthProviders
+
+!***************************************************************************
+Begin-Procedure EmployeeHealthProv
+#debug show 'Procedure: EmployeeHealthProv'
+!***************************************************************************
+
+Begin-Select Distinct
+M.EMPLID
+M.NATIONAL_ID
+N.HPROV_CD_BRA
+O.NAME_DISPLAY
+
+    Let $H_Emplid = Rtrim(&M.EMPLID, ' ')
+
+    Let $H_EmpCPF = Rtrim(&M.NATIONAL_ID, ' ')
+    Let $H_EmpName = Upper(Rtrim(&O.NAME_DISPLAY, ' '))
+    Do GetEmployeeHAmount
+
+    Write 1 From 'TPSE'      '|' -
+                 $H_EmpCPF   '|' -
+                 $H_EmpName  '|' -
+                 $v          '|'
+
+
+    !Do ProcDependents
+
+
+FROM PS_GPBR_DIRF_WRK M
+, PS_GPBR_H_EE_AMT N
+, PS_NAMES O
+WHERE M.PROCESS_INSTANCE = #prcs_process_instance
+AND M.EMPLID = N.EMPLID
+!AND M.EMPL_RCD = N.EMPL_RCD
+AND N.EFFDT >= $CalBeginDt1
+AND N.EFFDT <= $CalEndDt1
+AND N.HPROV_CD_BRA = $HProvCD
+AND O.EMPLID = N.EMPLID
+AND O.NAME_TYPE = 'PRI'
+AND O.EFFDT = (SELECT MAX(O2.EFFDT)
+                 FROM PS_NAMES O2
+                 WHERE O2.EMPLID = O.EMPLID
+                 AND O2.NAME_TYPE = O.NAME_TYPE
+                 AND O2.EFFDT <= $CalEndDt1)
+
+
+ORDER BY NATIONAL_ID
+End-Select
+End-Procedure EmployeeHealthProv
+
+!***************************************************************************
+Begin-Procedure GetEmployeeHAmount
+#debug show 'Procedure: GetEmployeeHAmount'
+!***************************************************************************
+
+Begin-Select
+SUM(Q.AMOUNT) &H_EmpAmount
+
+    Let  #a = round(&H_EmpAmount * 100, 0)
+    !Move #a to $v B99999999999999
+    Move #a to $v B999999999999
+    Let  $v = ltrim($v, ' ')
+
+FROM PS_GPBR_H_EE_AMT Q,
+PS_GPBR_OTH_EE_AMT R
+WHERE Q.EMPLID = $H_Emplid
+AND Q.EFFDT >= $CalBeginDt1
+AND Q.EFFDT <= $CalEndDt1
+AND Q.HPROV_CD_BRA = $HProvCD
+AND R.EMPLID = Q.EMPLID
+AND R.EMPL_RCD = Q.EMPL_RCD
+AND R.EFFDT = Q.EFFDT
+AND R.COMPANY = $Company
+End-Select
+
+End-Procedure GetEmployeeHAmount
+
+!***************************************************************************
+Begin-Procedure ProcessHProviders
+#debug show 'Procedure: ProcessHProviders'
+!***************************************************************************
+
+Let $WriteHdr = 'Y'
+
+Begin-Select
+CC.HPROV_CD_BRA
+CC.HPROV_CNPJ_BRA
+CC.DESCR
+CC.HPROV_ANS_CD_BRA
+!AA.EFFDT
+SUM(AA.AMOUNT) &EmpHResult
+
+    If $WriteHdr = 'Y'
+        Write 1 From 'PSE' '|'
+        Let $WriteHdr = 'N'
+    End-if
+
+    Let $HProvCD    = Rtrim(&CC.HPROV_CD_BRA, ' ')
+    Let $HProvCNPJ  = Rtrim(&CC.HPROV_CNPJ_BRA, ' ')
+    Let $HProvDescr = Rtrim(&CC.DESCR, ' ')
+    Let $HProvANS   = Rtrim(&CC.HPROV_ANS_CD_BRA, ' ')
+    !Let $HProvEffDT = Rtrim(&AA.EFFDT, ' ')
+    Let #HProvEEAmt = &EmpHResult
+
+    !Format number values:
+    !  * remove decimal point
+    !  * remove left blank spaces
+    !  * remove zero values
+
+    Let  #a = round(#HProvEEAmt * 100, 0)
+    !Move #a to $v B99999999999999
+    Move #a to $v B999999999999
+    Let  $v = ltrim($v, ' ')
+
+    Write 1 From 'OPSE'      '|' -
+                 $HProvCNPJ  '|' -
+                 $HProvDescr '|' -
+                 $HProvANS   '|'
+
+    Write 1 From 'TPSE'      '|' -
+                 $CPF        '|' -
+                 $Name       '|'-
+                 $v          '|'
+
+    Do ProcDependents
+
+FROM PS_GPBR_H_EE_AMT AA,
+    PS_GPBR_OTH_EE_AMT BB,
+    PS_HEALTH_PROV_BRA CC
+WHERE AA.EMPLID     = $Emplid
+AND AA.EMPL_RCD     = #Empl_rcd
+AND AA.EFFDT       >= $CalBeginDt1
+AND AA.EFFDT       <= $CalEndDt1
+AND BB.EMPLID       = AA.EMPLID
+AND BB.EMPL_RCD     = BB.EMPL_RCD
+AND BB.EFFDT        = AA.EFFDT
+AND BB.COMPANY      = $Company
+AND CC.HPROV_CD_BRA = AA.HPROV_CD_BRA
+AND CC.EFF_STATUS   = 'A'
+AND CC.EFFDT        =
+    (SELECT MAX(CC1.EFFDT)
+    FROM PS_HEALTH_PROV_BRA CC1
+    WHERE CC1.HPROV_CD_BRA = CC.HPROV_CD_BRA
+    AND CC1.EFF_STATUS     = 'A'
+    AND CC1.EFFDT         <= $CalEndDt1
+    )
+GROUP BY CC.HPROV_CD_BRA,
+    CC.HPROV_CNPJ_BRA,
+    CC.DESCR,
+    CC.HPROV_ANS_CD_BRA
+    !AA.EFFDT
+End-Select
+
+End-Procedure ProcessHProviders
+
+!***************************************************************************
+Begin-Procedure ProcDependents
+#debug show 'Procedure: ProcDependents'
+!***************************************************************************
+
+Begin-Select
+E.DEPENDENT_BENEF
+E.BIRTHDATE
+E.NAME_FORMAL
+E.RELATIONSHIP
+SUM(D.AMOUNT) &Dep_Amount
+
+
+    Let $Dependent_benef = Rtrim(&E.DEPENDENT_BENEF, ' ')
+    Let $Dep_BirthDate   = Rtrim(&E.BIRTHDATE, ' ')
+    Let $Dep_Name        = Upper(Rtrim(&E.NAME_FORMAL, ' '))
+    Let $Dep_Relation    = Rtrim(&E.RELATIONSHIP, ' ')
+    Let #Dep_Amount      = &Dep_Amount
+    Let $DepCPF = ''
+    Do GetDepCPF
+
+    #debug show ' $Dep_BirthDate :' $Dep_BirthDate
+    If $Dep_BirthDate <> ''
+        Do Convert-To-DTU-Date ($Dep_BirthDate, $Dep_BirthDate)
+        Do DTU-Diff-years($Dep_BirthDate, $CalEndDt, #YearsOld)
+        If $DepCPF = '' And #YearsOld >= 18
+            #debug show 'Faltam informações: Sem CPF para Dependente ' $Dep_name '. Empregado : ' $Emplid
+        End-If
+
+        Do DTU-Parse-Date ($Dep_BirthDate, #y, #m, #d)
+        Move #y to $y '0000'
+        Move #m to $m '00'
+        Move #d to $d '00'
+
+        Let $DepBDate = $y || $m || $d
+    Else
+        #debug show 'Faltam informações: Sem data de nascimento para Dependente ' $Dep_name '. Empregado : ' $Emplid
+        Let $DepBDate = ''
+    End-if
+
+    !Relationship
+    Evaluate $Dep_Relation
+    When = 'C'
+    When = 'RC'
+        Let $Rel = '04'
+        Break
+    When = 'FC'
+    When = 'OC'
+    When = 'SC'
+        Let $Rel = '06'
+        Break
+    When = 'P'
+    When = 'SA'
+        Let $Rel = '08'
+        Break
+    When = 'SP'
+        Let $Rel = '03'
+        Break
+    End-Evaluate
+
+    !Format number values:
+    !  * remove decimal point
+    !  * remove left blank spaces
+    !  * remove zero values
+    Let  #da = round(#Dep_Amount * 100, 0)
+    !Move #da to $dv B99999999999999
+    Move #da to $dv B999999999999
+    Let  $dv = ltrim($dv, ' ')
+
+
+    Write 1 From 'DTPSE'      '|' -
+                 $DepCPF      '|' -
+                 $DepBDate    '|' -
+                 $Dep_Name    '|' -
+                 $Rel         '|' -
+                 $dv          '|'
+
+FROM PS_GPBR_H_DEP_AMT D,
+PS_DEPENDENT_BENEF E,
+PS_GPBR_OTH_EE_AMT F
+WHERE D.EMPLID        = $H_Emplid
+!AND D.EMPL_RCD       = #Empl_rcd
+AND D.EFFDT          >= $CalBeginDt1
+AND D.EFFDT          <= $CalEndDt1
+AND D.HPROV_CD_BRA    = $HProvCD
+AND E.EMPLID          = D.EMPLID
+AND E.DEPENDENT_BENEF = D.DEPENDENT_BENEF
+AND F.EMPLID          = D.EMPLID
+AND F.EMPL_RCD        = D.EMPL_RCD
+AND F.EFFDT           = D.EFFDT
+AND F.COMPANY         = $Company
+AND E.RELATIONSHIP IN ('C', 'FC', 'OC', 'P', 'RC', 'SA', 'SC', 'SP')
+GROUP BY E.DEPENDENT_BENEF,
+    E.BIRTHDATE,
+    E.NAME_FORMAL,
+    E.RELATIONSHIP
+ORDER BY E.BIRTHDATE
+End-Select
+End-Procedure ProcDependents
+
+!***************************************************************************
+Begin-Procedure CreateINFRecords
+#debug show 'Procedure: CreateINFRecords'
+!***************************************************************************
+
+Begin-Select
+WK.EMPLID
+WK.NATIONAL_ID
+FA.FAPI_CNPJ_BRA
+FA.DESCR
+SUM((ED.CALC_RSLT_VAL + ED.CALC_ADJ_VAL) * DD.GPBR_SIGN_NBR) &RsltAmt
+
+
+   Let $INF_CPF  = &WK.NATIONAL_ID
+   Let $INF_CNPJ = &FA.FAPI_CNPJ_BRA
+   Let $INF_FAPI_Name = Rtrim(&FA.DESCR, ' ')
+   Move &RsltAmt to $INF_Amount '99999999.99'
+
+   Do CleanString ($INF_FAPI_Name, $INF_FAPI_Name)
+
+   Let $INF_Amount = replace($INF_Amount, '.', ',')
+
+
+   Write 1 From 'INF'            '|' -
+                 $INF_CPF        '|' -
+                 $INF_CNPJ       ' ' -
+                 $INF_FAPI_Name  ' ' -
+                 $INF_Amount     '|'
+
+FROM PS_GPBR_DIRF_WRK   WK,
+    PS_GP_SEG_GUIDE_WA WA,
+    PS_GP_RSLT_ERN_DED ED,
+    PS_GPBR_DIRF_DATA  DD,
+    PS_FAPI_PROV_BRA   FA
+WHERE PROCESS_INSTANCE  = #prcs_process_instance
+AND WK.EMPLID           = WA.EMPLID
+AND WK.EMPL_RCD         = WA.EMPL_RCD
+AND WK.CAL_RUN_ID       = WA.CAL_RUN_ID
+AND WK.CAL_ID           = WA.CAL_ID
+AND WA.ORIG_CAL_RUN_ID  = WA.CAL_RUN_ID
+AND WK.COMPANY          = WA.COMPANY
+AND WK.COMPANY          = $Company
+AND WK.PYMT_DT          >= $CalBeginDt1
+AND WK.PYMT_DT          <= $CalEndDt1
+AND ED.EMPLID            = WA.EMPLID
+AND ED.EMPL_RCD          = WA.EMPL_RCD
+AND ED.CAL_RUN_ID        = WA.CAL_RUN_ID
+AND ED.GP_PAYGROUP       = WA.GP_PAYGROUP
+AND ED.CAL_ID            = WA.CAL_ID
+AND ED.ORIG_CAL_RUN_ID   = WA.ORIG_CAL_RUN_ID
+AND ED.RSLT_SEG_NUM      = WA.RSLT_SEG_NUM
+AND DD.COMPANY           = WK.COMPANY
+AND DD.EFFDT             = (SELECT MAX(EFFDT)
+                            FROM PS_GPBR_DIRF_DATA
+                            WHERE COMPANY = DD.COMPANY
+                            AND EFFDT    <= WK.PYMT_DT)
+AND DD.GPBR_PAYROLL_TYPE = '10'
+AND DD.GPBR_SECTYPE_DIRF = 'PP'
+AND DD.PIN_NUM           = ED.PIN_NUM
+AND FA.FAPI_CD_BRA       = DD.FAPI_CD_BRA
+AND FA.EFFDT             = (SELECT MAX(EFFDT)
+                            FROM PS_FAPI_PROV_BRA
+                            WHERE FAPI_CD_BRA = FA.FAPI_CD_BRA)
+GROUP BY WK.EMPLID, WK.NATIONAL_ID, FA.FAPI_CNPJ_BRA, FA.DESCR
+ORDER BY WK.NATIONAL_ID, FA.FAPI_CNPJ_BRA
+
+End-Select
+
+End-Procedure CreateINFRecords
+
+
+
+!***************************************************************************
+Begin-Procedure GetDepCPF
+#debugX show 'Procedure: GetDepCPF'
+#debugX show '    $H_Emplid        : ' $H_Emplid
+#debugX show '    $Dependent_benef : ' $Dependent_benef
+!***************************************************************************
+
+Begin-Select
+NATIONAL_ID
+
+    Let $DepCPF = Rtrim(&NATIONAL_ID, ' ')
+    #debugX show '    $DepCPF          : ' $DepCPF
+
+FROM PS_DEP_BENEF_NID
+WHERE EMPLID         = $H_Emplid
+AND DEPENDENT_BENEF  = $Dependent_benef
+AND COUNTRY          = 'BRA'
+AND NATIONAL_ID_TYPE = 'CPF'
+End-Select
+
+End-Procedure GetDepCPF
+
+
+!***************************************************************************
+Begin-Procedure CleanWrkTBL
+#debug show 'Procedure: CleanWrkTBL'
+!***************************************************************************
+Begin-SQL
+DELETE FROM PS_GPBR_DIRF_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+Begin-SQL
+DELETE FROM PS_GPBR_DIRF_E_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+Begin-SQL
+DELETE FROM PS_GPBR_DIRF_D_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+Begin-SQL
+DELETE FROM PS_GPBR_DIRF_R_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+Begin-SQL
+DELETE FROM PS_GPBR_INFPA_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+Begin-SQL
+DELETE FROM PS_GPBR_RTPA_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+Begin-SQL
+DELETE FROM PS_GPBR_INFPC_WRK
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+End-SQL
+
+End-Procedure CleanWrkTBL
+
+!******************************************************************************
+Begin-Procedure GetPhoneBRA ($FullPhone, :$PhoneDDI, :$PhoneDDD, :$Phone, :$PhoneRamal)
+#debug show 'Procedure: GetPhoneBRA'
+!******************************************************************************
+  Let $PhoneDDI      = ''
+  Let $PhoneDDD      = ''
+  Let $Phone         = ''
+  Let $PhoneRamal    = ''
+  Let #i             = 1
+  Let #DotNumber     = 0
+  Let #SizeFullPhone = Length($FullPhone)
+  Let $CleanPhone    = ''
+  Let #PosDot1       = 0
+  Let #PosDot2       = 0
+  Let #PosDot3       = 0
+  !Clean Phone
+  While #i <= #SizeFullPhone
+    Let $Test = Substr($FullPhone,#i,1)
+
+
+    !If $Test is not a number then change to dot
+        If ($Test < '0' OR $Test > '9')
+            if $Test <> '-'
+                Let $Test = '.'
+            End-if
+        End-if
+    !if $Test is a number or a Dot add to $CleanPhone else Discard $Test
+    If $Test >= '0' And $Test <= '9' OR $Test = '.'
+          Let $CleanPhone = $CleanPhone || $Test
+    End-If
+    Add 1 to #i
+  End-While
+
+
+
+  Let #SizeCleanPhone = Length($CleanPhone)
+  Let #i = 1
+
+  !Find dots positions
+  While #i <= #SizeCleanPhone
+    Let $Test = Substr($CleanPhone,#i,1)
+    If $Test = '.'
+      If #PosDot1 > 0 AND #PosDot2 > 0
+        Let #PosDot3 = #i
+      End-If
+      If #PosDot1 > 0 AND #PosDot3 = 0
+              Let #PosDot2 = #i
+      End-If
+      If #PosDot2 = 0 AND #PosDot3 = 0
+              Let #PosDot1 = #i
+      End-if
+      add 1 to #DotNumber
+    End-If
+    Add 1 to #i
+  End-While
+  #debug show '#PosDot1   :' #PosDot1
+  #debug show '#PosDot2   :' #PosDot2
+  #debug show '#PosDot3   :' #PosDot3
+  #debug show '#DotNumber :' #DotNumber
+
+  Evaluate #DotNumber
+    When = 0
+      !Only phone
+      Let $Phone = $CleanPhone
+      Break
+    When = 1
+      !Maybe DDD.phone or phone.Ramal
+      If #PosDot1 <= 4
+        !DDD.Phone
+        Let $PhoneDDD   = Substr($CleanPhone,1           , #PosDot1 - 1)
+        Let $Phone      = Substr($CleanPhone,#PosDot1 + 1, #SizeCleanPhone)
+      Else
+        !Phone.Ramal
+        Let $Phone      = Substr($CleanPhone,1           , #PosDot1 - 1)
+        Let $PhoneRamal = Substr($CleanPhone,#PosDot1 + 1, #SizeCleanPhone)
+      End-If
+      Break
+    When = 2
+      !Maybe DDD.Phone.Ramal or DDI.DDD.Phone
+      If (#PosDot2 - #PosDot1) > 5
+        !DDD.Phone.Ramal
+        Let $PhoneDDD   = Substr($CleanPhone, 1           , #PosDot1 - 1)
+        Let $Phone      = Substr($CleanPhone, #PosDot1 + 1, (#PosDot2 - #PosDot1) - 1)
+        Let $PhoneRamal = Substr($CleanPhone,#PosDot2 + 1, #SizeCleanPhone)
+      Else
+        !DDI.DDD.Phone
+        Let $PhoneDDI   = Substr($CleanPhone,1           , #PosDot1 - 1)
+        Let $PhoneDDD   = Substr($CleanPhone,#PosDot1 + 1, (#PosDot2 - #PosDot1) - 1)
+        Let $Phone      = Substr($CleanPhone,#PosDot2 + 1, #SizeCleanPhone)
+      End-If
+
+      Break
+    When = 3
+      !Must be DDI.DDD.Phone.Ramal
+      Let $PhoneDDI   = Substr($CleanPhone, 1           , #PosDot1 - 1)
+      Let $PhoneDDD   = Substr($CleanPhone, #PosDot1 + 1, (#PosDot2 - #PosDot1) - 1)
+      Let $Phone      = Substr($CleanPhone, #PosDot2 + 1, (#PosDot3 - #PosDot2) - 1)
+      Let $PhoneRamal = Substr($CleanPhone, #PosDot3 + 1, #SizeCleanPhone)
+      Break
+  End-Evaluate
+  !DDD must be start with 2 zeros
+  !Let $PhoneDDD = '00' || $PhoneDDD
+
+  !Ramal mus be filled with zeros to lef
+  !Let $PhoneRamal = edit($PhoneRamal, '000000')
+
+
+  If Length($PhoneDDD) > 2
+    Let $PhoneDDD = Substr($PhoneDDD, 1,2)
+  End-If
+
+  If Length($PhoneRamal) > 6
+    Let $PhoneRamal = Substr($PhoneRamal, 1,6)
+  End-If
+
+
+  Let #X = Length($Phone)
+
+  If #X > 9
+   Let $Phone = Substr($Phone, 1,9)
+  End-If
+
+End-Procedure GetPhoneBRA
+
+
+!***************************************************************************
+Begin-Procedure CleanString($String_In, :$String_out)
+#debugx show 'PROCEDURE : CleanString'
+!***************************************************************************
+!Clean String for Internationa Characters, Double Spaces and Convert
+!to Uppercase
+!***************************************************************************
+let $String_In  = ltrim(rtrim($String_In, ' '),' ')
+let #I = 1
+Let $String_Out = ''
+let #Len = Length($String_In)
+let $Test_Char1 = ''
+let $Test_Char2 = ''
+let $Test_Char3 = ''
+
+While #I  <= #Len
+   Let $Test_Char    = Substr($String_In,#I, 1)
+   let $Test_Char3   = $Test_Char2
+   let $Test_Char2   = $Test_Char1
+   let $Test_Char1   = $Test_Char
+   if $Test_Char3 = $Test_Char2 and $Test_Char2 = $Test_Char1
+      let $Test_Char  = ''
+   end-if
+   !If $Test_Char <> '-'
+   !   Let $String_Out = $String_Out || Upper($Test_Char)
+   !End-if
+
+   let $Found = 'N'
+   !let $Test_Char = Substr($String_In, #I, 1)
+   let #Test_Code = ascii(Upper($Test_Char))
+   if (#Test_Code > 64 and #Test_Code < 91) or (#Test_Code > 47 and #Test_Code < 58)
+      let $String_Out = $String_Out || Upper($Test_Char)
+      let $Found = 'Y'
+   end-if
+
+   if ($Found = 'N')
+      evaluate $Test_Char
+        when = 'é'
+        when = 'ê'
+        when = 'ë'
+        when = 'è'
+        when = 'É'
+        when = 'Ê'
+        when = 'Ë'
+        when = 'È'
+          let $Test_Char = 'E'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = 'á'
+        when = 'â'
+        when = 'ä'
+        when = 'à'
+        when = 'å'
+        when = 'ã'
+        when = 'Á'
+        when = 'Â'
+        when = 'Ä'
+        when = 'À'
+        when = 'Å'
+        when = 'Ã'
+          let $Test_Char = 'A'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+         when = 'ï'
+        when = 'î'
+        when = 'ì'
+        when = 'í'
+        when = 'Ï'
+        when = 'Î'
+        when = 'Ì'
+        when = 'Í'
+          let $Test_Char = 'I'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = 'ô'
+        when = 'ö'
+        when = 'ò'
+        when = 'Ö'
+        when = 'ó'
+        when = 'Ô'
+        when = 'Ö'
+        when = 'Ò'
+        when = 'Ö'
+        when = 'Ó'
+          let $Test_Char = 'O'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = 'ü'
+        when = 'û'
+        when = 'ù'
+        when = 'ú'
+        when = 'Ü'
+        when = 'Û'
+        when = 'Ù'
+        when = 'Ú'
+          let $Test_Char = 'U'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = 'ñ'
+        when = 'Ñ'
+          let $Test_Char = 'N'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = 'Ç'
+        when = 'ç'
+          let $Test_Char = 'C'
+          let $String_Out  = $String_Out || $Test_Char
+          break
+        when = ' '
+        when = '-'
+          let $String_Out  = $String_Out || $Test_Char
+        when-other
+          break
+      end-evaluate
+    end-if
+    add 1 To #I
+End-While
+Let $String_Out = Upper($String_Out)
+Let $String_Out = replace($String_Out, '  ', ' ')
+End-procedure CleanString
+
+!***************************************************************************
+Begin-Procedure Insert_RIO
+#debug show 'Procedure: Insert_RIO'
+!***************************************************************************
+Begin-SQL
+INSERT
+INTO PS_GPBR_DIRF_R_WRK
+    (
+        PROCESS_INSTANCE,
+        COMPANY,
+        EMPLID,
+        EMPL_RCD,
+        GPBR_NUM_LINES,
+        PIN_NUM        
+    )
+    VALUES
+    (
+        #prcs_process_instance,
+        $Company,
+        $Emplid,
+        #Empl_rcd,
+        #CntPin,
+        #PinNumT       
+    )
+End-SQL
+End-Procedure Insert_RIO
+
+!***************************************************************************
+Begin-Procedure Insert_INFPA
+#debug show 'Procedure: Insert_INFPA'
+!Populate temp table with alimony beneficiaries by employee to report INFPA
+!new register according to 2017 DIRF layout.
+!***************************************************************************
+Begin-SQL
+INSERT INTO PS_GPBR_INFPA_WRK
+(PROCESS_INSTANCE,
+ SEQ_NUM,
+ EMPLID,
+ DEPENDENT_BENEF,
+ BIRTHDATE_CHAR,
+ NATIONAL_ID,
+ NAME_DISPLAY,
+ GPBR_RECTYPE)
+SELECT
+#prcs_process_instance,
+#CntINFPA,
+A.EMPLID,
+A.DEPENDENT_BENEF,
+A.BIRTHDATE_CHAR,
+A.NATIONAL_ID,
+A.NAME_DISPLAY,
+A.GPBR_RECTYPE
+
+FROM PS_GPBR_INFPA_VW A
+
+WHERE A.EMPLID        = $Emplid
+  AND A.DEPENDENT_BENEF = $IDEmplDepend
+End-SQL
+
+!Populate temp table with alimony amounts received by beneficiaries of the
+!employee to report 'RTPA' register. According to DIRF 2017 layout, there must
+!be one 'RTPA' register for every 'INFPA' register summarizing the payment
+!amounts by month and dependent. For performance purposes, PS_GPBR_RTPA_WRK
+!has been made child record of PS_GPBR_INFPA_WRK and a summarization is done
+!by grouping the all the key fields excluding only SEQ_NUM field from the
+!grouping to print the 'RTPA' register.
+
+    Let #rtpa_amt = &Result * #Sign
+    Let $rtpa_amt = #rtpa_amt
+
+    If $rtpa_amt = ''
+       Let $rtpa_amt = '0'
+    End-if
+
+Evaluate #month
+  When = 1
+      Let $AlimonyAmtList =  $rtpa_amt || ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0'
+      Break
+  When = 2
+      Let $AlimonyAmtList =  '0, ' || $rtpa_amt || ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0'
+      Break
+  When = 3
+      Let $AlimonyAmtList =  '0, 0, ' || $rtpa_amt || ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0'
+      Break
+  When = 4
+      Let $AlimonyAmtList =  '0, 0, 0, ' || $rtpa_amt || ', 0, 0, 0, 0, 0, 0, 0, 0, 0'
+      Break
+  When = 5
+      Let $AlimonyAmtList =  '0, 0, 0, 0, ' || $rtpa_amt || ', 0, 0, 0, 0, 0, 0, 0, 0'
+      Break
+  When = 6
+      Let $AlimonyAmtList =  '0, 0, 0, 0, 0, ' || $rtpa_amt || ', 0, 0, 0, 0, 0, 0, 0'
+      Break
+  When = 7
+      Let $AlimonyAmtList =  '0, 0, 0, 0, 0, 0, ' || $rtpa_amt || ', 0, 0, 0, 0, 0, 0'
+      Break
+  When = 8
+      Let $AlimonyAmtList =  '0, 0, 0, 0, 0, 0, 0, ' || $rtpa_amt || ', 0, 0, 0, 0, 0'
+      Break
+  When = 9
+      Let $AlimonyAmtList =  '0, 0, 0, 0, 0, 0, 0, 0, ' || $rtpa_amt || ', 0, 0, 0, 0'
+      Break
+  When = 10
+      Let $AlimonyAmtList =  '0, 0, 0, 0, 0, 0, 0, 0, 0, ' || $rtpa_amt || ', 0, 0, 0'
+      Break
+  When = 11
+      Let $AlimonyAmtList =  '0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ' || $rtpa_amt || ', 0, 0'  
+      Break
+  When = 12
+      Let $AlimonyAmtList =  '0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ' || $rtpa_amt || ', 0'    
+      Break
+  When = 13
+      Let $AlimonyAmtList =  '0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ' || $rtpa_amt
+End-Evaluate
+
+
+Begin-SQL
+INSERT INTO PS_GPBR_RTPA_WRK
+(PROCESS_INSTANCE,
+ SEQ_NUM,
+ EMPLID,
+ DEPENDENT_BENEF,
+ GPBR_AMT_01,
+ GPBR_AMT_02,
+ GPBR_AMT_03,
+ GPBR_AMT_04,
+ GPBR_AMT_05,
+ GPBR_AMT_06,
+ GPBR_AMT_07,
+ GPBR_AMT_08,
+ GPBR_AMT_09,
+ GPBR_AMT_10,
+ GPBR_AMT_11,
+ GPBR_AMT_12,
+ GPBR_AMT_13)
+VALUES
+(
+#prcs_process_instance,
+#CntINFPA,
+$Emplid,
+$IDEmplDepend,
+[$AlimonyAmtList]
+)
+End-SQL
+
+#debug show '      $Emplid :' $Emplid
+#debug show '#IDEmplDepend :' #IDEmplDepend
+
+End-Procedure Insert_INFPA
+
+!***************************************************************************
+Begin-Procedure Write_INFPA
+#debug show 'Procedure: Write_INFPA'
+!***************************************************************************
+Begin-Select DISTINCT
+A.DEPENDENT_BENEF   &A.DEPENDENT_BENEF
+A.NATIONAL_ID       &A.NATIONAL_ID
+A.BIRTHDATE_CHAR    &A.BIRTHDATE_CHAR
+A.NAME_DISPLAY      &A.NAME_DISPLAY
+A.GPBR_RECTYPE      &A.GPBR_RECTYPE
+
+     Let $DependentBenef = &A.DEPENDENT_BENEF
+     Let $CPF            = Rtrim(&A.NATIONAL_ID, ' ')
+     Let $BirthDt        = Rtrim(&A.BIRTHDATE_CHAR, ' ')
+     Let $DependName     = Rtrim(&A.NAME_DISPLAY, ' ')
+     Let $DependRelation = Rtrim(&A.GPBR_RECTYPE, ' ')
+     
+     Do CleanString ($DependName, $DependName)
+   
+     Write 1 From 'INFPA'          '|' -
+                  $CPF             '|' -
+                  $BirthDt         '|' -
+                  $DependName      '|' -
+                  $DependRelation  '|'
+
+     Do Write_RTPA
+
+FROM PS_GPBR_INFPA_WRK A
+
+WHERE A.PROCESS_INSTANCE = #prcs_process_instance
+  AND A.EMPLID           = $Emplid
+
+ORDER BY A.NATIONAL_ID, A.BIRTHDATE_CHAR, A.NAME_DISPLAY
+End-Select
+
+End-Procedure Write_INFPA
+
+!***************************************************************************
+Begin-Procedure Write_RTPA
+#debug show 'Procedure: Write_RTPA'
+!***************************************************************************
+Begin-Select
+A.PROCESS_INSTANCE                                                  &RTPA.PROCESS_INSTANCE
+A.EMPLID                                                            &RTPA.EMPLID
+A.DEPENDENT_BENEF                                                   &RTPA.DEPENDENT_BENEF
+CASE WHEN SUM(A.GPBR_AMT_01) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_01) END &RTPA_Amt_01
+CASE WHEN SUM(A.GPBR_AMT_02) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_02) END &RTPA_Amt_02
+CASE WHEN SUM(A.GPBR_AMT_03) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_03) END &RTPA_Amt_03
+CASE WHEN SUM(A.GPBR_AMT_04) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_04) END &RTPA_Amt_04
+CASE WHEN SUM(A.GPBR_AMT_05) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_05) END &RTPA_Amt_05
+CASE WHEN SUM(A.GPBR_AMT_06) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_06) END &RTPA_Amt_06
+CASE WHEN SUM(A.GPBR_AMT_07) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_07) END &RTPA_Amt_07
+CASE WHEN SUM(A.GPBR_AMT_08) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_08) END &RTPA_Amt_08
+CASE WHEN SUM(A.GPBR_AMT_09) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_09) END &RTPA_Amt_09
+CASE WHEN SUM(A.GPBR_AMT_10) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_10) END &RTPA_Amt_10
+CASE WHEN SUM(A.GPBR_AMT_11) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_11) END &RTPA_Amt_11
+CASE WHEN SUM(A.GPBR_AMT_12) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_12) END &RTPA_Amt_12
+CASE WHEN SUM(A.GPBR_AMT_13) < 0 THEN 0 ELSE SUM(A.GPBR_AMT_13) END &RTPA_Amt_13
+
+     Let #RTPA_Val01  =  round(&RTPA_Amt_01 * 100, 0)
+     Let #RTPA_Val02  =  round(&RTPA_Amt_02 * 100, 0)
+     Let #RTPA_Val03  =  round(&RTPA_Amt_03 * 100, 0)
+     Let #RTPA_Val04  =  round(&RTPA_Amt_04 * 100, 0)
+     Let #RTPA_Val05  =  round(&RTPA_Amt_05 * 100, 0)
+     Let #RTPA_Val06  =  round(&RTPA_Amt_06 * 100, 0)
+     Let #RTPA_Val07  =  round(&RTPA_Amt_07 * 100, 0)
+     Let #RTPA_Val08  =  round(&RTPA_Amt_08 * 100, 0)
+     Let #RTPA_Val09  =  round(&RTPA_Amt_09 * 100, 0)
+     Let #RTPA_Val10  =  round(&RTPA_Amt_10 * 100, 0)
+     Let #RTPA_Val11  =  round(&RTPA_Amt_11 * 100, 0)
+     Let #RTPA_Val12  =  round(&RTPA_Amt_12 * 100, 0)
+     Let #RTPA_Val13  =  round(&RTPA_Amt_13 * 100, 0)
+
+     Move #RTPA_Val01 to $RTPA_Val01 B99999999999999
+     Move #RTPA_Val02 to $RTPA_Val02 B99999999999999
+     Move #RTPA_Val03 to $RTPA_Val03 B99999999999999
+     Move #RTPA_Val04 to $RTPA_Val04 B99999999999999
+     Move #RTPA_Val05 to $RTPA_Val05 B99999999999999
+     Move #RTPA_Val06 to $RTPA_Val06 B99999999999999
+     Move #RTPA_Val07 to $RTPA_Val07 B99999999999999
+     Move #RTPA_Val08 to $RTPA_Val08 B99999999999999
+     Move #RTPA_Val09 to $RTPA_Val09 B99999999999999
+     Move #RTPA_Val10 to $RTPA_Val10 B99999999999999
+     Move #RTPA_Val11 to $RTPA_Val11 B99999999999999
+     Move #RTPA_Val12 to $RTPA_Val12 B99999999999999
+     Move #RTPA_Val13 to $RTPA_Val13 B99999999999999
+
+     Let $RTPA_Val01 = ltrim($RTPA_Val01, ' ')
+     Let $RTPA_Val02 = ltrim($RTPA_Val02, ' ')
+     Let $RTPA_Val03 = ltrim($RTPA_Val03, ' ')
+     Let $RTPA_Val04 = ltrim($RTPA_Val04, ' ')
+     Let $RTPA_Val05 = ltrim($RTPA_Val05, ' ')
+     Let $RTPA_Val06 = ltrim($RTPA_Val06, ' ')
+     Let $RTPA_Val07 = ltrim($RTPA_Val07, ' ')
+     Let $RTPA_Val08 = ltrim($RTPA_Val08, ' ')
+     Let $RTPA_Val09 = ltrim($RTPA_Val09, ' ')
+     Let $RTPA_Val10 = ltrim($RTPA_Val10, ' ')
+     Let $RTPA_Val11 = ltrim($RTPA_Val11, ' ')
+     Let $RTPA_Val12 = ltrim($RTPA_Val12, ' ')
+     Let $RTPA_Val13 = ltrim($RTPA_Val13, ' ')
+
+     Write 1 From 'RTPA'       '|' -
+                  $RTPA_Val01  '|' -
+                  $RTPA_Val02  '|' -
+                  $RTPA_Val03  '|' -
+                  $RTPA_Val04  '|' -
+                  $RTPA_Val05  '|' -
+                  $RTPA_Val06  '|' -
+                  $RTPA_Val07  '|' -
+                  $RTPA_Val08  '|' -
+                  $RTPA_Val09  '|' -
+                  $RTPA_Val10  '|' -
+                  $RTPA_Val11  '|' -
+                  $RTPA_Val12  '|' -
+                  $RTPA_Val13  '|'
+
+FROM PS_GPBR_RTPA_WRK A
+
+WHERE A.PROCESS_INSTANCE = #prcs_process_instance
+  AND A.EMPLID           = $Emplid
+  AND A.DEPENDENT_BENEF  = $DependentBenef
+
+GROUP BY A.PROCESS_INSTANCE, A.EMPLID, A.DEPENDENT_BENEF
+End-Select
+
+End-Procedure Write_RTPA
+
+!***************************************************************************
+Begin-Procedure Insert_INFPC
+#debug show 'Procedure: Insert_INFPC'
+!Populate temp table with private pension plan by employee to report INFPC
+!new register according to 2017 DIRF layout.
+!***************************************************************************
+Begin-SQL
+INSERT INTO PS_GPBR_INFPC_WRK
+(PROCESS_INSTANCE,
+ SEQ_NUM,
+ EMPLID,
+ FAPI_CNPJ_BRA,
+ DESCR)
+SELECT DISTINCT
+#prcs_process_instance,
+#CntINFPC,
+WK.EMPLID,
+FA.FAPI_CNPJ_BRA,
+FA.DESCR
+
+FROM PS_GPBR_DIRF_WRK   WK,
+     PS_GP_SEG_GUIDE_WA WA,
+     PS_GP_RSLT_ERN_DED ED,
+     PS_GPBR_DIRF_DATA  DD,
+     PS_FAPI_PROV_BRA   FA
+
+WHERE PROCESS_INSTANCE  = #prcs_process_instance
+AND WK.EMPLID           = $Emplid
+AND DD.PIN_NUM         IN ([$SQLInStr])
+AND WK.EMPLID           = WA.EMPLID
+AND WK.EMPL_RCD         = WA.EMPL_RCD
+AND WK.CAL_RUN_ID       = WA.CAL_RUN_ID
+AND WK.CAL_ID           = WA.CAL_ID
+AND WA.ORIG_CAL_RUN_ID  = WA.CAL_RUN_ID
+AND WK.COMPANY          = WA.COMPANY
+AND WK.COMPANY          = $Company
+AND WK.PYMT_DT          >= $CalBeginDt1
+AND WK.PYMT_DT          <= $CalEndDt1
+AND ED.EMPLID            = WA.EMPLID
+AND ED.EMPL_RCD          = WA.EMPL_RCD
+AND ED.CAL_RUN_ID        = WA.CAL_RUN_ID
+AND ED.GP_PAYGROUP       = WA.GP_PAYGROUP
+AND ED.CAL_ID            = WA.CAL_ID
+AND ED.ORIG_CAL_RUN_ID   = WA.ORIG_CAL_RUN_ID
+AND ED.RSLT_SEG_NUM      = WA.RSLT_SEG_NUM
+AND DD.COMPANY           = WK.COMPANY
+AND DD.EFFDT             = (SELECT MAX(EFFDT)
+                            FROM PS_GPBR_DIRF_DATA
+                            WHERE COMPANY = DD.COMPANY
+                            AND EFFDT    <= WK.PYMT_DT)
+AND DD.GPBR_PAYROLL_TYPE = '10'
+AND DD.GPBR_SECTYPE_DIRF = 'PP'
+AND DD.PIN_NUM           = ED.PIN_NUM
+AND FA.FAPI_CD_BRA       = DD.FAPI_CD_BRA
+AND FA.EFFDT             = (SELECT MAX(EFFDT)
+                            FROM PS_FAPI_PROV_BRA
+                            WHERE FAPI_CD_BRA = FA.FAPI_CD_BRA)
+                            
+End-SQL
+
+#debug show '      $Emplid :' $Emplid
+#debug show '    $SQLInStr :' $SQLInStr
+
+End-Procedure Insert_INFPC
+
+!***************************************************************************
+Begin-Procedure Write_INFPC
+#debug show 'Procedure: Write_INFPC'
+!***************************************************************************
+Begin-Select DISTINCT
+A.FAPI_CNPJ_BRA     &A.FAPI_CNPJ_BRA
+A.DESCR             &A.DESCR
+
+     Let $FAPI_CNPJ  = Rtrim(&A.FAPI_CNPJ_BRA, ' ')
+     Let $Descr      = Rtrim(&A.DESCR, ' ')
+     
+     Do CleanString ($Descr, $Descr)
+   
+     Write 1 From 'INFPC'          '|' -
+                  $FAPI_CNPJ       '|' -
+                  $Descr           '|'
+
+FROM PS_GPBR_INFPC_WRK A
+
+WHERE A.PROCESS_INSTANCE = #prcs_process_instance
+  AND A.EMPLID           = $Emplid
+
+ORDER BY A.FAPI_CNPJ_BRA
+End-Select
+
+End-Procedure Write_INFPC
+
+!***************************************************************************
+Begin-Procedure Fill-BPFDEC-Alim-PrivPen-Flds
+#debug show 'Procedure: Fill-BPFDEC-Alim-PrivPen-Flds'
+!***************************************************************************
+
+!Set field 'Indicador de identificacao do alimentando' in 'BPFDEC' record 
+!based on the dependents information. If a 'INFPA' record is found for a
+!given Employee, the field will be populated with 'S', otherwise, 'N'.
+
+Let $BPFDECAlim = ' '
+
+#debug show ' $BPFDECAlim            : ' $BPFDECAlim
+#debug show ' $Emplid                : ' $Emplid
+#debug show ' $Company               : ' $Company
+#debug show ' $CalBeginDt1           : ' $CalBeginDt1
+#debug show ' $CalEndDt1             : ' $CalEndDt1
+#debug show ' $SQLInStr              : ' $SQLInStr
+#debug show ' $IDEmplType            : ' $IDEmplType
+#debug show ' #prcs_process_instance : ' #prcs_process_instance
+
+Let $PayrollCurr   = $PayrollType
+Let $XlatValueCurr = $XlatValue
+Let $SQLInStrCurr  = $SQLInStr
+Let $PayrollType   = '10'
+Let $XlatValue     = 'AP'
+Do FillPayrollArray
+Let $SQLInstrAP10  = $SQLInStr
+Let $PayrollType   = '10'
+Let $XlatValue     = 'PA'
+Do FillPayrollArray
+Let $SQLInstrPA10  = $SQLInStr
+Let $SQLInstrAP10  = Rtrim($SQLInstrAP10, ' ')
+Let $SQLInstrPA10  = Rtrim($SQLInstrPA10, ' ')
+Let $SQLInStr      = ' '
+If $SQLInstrAP10 <> ''
+   Let $SQLInStr   = $SQLInstrAP10
+End-If
+If $SQLInstrPA10 <> ''
+   Let $SQLInStr    = Rtrim($SQLInStr, ' ')
+   If $SQLInStr <> ''
+      Let $SQLInStr = $SQLInStr || ',' || $SQLInstrPA10
+   Else
+      Let $SQLInStr = $SQLInstrPA10
+   End-If
+End-If
+Let $SQLInStr      = Rtrim($SQLInStr, ' ')
+
+If $SQLInStr <> ''
+
+Begin-Select
+ALIM.NAME_DISPLAY
+
+    Let $BPFDECAlim = 'S'
+
+FROM PS_GP_SEG_GUIDE_WA PA_A,
+    PS_GP_PYE_PRC_STAT PA_B,
+    PS_GP_RSLT_ERN_DED PA_C,
+    PS_GPBR_DIRF_WRK PA_W1,
+    PS_GPBR_INFPA_VW ALIM
+
+WHERE PA_A.EMPLID             = $Emplid
+AND PA_A.COMPANY              = $Company
+AND PA_B.EMPLID               = PA_A.EMPLID
+AND PA_B.CAL_RUN_ID           = PA_A.CAL_RUN_ID
+AND PA_B.EMPL_RCD             = PA_A.EMPL_RCD
+AND PA_B.GP_PAYGROUP          = PA_A.GP_PAYGROUP
+AND PA_B.CAL_ID               = PA_A.CAL_ID
+AND PA_B.ORIG_CAL_RUN_ID      = PA_B.ORIG_CAL_RUN_ID
+AND PA_B.RSLT_REV_NUM         = 1
+AND PA_B.RSLT_VER_NUM         =
+    (SELECT MAX(PA_B2.RSLT_VER_NUM)
+    FROM PS_GP_PYE_PRC_STAT PA_B2
+    WHERE PA_B2.EMPLID        = PA_B.EMPLID
+    AND PA_B2.CAL_RUN_ID      = PA_B.CAL_RUN_ID
+    AND PA_B2.EMPL_RCD        = PA_B.EMPL_RCD
+    AND PA_B2.GP_PAYGROUP     = PA_B.GP_PAYGROUP
+    AND PA_B2.CAL_ID          = PA_B.CAL_ID
+    AND PA_B2.ORIG_CAL_RUN_ID = PA_B.ORIG_CAL_RUN_ID
+    AND PA_B2.RSLT_VER_NUM    = PA_B.RSLT_VER_NUM
+    )
+AND PA_B.PYMT_DT             >= $CalBeginDt1
+AND PA_B.PYMT_DT             <= $CalEndDt1
+AND PA_C.EMPLID               = PA_A.EMPLID
+AND PA_C.CAL_RUN_ID           = PA_A.CAL_RUN_ID
+AND PA_C.EMPL_RCD             = PA_A.EMPL_RCD
+AND PA_C.GP_PAYGROUP          = PA_A.GP_PAYGROUP
+AND PA_C.CAL_ID               = PA_A.CAL_ID
+AND PA_C.ORIG_CAL_RUN_ID      = PA_A.ORIG_CAL_RUN_ID
+AND PA_C.RSLT_SEG_NUM         = PA_A.RSLT_SEG_NUM
+AND PA_C.PIN_NUM             IN ([$SQLInStr])
+AND PA_W1.EMPLID              = PA_A.EMPLID
+AND PA_W1.EMPL_RCD            = PA_A.EMPL_RCD
+AND PA_W1.COMPANY             = PA_A.COMPANY
+AND PA_W1.PYMT_DT             = PA_B.PYMT_DT
+AND PA_W1.CAL_RUN_ID          = PA_B.CAL_RUN_ID
+AND PA_W1.RSLT_REV_NUM        = PA_B.RSLT_REV_NUM
+AND PA_W1.RSLT_VER_NUM        = PA_B.RSLT_VER_NUM
+AND PA_W1.CAL_ID              = PA_B.CAL_ID
+AND PA_W1.RSLT_SEG_NUM        = PA_C.RSLT_SEG_NUM
+AND PA_W1.GPBR_LEG_EMPL_TYPE  = $IDEmplType
+AND PA_W1.PROCESS_INSTANCE    = #prcs_process_instance
+AND ALIM.EMPLID               = PA_A.EMPLID
+AND ALIM.DEPENDENT_BENEF      = PA_C.USER_FLD2
+End-Select
+
+End-If
+
+! Restore original values.
+Let $PayrollType   = $PayrollCurr
+Let $XlatValue     = $XlatValueCurr
+Let $SQLInStr      = $SQLInStrCurr
+
+If $BPFDECAlim = ' '
+   Let $BPFDECAlim = 'N'
+End-if
+#debug show ' $BPFDECAlim : ' $BPFDECAlim
+
+!Set field 'Indicador de identificacao da previdencia complementar' in 'BPFDEC' 
+!record based on the private pension information. If a 'INFPC' record is found 
+!for a given Employee, the field will be populated with 'S', otherwise, 'N'.
+
+Let $BPFDECPrevPriv = ' '
+
+#debug show ' $BPFDECPrevPriv        : ' $BPFDECPrevPriv
+#debug show ' #prcs_process_instance : ' #prcs_process_instance
+#debug show ' $Emplid                : ' $Emplid
+#debug show ' $Company               : ' $Company
+#debug show ' $CalBeginDt1           : ' $CalBeginDt1
+#debug show ' $CalEndDt1             : ' $CalEndDt1
+
+Let $PayrollCurr   = $PayrollType
+Let $XlatValueCurr = $XlatValue
+Let $SQLInStrCurr  = $SQLInStr
+Let $PayrollType   = '10'
+Let $XlatValue     = 'PP'
+Do FillPayrollArray
+Let $SQLInstrPP10  = $SQLInStr
+Let $SQLInstrPP10  = Rtrim($SQLInstrPP10, ' ')
+
+If $SQLInstrPP10 <> ''
+
+Begin-Select DISTINCT
+PP_FA.FAPI_CNPJ_BRA
+
+    Let $BPFDECPrevPriv = 'S'
+
+FROM PS_GPBR_DIRF_WRK   PP_WK,
+     PS_GP_SEG_GUIDE_WA PP_WA,
+     PS_GP_RSLT_ERN_DED PP_ED,
+     PS_GPBR_DIRF_DATA  PP_DD,
+     PS_FAPI_PROV_BRA   PP_FA
+
+WHERE PROCESS_INSTANCE      = #prcs_process_instance
+AND PP_WK.EMPLID            = $Emplid
+AND PP_DD.PIN_NUM          IN ([$SQLInstrPP10])
+AND PP_WK.EMPLID            = PP_WA.EMPLID
+AND PP_WK.EMPL_RCD          = PP_WA.EMPL_RCD
+AND PP_WK.CAL_RUN_ID        = PP_WA.CAL_RUN_ID
+AND PP_WK.CAL_ID            = PP_WA.CAL_ID
+AND PP_WA.ORIG_CAL_RUN_ID   = PP_WA.CAL_RUN_ID
+AND PP_WK.COMPANY           = PP_WA.COMPANY
+AND PP_WK.COMPANY           = $Company
+AND PP_WK.PYMT_DT          >= $CalBeginDt1
+AND PP_WK.PYMT_DT          <= $CalEndDt1
+AND PP_ED.EMPLID            = PP_WA.EMPLID
+AND PP_ED.EMPL_RCD          = PP_WA.EMPL_RCD
+AND PP_ED.CAL_RUN_ID        = PP_WA.CAL_RUN_ID
+AND PP_ED.GP_PAYGROUP       = PP_WA.GP_PAYGROUP
+AND PP_ED.CAL_ID            = PP_WA.CAL_ID
+AND PP_ED.ORIG_CAL_RUN_ID   = PP_WA.ORIG_CAL_RUN_ID
+AND PP_ED.RSLT_SEG_NUM      = PP_WA.RSLT_SEG_NUM
+AND PP_DD.COMPANY           = PP_WK.COMPANY
+AND PP_DD.EFFDT             = (SELECT MAX(EFFDT)
+                               FROM PS_GPBR_DIRF_DATA
+                               WHERE COMPANY = PP_DD.COMPANY
+                               AND EFFDT    <= PP_WK.PYMT_DT)
+AND PP_DD.GPBR_PAYROLL_TYPE = '10'
+AND PP_DD.GPBR_SECTYPE_DIRF = 'PP'
+AND PP_DD.PIN_NUM           = PP_ED.PIN_NUM
+AND PP_FA.FAPI_CD_BRA       = PP_DD.FAPI_CD_BRA
+AND PP_FA.EFFDT             = (SELECT MAX(EFFDT)
+                               FROM PS_FAPI_PROV_BRA
+                               WHERE FAPI_CD_BRA = PP_FA.FAPI_CD_BRA)
+End-Select
+
+End-If
+
+! Restore original values.
+Let $PayrollType   = $PayrollCurr
+Let $XlatValue     = $XlatValueCurr
+Let $SQLInStr      = $SQLInStrCurr
+
+If $BPFDECPrevPriv = ' '
+   Let $BPFDECPrevPriv = 'N'
+End-If
+#debug show ' $BPFDECPrevPriv : ' $BPFDECPrevPriv
+
+End-Procedure Fill-BPFDEC-Alim-PrivPen-Flds
+
+!***************************************************************************
+#include 'stdapi.sqc'    !Update Process API
+#include 'prcsapi.sqc'   !Process API
+#include 'datemath.sqc'  !Routines for date
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'sqrtrans.sqc'
+#include 'number.sqc'
+#include 'getcodta.sqc'  !Get selected fields from Company Table
+#include 'brfile01.sqc'  !File Utilities
+!***************************************************************************

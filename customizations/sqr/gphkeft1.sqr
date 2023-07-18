@@ -1,0 +1,329 @@
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/18:03:44:30                        
+!       $Release:  HR92                                       
+!      $Revision:  103                                        
+!                                                                      *
+!***********************************************************************
+!
+!***********************************************************************
+!                                                                      *
+! Global Payroll       Release 8                                       *
+!***********************************************************************
+
+!***********************************************************************
+!                                                                      *
+!  This SQR generates the Net Payments Report                          *
+!                                                                      *
+!  The user has several the option of generating a summary or detail   *
+!  report.                                                             *
+!                                                                      *
+!***********************************************************************
+!XXX    : SN : Data Retrieval SQL is incorrect when referencing the    *
+!XXX    :    : max(RSLT_SEG_NUM). There is no join for emplid and other*
+!       :    : key fields. In detail Report                            *
+!***********************************************************************
+
+#include 'setenv.sqc'   !Set environment
+#include 'setup32.sqc'  !page layout and printer definition
+#include 'number.sqc'   !Routines to format numbers
+#include 'datetime.sqc' !Routines for date and time formatting
+#include 'prcsapi.sqc'  !Replaces stdapi.sqc
+!
+#define ColR   155
+begin-report
+
+#IFDEF DEBUGA
+ lET $PRCS_OPRID = 'PS'
+ LET $PRCS_RUN_CNTL_ID = '1'
+#ENDIF
+        do Init-Processing
+        Do Stdapi-Init
+        do Get-Parameters
+        do Process-PE
+        do Reset                        ! called from reset.sqc
+        do Delete-RunControl
+        Do Stdapi-Term
+end-report
+!
+!***********************************************************************
+! Init-Processing                                                      *
+!***********************************************************************
+begin-procedure Init-Processing
+        do Init-Datetime
+        do Get-Current-Datetime
+        do Init-Report
+        do Define-Prcs-Vars
+!        do Get-Language-Codes
+end-procedure ! Init-Processing
+!
+!***********************************************************************
+! Init-Report                                                          *
+!***********************************************************************
+begin-procedure Init-Report
+
+#define Col1   1
+#define Col2   14
+#define Col3   27
+#define Col4   37
+#define Col5   87
+#define Col6   105
+
+    Let $ReportID = 'GPHKEFT1'
+
+    Let $Curr_Language_Cd = 'ENG'
+
+    do Init_Report_Translation ($ReportID, $curr_language_cd)
+
+    do Get_Field_Information ($ReportID, 'HKID'            , $HKID_Title,    #DW)
+    do Get_Field_Information ($ReportID, 'EMPLID'          , $EMPLID_Title,  #DW)
+    do Get_Field_Information ($ReportID, 'EMPL_RCD'        , $ERCD_Title,    #DW)
+    do Get_Field_Information ($ReportID, 'NAME'            , $NAME_Title,    #DW)
+    do Get_Field_Information ($ReportID, 'GP_AMT'          , $AMT_Title,     #DW)
+    do Get_Field_Information ($ReportID, 'MODE_OF_TRANSFER', $Mode_Title,    #DW)
+
+end-procedure ! Init-Report
+
+!***************************
+!***************************
+Begin-Procedure Print-Heading
+
+#Include 'stdhdg01.sqc'
+
+  Let #DL = {Colr} +25
+  print  '-'  (+1,1,#DL)  fill
+  print 'Calendar Group ID : ' (+1,1)
+  print $Cal_Run_ID            (0,23)
+  print 'Payment Date      : ' (+1,1)
+  print $PaymentDt             (0,23) ! edit 'DD/MM/YYYY'
+  print 'Pay Entity        : ' (+1,1)
+  Print $PayEntity             (0,23)
+  print  '-'                   (+1,1,#DL)  fill
+
+  Let #LC = 13
+
+  print $HKID_Title   (+1,{Col1})
+  print $EMPLID_Title (0,{Col2})
+  print $ERCD_Title   (0,{Col3})
+  print $NAME_Title   (0,{Col4})
+  Let #AmtTitle = {Col5} + 8
+  print $AMT_Title    (0,#AmtTitle)
+  print $Mode_Title   (0,{Col6})
+  print  '-'          (+1,1,#DL)  fill
+
+End-Procedure
+!
+!***********************************************************************
+! Get-Parameters                                                    *
+!***********************************************************************
+begin-procedure Get-Parameters
+Begin-SELECT
+RC.CAL_RUN_ID
+RC.PAYMENT_DT
+RC.GPHK_REPORT_LVL
+     Let $Cal_Run_ID = &RC.CAL_RUN_ID
+     Let $PaymentDt  = &RC.PAYMENT_DT
+     let $ReportLvl  = &RC.GPHK_REPORT_LVL
+
+     if rtrim($PaymentDt,' ') <> ''
+        Do Format-DateTime($PaymentDt, $PaymentDt, {DEFDATE},'','')
+     End-If
+
+  FROM PS_GPHK_EFT_RUNCTL RC
+    WHERE RC.OPRID         = $PRCS_OPRID
+        AND RC.RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+End-SELECT
+
+end-procedure ! Get-Parameters
+!
+!***********************************************************************
+! Process-PE                                                           *
+!***********************************************************************
+begin-procedure Process-PE
+   Let #PageNo = 1
+BEGIN-SELECT DISTINCT
+A.PAY_ENTITY
+   Let $PayEntity = &A.PAY_ENTITY
+
+   IF $ReportLvl = '1' ! Detail Report
+      Let $ReportTitle = 'Net Payments Report - Detailed'
+      Let $Print = 'Y'
+      Do Detail-Report
+      Add 2 to #LC
+      Print 'Total Records : ' (+2,1)
+      Print #TotRows         (0,20) edit '9999999999999999'
+      Let #LC = #LC + 1
+      Print 'Total Amount  : ' (+1,1)
+      Print #PAmount           (0,20) edit '9999999999999.99'
+   Else
+      Let $Print = 'N'
+      Let $ReportTitle = 'Net Payments Report - Summary'
+      Do Detail-Report
+      Do Print-Heading
+      Add 2 to #LC
+      Print 'Total Records : ' (+2,1)
+      Print #TotRows         (0,20) edit '9999999999999999'
+      Let #LC = #LC + 1
+      Print 'Total Amount  : ' (+1,1)
+      Print #PAmount           (0,20) edit '9999999999999.99'
+      new-page
+   End-if
+
+   FROM PS_GP_CAL_RUN_DTL A,
+        PS_GP_PAYMENT B
+ WHERE A.CAL_RUN_ID = B.CAL_RUN_ID
+  AND A.PAY_ENTITY = B.PAY_ENTITY
+  AND A.GP_PAYGROUP = B.GP_PAYGROUP
+  AND A.CAL_ID = B.CAL_ID
+  AND A.CAL_RUN_ID = $Cal_Run_ID
+  AND A.CALC_TYPE  = 'P'
+UNION
+SELECT
+PE.PAY_ENTITY
+   FROM PS_GP_CAL_RUN_OFF A,
+        PS_GP_PAYMENT B,
+        PS_GP_PYENT PE
+ WHERE A.CAL_RUN_ID = B.CAL_RUN_ID
+  AND A.GP_PAYGROUP = B.GP_PAYGROUP
+  AND A.CAL_RUN_ID = $Cal_Run_ID
+  AND B.PAY_ENTITY = PE.PAY_ENTITY
+End-SELECT
+End-Procedure ! Process-PE
+!
+!***********************************************************************
+! Detail-Report                                                        *
+!***********************************************************************
+begin-procedure Detail-Report
+   Let #TotRows = 0
+   Let #PAmount = 0
+   Let #LC = 65
+
+BEGIN-SELECT
+SUM(G.GP_PMT_AMT)  &Amount
+G.EMPLID
+G.EMPL_RCD
+G.PAYMENT_MTHD
+
+    Let $Emplid  = &G.EMPLID
+    Let $EmplRcd = &G.EMPL_RCD
+    Let $PayMthd = &G.PAYMENT_MTHD
+    Let #Amount  = &Amount
+
+    if $Print =  'Y'
+       let $FieldName = 'PAYMENT_MTHD'
+       let $FieldValue = $PayMthd
+       do Read-Translate-Table
+
+       Do Get-HK-ID
+       Do Get-Name
+       Do Print-Values
+    end-if
+
+    Add 1 to #TotRows
+    Add #Amount to #PAmount
+
+    FROM PS_GP_PAYMENT G
+    WHERE G.CAL_RUN_ID = $Cal_Run_ID
+      AND G.PAY_ENTITY = $PayEntity
+      AND G.PMT_TYPE   = '01'
+GROUP BY G.EMPLID, G.EMPL_RCD, G.PAYMENT_MTHD
+END-SELECT
+end-procedure ! Process-Main
+!
+!***********************************************************************
+! Get-HK-ID
+!***********************************************************************
+Begin-Procedure Get-HK-ID
+    Let $HK_ID = ''
+Begin-SELECT
+N.NATIONAL_ID
+    Let $HK_ID = rtrim(&N.NATIONAL_ID,' ')
+    if length($HK_ID) = 8
+       Let $HK_ID = ' ' || $HK_ID
+    End-if
+   FROM PS_GPHK_EE_NID_VW N
+  WHERE EMPLID = $Emplid
+End-SELECT
+end-procedure !
+!
+!***********************************************************************
+! Get-Name
+!***********************************************************************
+Begin-Procedure Get-Name
+Begin-SELECT
+A.NAME
+     Let $Name = &A.NAME
+   FROM PS_NAMES A
+  WHERE A.EMPLID = $Emplid
+    AND A.NAME_TYPE = 'PRI'
+End-SELECt
+End-Procedure
+!
+!***********************************************************************
+! Print-Values
+!***********************************************************************
+Begin-procedure Print-Values
+   if #LC > 50
+      if #PageNo > 1
+         new-page
+      end-if
+      Do Print-Heading
+      Add 1 to #PageNo
+   End-if
+   if rtrim($HK_ID,' ') <> ''
+      Print $HK_ID    (#LC,{Col1})  edit 'XXXXXXXX(X)'
+   end-if
+   Print $Emplid   (#LC,{Col2})
+   Print $EmplRcd  (#LC,{Col3})  edit '99'
+   Print $Name     (#LC,{Col4})
+   Print #Amount   (#LC,{Col5})     edit '999999999999.99'
+   Print $XlatLongName (#LC,{Col6})
+   Let #LC = #LC + 1
+End-Procedure
+!
+!***********************************************************************
+! Delete-RunControl                                                    *
+!***********************************************************************
+begin-procedure Delete-RunControl
+begin-SQL
+DELETE FROM PS_GPHK_EFT_RUNCTL
+    WHERE OPRID         = $PRCS_OPRID
+        AND RUN_CNTL_ID = $PRCS_RUN_CNTL_ID;
+end-SQL
+
+begin-SQL
+DELETE FROM PS_GPHK_RCP_RUNCTL
+    WHERE OPRID         = $PRCS_OPRID
+        AND RUN_CNTL_ID = $PRCS_RUN_CNTL_ID;
+end-SQL
+end-procedure ! Delete-RunControl
+!
+#include 'datemath.sqc'     ! Date conversion procedures
+#include 'sqrtrans.sqc'     ! Translate SQR strings to given language
+#include 'prcslng.sqc'      ! Replaces getrplng.sqc
+#include 'readxlat.sqc'     ! Procedure to read values from xlattable
+#include 'reset.sqc'        ! Reset printer procedure
+#include 'stdapi.sqc'   ! routines for process scheduler manipulation.
+

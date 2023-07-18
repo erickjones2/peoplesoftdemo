@@ -1,0 +1,3241 @@
+!***********************************************************************
+!  GPCHAL10:  Pay Advice - Verdienstnachweis                     *
+!***********************************************************************
+!                                                  *
+!                                                  *
+!                                                               *
+! This software and related documentation are provided under a  *
+! license agreement containing restrictions on use and          *
+! disclosure and are protected by intellectual property         *
+! laws. Except as expressly permitted in your license agreement *
+! or allowed by law, you may not use, copy, reproduce,          *
+! translate, broadcast, modify, license, transmit, distribute,  *
+! exhibit, perform, publish or display any part, in any form or *
+! by any means. Reverse engineering, disassembly, or            *
+! decompilation of this software, unless required by law for    *
+! interoperability, is prohibited.                              *
+! The information contained herein is subject to change without *
+! notice and is not warranted to be error-free. If you find any *
+! errors, please report them to us in writing.                  *
+!                                                               *
+!
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.       *
+! All Rights Reserved.                                          *
+!----------------------------------------------------------------------
+!
+!       $Release:  HR92                                                !
+!           $Bug:  31253748                                            !
+!                                                  *
+!***********************************************************************
+
+#include 'setenv.sqc'    ! set Default environment
+#include 'gpchut10.sqc'  ! setenv override for Swiss Default.
+#include 'gpchut12.sqc'  ! Substitution Variables Defined.
+
+#define PAGE_PAPER_SIZE   (A4)
+#define PAPER_SIZE   (A4)
+#define PAGE_ORIENTATION PORTRAIT
+#define LINE_HEIGHT 14
+#define CHAR_WIDTH 4.32
+#define BOTTOM_MARGIN 0.001
+#define TOP_MARGIN    0.1
+#define RIGHT_MARGIN  .05
+#define Pay_Mess_Array_Size 100
+
+#include 'setup31.sqc'
+!************************************************
+
+begin-Program
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Layout
+  do Init-Report
+ if $MultiPayslip <> 'Y'
+  do Process-Main
+  do GP-ePay-Control                       ! if ePay installed have a control row inserted.
+  do Delete_AL101_Tmp
+  do Delete_AL102_Tmp
+  do Delete_AL103_Tmp
+ end-if 
+  do Stdapi-Term
+  do Get-Log
+end-Program
+
+!************************************************
+begin-procedure Init-Report
+  move 'GPCHAL10' to $ReportID
+  move 'GPCHAL01' to $ReportID1
+  move $TITLE1 to $ReportTitle
+
+  do Stdapi-Init
+  do Security-Param
+
+  if $prcs_process_instance = ''
+    do Ask-Report-Parameters            !in Gpchut03.SQC
+  else
+    do Get-Report-Parameters            !in Gpchut06.SQC
+    do Process-Get-Values
+    do GP-ePay-Init                     ! Initialize ePay Variables
+  end-if
+
+
+  do Get_Type_Options($Name_Type,$Addr_Type,$Phone_Type,$Email_Type,$BirthName_Type,$Security_Type)
+
+  if $Security_Type = 'N'
+    let $Record_Security    = ''
+    let $Security_Where     = ''
+    let $Security_Where1    = ''
+    let $SecurityClause     = ''
+    let $Security_Effdt     = ''
+    let $Security_Effdt1    = ''
+  else
+    let $Record_Security    = ', PS_GPCH_RP_FAST_VW SCRTY'
+    let $Security_Where     = 'AND SCRTY.OPRID = ''' || $prcs_oprid || ''' AND PS.EMPLID = SCRTY.EMPLID AND PS.EMPL_RCD = SCRTY.EMPL_RCD'
+    let $Security_Where1    = 'AND SCRTY.OPRID = ''' || $prcs_oprid || ''' AND A.EMPLID = SCRTY.EMPLID AND A.EMPL_RCD = SCRTY.EMPL_RCD'
+    let $SecurityClause     = $SecurityClause
+    let $Security_Effdt     = 'AND SCRTY.EFFDT = (select max(SCRTY1.EFFDT) from PS_GPCH_RP_FAST_VW SCRTY1
+                                                  where SCRTY.EMPLID = SCRTY1.EMPLID
+                                                  and SCRTY.EMPL_RCD = SCRTY1.EMPL_RCD
+                                                  and SCRTY1.OPRID = SCRTY.OPRID
+                                                  and SCRTY1.EFFDT <= B.GPCH_AL_CPAY_ENDDT )'
+    let $Security_Effdt1     = 'AND SCRTY.EFFDT = (select max(SCRTY1.EFFDT) from PS_GPCH_RP_FAST_VW SCRTY1
+                                                   where SCRTY.EMPLID = SCRTY1.EMPLID
+                                                   and SCRTY.EMPL_RCD = SCRTY1.EMPL_RCD
+                                                   and SCRTY1.OPRID = SCRTY.OPRID
+                                                   and SCRTY1.EFFDT <= PS.GPCH_AL_CPAY_ENDDT )'
+  end-if
+
+  do Overide_Cu_Security
+
+
+  let #pos  = instr($sqr-program,'gpchal10',0)
+  let #pos  = #pos - 1
+  let $path = substr($sqr-program,1,#pos)
+  let $FileDir = $path || 'gpchal10.jpg'
+
+  #ifdef MVS
+     let #pos  = instr($sqr-program,'gpchal10',0)
+     let #pos  = #pos - 1
+     let $path = substr($sqr-program,1,#pos)
+     let $FileDir = $path || 'GPCHAL10)'
+  #end-if
+
+  #ifdef OS390
+     let #pos  = instr($sqr-program,'gpchal10',0)
+     let #pos  = #pos - 1
+     let $path = substr($sqr-program,1,#pos)
+     let $FileDir = $path || 'GPCHAL10)'
+  #end-if
+
+  #ifdef OS400
+     let #pos  = instr($sqr-program,'gpchal10',0)
+     let #pos  = #pos - 1
+     let $path = substr($sqr-program,1,#pos)
+     let $FileDir = $path || 'GPCHAL10)'
+  #end-if
+
+  #ifdef UNIX
+     let $FileDir = $path || 'gpchal10.jpg'
+  #end-if
+
+  #debug show 'File Directory:' $FileDir
+  
+
+  if $MultiPayslip = 'Y'
+
+    do Generate_Multiple_Payslip
+
+  else
+
+    do Security-Param
+    
+!FMB 20100907
+    !sps let $language_cd = 'GER'
+  
+    if $ApplyContextLanguage = 'Y'
+       let $language_cd = ''
+    end-if
+  
+    if $language_cd <> ''
+       do Get-Language ($ReportID1, $language_cd)
+    end-if
+
+    let $Cal_Run_Id_Crit_Chk  = ltrim($Cal_Run_Id_Crit_PS,' ')
+    If $Cal_Run_Id_Crit_Chk <>''
+       do Get-Data
+    else
+       DISPLAY '****************PAYSLIPS******************************'
+       DISPLAY ''
+       DISPLAY 'For this Current Pay End date there is no calendar group found.'
+       DISPLAY 'Please enter correct Pay End date or please run the payroll for this Pay End date.'
+       DISPLAY '******************************************************'
+    end-if
+
+  end-if
+end-procedure
+!************************************************
+begin-procedure Get-Values
+
+  let $PR_Pay_Entity  = rtrim(&GPCH_RUN_CNTL.PAY_ENTITY,' ')
+  let $language_cd    = rtrim($PRCS_LANGUAGE_CD,' ')
+  let $ApplyContextLanguage = rtrim(&GPCH_RUN_CNTL.GPCH_CONTEXT_LANG,' ')
+!FMB 20100907
+  !sps let $language_cd = 'GER'
+  let $Print_Vacation = rtrim(&GPCH_RUN_CNTL.GPCH_RC_PRN_COMP,' ')
+  let $Rgen_Interface = rtrim(&GPCH_RUN_CNTL.GPCH_RC_CLOSE_OPT,' ')
+  let $Final_Per      = rtrim(&GPCH_RUN_CNTL.GPCH_RC_FINAL_PR,' ')
+  if($Final_Per = '')
+    let $Final_Per = 'N'
+  end-if
+  let $Print_Opt      = rtrim(&GPCH_RUN_CNTL.GPCH_RC_LST_OPTION,' ')
+  let $ctl_print_dttm = RTRIM(ltrim(&GPCH_RUN_CNTL.GPCH_AL_PRINT_DTTM,' '),' ')
+  let $Sort1        = rtrim(&GPCH_RUN_CNTL.GPCH_RC_AL01_S1,' ')
+  let $Sort2          = rtrim(&GPCH_RUN_CNTL.GPCH_RC_AL01_S2,' ')
+  let $Sort3          = rtrim(&GPCH_RUN_CNTL.GPCH_RC_AL01_S3,' ')
+
+end-procedure
+!************************************************
+Begin-Procedure Process-Get-Values
+
+     Do Append-Log ('Emplid_Criteria_PS :',$Emplid_Criteria_PS)
+     Do Append-Log ('PayEntity_Crit_PS  :',$PayEntity_Crit_PS)
+     Do Append-Log ('Paygroup_Crit_PS   :',$Paygroup_Crit_PS)
+     Do Append-Log ('Dept_Crit_PS       :',$Dept_Crit_PS)
+     Do Append-Log ('Location_Crit_PS   :',$Location_Crit_PS)
+     Do Append-Log ('Print Vacation     :',$Print_Vacation)
+     Do Append-Log ('Print per Employee :',$Rgen_Interface)
+     Do Append-Log ('Final Period       :',$Final_Per)
+     Do Append-Log ('Print Option       :',$Print_Opt)
+
+
+     do Convert-to-DTU-DATE($Ctl_Curr_Pay_End_Dt,$DTU_end_dt)
+     do Dtu-Month-Begin($DTU_end_dt,$DTU_monthbegin)
+     do Convert-From-DTU-DATE($DTU_monthbegin,$Rpt_Start_Dt)
+
+     do Convert-to-DTU-DATE($Ctl_Curr_Pay_End_Dt,$DTU_end_dt)
+     do dtu-month-end($DTU_end_dt,$DTU_monthend)
+     do Convert-From-DTU-DATE($DTU_monthend,$Rpt_End_Dt)
+
+     #debug show ' From Month: '   $Rpt_Start_Dt  ' To : '  $Rpt_End_Dt
+     !---------------------------------------------------------------------
+     let $COMPRESS_ADD='N'
+
+     if rtrim ($Sort1 || $Sort2 || $Sort3, ' ') <> ''
+
+     let $Sort_Order = 'ORDER BY '
+
+     if rtrim ($Sort1, ' ') <> ''
+         concat $Sort1 with $Sort_Order
+     end-if
+
+     if (rtrim ($Sort2, ' ') <> '' and rtrim($Sort1, ' ') <>'')
+        concat ',' with $Sort_Order
+        concat $Sort2 with $Sort_Order
+     else
+        concat $Sort2 with $Sort_Order
+     end-if
+
+     if (rtrim ($Sort3, ' ') <> '' and (rtrim($Sort1, ' ') <>'' or rtrim($Sort2, ' ') <>''))
+         concat ',' with $Sort_Order
+         concat $Sort3 with $Sort_Order
+     else
+         concat $Sort3 with $Sort_Order
+     end-if
+     end-if
+     #Debug Show 'Sort Order : ' $Sort_Order
+     !--------------------------------------------------------------------
+     let $begin_time = datenow()
+
+
+     !do Get_Pin_Description
+     do Append-Log($LG_PINNM , $CURRENCY )
+
+     let $Company_Dt = $Ctl_Curr_Pay_End_Dt
+     do Get-PayEntity-Company
+
+End-Procedure Process-Get-Values
+!************************************************
+Begin-Procedure Get-Language($ReportID1, $language_cd)
+
+  do Init_Report_Translation ($ReportID1, $language_cd)
+  do Append_Report_Translation ('GPCHGLOB')
+  do Append_Report_Translation ('GPCHTX06')
+  do Gpce_Init_Report_Translation ($ReportID1, $language_cd)
+  do Gpce_Append_Report_Translation ('GPCHGLOB', $language_cd)
+  do Gpce_Append_Report_Translation ('GPCHTX06', $language_cd)
+  do Report-Translation
+
+end-procedure
+!************************************************
+Begin-Procedure Report-Translation
+
+  do Get_Field_Information ('GPCHAL01', 'TITLE',       $TITLE1,     #CW)
+  do Get_Field_Information ('GPCHAL01', 'CURRMTH',     $CURRMTH,    #CW)
+  do Get_Field_Information ('GPCHAL01', 'PAGE',        $PAGE,       #CW)
+  do Get_Field_Information ('GPCHAL01', 'HIREDT',      $HIREDT,     #CW)
+  do Get_Field_Information ('GPCHAL01', 'TERMDT',      $TERMDT,     #CW)
+  do Get_Field_Information ('GPCHAL01', 'BIRTHDT',     $BIRTHDT,    #CW)
+
+  do Get_Field_Information ('GPCHAL01', 'PAYMT',       $PAYMT,      #CW)
+  do Get_Field_Information ('GPCHAL01', 'LOC',         $LOC,        #CW)
+  do Get_Field_Information ('GPCHAL01', 'COSTCENTER',  $COSTCENTER, #CW)
+  do Get_Field_Information ('GPCHAL01', 'DEPT',        $DEPT,       #CW)
+
+  do Get_Field_Information ('GPCHAL01', 'ACCNO',       $ACCNO,     #CW)
+  do Get_Field_Information ('GPCHAL01', 'VACATION',    $VACATION,  #CW)
+  do Get_Field_Information ('GPCHAL01', 'BALPY',       $BALPY,     #CW)
+  do Get_Field_Information ('GPCHAL01', 'ENTIT',       $ENTIT,     #CW)
+  do Get_Field_Information ('GPCHAL01', 'TAKEN',       $TAKEN,     #CW)
+  do Get_Field_Information ('GPCHAL01', 'BAL',         $ABSBAL,    #CW)
+  do Get_Field_Information ('GPCHAL01', 'HOLI_PER',    $HOLI_PER,  #CW)
+  do Get_Field_Information ('GPCHAL01', 'VACA_PER',    $VACA_PER,  #CW)
+  do Get_Field_Information ('GPCHAL01', 'CURRENCY',    $CURRENCY,  #CW)
+
+  do Get_Field_Information ('GPCHAL01', 'HOUR',       $HOUR,      #CW)
+  do Get_Field_Information ('GPCHAL01', 'FACTOR',     $FACTOR,    #CW)
+  do Get_Field_Information ('GPCHAL01', 'PERCENT',    $PERCENT,   #CW)
+  do Get_Field_Information ('GPCHAL01', 'BASE',       $BASE,      #CW)
+  do Get_Field_Information ('GPCHAL01', 'AMOUNT',     $AMOUNT,    #CW)
+  do Get_Field_Information ('GPCHAL01', 'SUM',        $SUM,       #CW)
+  do Get_Field_Information ('GPCHAL01', 'YRSUM',      $YRSUM,     #CW)
+
+  do Get_Field_Information ('GPCHAL01', 'BLOHN',       $BLOHN,      #CW)
+  do Get_Field_Information ('GPCHAL01', 'UVLOHN',      $UVLOHN,     #CW)
+  do Get_Field_Information ('GPCHAL01', 'NLOHN',       $NLOHN,      #CW)
+  do Get_Field_Information ('GPCHAL01', 'UVBEITRAG',   $UVBEITRAG,  #CW)
+  do Get_Field_Information ('GPCHAL01', 'AHVLOHN',     $AHVLOHN,    #CW)
+  do Get_Field_Information ('GPCHAL01', 'ALV1LOHN',    $ALV1LOHN,   #CW)
+  do Get_Field_Information ('GPCHAL01', 'ALV2LOHN',    $ALV2LOHN,   #CW)
+  do Get_Field_Information ('GPCHAL01', 'YRSUM',       $YRSUM,      #CW)
+  do Get_Field_Information ('GPCHAL01', 'AHVBEITRAG',  $AHVBEITRAG, #CW)
+  do Get_Field_Information ('GPCHAL01', 'ALV1BEITRAG', $ALV1BEITRAG,#CW)
+  do Get_Field_Information ('GPCHAL01', 'ALV2BEITRAG', $ALV2BEITRAG,#CW)
+  do Get_Field_Information ('GPCHAL01', 'HD_ANNVAL',   $HD_ANNVAL,  #CW)
+
+  do Get_Field_Information ('GPCHAL01', 'TELEPONE',  $TELEPHONE,#CW)
+  do Get_Field_Information ('GPCHAL01', 'TELEFAX',   $TELEFAX,  #CW)
+  do Get_Field_Information ('GPCHAL01', 'PREVMON',   $PREVMONTH,#CW)
+  do Get_Field_Information ('GPCHAL01', 'TRANSFER',  $TRANSFER, #CW)
+  do Get_Field_Information ('GPCHAL01', 'VALID',     $VALID,    #CW)
+
+  do Get_Field_Information ('GPCHGLOB', 'HD_MR',       $HD_MR ,     #CW)
+  do Get_Field_Information ('GPCHGLOB', 'HD_MRS',      $HD_MRS,     #CW)
+  do Get_Field_Information ('GPCHGLOB', 'HD_FROM',     $HD_FROM,    #CW)
+  do Get_Field_Information ('GPCHGLOB', 'HD_PAYGROUP', $HD_PAYGROUP,#CW)
+  do Get_Field_Information ('GPCHGLOB', 'EMPLID',      $HD_EMPLID,  #CW)
+  do Get_Field_Information ('GPCHGLOB', 'PRINTCLASS',  $PRINTCLASS, #CW)
+  do Get_Field_Information ('GPCHGLOB', 'PYENT',       $PYENT,      #CW)
+
+  do Get_Field_Information ('GPCHGLOB', 'LG_BDTTIME',      $LG_BDTTIME,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_DBNAME',       $LG_DBNAME,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_DBTYPE',       $LG_DBTYPE,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_EDTTIME',      $LG_EDTTIME,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_OPERID',       $LG_OPERID,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_OPERSYS',      $LG_OPERSYS,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_OUTDESTFOR',   $LG_OUTDESTFOR,   #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_OUTDESTTYPE',  $LG_OUTDESTTYPE,  #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PRCINSTNUM',   $LG_PRCINSTNUM,   #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PRCNM',        $LG_PRCNM,        #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PRCTYPE',      $LG_PRCTYPE,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_REPLNG',       $LG_REPLNG,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_REPNM',        $LG_REPNM,        #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_RUNCTLID',     $LG_RUNCTLID,     #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_RUNLOC',       $LG_RUNLOC,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_RUNSTAT',      $LG_RUNSTAT,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_TOTDURA',      $LG_TOTDURA,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_CURRDT',       $LG_CURRDT,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_SRTORD',       $LG_SRTORD,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PAYENT',       $LG_PAYENT,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PSTYPE',       $LG_PSTYPE,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_RUNCTLPA',     $LG_RUNCTLPA,     #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_VALUE',        $LG_VALUE,        #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_REPLOG',       $LG_REPLOG,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_LOGITEM',      $LG_LOGITEM,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PINNM',        $LG_PINNM,        #CW)
+  do Get_Field_Information ('GPCHGLOB', 'HD_CASH',         $HD_CASH,         #CW)
+  do Get_Field_Information ('GPCHGLOB', 'HD_CHEQUE',       $HD_CHEQUE,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'HD_POSTAL',       $HD_POSTAL,       #CW)
+
+
+  do Get_Field_Information ('GPCHTX06', 'JAN',         $JAN,     #CW)
+  do Get_Field_Information ('GPCHTX06', 'FEB',         $FEB,     #CW)
+  do Get_Field_Information ('GPCHTX06', 'MAR',         $MAR,     #CW)
+  do Get_Field_Information ('GPCHTX06', 'APR',         $APR,     #CW)
+  do Get_Field_Information ('GPCHTX06', 'MAY',         $MAY,     #CW)
+  do Get_Field_Information ('GPCHTX06', 'JUN',         $JUN,     #CW)
+  do Get_Field_Information ('GPCHTX06', 'JUL',         $JUL,     #CW)
+  do Get_Field_Information ('GPCHTX06', 'AUG',         $AUG,     #CW)
+  do Get_Field_Information ('GPCHTX06', 'SEP',         $SEP,     #CW)
+  do Get_Field_Information ('GPCHTX06', 'OCT',         $OCT,     #CW)
+  do Get_Field_Information ('GPCHTX06', 'NOV',         $NOV,     #CW)
+  do Get_Field_Information ('GPCHTX06', 'DEC',         $DEC,     #CW)
+
+end-Procedure Report-Translation
+
+!****************************************************************************
+begin-procedure Init-Layout
+
+!**columns for fixed header
+
+   #define col0  5
+   #define col1  5
+   #define col10 63
+   #define col12 77
+   #define col13 84
+   #define col14 105
+
+!**columns for variable body
+
+   #define colv0 5
+   #define colv3 53    !Unit
+   #define colv4 75    !Rate
+   #define colv6 76    !Base
+   #define colv7 87    !Calc
+   #define colv8 105   !Sum
+   #define colv9 118   !Curr
+
+!**columns for variable body header
+
+   #define colhv3 53    !Unit
+   #define colhv4 61    !Rate
+   #define colhv5 75    !Percent
+   #define colhv7 97    !Calc
+   #define colhv8 115  !Sum
+
+
+!**columns for fixed footer
+
+   #define colf0 5
+   #define colf2 16
+   #define colf3 31
+   #define colf4 46
+   #define colf41 92
+   #define colf42 112
+   #define colf5 61
+   #define colf6 61
+   #define colf7 76
+   #define colf8 102
+
+
+end-procedure
+
+!************************************************
+begin-heading  24
+
+  if $foot = 'NO'
+    goto noheader
+  end-if
+
+  alter-printer
+  point-size = 12
+  font= 3
+
+  if $FileDir <> ''
+       print-image (2,{col1})
+       Type       = jpeg-file
+       Image-Size = (20,2)
+       source     = $FileDir
+  end-if
+
+!******print personal data****************
+print $PH_Tit            (11,{col1})
+print $PH_Nam            (+1,{col1})
+print $PH_PAd2           (+1,{col1})
+print $PH_PAd3           (+1,{col1})
+print $PH_PAd31          (+1,{col1})
+print $PH_PAd4           (+1,{col1})
+print $PH_PAd5           (+1,{col1})
+
+!******print Company data****************
+  alter-printer
+  point-size = 11
+  font= 3
+print $PH_Ent            (10,{col13})
+print $PH_CAd2           (+1,{col13})
+print $PH_CAd3           (+1,{col13})
+if $PH_CAd31 <> ''
+      print $PH_CAd31      (+1,{col13})
+end-if
+print $PH_Tel            (+1,{col13})
+print $PH_Fax            (+1,{col13})
+print $PH_Otr            (+1,{col13})
+
+!******print Vacation data****************
+  alter-printer
+  point-size = 12
+  font= 3
+if $Prin_Vac <> 'N'
+      print $PH_BDes     (+3,{col13})
+      print $PH_BVal     (0,{colhv8})
+      print $PH_NDes     (+1,{col13})
+      print $PH_NVal     (0,{colhv8})
+      print $PH_TDes     (+1,{col13})
+      print $PH_TVal     (0,{colhv8})
+      print $PH_BaDes      (+1,{col13})
+      print $PH_BaVal      (0,{colhv8})
+end-if
+
+!*****print EMPLID*******************
+print $PH_ID             (20,{col1})
+
+!*****print Report Title*******************
+print $PH_R_Tit          (23,{col1}) bold
+print '_'                (23,{colv0},72) FILL  bold
+
+!*****print page number*******************
+
+print $PH_Page      (23,111)
+print #page-count   (23,122)  edit 99
+
+!*****print Labels *******************
+print $PH_Col2           (24,{colhv3}) bold
+print $PH_Col3           (24,{colhv5}) bold
+print $PH_Col4           (24,{colhv7}) bold
+print $PH_Col5           (24,{colhv8}) bold
+
+  noheader:
+
+end-heading
+
+!**************************************************
+begin-footing  5
+
+  alter-printer
+  point-size = 12
+  font= 3
+
+
+ print $PF_Prev                (1,{colv0})
+ print '_'                     (1,{colv0},72) FILL  bold
+ print $PF_Trans               (2,{colf0})  bold
+ print $PF_Valid               (2,{colf6})  bold
+
+
+ print $PF_BNK_Dt              (2,{colf7}) bold
+ print $PF_BNK_Tot             (2,{colv8}) bold
+
+
+ print $PF_Trans_R31           (3,{colf0})
+ print $PF_Valid_R31           (3,{colf3})
+ print $PF_BNK_DT_R31          (3,{colf7})
+ print $PF_BNK_TOT_R31         (3,{colv8})
+
+
+ print $PF_Trans_R32           (4,{colf0})
+ print $PF_Valid_R32           (4,{colf3})
+ print $PF_BNK_DT_R32          (4,{colf7})
+ print $PF_BNK_TOT_R32         (4,{colv8})
+
+  print $print_ctl_dt           (4,{colf41})
+  print $print_ctl_tm           (4,{colf42})
+  
+  let #PayslipPageCount=#page-count
+  
+end-footing
+
+!**************************************************
+Begin-Procedure Check-Currency-Elements
+#DEBUG show '-> Check-Currency-Elements'
+
+ let $Curr_Elem='N'
+begin-SELECT on-error=give_warning
+AB.CURRENCY_CD
+ let $Curr_Elem='Y'
+FROM PS_GPCH_RC_CURRCD AB
+WHERE AB.OPRID       = $prcs_oprid
+AND   AB.RUN_CNTL_ID = $prcs_run_cntl_id
+End-Select
+
+#DEBUG show '-> Check-Currency-Elements'
+End-Procedure  Check-Currency-Elements
+ !**************************************************
+begin-procedure Process-Main
+#DEBUG show '-> Process-Main' $SecurityClause
+   !do check-mob-ePay-enabled ('CHE',$GPmobepay_check) 
+   if $Print_Opt = '0'
+      goto End_Process_Main
+   end-if
+
+   if $Final_Per = 'Y'
+      goto End_Process_Main_End
+   end-if
+
+   let $Cal_Run_Id_Crit_Chk  = ltrim($Cal_Run_Id_Crit_PS,' ')
+       if $Cal_Run_Id_Crit_Chk = ''
+         goto End_Process_Main_End
+   end-if
+
+   do Get_Pin_Description
+   do Get-Percent-Print-Design
+   do Check-Currency-Elements
+   do Get-Bank-Data
+   do Get-Payslip-Messages
+!**This is the outer loop that processes all employees
+!**that need a pay advice.
+
+   let $IntEmplid    = ' '
+   let $Old_Company  = ' '
+   let $first        = 'Y'
+
+   let #Gen_Empl_Count = 0
+   let $old_lang_cd    = 'XYZ'    ! Initialize the vaiable to XYZ
+
+begin-SELECT DISTINCT on-error=give_warning
+#ifdef ORACLE
+/*+ INDEX(PS PS_GPCH_RP_0001)*/
+#endif
+PS.EMPLID
+PS.EMPL_RCD
+PS.GPCH_AL_CPAY_ENDDT
+PS.PRD_BGN_DT
+PS.PRD_END_DT
+PS.SEG_BGN_DT
+PS.SEG_END_DT
+PS.PAY_ENTITY
+PS.LOCATION
+PS.COMPANY
+PS.DEPTID
+PS.GP_PAYGROUP
+PS.CAL_ID
+!PS.RSLT_SEG_NUM
+PS.SLICE_BGN_DT
+PS.SLICE_END_DT
+PS.TERMINATION_DT
+PS.CURRENCY_CD
+PS.CAL_RUN_ID
+PS.HIRE_DT
+PS.LANG_CD
+PS.SEX
+EE.GP_CALC_TS
+#ifdef ORACLE
+TO_CHAR(EE.GP_CALC_TS,'DD-MON-YYYY_HH:MI:SS_AM')     &Ora_date
+#endif
+PS.BIRTHDATE
+
+
+  let $lang_cd = rtrim(&PS.LANG_CD,' ')
+  
+  !FMB 20100907
+  !sps let $lang_cd = 'GER'
+  if $lang_cd = ''
+         let $lang_cd = $BASE_LANG
+  end-if
+
+  !Get-Language takes about 2 seconds per EmplID. So execute only if there is a Language change
+  !if $old_lang_cd <> $lang_cd
+  if $language_cd <> ''
+     if $old_lang_cd <> $language_cd
+        do Get-Language ($ReportID1, $language_cd)
+     end-if
+  else
+      if $old_lang_cd <> $lang_cd
+         do Get-Language ($ReportID1, $lang_cd)
+      end-if
+  end-if
+
+
+   let $EmplId = &PS.EMPLID
+
+
+   do Format-Number (&PS.EMPL_RCD, $Empl_Rcd_Num, '999')
+   let $Empl_Rcd_Num = ltrim($Empl_Rcd_Num,' ')
+   move &PS.EMPL_RCD to #Empl_Rcd
+
+  !let $RET_PRD_END_DT      = &PS.PRD_END_DT
+  let $Cal_Curr_Pay_End_Dt = &PS.GPCH_AL_CPAY_ENDDT
+  let $Ctl_Cal_Run_Id      = &PS.CAL_RUN_ID
+  let $MSLP_CAL_ID         =&PS.CAL_ID
+  let $PSLP_PRD_BGN_DT      = &PS.PRD_BGN_DT
+  let $PSLP_PRD_END_DT      = &PS.PRD_END_DT
+  let $PSLP_SLICE_BGN_DT      = &PS.SLICE_BGN_DT
+  let $PSLP_SLICE_END_DT      = &PS.SLICE_END_DT
+  let $PSLP_SEG_BGN_DT      = &PS.SEG_BGN_DT
+  let $PSLP_SEG_END_DT      = &PS.SEG_END_DT
+  !--------------------------------------------------------------------Job
+
+  let $PayEntity  = rtrim(&PS.PAY_ENTITY,' ')
+  let $Paygrp     = rtrim(&PS.GP_PAYGROUP,' ')
+  let $Deptid     = rtrim(&PS.DEPTID,' ')
+  let $Location   = rtrim(&PS.LOCATION, ' ')
+  let $Company    = rtrim(&PS.COMPANY, ' ')
+  
+  
+     
+ ! if $MultiPayslip <> 'Y' AND $GPmobepay_check= 'Y' and $Ctl_Cal_Run_Id <> $mplsp_cal_run_id
+  if $MultiPayslip <> 'Y' AND $Ctl_Cal_Run_Id <> $mplsp_cal_run_id
+  do init-mpslp($Ctl_Cal_Run_Id)
+  do check-mob-ePay-enabled ('CHE',$GPmobepay_check) 
+  let $mplsp_cal_run_id= $Ctl_Cal_Run_Id
+  end-if
+  
+  #ifdef ORACLE
+    let $GP_CALC_TS = &Ora_date
+  #else
+    let $GP_CALC_TS = &EE.GP_CALC_TS
+  #endif
+
+   if $Old_Company <> $Company
+      do Get-Company-Address-Array($Company,$Cpline1,$Cpline2,$Cpline3,$Cpline31,$Cpline4,$Cpline5,$Cpline6,
+                        $Cpdescr,$Cpdescrshrt,$Cpcity,$Cpstate,$Cppostal,$Busn_Phone,$Fax_Phone,$Otr_Phone)
+   end-if
+
+  ! To be used for footer (Sammler)
+  !let $Slice_End_Dt    = &PS.SLICE_END_DT
+  !let #Rslt_Seg_Num    = &PS.RSLT_SEG_NUM
+  !let $Cal_Id        = &PS.CAL_ID
+
+  do Format-DateTime(&PS.TERMINATION_DT, $out, {DEFDATE}, '', '')
+  let $Employment_Termination_Dt = $out
+  !--------------------------------------------------------------------Currency
+  let $Empl_Curr     = &PS.CURRENCY_CD
+
+  !$Empl_Curr  Default currency in which the Employee is processed.
+  !$Rpt_Cur    The currency in which the Report wants to Run : From Run Control.
+  ! If not same convert the default curr to prefered cur value
+
+  !#DEBUG SHOW 'Empl Curr : ' $Empl_Curr 'Run Control Curr : '  $Rpt_Cur
+
+  if $Empl_Curr <> $Rpt_Cur
+     do Get-Currency-Rate($BaseCurr,$Rpt_Cur,$BaseRtType,$Cal_Curr_Pay_End_Dt,'F',#CurrRate)
+  else
+     let #CurrRate = 1
+  end-if
+
+  !------------------------------------------------------------------set global variables:
+
+
+   let $glob_p_sex               = rtrim(&PS.SEX,' ')
+   let $glob_p_birthdate         = &PS.BIRTHDATE
+   let $glob_p_orig_hire_dt      = &PS.HIRE_DT
+
+
+   !let $glob_mt_addr           = '02'
+   let $AL_AL01_PRINT          = 'Y'
+
+      do Get-AL-EMPLMT-1
+
+
+  !----------------------------------------------------------------------Procedure Para
+
+  if  ($EmplId <> $IntEmplid)              !To Execute these procedures once for each employee
+     if $Print_Opt = '1' or $Print_Opt = '2'
+            do Get-Print-Pin-Info-For-Emp         ! Fetching Pin Data
+            do Gen-Message                        ! Generate Messages
+
+            do Get-Sammler                        ! Getting the footer Year to Date values for each Employee
+            do Gen_Foot_Inf_Per_Employee
+
+            do Gen_Head_Inf_Per_Employee
+
+            do Let-Long-String
+     end-if
+
+     do Get-Interface-Options
+  end-if
+
+  if  ($EmplId = $IntEmplid) and (#Empl_Rcd <> #IntEmpl_Rcd) !To Execute these procedures once for each employee
+     if $Print_Opt = '1' or $Print_Opt = '2'
+            do Get-Print-Pin-Info-For-Emp         ! Fetching Pin Data
+            do Gen-Message                        ! Generate Messages
+
+            do Get-Sammler                        ! Getting the footer Year to Date values for each Employee
+            do Gen_Foot_Inf_Per_Employee
+
+            do Gen_Head_Inf_Per_Employee
+
+            do Let-Long-String
+     end-if
+     do Get-Interface-Options
+  end-if
+ 
+   let $IntEmplid   = $Emplid
+   let #IntEmpl_Rcd = #Empl_Rcd
+   let $first     = 'N'
+   let $Old_Company = $Company
+   let $old_lang_cd = $lang_cd    ! Assign the current Language code
+   
+FROM PS_GPCH_RP_0001   PS
+   , PS_GPCHAL103_TMP  EE
+WHERE PS.EMPLID           = EE.EMPLID
+AND   PS.EMPL_RCD         = EE.EMPL_RCD
+AND   EE.PROCESS_INSTANCE = #prcs_process_instance
+[$Cal_Run_Id_Crit_PS]
+[$Cal_Id_Crit_PS]
+ORDER BY PS.LANG_CD, PS.EMPLID
+end-SELECT
+
+#DEBUG SHOW 'Security Clause : ' $SecurityClause
+
+    let $reportend_time = datenow()
+
+      let $Tot_Empl_Count = to_char(#Tot_Empl_Count)
+      let $Gen_Empl_Count = to_char(#Gen_Empl_Count)
+
+      if $Rgen_Interface = 'N'
+         do Delete_AL103_Tmp
+         do Get-Print-Emplids
+         do Delete_Extra_Emplid_ONL
+      end-if
+
+
+  do Get_Field_Information ('GPCHGLOB', 'RUN_DATE'  , $stdhdg_run_dt , #dummy_width)
+  do Get_Field_Information ('GPCHGLOB', 'RUN_TIME'  , $stdhdg_run_tm , #dummy_width)
+
+
+
+      if $ctl_print_dttm = 'Y'
+           let $print_ctl_dt = $ReportDate
+           let $print_ctl_tm = $ReportTime
+      else
+           let $print_ctl_dt = ''
+           let $print_ctl_tm = ''
+      end-if
+
+
+
+ End_Process_Main:
+ 
+ if $Print_Opt <> '1'
+    do Print-Report
+ end-if
+ Do Append-Log ('Report Begin & SQC Begin   '   , $begin_time)
+ Do Append-Log ('SQC End & Processing Begin '   , $end_time )
+ Do Append-Log ('Processing & Report End    '   , $reportend_time)
+ Do Append-Log(' ',' ')
+ Do Append-Log('----------------------------- ' , '------------------------------' )
+ Do Append-Log ('Actual generated Employees  '  ,  $Gen_Empl_Count)
+ Do Append-Log('----------------------------- ' , '------------------------------' )
+
+ End_Process_Main_End:
+
+#DEBUG show 'Sort_Order:' $Sort_Order
+#DEBUG show '<- Process-Main'
+end-procedure
+
+!******************************************************************************************
+Begin-procedure Print-Report
+
+begin-SELECT DISTINCT on-error=give_warning
+PBD.EMPLID
+PBD.EMPL_RCD
+PBD.LOCATION
+PBD.COMPANY
+PBD.DEPTID
+PBD.GP_PAYGROUP
+PD.NAME
+
+      let $Prn_Emplid  = &PBD.EMPLID
+      let #Prn_Emplrcd = &PBD.EMPL_RCD
+      let $Prn_Paygrp  = &PBD.GP_PAYGROUP
+      let $Prn_Deptid  = &PBD.DEPTID
+
+      do Print-Report-Main
+      do GP-ePay-Guide
+      
+FROM PS_GPCH_RP_0001   PBD
+   , {Record_Person}   PD
+   , PS_GPCHAL103_TMP  EE
+WHERE PBD.EMPLID           = EE.EMPLID
+AND   PBD.EMPL_RCD         = EE.EMPL_RCD
+AND   PD.EMPLID            = EE.EMPLID
+AND   EE.PROCESS_INSTANCE  = #prcs_process_instance
+AND   PBD.SEG_END_DT = ( SELECT MAX(PBD1.SEG_END_DT) from PS_GPCH_RP_0001 PBD1
+WHERE PBD.EMPLID           = PBD1.EMPLID
+   AND PBD.CAL_RUN_ID      = PBD1.CAL_RUN_ID
+   AND PBD.EMPL_RCD        = PBD1.EMPL_RCD
+   AND PBD.GP_PAYGROUP     = PBD1.GP_PAYGROUP
+   AND PBD.CAL_ID          = PBD1.CAL_ID
+   AND PBD.ORIG_CAL_RUN_ID = PBD1.ORIG_CAL_RUN_ID )
+[$Cal_Run_Id_Crit]
+[$Cal_Id_Crit]
+[$Sort_Order]
+end-SELECT
+
+End-Procedure Print-Report
+
+
+!******************************************************************************************
+
+Begin-procedure Print-Report-Main
+
+begin-SELECT on-error=give_warning
+PSA.EMPLID
+PSA.EMPL_RCD
+PSA.GPCH_RP_AL1_DATA
+{DATETIMEOUT-PREFIX}PSA.GPCH_AL_CPAY_ENDDT{DATETIMEOUT-SUFFIX}                &seg_bgn_dt
+{DATETIMEOUT-PREFIX}PSA.GPCH_AL_CPAY_ENDDT{DATETIMEOUT-SUFFIX}                &seg_end_dt
+{DATETIMEOUT-PREFIX}PSA.GPCH_AL_CPAY_ENDDT{DATETIMEOUT-SUFFIX}                &pymt_dt
+{DATETIMEOUT-PREFIX}PSA.GPCH_AL_CPAY_ENDDT{DATETIMEOUT-SUFFIX}                &PRD_END_DT
+PSA.GPCH_AL_CPAY_ENDDT                                                        &Normal_date
+
+   let $NewEmployee = rtrim(&PSA.EMPLID,' ') || to_char(&PSA.EMPL_RCD)
+
+
+   if isnull(&PSA.GPCH_RP_AL1_DATA)
+      let $PayData = 'NULLD'
+   else
+      let $PayData = &PSA.GPCH_RP_AL1_DATA
+      print $NewEmployee () on-break level = 1 After=New-Employee Print=Never
+   end-if
+
+
+      if $Print_Opt <> '1' and $PayData <> 'NULLD'
+         do Split-LongStr
+      end-if
+
+FROM PS_GPCH_RP_AL10ONL PSA ,
+     PS_GPCHAL103_TMP PS
+WHERE PSA.EMPLID            = PS.EMPLID
+AND   PSA.EMPL_RCD          = PS.EMPL_RCD
+AND   NOT EXISTS            (SELECT 'X' FROM PS_GPCH_AL_EMPLMT SS
+                             WHERE PSA.EMPLID            = SS.EMPLID
+                             AND   PSA.EMPL_RCD          = SS.EMPL_RCD
+                             AND   PSA.COMPANY           = SS.COMPANY
+                             AND   SS.GPCH_AL_AL01_PRINT = 'N'
+                             AND   SS.EFFDT = (SELECT MAX(EFFDT) FROM PS_GPCH_AL_EMPLMT SS2
+                                               WHERE SS.EMPLID  = SS2.EMPLID
+                                               AND   SS2.EFFDT <= $Ctl_Curr_Pay_End_Dt))
+AND   PS.PROCESS_INSTANCE   = #prcs_process_instance
+AND   PSA.EMPLID            = $Prn_Emplid
+AND   PSA.EMPL_RCD          = #Prn_Emplrcd
+[$Cal_Run_Id_Crit_PSA]
+[$PayEntity_Crit_PSA]
+End-Select
+
+End-Procedure Print-Report-Main
+!******************************************************************************************
+Begin-procedure Generate_Multiple_Payslip
+#Debug Show '-> Generate_Multiple_Payslip'
+
+LET $Emplid_selected = 'N'
+
+begin-SELECT on-error=give_warning
+A.EMPLID                 &A.EMPLID
+A.EMPL_RCD               &A.EMPL_RCD
+A.GPCH_RP_AL1_DATA       &A.GPCH_RP_AL1_DATA
+A.GPCH_AL_CPAY_ENDDT     &A.GPCH_AL_CPAY_ENDDT
+B.GPCH_RC_LST_OPTION
+   let $Print_Opt      = rtrim(&B.GPCH_RC_LST_OPTION,' ')
+   let $NewEmployee = rtrim(&A.EMPLID,' ') || to_char(&A.EMPL_RCD) || &A.GPCH_AL_CPAY_ENDDT
+
+   LET $Emplid_selected = 'Y'
+   if isnull(&A.GPCH_RP_AL1_DATA)
+      let $PayData = 'NULLD'
+   else
+      let $PayData = &A.GPCH_RP_AL1_DATA
+      print $NewEmployee () on-break level = 1 After=New-Employee
+                            Print=Never
+   end-if
+
+
+   if $Print_Opt <> '1' and $Print_Opt <> '2' and $PayData <> 'NULLD'
+        do Split-LongStr
+     end-if
+
+
+FROM PS_GPCH_RP_AL10ONL A, PS_GPCH_RC_PAYROLL B, PS_GPCH_RC_EMPLID C [$Record_Security]
+WHERE A.EMPLID = C.EMPLID AND (A.PAY_ENTITY = B.PAY_ENTITY
+                               OR B.PAY_ENTITY = ' ')
+AND A.GPCH_AL_CPAY_ENDDT <= B.GPCH_AL_CPAY_ENDDT
+AND A.GPCH_AL_CPAY_ENDDT >= B.GPCH_RC_FROM_DT
+
+AND   NOT EXISTS            (SELECT 'X' FROM PS_GPCH_AL_EMPLMT SS
+                             WHERE A.EMPLID            = SS.EMPLID
+                             AND   A.EMPL_RCD          = SS.EMPL_RCD
+                             AND   A.COMPANY           = SS.COMPANY
+                             AND   SS.GPCH_AL_AL01_PRINT = 'N'
+                             AND   SS.EFFDT = (SELECT MAX(EFFDT) FROM
+                             PS_GPCH_AL_EMPLMT SS2
+                             WHERE SS.EMPLID  = SS2.EMPLID
+                             AND   SS2.EFFDT <= B.GPCH_AL_CPAY_ENDDT))
+AND B.OPRID = C.OPRID
+AND B.RUN_CNTL_ID = C.RUN_CNTL_ID
+AND B.OPRID       = $prcs_oprid
+AND B.RUN_CNTL_ID = $prcs_run_cntl_id
+
+!AND A.EMPLID    = SCRTY.EMPLID
+[$Security_Where1]
+!AND SCRTY.OPRID = $prcs_oprid
+[$SecurityClause]
+[$Security_Effdt]
+!AND (SCRTY.ROWSECCLASS = 'HCDPALL' or SCRTY.ROWSECCLASS = 'HCDPCHE')
+End-Select
+DISPLAY '**************** MULTIPLE PAYSLIPS********************'
+DISPLAY ''
+if  $Emplid_selected = 'N'
+DISPLAY 'For Multiple Payslips, at least one Employee should be selected.'
+DISPLAY 'Please enter EMPLID in the Payslip Generation Page.'
+DISPLAY '******************************************************'
+END-IF
+
+#Debug Show '-> Generate_Multiple_Payslip'
+
+End-Procedure Generate_Multiple_Payslip
+!*********************************************************************************
+
+begin-procedure Get-Percent-Print-Design
+#Debug Show '-> Get-Percent-Print-Design  '
+
+create-array name=perdesign size=50
+  field=PINNUM:number
+
+  let #perdsgn = 0
+
+begin-SELECT on-error=give_warning
+PC.PIN_MBR_NUM
+
+    let #Pin_Mbr_Num = &PC.PIN_MBR_NUM
+    put #Pin_Mbr_Num INTO perdesign(#perdsgn) PINNUM
+    let #perdsgn = #perdsgn + 1
+
+FROM PS_GP_ACM_MBR PC,PS_GP_PIN PCM
+WHERE PCM.PIN_NUM = PC.PIN_NUM
+AND   (PCM.PIN_NM  = 'CH_RP_2DEC' OR PCM.PIN_NM  = 'CH_RP_C2DEC')
+End-Select
+
+#Debug Show '-> Get-Percent-Print-Design '
+end-procedure Get-Percent-Print-Design
+
+!*************************************************************************
+begin-procedure Check-Percent-Print-Design(:$Print_Mask)
+#Debug Show '-> Check-Percent-Print-Design  '  #_perdsgn
+
+  let #pi = 0
+While #pi < #_perdsgn
+
+  get #Pin_Mbr   from perdesign(#pi)PINNUM
+
+  if  #_Pin_Num = #Pin_Mbr
+      let $Print_Mask = '999.99'
+  end-if
+
+  Add 1 to #pi
+
+End-While
+
+#Debug Show '<- Check-Percent-Print-Design '
+end-procedure Check-Percent-Print-Design
+!*************************************************************************
+begin-procedure Get_PaySlip_Pin_Descr
+#DEBUG show '-> Get_PaySlip_Pin_Descr  '
+
+      Lookup Get_Base_Pin_Descr #Pin_Num $Return_Val
+      if Not Isnull ($Return_Val)
+        Unstring $Return_Val by ';' into $Pin_Nm $Pin_Descr
+        let $Pin_Descr         =  rtrim($Pin_Descr,' ')
+        let $Pin_Nm          =  rtrim($Pin_Nm,' ')
+      end-if
+
+      if ($BASE_LANG <> $language_cd) and ($language_cd <> '')
+         Lookup Get_Trans_Pin_Descr #Pin_Num $Return_Val
+         if Not Isnull ($Return_Val)  ! Only if value returned else base language is printed.
+          Unstring $Return_Val by ';' into $Pin_Nm $Pin_Descr
+          let $Pin_Descr         =  rtrim($Pin_Descr,' ')
+          let $Pin_Nm          =  rtrim($Pin_Nm,' ')
+         end-if
+      end-if
+
+      if ($BASE_LANG <> $language_cd) and ($language_cd = '')
+
+         if $lang_cd = 'GER'
+          Lookup Get_Trans_Pin_Descr_GER #Pin_Num $Return_Val
+          if Not Isnull ($Return_Val)  ! Only if value returned else base language is printed.
+             Unstring $Return_Val by ';' into $Pin_Nm $Pin_Descr
+             let $Pin_Descr         =  rtrim($Pin_Descr,' ')
+             let $Pin_Nm          =  rtrim($Pin_Nm,' ')
+          end-if
+         end-if
+
+
+         if $lang_cd = 'FRA'
+          Lookup Get_Trans_Pin_Descr_FRA #Pin_Num $Return_Val
+          if Not Isnull ($Return_Val)  ! Only if value returned else base language is printed.
+             Unstring $Return_Val by ';' into $Pin_Nm $Pin_Descr
+             let $Pin_Descr         =  rtrim($Pin_Descr,' ')
+             let $Pin_Nm          =  rtrim($Pin_Nm,' ')
+          end-if
+         end-if
+
+
+         if $lang_cd = 'ITA'
+          Lookup Get_Trans_Pin_Descr_ITA #Pin_Num $Return_Val
+          if Not Isnull ($Return_Val)  ! Only if value returned else base language is printed.
+             Unstring $Return_Val by ';' into $Pin_Nm $Pin_Descr
+             let $Pin_Descr         =  rtrim($Pin_Descr,' ')
+             let $Pin_Nm          =  rtrim($Pin_Nm,' ')
+          end-if
+         end-if
+
+         if $lang_cd = 'ENG'
+          Lookup Get_Trans_Pin_Descr_ENG #Pin_Num $Return_Val
+          if Not Isnull ($Return_Val)  ! Only if value returned else base language is printed.
+             Unstring $Return_Val by ';' into $Pin_Nm $Pin_Descr
+             let $Pin_Descr         =  rtrim($Pin_Descr,' ')
+             let $Pin_Nm          =  rtrim($Pin_Nm,' ')
+          end-if
+         end-if
+
+         #Debug show 'No language ' $EmplId ' , ' $lang_cd ' , ' $Pin_Descr ' , ' $Pin_Nm
+
+      end-if
+
+
+      if $J_Cal_Run_id = 'ZRETRO'
+         let $Pin_Descr = '*' || $Pin_Descr
+      end-if
+
+
+#DEBUG show '<- Get_PaySlip_Pin_Descr  '
+end-procedure Get_PaySlip_Pin_Descr
+
+BEGIN-PROCEDURE Update_pslp_id
+
+begin-SQL on-error=give_warning
+UPDATE PS_GP_MPSLP_STGHDR SET GP_PSLP_ID= $eV8
+WHERE EMPLID= $eV5
+AND CAL_RUN_ID= $eV6
+AND GP_PAYGROUP=$Prn_Paygrp
+AND EMPL_RCD=#Prn_Emplrcd
+AND PRD_BGN_DT=$eV11
+AND PRD_END_DT=$eV10
+AND PYMT_DT=$eV9
+end-sql
+
+begin-SQL on-error=give_warning
+UPDATE PS_GP_MPSLP_STGED SET GP_PSLP_ID= $eV8
+WHERE EMPLID= $eV5
+AND CAL_RUN_ID= $eV6
+AND GP_PAYGROUP=$Prn_Paygrp
+AND EMPL_RCD=#Prn_Emplrcd
+AND PRD_BGN_DT=$eV11
+AND PRD_END_DT=$eV10
+AND PYMT_DT=$eV9
+end-sql
+  
+end-procedure
+
+begin-procedure Get_Pin_Code (#Pin_Num)
+
+begin-SELECT on-error=give_warning
+pin.PIN_CODE
+  let $_Element_Pin_Code = &pin.PIN_CODE
+FROM PS_GP_PIN pin
+where pin.PIN_NUM = #Pin_Num 
+end-select
+
+end-procedure Get_Pin_Code
+
+
+begin-procedure Swiss-mplsp
+
+do Get-Payment-Date
+
+let #Mslp_Printorder=#Mslp_Printorder+1
+
+if $J_Cal_Run_id  <> 'ZRETRO' 
+  let $mpslp_SLICE_BGN_DT=&J.SLICE_BGN_DT
+  let $mpslp_SLICE_END_DT=&J.SLICE_END_DT
+end-if
+   let $mpslp_Cal_Run_id= $Ctl_Cal_Run_Id
+   let $mpslp_PYMT_DT=$Cal_Curr_Pymt_End_Dt
+   let $mpslp_PRD_BGN_DT=$PSLP_PRD_BGN_DT
+   let $mpslp_PRD_END_DT=$PSLP_PRD_END_DT 
+   let $mpslp_SEG_BGN_DT=$PSLP_SEG_BGN_DT
+   let $mpslp_SEG_END_DT=$PSLP_SEG_END_DT
+
+   IF $mpslp_SLICE_BGN_DT= ''
+  let $mpslp_SLICE_BGN_DT=$PSLP_SLICE_BGN_DT
+  let $mpslp_SLICE_END_DT=$PSLP_SLICE_END_DT
+  END-IF
+   
+IF  $Prnt_Sum = 'Y'
+    let #Mplsp_Calc    =  #Calc_Sum
+else
+    let #Mplsp_Calc   =   #Calc
+END-IF
+
+do Get-RUN-TYPE
+
+  if $RUN_TYPE = ''
+    let $RUN_TYPE = 'KWPAY'
+  end-if
+show '#PayslipPageCount-' #PayslipPageCount
+LET $Mpslp_Emplid  = ltrim(rtrim($EmplId  , ' '), ' ')
+LET $Mplsp_Runid  = ltrim(rtrim($mpslp_Cal_Run_id, ' '), ' ')
+LET $Mpslp_pslp_id  = $Mplsp_Runid || '_' ||$Paygrp || '_' ||$Mpslp_Emplid || '_' || to_char(#Empl_Rcd ) || to_char(#PayslipPageCount)|| '_' ||to_char(#PayslipPageCount) !gp epay payslip id
+
+
+   
+
+LET $CurrentKey= $Mpslp_Emplid || $mpslp_Cal_Run_id||  $Paygrp || $Mpslp_Empl_Rcd
+
+ if $CurrentKey <> $PrevKey and $Str_Net_Sslp = 'Y' and $Str_Gross_Sslp = 'Y'  
+  
+  LET MPSLP_HDR.EMPLID(0) = $EmplId
+  LET MPSLP_HDR.CAL_RUN_ID(0) = $mpslp_Cal_Run_id
+  LET MPSLP_HDR.EMPL_RCD(0) = #Empl_Rcd 
+  LET MPSLP_HDR.GP_PAYGROUP(0) = $Paygrp
+  LET MPSLP_HDR.CAL_ID(0) =  $Cal_Id
+  LET MPSLP_HDR.ORIG_CAL_RUN_ID(0) =$mpslp_Cal_Run_id
+  LET MPSLP_HDR.RSLT_SEG_NUM(0) = &J.RSLT_SEG_NUM
+  LET MPSLP_HDR.GP_PSLP_SRCPRODUCT(0) = 'GPCHE' 
+  LET MPSLP_HDR.GP_PSLP_ID(0) = $Mpslp_pslp_id
+  !LET MPSLP_HDR.SEG_BGN_DT(0) = $mpslp_SEG_BGN_DT
+  !LET MPSLP_HDR.SEG_END_DT(0) = $mpslp_SEG_END_DT
+  LET MPSLP_HDR.SEG_BGN_DT(0) = $mpslp_PRD_BGN_DT
+  LET MPSLP_HDR.SEG_END_DT(0) = $mpslp_PRD_END_DT
+  LET MPSLP_HDR.PRD_BGN_DT(0) = $mpslp_PRD_BGN_DT
+  LET MPSLP_HDR.PRD_END_DT(0) = $mpslp_PRD_END_DT
+  LET MPSLP_HDR.PYMT_DT(0) = $mpslp_PYMT_DT
+  LET MPSLP_HDR.GP_MPSLP_GROSS(0) = #Gross_Sslp
+  LET MPSLP_HDR.GP_MPSLP_NET(0) = #Net_Sslp
+   
+
+  
+  LET MPSLP_HDR.GP_COMPANY(0) = $Company
+  LET MPSLP_HDR.RUN_TYPE(0) = $RUN_TYPE
+
+  DO insert_mpslp_hdr_row
+
+  LET $PrevKey=$CurrentKey
+  LET $Str_Gross_Sslp = 'N'
+  LET $Str_Net_Sslp = 'N'
+
+ End-if
+
+    LET MPSLP_ED.EMPLID(0) = $EmplId
+    LET MPSLP_ED.CAL_RUN_ID(0) = $mpslp_Cal_Run_id
+    LET MPSLP_ED.EMPL_RCD(0) = #Empl_Rcd  
+    LET MPSLP_ED.GP_PAYGROUP(0) = $Paygrp
+    LET MPSLP_ED.CAL_ID(0) =  $Cal_Id
+    LET MPSLP_ED.ORIG_CAL_RUN_ID(0) =$J_Cal_Run_id
+    LET  MPSLP_ED.RSLT_SEG_NUM(0)    =&J.RSLT_SEG_NUM   
+    LET  MPSLP_ED.GP_PSLP_SRCPRODUCT(0)    ='GPCHE'   
+    LET  MPSLP_ED.GP_PSLP_ID(0)    = $Mpslp_pslp_id 
+    LET  MPSLP_ED.INSTANCE(0)    =   &J.INSTANCE
+    LET  MPSLP_ED.PIN_NUM(0)    =   #Pin_Num
+    LET  MPSLP_ED.SLICE_BGN_DT(0)    = $mpslp_SLICE_BGN_DT  
+    LET  MPSLP_ED.SLICE_END_DT(0)    =   $mpslp_SLICE_END_DT
+    LET MPSLP_ED.PRD_BGN_DT(0) =  $mpslp_PRD_BGN_DT
+    LET MPSLP_ED.PRD_END_DT(0) =  $mpslp_PRD_END_DT
+    !LET MPSLP_ED.SEG_BGN_DT(0) =  $mpslp_SEG_BGN_DT
+    !LET MPSLP_ED.SEG_END_DT(0) =  $mpslp_SEG_END_DT
+    LET MPSLP_ED.SEG_BGN_DT(0) =  $mpslp_PRD_BGN_DT
+    LET MPSLP_ED.SEG_END_DT(0) =  $mpslp_PRD_END_DT
+    LET  MPSLP_ED.PYMT_DT(0)    =   $mpslp_PYMT_DT
+    LET  MPSLP_ED.RUN_TYPE(0)    =   $RUN_TYPE
+    LET  MPSLP_ED.CALC_RSLT_VAL(0)    =   #Mplsp_Calc
+  
+    LET  MPSLP_ED.BASE_RSLT_VAL(0)    =   #Base
+  
+    LET  MPSLP_ED.RATE_RSLT_VAL(0)    =   #Rate 
+    LET  MPSLP_ED.UNIT_RSLT_VAL(0)    = #Units  
+
+    LET  MPSLP_ED.PCT_RSLT_VAL(0)    =  #Percent 
+
+
+  IF (&K.ENTRY_TYPE_ELEM='ER0' AND &K.GPCH_AL_OVERRIDE= 'N') OR (&K.ENTRY_TYPE_ELEM='DD0' AND &K.GPCH_AL_OVERRIDE= 'Y')
+     LET  MPSLP_ED.GP_MPSLP_SECTION(0)    =   '10'
+  End-If
+  IF (&K.ENTRY_TYPE_ELEM='DD0'AND &K.GPCH_AL_OVERRIDE= 'N') OR (&K.ENTRY_TYPE_ELEM='ER0' AND &K.GPCH_AL_OVERRIDE= 'Y')
+     LET  MPSLP_ED.GP_MPSLP_SECTION(0)    =   '20'
+  End-If
+    
+    LET $PRORDER = to_char(&K.GPCH_BL_PR_ORDER)
+    LET $PRORDER1= substr($PRORDER, 1,3) 
+    LET #PRORDER2= to_number($PRORDER1)
+    !LET  MPSLP_ED.GP_MPSLP_SPRNT_ORD(0)    =   &K.GPCH_BL_PR_ORDER
+    LET  MPSLP_ED.GP_MPSLP_SPRNT_ORD(0)    =   #PRORDER2 
+   
+  ! LET  MPSLP_ED.GP_MPSLP_SUBSECTN(0)     =    &K.GPCH_BL_PR_GROUP
+    LET  MPSLP_ED.GP_MPSLP_PRNT_ORD(0)     =    #Mslp_Printorder
+    LET  MPSLP_ED.GP_MPSLP_PIN_DESCR(0)    =    substr($Pin_Descr, 1,30) 
+
+    DO insert_mpslp_ernded_row
+       
+end-procedure Swiss-mplsp
+!*************************************************************************
+
+begin-procedure Get-SS_NET_VAL
+
+ 
+begin-SELECT on-error=give_warning 
+NET.NET_PAY              &NET.NET_PAY
+   let #SS_NET_PAYMENT = &NET.NET_PAY
+FROM   PS_GPCH_RP_AL10ONL  NET
+WHERE  NET.EMPLID  = $eV5 
+      AND NET.EMPL_RCD = #Prn_Emplrcd 
+      AND NET.CAL_RUN_ID = $eV6 
+     AND NET.GPCH_AL_CPAY_ENDDT = $eV10
+     AND NET.PAY_ENTITY = $PayEntity
+
+END-SELECT
+end-procedure Get-SS_NET_VAL
+
+!**************************************************************************
+
+Begin-Procedure Get-Department
+   Let $Department = ''
+Begin-SELECT on-error=give_warning
+D.DESCR
+   Let $Department = &D.DESCR
+
+FROM PS_JOB J, PS_DEPT_TBL D
+WHERE J.EMPLID = $eV5
+ AND J.EMPL_RCD = #Prn_Emplrcd
+ AND J.DEPTID = $Prn_Deptid
+ AND J.EFFDT = (SELECT MAX(J1.EFFDT) FROM PS_JOB J1
+                 WHERE J1.EMPLID = J.EMPLID
+                 AND J1.EMPL_RCD = J.EMPL_RCD
+                 AND J1.EFFDT <= $eV10)
+ AND J.EFFSEQ = (SELECT MAX(EFFSEQ) FROM PS_JOB J2
+                             WHERE J2.EMPLID    = J.EMPLID
+                               AND J2.EMPL_RCD  = J.EMPL_RCD
+                               AND J2.EFFDT     = J.EFFDT)
+ AND D.DEPTID = J.DEPTID
+ AND D.SETID = J.SETID_DEPT
+ AND D.EFFDT = (SELECT MAX(D1.EFFDT) FROM PS_DEPT_TBL D1
+                WHERE D1.DEPTID = D.DEPTID
+                   AND D1.SETID = D.SETID
+                   AND D1.EFF_STATUS = 'A'
+                   AND D1.EFFDT <= $eV10)
+End-SELECT
+#DEBUG show 'EMPLID:' $eV5 ' EMPL_RCD: ' #Prn_Emplrcd ' prd end date: ' $eV10 ' deptid: ' $Prn_Deptid ' $Department: ' $Department
+End-Procedure Get-Department
+
+!**************************************************************************
+
+begin-procedure Get-Print-Pin-Info-For-Emp
+#DEBUG show '-> Get-Print-Pin-Info-For-Emp '
+#DEBUG show '1.'$EmplId  '2.' #Emprec  '3.' $Ctl_Cal_Run_Id  '4.' $Ctl_Print  '5.' $RET_PRD_END_DT
+
+ 
+
+   let $foot           = 'NO'
+   let $GPCH_AL01_BODY = ' <BODY>'     !Variable $GPCH_AL01_BODY initialiesieren
+   let #Prnt_Ord       = 1
+   let #Mslp_Printorder=0
+   let #Blnk_Line_Nbr  = 0
+   let #SS_pslp_net= 0
+   let $Str_Gross_Mslp =''
+   let $Str_Net_Mslp=''
+   let #Gross_Mslp =0
+   let #Net_Mslp = 0
+   LET $Mpslp_Empl_Rcd = to_char(#Empl_Rcd)
+  LET $GPwhere_clause = 'AND EMPLID  =  ' ||''''|| $EmplId  || ''''  ||'  AND  EMPL_RCD= ' || $Mpslp_Empl_Rcd 
+  
+  do clean_mpslp_records ($Ctl_Cal_Run_Id, $GPwhere_clause)
+
+  
+let $sql-statement = 'GPCHAL10.sqr , Select , Get-Print-Pin-Info-For-Emp'
+begin-SELECT on-error=give_warning
+J.EMPLID
+J.EMPL_RCD
+J.PIN_NUM
+J.CAL_RUN_ID
+J.GPCH_AL_CPAY_ENDDT
+J.PRD_END_DT
+J.RSLT_SEG_NUM
+J.SLICE_BGN_DT
+J.SLICE_END_DT
+J.BASE_RSLT_VAL  &BASE_RSLT_VAL
+J.RATE_RSLT_VAL  &RATE_RSLT_VAL
+J.UNIT_RSLT_VAL  &UNIT_RSLT_VAL
+J.PCT_RSLT_VAL   &PERCENT_RSLT_VAL
+J.CALC_RSLT_VAL  &CALC_RSLT_VAL
+J.CALC_RSLT_VAL  &SUM_RSLT_VAL
+J.INSTANCE
+K.GPCH_AL_OVERRIDE
+K.GPCH_BL_PR_GROUP     ()   on-break print=never procedure=Print-Blank-Line
+K.GPCH_BL_PR_ORDER
+K.PIN_NUM
+K.GPCH_BL_PR_CALC
+K.GPCH_BL_PR_BASE
+K.GPCH_BL_PR_RATE
+K.GPCH_BL_PR_UNITS
+K.GPCH_BL_PR_PERCENT
+K.GPCH_BL_PR_SUM
+K.GPCH_AL_SIGNVALUE
+K.ENTRY_TYPE_ELEM
+
+      let $foot         ='YES'
+      let #Pin_Num      = &K.PIN_NUM
+      let $PRD_END_DT   = &J.PRD_END_DT
+      let $J_Cal_Run_id = rtrim(&J.CAL_RUN_ID,' ')
+  
+
+      do Get_PaySlip_Pin_Descr    ! Select Pin Nm and Descr
+
+  ! Checking for print confirmation
+
+      let $Prnt_Units   = &K.GPCH_BL_PR_UNITS
+      let $Prnt_Rate    = &K.GPCH_BL_PR_RATE
+      let $Prnt_Percent = &K.GPCH_BL_PR_PERCENT
+      let $Prnt_Base    = &K.GPCH_BL_PR_BASE
+      let $Prnt_Calc    = &K.GPCH_BL_PR_CALC
+      let $Prnt_Sum     = &K.GPCH_BL_PR_SUM
+
+
+  ! Selecting values
+
+      if $Prnt_Calc = 'N' and $Prnt_Base = 'N' and $Prnt_Rate = 'N'
+         let #UNIT_RSLT_VAL    = &UNIT_RSLT_VAL * &K.GPCH_AL_SIGNVALUE
+      else
+         let #UNIT_RSLT_VAL    = &UNIT_RSLT_VAL
+      end-if
+
+      if $Prnt_Calc = 'N' and $Prnt_Units = 'N' and $Prnt_Rate = 'N'
+         let #BASE_RSLT_VAL    = &BASE_RSLT_VAL * &K.GPCH_AL_SIGNVALUE
+      else
+         let #BASE_RSLT_VAL    = &BASE_RSLT_VAL
+      end-if
+
+
+      let #PERCENT_RSLT_VAL = &PERCENT_RSLT_VAL
+      let #RATE_RSLT_VAL    = &RATE_RSLT_VAL
+      let #CALC_RSLT_VAL    = &CALC_RSLT_VAL * &K.GPCH_AL_SIGNVALUE
+      let #SUM_RSLT_VAL     = &SUM_RSLT_VAL  * &K.GPCH_AL_SIGNVALUE
+
+ !TO change the amount fields to the Report Currency
+
+      let #CALC_RSLT_VAL  = #CALC_RSLT_VAL * #CurrRate
+      let #SUM_RSLT_VAL   = #SUM_RSLT_VAL  * #CurrRate
+      let #BASE_RSLT_VAL  = #BASE_RSLT_VAL * #CurrRate
+
+ !#debug show '2. ' $Pin_Descr '    :' #UNIT_RSLT_VAL ',' #RATE_RSLT_VAL ','  #PERCENT_RSLT_VAL ',' #BASE_RSLT_VAL ',' #CALC_RSLT_VAL ',' #SUM_RSLT_VAL
+
+ !TO CHECK IF VALUES ARE TO BE PRINT OR NOT
+ !   _________________________________________________________________________________________
+
+      if $Prnt_Units = 'Y'
+            let #Units = #UNIT_RSLT_VAL
+      else
+            let #Units = 0
+      end-if
+
+
+      if $Prnt_Rate = 'Y'
+            let #Rate = #RATE_RSLT_VAL
+      else
+            let #Rate = 0
+      end-if
+
+
+      if $Prnt_Percent = 'Y'
+            let  #Percent = #PERCENT_RSLT_VAL
+      else
+            let  #Percent = 0
+      end-if
+
+
+      if $Prnt_Base = 'Y'
+            let #Base = #BASE_RSLT_VAL
+      else
+            let #Base = 0
+      end-if
+
+      if $Prnt_Calc = 'Y'
+            let #Calc = #CALC_RSLT_VAL
+      else
+            let #Calc = 0
+      end-if
+
+
+      if $Prnt_Sum = 'Y'
+            let #Calc_Sum = #SUM_RSLT_VAL
+      else
+            let #Calc_Sum = 0
+      end-if
+
+
+    !_______________________________________________________________________________________
+
+    ! #Debug show '3. ' $Pin_Descr '    :' $Prnt_Units ',' $Prnt_Rate ',' $Prnt_Percent ',' $Prnt_Base ',' $Prnt_Calc ',' $Prnt_Sum
+
+    ! #Debug show '4. ' $Pin_Descr '    :' #Units ',' #Rate ',' #Percent ',' #Base ','  #Calc ',' #Calc_Sum
+
+    do Gen-Balance-Values(#Rate,#Percent,#Units,#Calc,#Calc_Sum,#Base,
+                          $Pin_Nm,$Pin_Descr,$Rpt_Cur,$Prnt_Sum)            !within this file
+
+    if $Curr_Elem='Y'
+       ! To print the currency converted pin's values asked for
+       do Gen-Bal-Curr-Covt-Values(#Rate,#Percent,#Units,#Calc,#Calc_Sum,#Base,
+                                   #Pin_Num,$Pin_Nm,$Pin_Descr,$Rpt_Cur,$first,$Prnt_Sum)
+    end-if
+     
+     IF  $Prnt_Sum = 'Y'
+       let #Plsp_Calc    =  #Calc_Sum
+     else
+       let #Plsp_Calc   =   #Calc
+     END-IF
+
+     do Get_Pin_Code (#pin_num)
+
+    if $Str_Gross_Sslp  <> 'Y' and $Element_Pin_Code =  'CH_RP_0050 CHE'  and $J_Cal_Run_id  <> 'ZRETRO' 
+       let #Gross_Sslp=#Plsp_Calc
+       let $Str_Gross_Sslp='Y'
+    end-if
+
+    if $Str_Net_Sslp  <> 'Y' and $Element_Pin_Code =  'CH_RP_0054 CHE' and $J_Cal_Run_id  <> 'ZRETRO' 
+        let #Net_Sslp=#Plsp_Calc
+        let $Str_Net_Sslp='Y'
+    end-if
+   let $mpslp_PYMT_DT=$Cal_Curr_Pay_End_Dt
+   let $mpslp_PRD_BGN_DT=$PSLP_PRD_BGN_DT
+   let $mpslp_PRD_END_DT=$PSLP_PRD_END_DT 
+  
+    
+!    if $GPmobepay_check = 'Y' 
+        do Swiss-mplsp
+!      end-if
+
+  let #Calc     = 0
+  let #Base     = 0
+  let #Rate     = 0
+  let #Units    = 0
+  let #Percent  = 0
+  let #Calc_Sum = 0
+
+
+FROM PS_GPCHAL101_TMP J, PS_GPCH_BL_PRINT K
+WHERE  K.PIN_NUM            = J.PIN_NUM
+AND    K.GPCH_RC_REPORTNAME = $Ctl_Print
+AND    K.EFF_STATUS         = 'A'
+AND    J.EMPLID             = $EmplId
+AND    J.EMPL_RCD           = #Empl_Rcd
+AND    J.PROCESS_INSTANCE   = #prcs_process_instance
+!ORDER BY J.GPCH_AL_CPAY_ENDDT, K.GPCH_BL_PR_GROUP, K.GPCH_BL_PR_ORDER,K.GPCH_BL_PR_BASE
+ORDER BY K.GPCH_BL_PR_GROUP, K.GPCH_BL_PR_ORDER,J.EMPLID,J.EMPL_RCD,J.PIN_NUM,J.CAL_RUN_ID,J.PRD_END_DT
+end-SELECT
+
+Let #Prnt_Ord = #Prnt_Ord - 1
+Let $Prnt_Ord = to_char(#Prnt_Ord)
+Let $GPCH_AL01_BODY = $GPCH_AL01_BODY || '<BLL>' || $Blnk_Line_Nbr || '</BLL><SRS>' || $Prnt_Ord || '</SRS></BODY>'
+
+#DEBUG show '<- Get-Print-Pin-Info-For-Emp ' $EmplId ' , ' $Blnk_Line_Nbr ' , ' $Prnt_Ord ' , ' $GPCH_AL01_BODY
+end-procedure
+!**************************************************************************************************
+begin-procedure Gen-Bal-Curr-Covt-Values(#Rate_C,#Percent_C,#Units_C,#Calc_C,#Calc_Sum_C,#Base_C,
+                                         #Pin_Num_C,$Pin_Nm_C,$Pin_Descr_C,$Rpt_Cur_C,$first,$Prnt_Sum)
+#DEBUG show '-> Gen-Bal-Curr-Covt-Values'
+
+let #Calc_CC     = 0
+let #Base_CC     = 0
+let #Rate_CC     = 0
+let #Units_CC    = 0
+let #Percent_CC  = 0
+let #Calc_Sum_CC = 0
+
+
+begin-SELECT on-error=give_warning
+
+CB.CURRENCY_CD
+CB.PIN_NUM
+CBP.PIN_NM
+
+      let $TO_CUR_C      = &CB.CURRENCY_CD
+      let $CUR_Pin_Nm_C  = &CBP.PIN_NM
+      let #CUR_PIN_NUM_C = &CB.PIN_NUM
+
+      if $first='Y'
+       Do Append-log($CUR_Pin_Nm_C,$TO_CUR_C)
+      end-if
+
+     ! #DEBUG SHOW 'INSIDE :' #CUR_RT_C ' ' #Calc_C ' ' #Calc_Sum_C ' ' $Rpt_Cur_C ' ' $TO_CUR_C
+
+      do Get-Currency-Rate($Rpt_Cur_C,$TO_CUR_C,$_BaseRtType,$_Cal_Curr_Pay_End_Dt,'F',#FarCurRate)
+
+      let #CUR_RT_C = #FarCurRate     ! Getting the required rate.
+
+      let #Rate_CC    = #Rate_C
+      let #Percent_CC = #Percent_C
+      let #Units_CC   = #Units_C
+
+
+      let #Calc_CC     = #CUR_RT_C * #Calc_C
+      let #Base_CC     = #CUR_RT_C * #Base_C
+      let #Calc_SUM_CC = #CUR_RT_C * #Calc_Sum_C
+
+
+    !  #DEBUG SHOW 'OUTSIDE:' #CUR_RT_C ' ' #Calc_CC ' ' #Calc_Sum_CC ' ' #Ytd_Sum_CC
+      do Gen-Balance-Values(#Rate_CC,#Percent_CC,#Units_CC,#Calc_CC,#Calc_Sum_CC,#Base_CC,
+                            $Pin_Nm_C,$Pin_Descr_C,$TO_CUR_C,$Prnt_Sum)
+
+
+FROM PS_GPCH_RC_CURRCD CB , PS_GP_PIN CBP
+WHERE CB.PIN_NUM   = CBP.PIN_NUM
+AND CB.OPRID       = $_prcs_oprid
+AND CB.RUN_CNTL_ID = $_prcs_run_cntl_id
+AND CB.PIN_NUM     = #Pin_Num_C
+ORDER BY CB.PIN_NUM,CB.CURRENCY_CD
+
+end-SELECT
+
+
+#DEBUG show '<- Print-Bal-Curr-Covt-Values '
+end-procedure
+!*************************************************************************************
+begin-procedure Gen-Balance-Values (#Rate_P,#Percent_P,#Units_P,#Calc_P,#Calc_Sum_P,#Base_P,
+                                    $Pin_Nm_P,$Pin_Descr_P,$Rpt_Cur_P,$Prnt_Sum_P)
+#DEBUG show '-> Generate-Balance-Values '
+
+
+   if rtrim($Pin_Nm_P,' ') = ''
+      goto End-Label
+   end-if
+
+      let $Prnt_Ord        = to_char(#_Prnt_Ord)
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || ' <BRLINE>'
+
+   if $Prnt_Sum_P = 'Y'
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<BLD>Y</BLD><PDES>' || $Pin_Descr_P || '</PDES>'
+   else
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<BLD>N</BLD><PDES>' || $Pin_Descr_P || '</PDES>'
+   end-if
+
+   if #Units_P <> 0
+        ! SYED do Format-Number (#Units_P, $Unitsy, '999.99mi')
+        do Format-Number (#Units_P, $Unitsy, '99999.99mi')
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<UNT>' || $Unitsy || '</UNT>'
+   else
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<UNT>0</UNT>'
+   end-if
+
+   if #Rate_P <> 0
+         do Format-Number (#Rate_P, $Ratey, '9,999,999.99mi')
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<RAT>' || $Ratey || '</RAT>'
+   else
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<RAT>0</RAT>'
+   end-if
+
+   if #Percent_P <> 0
+           let $Print_Mask = '999.9999'
+           do Check-Percent-Print-Design($Print_Mask)
+           do Format-Number (#Percent_P, $Percenty, $Print_Mask)
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<PER>' || $Percenty || '</PER>'
+   else
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<PER>0</PER>'
+   end-if
+
+   if #Base_P <> 0
+         do Format-Number (#Base_P, $Basey, '9,999,999.99mi')
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<BAS>' || $Basey || '</BAS>'
+   else
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<BAS>0</BAS>'
+   end-if
+
+   if #Calc_P <> 0
+         do Format-Number (#Calc_P, $Calcy, '9,999,999.99mi')
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<AMT>' || $Calcy || '</AMT>'
+   else
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<AMT>0</AMT>'
+   end-if
+
+   if #Calc_Sum_P <> 0
+         do Format-Number (#Calc_Sum_P, $Calc_Sumy, '9,999,999.99mi')
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<SUM>' || $Calc_Sumy || '</SUM>'
+   else
+      if rtrim($Pin_Nm_P,' ') = 'CH_RP_0050'
+         let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<SUM>        0.00</SUM>'
+      else
+         let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<SUM>0</SUM>'
+      end-if
+   end-if
+
+!-------------------------------------------------------------------------------------------
+  let $Unitsy    = ''
+  let $Ratey     = ''
+  let $Percenty  = ''
+  let $Basey     = ''
+  let $Calcy     = ''
+  let $Calc_Sumy = ''
+
+
+  if $Rpt_Cur_P <> $_Rpt_Cur   ! to display only diff curr
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<DCUR>' || $Rpt_Cur_P || '</DCUR>'
+  else
+      let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '<DCUR>N</DCUR>'
+  end-if
+
+  let $_GPCH_AL01_BODY = $_GPCH_AL01_BODY || '</BRLINE>'
+  let #_Prnt_Ord = #_Prnt_Ord + 1
+
+End-Label:
+
+#DEBUG show '<- Gen-Balance-Values '
+end-procedure
+!**************************************************
+begin-procedure Print-Blank-Line
+
+let #Blnk_Line_Nbr = #Blnk_Line_Nbr + 1
+let $Blnk_Line_Nbr = to_char(#Blnk_Line_Nbr)
+let $GPCH_AL01_BODY = $GPCH_AL01_BODY || ' <PBL>' || $Blnk_Line_Nbr || '</PBL>'
+
+end-procedure
+!**************************************************
+begin-procedure New-Pay-End-Dt
+#DEBUG show '-> New-Pay-End-Dt'
+  new-page
+
+#DEBUG show '<- New-Pay-End-Dt'
+end-procedure
+!****************************************************
+begin-procedure Print-End-Dates
+#DEBUG show '-> Print-End-Dates'  $RET_PRD_END_DT  '  ,  ' $Cal_Curr_Pay_End_Dt
+
+  !do ConvertToComponents($RET_PRD_END_DT,$Retro_Year,$Retro_Month,$Retro_Day)
+  do ConvertToComponents($Cal_Curr_Pay_End_Dt,$Curr_Year,$Curr_Month,$Curr_Day)
+
+  !let $Print_Pay_End_Dt = ''
+  !concat $Retro_Month with $Print_Pay_End_Dt
+  !concat        '/' with $Print_Pay_End_Dt
+  !concat $Retro_Year  with $Print_Pay_End_Dt
+
+  let $Curr_Pay_End_Dt = ''
+  concat ' : '       with $Curr_Pay_End_Dt
+  evaluate  $Curr_Month
+        when = '01'
+           concat $JAN  with $Curr_Pay_End_Dt
+           break
+        when = '02'
+           concat $FEB  with $Curr_Pay_End_Dt
+           break
+        when = '03'
+           concat $MAR  with $Curr_Pay_End_Dt
+           break
+        when = '04'
+           concat $APR  with $Curr_Pay_End_Dt
+           break
+        when = '05'
+           concat $MAY  with $Curr_Pay_End_Dt
+           break
+        when = '06'
+           concat $JUN  with $Curr_Pay_End_Dt
+           break
+        when = '07'
+           concat $JUL  with $Curr_Pay_End_Dt
+           break
+        when = '08'
+           concat $AUG  with $Curr_Pay_End_Dt
+           break
+        when = '09'
+           concat $SEP  with $Curr_Pay_End_Dt
+           break
+        when = '10'
+           concat $OCT  with $Curr_Pay_End_Dt
+           break
+        when = '11'
+           concat $NOV  with $Curr_Pay_End_Dt
+           break
+        when = '12'
+           concat $DEC  with $Curr_Pay_End_Dt
+           break
+        when-other
+           break
+ end-evaluate
+
+  concat ' '       with $Curr_Pay_End_Dt
+  concat $Curr_Year  with $Curr_Pay_End_Dt
+
+
+  !print $Curr_Pay_End_Dt                  (5,{col10})
+
+#DEBUG show '<-  Print-End-Dates'
+end-procedure
+!****************************************************
+begin-procedure Get-Sammler
+#DEBUG show '-> Get-Sammler'
+
+!#DEBUG show '1. '$EmplId  '2. ' #Empl_Rcd  '3. ' $Ctl_Cal_Run_Id  '4. ' $Paygrp  '5. ' $Cal_Id '6. ' #Rslt_Seg_Num '7. '  $Slice_End_Dt
+
+begin-SELECT on-error=give_warning
+SAM.GPCH_RP_AMOUNT1    &Bruttolohn
+SAM.GPCH_RP_AMOUNT2    &Nettolohn
+SAM.GPCH_RP_AMOUNT3    &AHV-Lohn
+SAM.GPCH_RP_AMOUNT4    &AHV-Beitrag
+SAM.GPCH_RP_AMOUNT5    &ALV1-Lohn
+SAM.GPCH_RP_AMOUNT6    &ALV1-Beitrag
+SAM.GPCH_RP_AMOUNT7    &UV-Lohn
+SAM.GPCH_RP_AMOUNT8    &UV-Beitrag
+SAM.GPCH_RP_AMOUNT9    &ALV2-Lohn
+SAM.GPCH_RP_AMOUNT10   &ALV2-Beitrag
+SAM.GPCH_RP_AMOUNT11   &Vac_Entitled
+SAM.GPCH_RP_AMOUNT12   &Vac_Taken
+SAM.GPCH_RP_AMOUNT13   &Vac_Balance
+SAM.GPCH_RP_AMOUNT14   &Vac_Pyear
+SAM.GPCH_RP_AMOUNT16   &Holiday_Per
+SAM.GPCH_RP_AMOUNT17   &Vacation_Per
+FROM PS_GPCH_RP_0002 SAM
+WHERE SAM.EMPLID     = $EmplId
+AND SAM.EMPL_RCD     = #Empl_Rcd
+AND SAM.CAL_RUN_ID   = $Ctl_Cal_Run_Id
+AND SAM.GP_PAYGROUP  = $Paygrp
+AND SAM.PRD_END_DT   = SAM.GPCH_AL_CPAY_ENDDT
+!AND SAM.CAL_ID     = $Cal_Id
+!AND SAM.RSLT_SEG_NUM = #Rslt_Seg_Num
+!AND SAM.PRD_END_DT   = $RET_PRD_END_DT
+!AND SAM.SLICE_END_DT = $Slice_End_Dt
+End-Select
+      !---------------
+      do Format-Number (&Vac_Pyear,     $DE_AB_VACENT_PYEAR, 'B999999999.99')
+      do Format-Number (&Vac_Entitled,  $DE_AB_VACENT_ENT,   'B999999999.99')
+      do Format-Number (&Vac_Taken,     $DE_AB_VACENT_TAKE,  'B999999999.99')
+      do Format-Number (&Vac_Balance,   $DE_AB_VACENT_BAL,   'B999999999.99')
+      do Format-Number (&Holiday_Per,   $DE_AB_HOLIDAY_PER,  'B99.9999')
+      do Format-Number (&Vacation_Per,  $DE_AB_VACATION_PER, 'B99.9999')
+
+      let $DE_AB_VACENT_PYEAR = ltrim($DE_AB_VACENT_PYEAR,' ')
+      let $DE_AB_VACENT_ENT   = ltrim($DE_AB_VACENT_ENT,' ')
+      let $DE_AB_VACENT_TAKE  = ltrim($DE_AB_VACENT_TAKE,' ')
+      let $DE_AB_VACENT_BAL   = ltrim($DE_AB_VACENT_BAL,' ')
+      let $DE_AB_HOLIDAY_PER  = ltrim($DE_AB_HOLIDAY_PER,' ')
+      let $DE_AB_VACATION_PER = ltrim($DE_AB_VACATION_PER,' ')
+      !---------------
+      let  #Bruttolohn  = &Bruttolohn  * #CurrRate
+      let  #Nettolohn   = &Nettolohn   * #CurrRate
+      let  #AHV-Lohn    = &AHV-Lohn    * #CurrRate
+      let  #AHV-Beitrag = &AHV-Beitrag * #CurrRate
+
+      do Format-Number (#Bruttolohn,  $Bruttolohn, '9,999,999.99mi')
+      do Format-Number (#Nettolohn,   $Nettolohn,  '9,999,999.99mi')
+      do Format-Number (#AHV-Lohn,    $AHV-Lohn,   '9,999,999.99mi')
+      do Format-Number (#AHV-Beitrag, $AHV-Beitrag,'9,999,999.99mi')
+      !---------------
+
+      let  #ALV1-Lohn      = &ALV1-Lohn      * #CurrRate
+      let  #ALV1-Beitrag   = &ALV1-Beitrag   * #CurrRate
+      let  #UV-Lohn        = &UV-Lohn        * #CurrRate
+      let  #UV-Beitrag     = &UV-Beitrag     * #CurrRate
+
+      do Format-Number (#ALV1-Lohn,   $ALV1-Lohn,   '9,999,999.99mi')
+      do Format-Number (#ALV1-Beitrag,$ALV1-Beitrag,'9,999,999.99mi')
+      do Format-Number (#UV-Lohn,     $UV-Lohn,     '9,999,999.99mi')
+      do Format-Number (#UV-Beitrag,  $UV-Beitrag,  '9,999,999.99mi')
+
+      !---------------
+
+      let  #ALV2-Lohn        = &ALV2-Lohn      * #CurrRate
+      let  #ALV2-Beitrag     = &ALV2-Beitrag   * #CurrRate
+
+      do Format-Number (#ALV2-Lohn,   $ALV2-Lohn,   '9,999,999.99mi')
+      do Format-Number (#ALV2-Beitrag,$ALV2-Beitrag,'9,999,999.99mi')
+
+
+#DEBUG show '<- Get-Sammler'
+end-procedure
+
+!**************************************************
+
+begin-procedure Print-Sammler
+
+#DEBUG show '-> Print-Sammler'
+
+
+  print $HD_ANNVAL           (1,{colf0}) bold
+  print '_'                (1,{colf0},116) FILL     bold
+
+  print $BLOHN               (2,{colf0})   bold
+  print $UVLOHN              (4,{colf0})   bold
+
+  print $Bruttolohn                   (2,{Colf2})
+  print $UV-Lohn                    (4,{Colf2})
+
+  print $NLOHN               (2,{colf3})   bold
+  print $UVBEITRAG           (4,{colf3})   bold
+
+  print $Nettolohn                    (2,{Colf4})
+  print $UV-Beitrag                   (4,{Colf4})
+
+  print  $AHVLOHN            (2,{colf5})   bold
+  print  $ALV1LOHN           (3,{colf5})   bold
+  print  $ALV2LOHN           (4,{colf5})   bold
+
+  print $AHV-Lohn                     (2,{Colf6})
+  print $ALV1-Lohn                    (3,{Colf6})
+  print $ALV2-Lohn                    (4,{Colf6})
+
+
+  print $AHVBEITRAG          (2,{colf7})    bold
+  print $ALV1BEITRAG           (3,{colf7})    bold
+  print $ALV2BEITRAG           (4,{colf7})    bold
+
+  print $AHV-Beitrag                  (2,{Colf8})
+  print $ALV1-Beitrag                 (3,{Colf8})
+  print $ALV2-Beitrag                 (4,{Colf8})
+
+
+  !------------------------------------------------------------------------------
+
+  let $Bruttolohn      = ' '
+  let $UV-Lohn       = ' '
+
+  let $Nettolohn     = ' '
+  let $UV-Beitrag      = ' '
+
+  let $AHV-Lohn      = ' '
+  let $ALV1-Lohn     = ' '
+  let $ALV2-Lohn     = ' '
+
+  let $AHV-Beitrag    = ' '
+  let $ALV1-Beitrag   = ' '
+  let $ALV2-Beitrag   = ' '
+
+
+#DEBUG show '<- Print-Sammler'
+ end-procedure
+!**************************************************
+
+begin-procedure New-Employee
+#DEBUG show '-> New-Employee'
+
+new-page
+
+let #page-count = 1
+#DEBUG show '<- New-Employee'
+end-procedure
+
+!**************************************************
+! THIS FUNCTION PRINTS MESSAGES ON PAYSHEET
+begin-procedure Get-Payslip-Messages
+#DEBUG show '-> Get-Payslip-Messages'
+
+let #si = 0
+
+create-array name=Storemess size={Pay_Mess_Array_Size}
+  field=MESSAGE_ID:char
+  field=MESSAGE_LANG:char
+  field=MESSAGE_DESCR:char
+
+if ($BASE_LANG = $language_cd)
+    let $Fill_lang = $BASE_LANG
+    do Get-Message-Base
+    do Fill-Message
+end-if
+
+if ($BASE_LANG <> $language_cd) and ($language_cd <> '')
+    let $Message_Language = ' AND MSL.LANGUAGE_CD = ''' || $language_cd ||  ''' '
+    let $Fill_lang = $language_cd
+    do Get-Message-Base
+    do Get-Message-Language
+    do Fill-Message
+end-if
+
+if ($BASE_LANG <> $language_cd) and ($language_cd = '')
+
+    let $Message_Language = ' AND MSL.LANGUAGE_CD = ''' || 'GER' ||  ''' '
+    let $Fill_lang = 'GER'
+    do Get-Message-Base
+    do Get-Message-Language
+    do Fill-Message
+
+    let $Message_Language = ' AND MSL.LANGUAGE_CD = ''' || 'FRA' ||  ''' '
+    let $Fill_lang = 'FRA'
+    do Get-Message-Base
+    do Get-Message-Language
+    do Fill-Message
+
+    let $Message_Language = ' AND MSL.LANGUAGE_CD = ''' || 'ENG' ||  ''' '
+    let $Fill_lang = 'ENG'
+    do Get-Message-Base
+    do Get-Message-Language
+    do Fill-Message
+
+    let $Message_Language = ' AND MSL.LANGUAGE_CD = ''' || 'ITA' ||  ''' '
+    let $Fill_lang = 'ITA'
+    do Get-Message-Base
+    do Get-Message-Language
+    do Fill-Message
+
+end-if
+
+#DEBUG show '<- Get-Payslip-Messages'
+end-procedure Get-Payslip-Messages
+!**************************************************
+begin-procedure Get-Message-Base
+#DEBUG show '-> Get-Message-Base'
+
+create-array name=paymess size={Pay_Mess_Array_Size}
+  field=MESSAGE_ID:char
+  field=MESSAGE_LANG:char
+  field=MESSAGE_DESCR:char
+
+
+begin-SELECT on-error=give_warning
+MS.DESCR100     &MessDescr
+MS.PAY_ENTITY   &MessPayEnt
+MS.GP_PAYGROUP  &MessPayGrp
+MS.LOCATION     &MessLoca
+MS.DEPTID       &MessDept
+MS.EMPLID       &MessEmplid
+MS.SEQUENCE_NBR &mess_cnt
+
+    let $MessPayEnt = rtrim(&MessPayEnt,' ')
+    let $MessPayGrp = rtrim(&MessPayGrp,' ')
+    let $MessLoca   = rtrim(&MessLoca,' ')
+    let $MessDept   = rtrim(&MessDept,' ')
+    let $MessEmplid = rtrim(&MessEmplid,' ')
+    let $MessDecr   = rtrim(&MessDescr,' ')
+    let #mess_cnt   = &mess_cnt
+
+     if $MessPayEnt <> ''
+     put $MessPayEnt         INTO paymess(#mess_cnt) MESSAGE_ID
+     put $MessDecr           INTO paymess(#mess_cnt) MESSAGE_DESCR
+     put $BASE_LANG          INTO paymess(#mess_cnt) MESSAGE_LANG
+    end-if
+
+    if $MessPayGrp <> ''
+     put $MessPayGrp         INTO paymess(#mess_cnt) MESSAGE_ID
+     put $MessDecr           INTO paymess(#mess_cnt) MESSAGE_DESCR
+     put $BASE_LANG          INTO paymess(#mess_cnt) MESSAGE_LANG
+    end-if
+
+    if $MessLoca <> ''
+     put $MessLoca           INTO paymess(#mess_cnt) MESSAGE_ID
+     put $MessDecr           INTO paymess(#mess_cnt) MESSAGE_DESCR
+     put $BASE_LANG          INTO paymess(#mess_cnt) MESSAGE_LANG
+    end-if
+
+    if $MessDept <> ''
+     put $MessDept           INTO paymess(#mess_cnt) MESSAGE_ID
+     put $MessDecr           INTO paymess(#mess_cnt) MESSAGE_DESCR
+     put $BASE_LANG          INTO paymess(#mess_cnt) MESSAGE_LANG
+    end-if
+
+    if $MessEmplid <> ''
+     put $MessEmplid         INTO paymess(#mess_cnt) MESSAGE_ID
+     put $MessDecr           INTO paymess(#mess_cnt) MESSAGE_DESCR
+     put $BASE_LANG          INTO paymess(#mess_cnt) MESSAGE_LANG
+    end-if
+
+
+from PS_GPCH_AL_01_MSG MS
+where MS.GPCH_AL_CPAY_ENDDT  = $Ctl_Curr_Pay_End_Dt
+End-Select
+
+
+#DEBUG show '<- Get-Message-Base'
+end-procedure Get-Message-Base
+!**************************************************
+begin-procedure Get-Message-Language
+#DEBUG show '-> Get-Message-Language'
+begin-SELECT on-error=give_warning
+MSL.DESCR100     &MessDescrL
+MSG.PAY_ENTITY   &MessPayEntL
+MSG.GP_PAYGROUP  &MessPayGrpL
+MSG.LOCATION     &MessLocaL
+MSG.DEPTID       &MessDeptL
+MSG.EMPLID       &MessEmplidL
+MSL.LANGUAGE_CD  &MessLangcd
+MSL.SEQUENCE_NBR &MessSeqNbr
+
+    let $MessPayEnt = rtrim(&MessPayEntL,' ')
+    let $MessPayGrp = rtrim(&MessPayGrpL,' ')
+    let $MessLoca   = rtrim(&MessLocaL,' ')
+    let $MessDept   = rtrim(&MessDeptL,' ')
+    let $MessEmplid = rtrim(&MessEmplidL,' ')
+    let $MessDecr   = rtrim(&MessDescrL,' ')
+    let $MessLangcd = rtrim(&MessLangcd,' ')
+    let #MessSeqNbr = &MessSeqNbr
+
+
+    if $MessPayEnt <> ''
+     put $MessPayEnt         INTO paymess(#MessSeqNbr) MESSAGE_ID
+     put $MessDecr           INTO paymess(#MessSeqNbr) MESSAGE_DESCR
+     put $MessLangcd         INTO paymess(#MessSeqNbr) MESSAGE_LANG
+    end-if
+
+    if $MessPayGrp <> ''
+     put $MessPayGrp         INTO paymess(#MessSeqNbr) MESSAGE_ID
+     put $MessDecr           INTO paymess(#MessSeqNbr) MESSAGE_DESCR
+     put $MessLangcd         INTO paymess(#MessSeqNbr) MESSAGE_LANG
+    end-if
+
+    if $MessLoca <> ''
+     put $MessLoca           INTO paymess(#MessSeqNbr) MESSAGE_ID
+     put $MessDecr           INTO paymess(#MessSeqNbr) MESSAGE_DESCR
+     put $MessLangcd         INTO paymess(#MessSeqNbr) MESSAGE_LANG
+    end-if
+
+    if $MessDept <> ''
+     put $MessDept           INTO paymess(#MessSeqNbr) MESSAGE_ID
+     put $MessDecr           INTO paymess(#MessSeqNbr) MESSAGE_DESCR
+     put $MessLangcd         INTO paymess(#MessSeqNbr) MESSAGE_LANG
+    end-if
+
+    if $MessEmplid <> ''
+     put $MessEmplid         INTO paymess(#MessSeqNbr) MESSAGE_ID
+     put $MessDecr           INTO paymess(#MessSeqNbr) MESSAGE_DESCR
+     put $MessLangcd         INTO paymess(#MessSeqNbr) MESSAGE_LANG
+    end-if
+
+
+from PS_GPCH_AL_01_LNG MSL, PS_GPCH_AL_01_MSG MSG
+where MSL.GPCH_AL_CPAY_ENDDT  = $Ctl_Curr_Pay_End_Dt
+and MSL.GPCH_AL_CPAY_ENDDT = MSG.GPCH_AL_CPAY_ENDDT
+and MSL.SEQUENCE_NBR = MSG.SEQUENCE_NBR 
+[$Message_Language]
+ORDER BY MSL.GPCH_AL_CPAY_ENDDT,MSL.LANGUAGE_CD,MSL.SEQUENCE_NBR
+End-Select
+
+#DEBUG show '<- Get-Message-Language'
+end-procedure Get-Message-Language
+!**************************************************
+Begin-Procedure Fill-Message
+
+   let #mi = 0
+
+   while #mi <= #mess_cnt
+
+      get $MessEmplid $MessLangcd $MessDecr from paymess(#mi)
+      put $MessEmplid $Fill_lang $MessDecr into Storemess(#si)
+
+     ! #DEBUG SHOW #mi ' , ' #si ' , ' $MessEmplid ' , ' $MessDecr ' , '  $Fill_lang
+
+      let #mi = #mi + 1
+      let #si = #si + 1
+
+   end-while
+
+
+End-Procedure Fill-Message
+!**************************************************
+begin-procedure Gen-Message
+#DEBUG show '-> Gen-Message'
+
+
+    let #mess_cnt = #si
+
+    let $GPCH_AL01_MSG = ' <MESS>'
+
+    if #mess_cnt > 0
+       let #Msg_Nbr = 0
+    else
+       let $GPCH_AL01_MSG = $GPCH_AL01_MSG || 'N</MESS>'
+       goto MessEnd
+    end-if
+
+    let $MessPayEnt1 = rtrim($PayEntity,' ')
+    let $MessPayGrp1 = rtrim($Paygrp,' ')
+    let $MessLoca1   = rtrim($Location,' ')
+    let $MessDept1   = rtrim($Deptid,' ')
+    let $MessEmplid1 = rtrim($EmplId,' ')
+
+    let #PayEntMsg_Nbr = 0
+    let #PayGrpMsg_Nbr = 0
+    let #LocaMsg_Nbr   = 0
+    let #DeptMsg_Nbr   = 0
+    let #EmplidMsg_Nbr = 0
+
+
+    !#DEBUG SHOW 'Messages ' $MessPayEnt1 ' , ' $MessPayGrp1 ' , ' $MessLoca1 ' , ' $MessDept1 ' , ' $MessEmplid1
+
+    if ($BASE_LANG =  $Language_cd)
+        let $User_lang = $BASE_LANG
+    end-if
+
+    if  ($BASE_LANG <>  $Language_cd) and ($Language_cd <> '')
+         let $User_lang = $Language_cd
+    end-if
+
+    if  ($BASE_LANG <>  $Language_cd) and ($Language_cd = '')
+         let $User_lang = $Lang_cd
+    end-if
+
+    let #mi = 0
+    While #mi <= #mess_cnt
+
+       get $MESSAGE_ID     from Storemess(#mi) MESSAGE_ID
+       get $MESSAGE_DESCR  from Storemess(#mi) MESSAGE_DESCR
+       get $MESSAGE_LANG   from Storemess(#mi) MESSAGE_LANG
+      !#DEBUG SHOW 'Message id  ' $MESSAGE_ID
+
+      if $MessPayEnt1 = $MESSAGE_ID AND $MESSAGE_LANG = $User_lang
+            let #PayEntMsg_Nbr = #PayEntMsg_Nbr + 1
+            let $PE_Nbr        = to_char(#PayEntMsg_Nbr)
+
+            let $GPCH_AL01_MSG = $GPCH_AL01_MSG || '<MDES>' || $MESSAGE_DESCR || '</MDES>'
+            !let $GPCH_AL01_MSG = $GPCH_AL01_MSG || $MESSAGE_DESCR
+            let #Msg_Nbr       = #Msg_Nbr + 1
+      end-if
+
+      if $MessPayGrp1 = $MESSAGE_ID AND $MESSAGE_LANG = $User_lang
+            let #PayGrpMsg_Nbr = #PayGrpMsg_Nbr + 1
+            let $PG_Nbr        = to_char(#PayGrpMsg_Nbr)
+            let $GPCH_AL01_MSG = $GPCH_AL01_MSG || '<MDES>' || $MESSAGE_DESCR || '</MDES>'
+            let #Msg_Nbr       = #Msg_Nbr + 1
+      end-if
+
+      if $MessLoca1 = $MESSAGE_ID AND $MESSAGE_LANG = $User_lang
+            let #LocaMsg_Nbr   = #LocaMsg_Nbr + 1
+            let $Lo_Nbr        = to_char(#LocaMsg_Nbr)
+            let $GPCH_AL01_MSG = $GPCH_AL01_MSG || '<MDES>' || $MESSAGE_DESCR || '</MDES>'
+            let #Msg_Nbr       = #Msg_Nbr + 1
+      end-if
+
+      if $MessDept1 = $MESSAGE_ID AND $MESSAGE_LANG = $User_lang
+            let #DeptMsg_Nbr   = #DeptMsg_Nbr + 1
+            let $Dp_Nbr        = to_char(#DeptMsg_Nbr)
+            let $GPCH_AL01_MSG = $GPCH_AL01_MSG || '<MDES>' || $MESSAGE_DESCR || '</MDES>'
+            let #Msg_Nbr       = #Msg_Nbr + 1
+      end-if
+
+      if $MessEmplid1 = $MESSAGE_ID AND $MESSAGE_LANG = $User_lang
+            let #EmplidMsg_Nbr = #EmplidMsg_Nbr + 1
+            let $Em_Nbr        = to_char(#EmplidMsg_Nbr)
+            let $GPCH_AL01_MSG = $GPCH_AL01_MSG || '<MDES>' || $MESSAGE_DESCR || '</MDES>'
+            let #Msg_Nbr       = #Msg_Nbr + 1
+      end-if
+
+      Add 1 to #mi
+
+    End-While
+      let $Msg_Nbr       = to_char(#Msg_Nbr)
+      let $GPCH_AL01_MSG = $GPCH_AL01_MSG || '<MENBR>' || $Msg_Nbr || '</MENBR></MESS>'
+
+      MessEnd:
+
+#DEBUG show '<- Gen-Message'
+end-procedure Gen-Message
+!****************************************************************
+! This function prints employee's payroll relevant data.
+!****************************************************************
+begin-procedure Get-Employee-Data
+#DEBUG show '-> Get-Employee-Data' $Emplid
+
+   do Format-DateTime($glob_p_birthdate, $Birthdate, {DEFDATE}, '', '')
+   do Format-DateTime($glob_p_orig_hire_dt, $Orig_Hire_Dt, {DEFDATE}, '', '')
+
+   if $glob_mt_addr = '02'
+
+      do Get-Emp-Address($Emplid,$Ctl_Curr_Pay_End_Dt,$Al_Empl_Addr_Type,$ADDLINE1,$ADDLINE2,$ADDLINE3,$ADDLINE31,
+                  $ADDLINE4,$ADDLINE5,$ADDLINE6,$Full_Name,$FirstName,$LastName,$NAME_PREFIX,
+                   $NAME_TITLE,$NAME_ROYAL_PREFIX,$NAME_ROYAL_SUFFIX,$Phone,$Email,$CITY,$STATE,$POSTAL)
+
+
+      do Get-Location-Address($Location,$Ctl_Curr_Pay_End_Dt,$ADDLINE1,$ADDLINE2,$ADDLINE3,$ADDLINE31,
+                   $ADDLINE4,$ADDLINE5,$ADDLINE6,$LOCATION_DESCR,$LOCATION_DESCRSHORT,$CITY,$STATE,$POSTAL)
+
+   else
+      do Get-Emp-Address($Emplid,$Ctl_Curr_Pay_End_Dt,$Al_Empl_Addr_Type,$ADDLINE1,$ADDLINE2,$ADDLINE3,$ADDLINE31,
+                   $ADDLINE4,$ADDLINE5,$ADDLINE6,$Full_Name,$FirstName,$LastName,$NAME_PREFIX,
+                   $NAME_TITLE,$NAME_ROYAL_PREFIX,$NAME_ROYAL_SUFFIX,$Phone,$Email,$CITY,$STATE,$POSTAL)
+   end-if
+
+
+
+   Lookup Get_Bank_Data $Emplid $Return_Bank
+
+   if Not Isnull ($Return_Bank)
+      Unstring $Return_Bank by ';' into $Bank $Return_Bank1
+      Unstring $Return_Bank1 by '&' into $BLZ $Kontonummer
+      let $Bank        =  rtrim($Bank,' ')
+      let $BLZ         =  rtrim($BLZ,' ')
+      let $Kontonummer =  rtrim($Kontonummer,' ')
+   end-if
+
+#DEBUG show '<- Get-Employee-Data'
+end-procedure
+!**************************************************
+! This function prints employee's payroll relevant
+! data. The fields that are reported and the layout
+! are subject to customization.
+!**************************************************
+begin-procedure Print-Employee-Data
+#DEBUG show '-> Print-Employee-Data'
+
+   if $glob_p_sex = 'M'
+      let $NAME_PREFIX = rtrim(ltrim($HD_MR,' '),' ')
+   else
+      let $NAME_PREFIX = rtrim(ltrim($HD_MRS,' '),' ')
+   end-if
+
+   let $Name_Prefix_Title = ''
+   concat $NAME_PREFIX with $Name_Prefix_Title
+   concat ' ' with $Name_Prefix_Title
+   concat $NAME_TITLE with  $Name_Prefix_Title
+
+!******generate personal data****************
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || ' <PDAT>'
+
+   let $EmplCode = rtrim($EmplId,' ')
+   concat '-' with $EmplCode
+   concat $Empl_Rcd_Num with $EmplCode
+
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<ID>'    || $EmplCode || '</ID>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<TIT>'   || $Name_Prefix_Title || '</TIT>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<NAM>'   || $Full_Name || '</NAM>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<PAD2>'  || $ADDLINE2 || '</PAD2>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<PAD3>'  || $ADDLINE3 || '</PAD3>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<PAD31>' || $ADDLINE31 || '</PAD31>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<PAD4>'  || $ADDLINE4 || '</PAD4>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<PAD5>'  || $ADDLINE5 || '</PAD5>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '</PDAT>'
+
+!******generate Company data****************
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || ' <CDAT>'
+   let $TELEPHONE1 = ''
+   concat $TELEPHONE with $TELEPHONE1
+   concat ' ' with  $TELEPHONE1
+   concat $Busn_Phone with $TELEPHONE1
+
+   let $TELEFAX1 = ''
+   concat $TELEFAX with $TELEFAX1
+   concat ' ' with $TELEFAX1
+   concat $Fax_Phone with $TELEFAX1
+
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<ENT>' || $Cpdescr || '</ENT>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<CAD2>' || $Cpline2 || '</CAD2>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<CAD3>' || $Cpline3 || '</CAD3>'
+
+   if $Cpline31 <> ''
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<CAD31>' || $Cpline31 || '</CAD31>'
+   end-if
+
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<TEL>' || $TELEPHONE1 || '</TEL>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<FAX>' || $TELEFAX1 || '</FAX>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<OTR>' || $Otr_Phone || '</OTR>'
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '</CDAT>'
+
+!******generate vacation data****************
+
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || ' <VAC>'
+   if $Print_Vacation = 'Y'
+
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || ' <BPY>'
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<DES>' || $BALPY || '</DES>'
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<VAL>' || $DE_AB_VACENT_PYEAR || '</VAL></BPY>'
+
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || ' <NTD>'
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<DES>' || $ENTIT || '</DES>'
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<VAL>' || $DE_AB_VACENT_ENT || '</VAL></NTD>'
+
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || ' <TAK>'
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<DES>' || $TAKEN || '</DES>'
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<VAL>' || $DE_AB_VACENT_TAKE || '</VAL></TAK>'
+
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || ' <BAL>'
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<DES>' || $ABSBAL || '</DES>'
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '<VAL>' || $DE_AB_VACENT_BAL || '</VAL></BAL></VAC>'
+
+   else
+
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || 'N</VAC>'
+
+   end-if
+
+#DEBUG show '<- Print-Employee-Data'
+end-procedure
+!************************************************
+begin-procedure Print-Labels
+
+   let $column1        = $FACTOR || '/' || $BASE
+   let $column2        = $HOUR   || '/' || $PERCENT
+   let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || ' <HFR2><COL1>BL</COL1><COL2>' || $column1 || '</COL2><COL3>' || $column2 || '</COL3><COL4>' || $AMOUNT || '</COL4><COL5>' || $SUM || '</COL5></HFR2>'
+
+end-procedure
+!****************************************************************
+begin-procedure Get-Bank-Footer
+#DEBUG show '-> Get-Bank-Footer '
+
+   let #Tran_Bank_Tot = 0
+
+begin-SELECT on-error=give_warning
+A.BANK_NM
+PBD.GPCH_BK_TRNST_RCVR
+PBD.GPCH_BK_ACCT_RCVR
+PBD.GP_PMT_AMT
+PBD.DEBIT_DT
+
+  let $Tran_Bank_Nm =  rtrim(&A.BANK_NM ,' ')
+  let $Tran_Bank_cd =  rtrim(&PBD.GPCH_BK_TRNST_RCVR,' ')
+  let $Tran_Bank_Ac =  rtrim(&PBD.GPCH_BK_ACCT_RCVR ,' ')
+  let #Tran_Bank_Amt = &PBD.GP_PMT_AMT
+
+  let #Tran_Bank_Tot = #Tran_Bank_Tot + #Tran_Bank_Amt
+
+  do Format-Number (#Tran_Bank_Amt, $Tran_Bank_Amt, '9,999,999.99mi')
+
+  let $GPCH_AL01_FOOT = $GPCH_AL01_FOOT || '<FR3><TRA>' || $Tran_Bank_Nm || '</TRA><VLD>' || $Tran_Bank_cd || '</VLD>'  || '<BNKDT>' || $Tran_Bank_Ac || '</BNKDT><BNKTO>' || $Tran_Bank_Amt || '</BNKTO></FR3>'
+
+FROM PS_GPCH_BK_XFER_EE PBD , PS_BANK_EC_TBL A
+WHERE PBD.GPCH_BK_CNTRY_RCVR = A.COUNTRY_CD
+AND   PBD.GPCH_BK_TRNST_RCVR = A.BANK_CD
+AND   PBD.EMPLID           = $EmplId
+AND   PBD.EMPL_RCD         = #Empl_Rcd
+[$Cal_Run_Id_Crit]
+[$Cal_Id_Crit]
+[$PayEntity_Crit]
+End-Select
+
+begin-SELECT on-error=give_warning
+PS.GP_PMT_AMT
+PS.DEBIT_DT
+PS.PAYMENT_MTHD
+
+
+
+  let $PAYMENT_MTHD =  rtrim(&PS.PAYMENT_MTHD,' ')
+
+  evaluate $PAYMENT_MTHD
+  when = 'A'
+    let $Tran_Bank_Nm =  $HD_CASH
+    break
+  when = 'C'
+    let $Tran_Bank_Nm =  $HD_CHEQUE
+    break
+  when-other
+    let $Tran_Bank_Nm =  $HD_POSTAL
+    break
+  End-Evaluate
+
+  let $Tran_Bank_cd =  ' '
+  let $Tran_Bank_Ac =  ' '
+  let #Tran_Bank_Amt = &PS.GP_PMT_AMT
+
+  let #Tran_Bank_Tot = #Tran_Bank_Tot + #Tran_Bank_Amt
+
+  do Format-Number (#Tran_Bank_Amt, $Tran_Bank_Amt, '9,999,999.99mi')
+
+  let $GPCH_AL01_FOOT = $GPCH_AL01_FOOT || '<FR3><TRA>' || $Tran_Bank_Nm || '</TRA><VLD>' || $Tran_Bank_cd || '</VLD>'  || '<BNKDT>' || $Tran_Bank_Ac || '</BNKDT><BNKTO>' || $Tran_Bank_Amt || '</BNKTO></FR3>'
+
+FROM PS_GPCH_BK_XFER_EE PS
+WHERE PS.GPCH_BK_CNTRY_RCVR = ' '
+AND   PS.GPCH_BK_TRNST_RCVR = ' '
+AND   PS.EMPLID             = $EmplId
+AND   PS.EMPL_RCD           = #Empl_Rcd
+[$Cal_Run_Id_Crit_PS]
+[$Cal_Id_Crit_PS]
+[$PayEntity_Crit_PS]
+End-Select
+
+
+  do Get-Payment-Date
+  do Format-Number (#Tran_Bank_Tot, $Tran_Bank_Tot, '9,999,999.99mi')
+
+
+#DEBUG show '<- Get-Bank-Footer '
+end-procedure
+!****************************************************************
+Begin-Procedure Get-Payment-Date
+#DEBUG show '-> Get-Payment-Date' $Paygrp
+
+begin-SELECT on-error=give_warning
+PBD.PYMT_DT
+  let $Cal_Curr_Pymt_End_Dt = &PBD.PYMT_DT
+FROM PS_GP_CALENDAR PBD
+WHERE PBD.GP_PAYGROUP = $Paygrp
+[$Cal_Id_Crit]
+End-Select
+
+do Format-DateTime(&PBD.PYMT_DT, $Tran_Bank_Dt, {DEFDATE}, '', '')
+
+#DEBUG show '<- Get-Payment-Date'
+End-Procedure Get-Payment-Date
+!****************************************************************
+begin-procedure Get-Bank-Data
+#DEBUG show '-> Get-Bank-Data'
+      #ifdef DB2ALL
+      let $Where_Bank_Data = 'B2.BANK_CD=B3.BANK_CD '
+                   || ' AND B2.COUNTRY_CD = B3.COUNTRY_CD '
+                   || ' AND PBD.EMPLID = B1.EMPLID '
+                   || ' AND B1.EMPLID = B2.EMPLID '
+                   || ' AND B1.ACCOUNT_ID = B2.ACCOUNT_ID '
+                   || ' AND B1.PRIMARY_ACCT_IND = ''Y'''
+                   || ' AND B1.EFFDT = (SELECT MAX(EFFDT) FROM PS_GP_NET_DIST_DTL B4 '
+                                  || '  WHERE B1.EMPLID=B4.EMPLID '
+                                  || '  AND   B1.EMPL_RCD=B4.EMPL_RCD '
+                                  || '  AND   B1.EFFDT <= '
+                                  ||'CAST(' ||''''||$Ctl_Curr_Pay_End_Dt||''''||' AS DATE))' 
+                   || $Cal_Run_Id_Crit
+                   || $Cal_Id_Crit
+                   || $PayEntity_Crit
+                   || $Location_Crit
+                   || $Dept_Crit
+                   || $PayGroup_Crit
+                   || $Emplid_Criteria
+
+        #else
+                  let $Where_Bank_Data = 'B2.BANK_CD=B3.BANK_CD '
+                   || ' AND B2.COUNTRY_CD = B3.COUNTRY_CD '
+                   || ' AND PBD.EMPLID = B1.EMPLID '
+                   || ' AND B1.EMPLID = B2.EMPLID '
+                   || ' AND B1.ACCOUNT_ID = B2.ACCOUNT_ID '
+                   || ' AND B1.PRIMARY_ACCT_IND = ''Y'''
+                   || ' AND B1.EFFDT = (SELECT MAX(EFFDT) FROM PS_GP_NET_DIST_DTL B4 '
+                                  || '  WHERE B1.EMPLID=B4.EMPLID '
+                                  || '  AND   B1.EMPL_RCD=B4.EMPL_RCD '
+                                  || '  AND   B1.EFFDT <= '
+                                  ||''''||$Ctl_Curr_Pay_End_Dt||''''||')'
+                   || $Cal_Run_Id_Crit
+                   || $Cal_Id_Crit
+                   || $PayEntity_Crit
+                   || $Location_Crit
+                   || $Dept_Crit
+                   || $PayGroup_Crit
+                   || $Emplid_Criteria
+        #end-if
+
+      #Debug show $Where_Bank_Data
+
+      #ifdef MICROSOFT
+           Load-Lookup name = Get_Bank_Data
+           Table          = 'PS_GPCH_RP_0001 PBD , PS_GP_NET_DIST_DTL B1 , PS_PYE_BANKACCT B2 , PS_BANK_EC_TBL B3'
+           Key          = 'B1.EMPLID'
+           Return_Value     = 'B3.BANK_NM+'';''+B3.BANK_CD+''&''+B2.ACCOUNT_EC_ID'
+           Where          = $Where_Bank_Data
+      #else
+           Load-Lookup name = Get_Bank_Data
+           Table          = 'PS_GPCH_RP_0001 PBD , PS_GP_NET_DIST_DTL B1 , PS_PYE_BANKACCT B2 , PS_BANK_EC_TBL B3'
+           Key          = 'B1.EMPLID'
+           Return_Value     = 'B3.BANK_NM||'';''||B3.BANK_CD||''&''||B2.ACCOUNT_EC_ID'
+           Where          = $Where_Bank_Data
+      #end-if
+
+#DEBUG show '<- Get-Bank-Data'
+end-procedure
+
+!****************************************************************
+Begin-procedure Gen_Foot_Inf_Per_Employee
+
+   let $GPCH_AL01_FOOT = ' <FOOT>'
+   let $fot            = '* = '
+   concat $PREVMONTH with  $fot
+   let $GPCH_AL01_FOOT = $GPCH_AL01_FOOT || ' <FR1><PRE>' || $fot || '</PRE><USCL></USCL></FR1>'
+   do Get-Bank-Footer                              !within this file
+   let $GPCH_AL01_FOOT = $GPCH_AL01_FOOT || '<FR2><TRA>' || $TRANSFER || '</TRA><VLD>' || $VALID || '</VLD>'  || '<BNKDT>' || $Tran_Bank_Dt || '</BNKDT><BNKTO>' || $Tran_Bank_Tot || '</BNKTO></FR2></FOOT></ROOT>'
+
+End-procedure Gen_Foot_Inf_Per_Employee
+!******************************************************************************
+Begin-procedure Gen_Head_Inf_Per_Employee
+
+  let $GPCH_AL01_HEAD = '<?xml version="1.0" encoding="ISO-8859-1"?> <ROOT> <HEAD>'
+
+  if $foot = 'NO'
+      let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || 'N</HEAD>'
+     goto noheader
+  end-if
+
+  do Get-Employee-Data                  !within this file
+  do Print-Employee-Data                !within this file
+
+  let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || ' <HFO>'
+
+  do Print-End-Dates                    !within this file
+
+
+  let $REP_TITLE1     = $TITLE1 || $Curr_Pay_End_Dt
+  let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || ' <HFR1><RTIT>' || $REP_TITLE1 || '</RTIT><PAG>' || $PAGE || '</PAG><FRT>' || $FROM || '</FRT><USCL></USCL></HFR1>'
+
+
+  do Print-Labels                       !within this file
+  let $GPCH_AL01_HEAD = $GPCH_AL01_HEAD || '</HFO></HEAD>'
+
+  noheader:
+
+End-procedure Gen_Head_Inf_Per_Employee
+!****************************************************************************
+begin-procedure Let-Long-String
+
+let $LongStr= $GPCH_AL01_HEAD || $GPCH_AL01_BODY || $GPCH_AL01_MSG || $GPCH_AL01_FOOT
+
+end-procedure Let-Long-String
+!******************************************************************************************
+begin-procedure Commit_Trans
+  #ifdef SYBASE
+    Begin-Sql on-error=give_warning
+      COMMIT TRANSACTION
+    End-SQL
+  #endif
+
+  #ifdef MICROSOFT
+   !  Begin-Sql on-error=give_warning
+   !    COMMIT TRANSACTION
+   !  End-SQL
+  #endif
+
+  #ifdef INFORMIX
+     Begin-Sql on-error=give_warning
+     COMMIT WORK
+     End-SQL
+  #endif
+
+  #ifdef ORACLE
+      COMMIT
+  #endif
+end-procedure
+
+
+!******************************************************************************************
+begin-procedure Begin_Trans
+  #ifdef SYBASE
+    Begin-Sql on-error=give_warning
+      BEGIN TRANSACTION
+    End-SQL
+  #endif
+
+  #ifdef MICROSOFT
+    !  Begin-Sql on-error=give_warning
+    !  BEGIN TRANSACTION
+    !  End-SQL
+  #endif
+
+  #ifdef INFORMIX
+      Begin-Sql on-error=give_warning
+      BEGIN WORK
+      End-SQL
+  #endif
+end-procedure
+
+!**********************************************************************
+begin-procedure Get-Interface-Options
+#debug show  '-> Get-Interface-Options'
+ 
+   let $Prd_Enddt = &GPCH_RUN_CNTL.GPCH_AL_CPAY_ENDDT
+   let #Gr_Seq    = 0
+
+   if $Print_Opt = '1'
+      if $Final_Per = 'Y'
+            do Insert-New-Payslip-Row($EmplId,$Ctl_Cal_Run_Id,#Empl_Rcd,#Gr_Seq,$PayEntity,$Deptid,$Company,$Prd_Enddt, $Final_Per,$Al_Al01_Print,$glob_mt_addr,$Al_Empl_Addr_Type,$GP_CALC_TS,$LongStr,#Net_Sslp,#Gross_Sslp)
+      else
+            do Insert-New-Payslip-Row($EmplId,$Ctl_Cal_Run_Id,#Empl_Rcd,#Gr_Seq,$PayEntity,$Deptid,$Company,$Prd_Enddt, $Final_Per,$Al_Al01_Print,$glob_mt_addr,$Al_Empl_Addr_Type,$GP_CALC_TS,$LongStr,#Net_Sslp,#Gross_Sslp)
+      end-if
+   end-if
+
+   if $Print_Opt = '2'
+      if $Final_Per = 'Y'
+            do Insert-New-Payslip-Row($EmplId,$Ctl_Cal_Run_Id,#Empl_Rcd,#Gr_Seq,$PayEntity,$Deptid,$Company,$Prd_Enddt, $Final_Per,$Al_Al01_Print,$glob_mt_addr,$Al_Empl_Addr_Type,$GP_CALC_TS,$LongStr,#Net_Sslp,#Gross_Sslp)
+      else
+            do Insert-New-Payslip-Row($EmplId,$Ctl_Cal_Run_Id,#Empl_Rcd,#Gr_Seq,$PayEntity,$Deptid,$Company,$Prd_Enddt, $Final_Per,$Al_Al01_Print,$glob_mt_addr,$Al_Empl_Addr_Type,$GP_CALC_TS,$LongStr,#Net_Sslp,#Gross_Sslp)
+      end-if
+   end-if
+
+#debug show   '<- Get-Interface-Options'
+end-procedure Get-Interface-Options
+!***********************************************************************
+begin-procedure Insert-New-Payslip-Row($Empl,$Ctl_Cal_Run_Id,#E_Rec,#NewSeqNbr,$PayEntity,$Deptid,$Company,$Prddt,$Fin_Per,
+                                       $AL_Al01_Print,$glob_mt_addr,$Al_Empl_Addr_Type,$GP_CALC_TS,$LStr,#Net_ss_pslp,#Gross_ss_pslp)
+#debug show '-> Insert-New-Payslip-Row' $Empl ' , ' $Al_Empl_Addr_Type
+do Begin_Trans
+
+
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCH_RP_AL10ONL
+(EMPLID,CAL_RUN_ID,EMPL_RCD,GPCH_RP_SEQUENCE,PAY_ENTITY,DEPTID,COMPANY,GPCH_AL_CPAY_ENDDT,GPCH_RC_FINAL_PR,
+ GPCH_AL_AL01_PRINT,GPCH_AL_AL01_ADDR, ADDRESS_TYPE,GP_CALC_TS,NET_PAY,GROSS_AMT,GPCH_RP_AL1_DATA)
+VALUES
+($Empl,$Ctl_Cal_Run_Id,#E_Rec,#NewSeqNbr,$PayEntity,$Deptid,$Company,$Prddt,$Fin_Per,$AL_Al01_Print,$glob_mt_addr,
+ $Al_Empl_Addr_Type,to_date($GP_CALC_TS,'DD-MON-YYYY_HH:MI:SS_AM'),#Net_ss_pslp,#Gross_ss_pslp,$LStr)
+End-Sql
+#else
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCH_RP_AL10ONL
+(EMPLID,CAL_RUN_ID,EMPL_RCD,GPCH_RP_SEQUENCE,PAY_ENTITY,DEPTID,COMPANY,GPCH_AL_CPAY_ENDDT,GPCH_RC_FINAL_PR,
+ GPCH_AL_AL01_PRINT,GPCH_AL_AL01_ADDR, ADDRESS_TYPE,GP_CALC_TS,NET_PAY,GROSS_AMT,GPCH_RP_AL1_DATA)
+VALUES
+($Empl,$Ctl_Cal_Run_Id,#E_Rec,#NewSeqNbr,$PayEntity,$Deptid,$Company,$Prddt,$Fin_Per,$AL_Al01_Print,$glob_mt_addr,
+ $Al_Empl_Addr_Type,$GP_CALC_TS,#Net_ss_pslp,#Gross_ss_pslp,$LStr)
+End-Sql
+#endif
+
+do Commit_Trans
+#debug show '<- Insert-New-Payslip-Row'
+end-procedure Insert-New-Payslip-Row
+
+!***********************************************************************
+begin-procedure Get-Tag-Contents($Sour_Str,$Bgn_Tag_Des,$End_Tag_Des,:$Tag_Cont)
+
+let $Sour_Str = ltrim($Sour_Str,' ')
+let #Bgn_Cont = instr($Sour_Str,$Bgn_Tag_Des,1)
+let #End_Cont = instr($Sour_Str,$End_Tag_Des,1)
+let #SStr_Len = length($End_Tag_Des)
+let #Len_Cont = #End_Cont + #SStr_Len - #Bgn_Cont
+let $Tag_Cont = substr($Sour_Str,#Bgn_Cont,#Len_Cont)
+
+
+end-procedure
+!*************************************************************************
+begin-procedure Get-Tag-Values($Sour_Str,$Bgn_Tag_Des,$End_Tag_Des,:$Tag_Val)
+
+let $Sour_Str = ltrim($Sour_Str,' ')
+let #Bgn_Cont = instr($Sour_Str,$Bgn_Tag_Des,1)
+let #End_Cont = instr($Sour_Str,$End_Tag_Des,1)
+let #SStr_Len = length($End_Tag_Des)
+let #Len_Cont = #End_Cont - #Bgn_Cont - #SStr_Len + 1
+let #Bgn_Cont = #Bgn_Cont + #SStr_Len - 1
+let $Tag_Val  = substr($Sour_Str,#Bgn_Cont,#Len_Cont)
+
+end-procedure
+!*************************************************************************
+begin-procedure Get-Tag-ContentsP($Sour_Str,$Bgn_Tag_Des,$End_Tag_Des,#Body_Start,:$Tag_Cont,:#End_Cont)
+#debug show  '-> Get-Tag-ContentsP'
+
+let $Sour_Str = ltrim($Sour_Str,' ')
+let #Bgn_Cont = instr($Sour_Str,$Bgn_Tag_Des,#Body_Start)
+let #End_Cont = instr($Sour_Str,$End_Tag_Des,#Body_Start)
+let #SStr_Len = length($End_Tag_Des)
+let #Len_Cont = #End_Cont + #SStr_Len - #Bgn_Cont
+let $Tag_Cont = substr($Sour_Str,#Bgn_Cont,#Len_Cont)
+
+#debug show '<- Get-Tag-ContentsP'
+end-procedure
+!***********************************************************************
+begin-procedure Get-Mess-Contents($Sour_Str,#Search_Bgn,$Bgn_Tag_Des,$End_Tag_Des,:$Mess_Cont)
+
+let $Sour_Str = ltrim($Sour_Str,' ')
+let #Bgn_Cont = instr($Sour_Str,$Bgn_Tag_Des,#Search_Bgn)
+let #End_Cont = instr($Sour_Str,$End_Tag_Des,#Search_Bgn)
+let #SStr_Len = length($End_Tag_Des)
+let #Len_Cont = #End_Cont - #Bgn_Cont - #SStr_Len + 1
+let #Bgn_Cont = #Bgn_Cont + #SStr_Len - 1
+let $Mess_Cont = substr($Sour_Str,#Bgn_Cont,#Len_Cont)
+
+end-procedure
+
+!***********************************************************************
+begin-procedure Split-LongStr
+
+   let #Next_PBL_Pos = 1
+
+   do Get-Tag-Contents($PayData,'<HEAD>','</HEAD>',$Str_Head)
+   do Split-Head
+
+   do Get-Tag-Contents($PayData,'<FOOT>','</FOOT>',$Str_Foot)
+   do Split-Foot
+
+   do Get-Tag-Contents($PayData,'<BODY>','</BODY>',$Str_Body)
+   do Split-Print-Body
+
+
+   do Get-Tag-Contents($PayData,'<MESS>','</MESS>',$Str_Mess)
+   do Split-Print-Mess
+
+end-procedure Split-LongStr
+!***********************************************************************
+begin-procedure Split-Head
+
+   let $Chk_No_Head = substr($Str_Head,7,1)
+   if $Chk_No_Head = 'N'
+      Display 'Es wurde kein Header generiert'
+      goto nohead
+   end-if
+
+   do Get-Tag-Contents($Str_Head,'<PDAT>','</PDAT>',$PDat)
+   if $PDat <> ''
+      do Get-Tag-Values($PDat,'<ID>','</ID>',$PH_ID)
+      do Get-Tag-Values($PDat,'<TIT>','</TIT>',$PH_Tit)
+      do Get-Tag-Values($PDat,'<NAM>','</NAM>',$PH_Nam)
+      do Get-Tag-Values($PDat,'<PAD2>','</PAD2>',$PH_PAd2)
+      do Get-Tag-Values($PDat,'<PAD3>','</PAD3>',$PH_PAd3)
+      do Get-Tag-Values($PDat,'<PAD31>','</PAD31>',$PH_PAd31)
+      do Get-Tag-Values($PDat,'<PAD4>','</PAD4>',$PH_PAd4)
+      do Get-Tag-Values($PDat,'<PAD5>','</PAD5>',$PH_PAd5)
+   end-if
+
+   do Get-Tag-Contents($Str_Head,'<CDAT>','</CDAT>',$CDat)
+   if $PDat <> ''
+      do Get-Tag-Values($CDat,'<ENT>','</ENT>',$PH_Ent)
+      do Get-Tag-Values($CDat,'<CAD2>','</CAD2>',$PH_CAd2)
+      do Get-Tag-Values($CDat,'<CAD3>','</CAD3>',$PH_CAd3)
+      do Get-Tag-Values($CDat,'<CAD31>','</CAD31>',$PH_CAd31)
+      do Get-Tag-Values($CDat,'<TEL>','</TEL>',$PH_Tel)
+      do Get-Tag-Values($CDat,'<FAX>','</FAX>',$PH_Fax)
+      do Get-Tag-Values($CDat,'<OTR>','</OTR>',$PH_Otr)
+   end-if
+
+   do Get-Tag-Contents($Str_Head,'<VAC>','</VAC>',$Prin_Vac)
+   if $Prin_Vac <> 'N'
+      do Get-Tag-Contents($Prin_Vac,'<BPY>','</BPY>',$Bpy)
+            do Get-Tag-Values($Bpy,'<DES>','</DES>',$PH_BDes)
+            do Get-Tag-Values($Bpy,'<VAL>','</VAL>',$PH_BVal)
+      do Get-Tag-Contents($Prin_Vac,'<NTD>','</NTD>',$Ntd)
+            do Get-Tag-Values($Ntd,'<DES>','</DES>',$PH_NDes)
+            do Get-Tag-Values($Ntd,'<VAL>','</VAL>',$PH_NVal)
+      do Get-Tag-Contents($Prin_Vac,'<TAK>','</TAK>',$Tak)
+            do Get-Tag-Values($Tak,'<DES>','</DES>',$PH_TDes)
+            do Get-Tag-Values($Tak,'<VAL>','</VAL>',$PH_TVal)
+      do Get-Tag-Contents($Prin_Vac,'<BAL>','</BAL>',$Bal)
+            do Get-Tag-Values($Bal,'<DES>','</DES>',$PH_BaDes)
+            do Get-Tag-Values($Bal,'<VAL>','</VAL>',$PH_BaVal)
+   end-if
+
+   do Get-Tag-Contents($Str_Head,'<HFO>','</HFO>',$Head_Foot)
+   if $Head_Foot <> ''
+      do Get-Tag-Contents($Str_Head,'<HFR1>','</HFR1>',$HF_Row1)
+            do Get-Tag-Values($HF_Row1,'<RTIT>','</RTIT>',$PH_R_Tit)
+            do Get-Tag-Values($HF_Row1,'<PAG>','</PAG>',$PH_Page)
+            do Get-Tag-Values($HF_Row1,'<FRT>','</FRT>',$PH_From)
+      do Get-Tag-Contents($Str_Head,'<HFR2>','</HFR2>',$HF_Row2)
+            do Get-Tag-Values($HF_Row2,'<COL1>','</COL1>',$PH_Col1)
+            do Get-Tag-Values($HF_Row2,'<COL2>','</COL2>',$PH_Col2)
+            do Get-Tag-Values($HF_Row2,'<COL3>','</COL3>',$PH_Col3)
+            do Get-Tag-Values($HF_Row2,'<COL4>','</COL4>',$PH_Col4)
+            do Get-Tag-Values($HF_Row2,'<COL5>','</COL5>',$PH_Col5)
+   end-if
+
+
+nohead:
+
+end-procedure Split-Head
+!*************************************************
+begin-procedure Split-Print-Body
+#Debug Show 'Split-Print-Body -> ' $NewEmployee
+
+   let #Gen_Empl_Count = #Gen_Empl_Count + 1
+
+   do Get-Tag-Values($Str_Body,'<SRS>','</SRS>',$PB_Dat_Rows)
+   do Get-Tag-Values($Str_Body,'<BLL>','</BLL>',$PB_Blank_Rows)
+   let #PB_Dat_Rows   = to_number(edit($PB_Dat_Rows,'999'))
+   let #PB_Blank_Rows = to_number(edit($PB_Blank_Rows,'999'))
+   let #PB_Sum_Rows   = #PB_Dat_Rows + #PB_Blank_Rows
+   let #PB_Count      = 1
+   let #PB_Dat_Count  = 1
+
+   alter-printer
+   point-size = 12
+   font= 3
+
+   let #Body_Start = 1
+
+   #debug show $NewEmployee ' , ' #PB_Dat_Rows ' , ' #PB_Blank_Rows ' , ' #PB_Count ' , ' #PB_Dat_Rows
+
+   while #PB_Count <= #PB_Dat_Rows
+
+      let $PB_Dat_Count = to_char(#PB_Dat_Count)
+      let $Tag_End_Con  = '</BRLINE>'
+      let $Tag_Bgn_Con  = '<BRLINE>'
+      let #Body_Pos     = instr($Str_Body,$Tag_End_Con,#Body_Start)
+      let #Next_PBL_Pos = instr($Str_Body,'<PBL>',#Body_Pos)
+
+      if #Next_PBL_Pos >= #Body_Pos + 7 and #Next_PBL_Pos <= #Body_Pos + 10
+            let $Next_Row_Blank = 'Y'
+      end-if
+
+
+      do Get-Tag-ContentsP($Str_Body,$Tag_Bgn_Con, $Tag_End_Con,#Body_Start,$PB_Row, #Line_Offset)
+      do Get-Tag-Values($PB_Row,'<BLD>','</BLD>',$PB_Bold)
+      do Get-Tag-Values($PB_Row,'<PDES>','</PDES>'  ,$PB_Pin_Descr)
+      do Get-Tag-Values($PB_Row,'<UNT>','</UNT>'  ,$PB_Unit)
+      do Get-Tag-Values($PB_Row,'<RAT>','</RAT>'  ,$PB_Rate)
+      do Get-Tag-Values($PB_Row,'<PER>','</PER>'  ,$PB_Percent)
+      do Get-Tag-Values($PB_Row,'<BAS>','</BAS>'  ,$PB_Base)
+      do Get-Tag-Values($PB_Row,'<AMT>','</AMT>'  ,$PB_Amount)
+      do Get-Tag-Values($PB_Row,'<SUM>','</SUM>'  ,$PB_Sum)
+      do Get-Tag-Values($PB_Row,'<DCUR>','</DCUR>'  ,$PB_Dif_Curr)
+
+      let #Body_Start = #Line_Offset + 1
+
+                  if $PB_Bold = 'Y'
+                        print $PB_Pin_Descr (+1,{colv0})  bold
+                  else
+                        print $PB_Pin_Descr (+1,{colv0})
+                  end-if
+
+                  if $PB_Unit <> '0'
+                        Print $PB_Unit  (0,{colv4})
+                  end-if
+
+
+                  if $PB_Rate <> '0'
+                        Print $PB_Rate  (0,{colv3})
+                  end-if
+
+
+                  if $PB_Percent <> '0'
+                        Print $PB_Percent   (0,{colv4})
+                  end-if
+
+
+                  if $PB_Base <> '0'
+                        Print $PB_Base  (0,{colv3})
+                  end-if
+
+
+                  if $PB_Amount <> '0'
+                        Print $PB_Amount  (0,{colv7})
+                  end-if
+
+
+                  if $PB_Sum <> '0'
+                        if $PB_Bold = 'Y'
+                              Print $PB_Sum   (0,{colv8})  bold
+                        else
+                              Print $PB_Sum   (0,{colv8})
+                        end-if
+                  end-if
+
+                  if $PB_Diff_Cur <> '0'
+                        Print $PB_Diff_Cur (0,{colv9})  bold
+                  end-if
+
+                  let #PB_Dat_Count = #PB_Dat_Count + 1
+
+
+      if $Next_Row_Blank = 'Y'
+            Print ''  (+1,0) !Blank line
+            let $Next_Row_Blank = 'N'
+      end-if
+
+      Add 1 to #PB_Count
+end-while
+
+#debug show 'Split-Print-Body <- '
+end-procedure Split-Print-Body
+!************************************************
+begin-procedure Split-Print-Mess
+   do Get-Tag-Values($Str_Mess,'<MESS>','</MESS>',$PB_Mess)
+   if $PB_Mess <> 'N'
+
+      print '' (+2,0)
+      do Get-Tag-Values($PB_Mess,'<MENBR>','</MENBR>',$PBM_Nbr)
+      let #Mess_Count   = 1
+      let #PBM_Nbr      = to_number($PBM_Nbr)
+      let #Mess_Act_Pos = 1
+
+      while #Mess_Count <= #PBM_Nbr
+            let $MTag_End_Con = '</MDES>'
+            let $MTag_Bgn_Con = '<MDES>'
+            let #Mess_Pos = instr($PB_Mess,$MTag_End_Con,#Mess_Act_Pos)
+            do Get-Mess-Contents($PB_Mess,#Mess_Act_Pos,$MTag_Bgn_Con, $MTag_End_Con,$Mess_Row)
+
+            let $Mess_Row = replace($Mess_Row,'<LNK1>','')
+
+            let $Mess_Row = replace($Mess_Row,'</LNK1>','')
+
+            print $Mess_Row    (+1,8)  Bold wrap 60 3
+            let #Mess_Act_Pos =   #Mess_Pos + 7
+
+            Add 1 to #Mess_Count
+      end-while
+
+   end-if
+
+end-procedure Split-Print-Mess
+!************************************************
+begin-procedure Split-Foot
+       do Get-Tag-Contents($Str_Foot,'<FOOT>','</FOOT>',$PF_Foot)
+
+       #debug show '$PF_Foot = ' $PF_Foot
+
+        do Get-Tag-Contents($PF_Foot,'<FR1>','</FR1>',$PF_Foot_R1)
+                do Get-Tag-Values($PF_Foot_R1,'<PRE>','</PRE>',$PF_Prev)
+        do Get-Tag-Contents($PF_Foot,'<FR2>','</FR2>',$PF_Foot_R2)
+                do Get-Tag-Values($PF_Foot_R2,'<TRA>','</TRA>',$PF_Trans)
+                do Get-Tag-Values($PF_Foot_R2,'<VAL>','</VAL>',$PF_Valid)
+                do Get-Tag-Values($PF_Foot_R2,'<BNKDT>','</BNKDT>',$PF_BNK_Dt)
+                do Get-Tag-Values($PF_Foot_R2,'<BNKTO>','</BNKTO>',$PF_BNK_Tot)
+        let #Offset = 0
+        do Get-Tag-ContentsP($PF_Foot,'<FR3>','</FR3>',#Offset,$PF_Foot_R3, #Offset)
+                do Get-Tag-Values($PF_Foot_R3,'<TRA>','</TRA>',$PF_Trans_R31)
+                do Get-Tag-Values($PF_Foot_R3,'<VAL>','</VAL>',$PF_Valid_R31)
+                do Get-Tag-Values($PF_Foot_R3,'<BNKDT>','</BNKDT>',$PF_BNK_Dt_R31)
+                do Get-Tag-Values($PF_Foot_R3,'<BNKTO>','</BNKTO>',$PF_BNK_Tot_R31)
+
+        #debug show '$PF_Foot_R3 for 31 = ' $PF_Foot_R3 ' #Offset = ' #Offset
+        if #Offset > 0
+        let #Offset = #Offset + 1
+        do Get-Tag-ContentsP($PF_Foot,'<FR3>','</FR3>',#Offset,$PF_Foot_R3, #Offset)
+                do Get-Tag-Values($PF_Foot_R3,'<TRA>','</TRA>',$PF_Trans_R32)
+                do Get-Tag-Values($PF_Foot_R3,'<VAL>','</VAL>',$PF_Valid_R32)
+                do Get-Tag-Values($PF_Foot_R3,'<BNKDT>','</BNKDT>',$PF_BNK_Dt_R32)
+                do Get-Tag-Values($PF_Foot_R3,'<BNKTO>','</BNKTO>',$PF_BNK_Tot_R32)
+        end-if
+
+end-procedure Split-Foot
+
+!***********************************************************************
+begin-procedure Get-Al-Emplmt-1
+
+  let $Al_Empl_Addr_Type = ''
+  let $glob_mt_addr           = '02'
+begin-SELECT on-error=give_warning
+MT.GPCH_AL_AL01_PRINT
+MT.GPCH_AL_AL01_ADDR
+MT.ADDRESS_TYPE
+
+   let $AL_AL01_PRINT         = &MT.GPCH_AL_AL01_PRINT
+   let $glob_mt_addr          = &MT.GPCH_AL_AL01_ADDR
+   let $Al_Empl_Addr_Type     = &MT.ADDRESS_TYPE
+
+   from PS_GPCH_AL_EMPLMT MT
+WHERE MT.EMPLID    = $EmplId
+!and   MT.EMPL_RCD  = #Empl_Rcd
+AND   MT.COMPANY   = $Company
+AND   MT.EFFDT     = (SELECT MAX(EFFDT) FROM PS_GPCH_AL_EMPLMT MT2
+                      WHERE MT.EMPLID = MT2.EMPLID
+                      and MT.COMPANY   = MT2.COMPANY
+                      AND   MT2.EFFDT <= $Ctl_Curr_Pay_End_Dt)
+End-Select
+
+    if rtrim($Al_Empl_Addr_Type,' ') = ''
+      let $Al_Empl_Addr_Type  = $Addr_Type
+    end-if
+
+end-procedure
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Init                                             *
+! Initialize variables that we’ll use for ePay processing              *
+!***********************************************************************
+begin-procedure GP-ePay-Init
+
+  do JobCheck
+  let $sql-statement = 'GPCHAL10.sqr, GP-ePay-Init '
+
+  do Check-ePay-installed ($ePay_Installed)
+
+  If $ePay_Installed = 'Y' and  $RunsInEpayJob='Y'
+
+    let #eV4 =  To_number($prcs_process_instance)
+
+    !* have the Output Working Directory from the Process parameters table
+    do Get-Output-Wrk-Directory(#eV4, $PRCSOUTPUTDIR, $PRCSNAME)
+
+    !* have the URL id from the Payslip option table
+    do Get-ePay-URLid ('CHE', $eV18)
+
+    !* Global ePay variable settings used in GP-ePay procedures in this SQR
+    let $eV1 = $prcs_oprid
+    let $eV2 = $prcs_run_cntl_id
+    let $eV3 = $ReportID
+
+    let #page-total = 1
+
+  End-If
+
+end-procedure
+
+!GP-ePay-Init
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Guide                                            *
+! Insert one row per payslip into the temporary guide table for ePay   *
+!***********************************************************************
+
+begin-procedure GP-ePay-Guide
+
+   let $sql-statement = 'GPCHAL10.sqr,GP-ePay-Guide'
+
+
+   if $ePay_Installed = 'Y' and  $RunsInEpayJob='Y'
+
+      ! For CHE we do need to retrieve the runtype value other CE's may have it already
+      do Get-RUN-TYPE
+     
+      if $RUN_TYPE = ''
+         let $RUN_TYPE = 'KWPAY'
+      end-if
+
+      let $page-count = to_char(#PayslipPageCount)
+      let $eV5  = ltrim(rtrim($Prn_Emplid  , ' '), ' ')
+      let $eV6  = ltrim(rtrim($CAL_RUN_ID_M, ' '), ' ')
+      let $eV7  = 'GPCHE'
+      let $eV8  = $eV6 || '_' || $Prn_Paygrp || '_' || $eV5 || '_' || to_char(#Prn_Emplrcd) || $page-count !gp epay payslip id
+      let $eV8  = rtrim($eV8, ' ') || '_' || $page-count
+      let $eV9  = $mpslp_PYMT_DT
+      let $eV10 = $mpslp_PRD_END_DT
+      let $eV11 = $mpslp_PRD_BGN_DT
+      do Get-SS_NET_VAL
+                 let #eV12 = #SS_NET_PAYMENT
+    
+      let $eV13 = $Prn_Deptid
+      if  rtrim($eV13,' ') = ''
+         let $eV13 = 'No DESCRIPTION'
+      else
+         do Get-Department
+         let $eV13 = $Department
+      end-if
+      let $eV14 = rtrim($RUN_TYPE, ' ')
+      let $eV15 = 'ORIG'                           ! payslip status ORIGINAL
+      let $eV16 = $eV6 || '_' ||$eV7 || '_' ||$eV8 || '.pdf'      !sysfilename of the payslip pdf since emplid is in payslip id-don't add emplid
+      let $eV17 = $eV16                                           !userfilename  - what the payee sees filename as
+      let #eV19 = #page-total                                     !begin page number of payslip in output report
+      let #eV20 = #page-total + #PayslipPageCount - 1                   !end:- page number of payslip in output report
+      let #page-total = #page-total + #PayslipPageCount
+
+      !Input:OPRID, RUN_CNTL_ID, PROCNAME, DATAINST, EMPLID, CAL_RUN_ID, SRCPRODUCT,
+      !GP_PSLP_ID,PYMT_DT,PRD_END_DT,PRD_BGN_DT,#NET_PAY,Payslip DESCR,RUN_TYPE,
+      !PSLP_STATUS,ATTACHSYSFILENAME, ATTACHUSERFILE,FILEURLID, BGNPGNBR,ENDPGNBR
+
+      show $eV1 ' , ' $eV2 ' , ' $eV3 ' , ' #eV4 ' , ' $eV5 ' , ' $eV6 ' , ' $eV7 ' , ' $eV8 ' , '
+      show $eV9 ' , ' $eV10 ' , ' $eV11 ' , ' #eV12 ' , ' $eV13 ' , ' $eV14 ' , ' $eV15 ' , ' $eV16 ' , '
+      show $eV17 ' , ' $eV18 ' , ' #eV19 ' , ' #eV20'
+      do Update_pslp_id
+      do Insert-ePay-Guide-Data($eV1,$eV2,$eV3,#eV4,$eV5,$eV6,$eV7,$eV8,$eV9,$eV10,$eV11,#eV12,$eV13,$eV14,$eV15,$eV16,$eV17,$eV18,#eV19,#eV20)
+
+   end-If
+
+end-procedure ! GP-ePay-Guide
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Control                                          *
+! Insert one row per report into the epay run control table            *
+!***********************************************************************
+begin-procedure GP-ePay-Control
+
+let $sql-statement = 'GPCHAL10.sqr,GP-ePay-Control '
+
+ If $ePay_Installed = 'Y' and  $RunsInEpayJob='Y'
+
+! After copy command is supplied and implemented we will provide a procedure in gpsspslp.sqc to close the
+! report file and make a copy of it – storing in the files directory.  PSLP_SOURCEFILE AND OR
+! PSLP_SOURCELOC variables may be effected by this change.
+
+   !Do Copy-Report-For-ePay
+   let $rptid = lower($ReportID)
+   let $eCV7  = $rptid || '_' || $prcs_process_instance || '.PDF'
+   let $eCV8  = rtrim($PRCSOUTPUTDIR, ' ')
+
+   ! Input:OPRID,RUN_CNTL_ID,PROCNAME,SPLIT_IND,ATCH_IND,CTLFILE,SOURCEFILE,
+   ! SOURCELOC,WORKINGLOC,FILELAYOUT,DATAINST,FILEURLID,CLEANUP
+
+  show $eV1 ' , ' $eV2 ' , ' $eV3 ' , ' $eCV7 ' , ' $eCV8 ' , ' #eV4 ' , ' $eV18
+  do Insert-ePay-RunControl($eV1,$eV2,$eV3,'Y', 'Y', ' ', $eCV7,$eCV8,' ',' ',#eV4,$eV18,'Y')
+
+ End-If
+
+end-procedure !GP-ePay-Control
+!***********************************************************************
+! WhoAmI - is process run as part of epay prep or standalone?
+!***********************************************************************
+
+begin-procedure JobCheck
+
+let $RunsInEpayJob = 'N'
+let #prcs_inst = To_number($prcs_process_instance)
+
+begin-SELECT on-error=give_warning
+JOBINSTANCE  &INST
+  let #inst = &INST
+  if  #inst  > 0
+        let $RunsInEpayJob='Y'
+  end-if
+FROM PSPRCSRQST WHERE JOBINSTANCE =
+(SELECT JOBINSTANCE FROM PSPRCSRQST WHERE PRCSINSTANCE = #prcs_inst )
+AND PRCSNAME = 'GP_EPAY'
+END-SELECT
+
+#debug show 'result: '  $RunsInEpayJob
+#debug show 'instance: '  #prcs_inst
+
+end-procedure
+
+!***********************************************************************
+! Get-RUN-TYPE                                                         *
+!***********************************************************************
+begin-procedure Get-RUN-TYPE
+
+let $RUN_TYPE           =  ''
+let $sql-statement = 'GPCHAL10.sqr,Select , Get-RUN-TYPE'
+BEGIN-SELECT on-error=give_warning
+PS.RUN_TYPE               &PS.RUN_TYPE
+   let $RUN_TYPE = rtrim(&PS.RUN_TYPE, ' ')
+FROM   PS_GP_CALENDAR  PS
+WHERE  PS.GP_PAYGROUP  = $Paygrp
+[$Cal_Id_Crit_PS]
+END-SELECT
+end-procedure
+!****************************************************
+Begin-procedure Get_English_Strings($ReportID)
+#Debug show 'Get_English_Strings -> '  $ReportID
+
+evaluate $ReportID
+       when = 'GPCHTX06'
+           do Get_Eng_GPCHTX06
+           break
+        when = 'GPCHAL01'
+           do Get_Eng_GPCHAL01
+           break
+        when = 'GPCHGLOB'
+           do Get_Eng_GPCHGLOB
+           break
+        when-other
+           break
+ end-evaluate
+#Debug show 'Get_English_Strings <- ' #_str_cnt
+End-procedure Get_English_Strings
+!****************************************************************************
+Begin-procedure Get_German_Strings($ReportID)
+#Debug show 'Get_German_Strings -> '  $ReportID
+
+evaluate $ReportID
+        when = 'GPCHTX06'
+           do Get_Ger_GPCHTX06
+           break
+        when = 'GPCHAL01'
+           do Get_Ger_GPCHAL01
+           break
+        when = 'GPCHGLOB'
+           do Get_Ger_GPCHGLOB
+           break
+        when-other
+           break
+ end-evaluate
+
+#Debug show 'Get_German_Strings <- ' #_str_cnt
+End-procedure Get_German_Strings
+!****************************************************************************
+Begin-procedure Get_Italian_Strings($ReportID)
+#Debug show 'Get_Italian_Strings -> '  $ReportID
+
+ evaluate $ReportID
+        when = 'GPCHTX06'
+           do Get_Ita_GPCHTX06
+           break
+        when = 'GPCHAL01'
+           do Get_Ita_GPCHAL01
+           break
+        when = 'GPCHGLOB'
+           do Get_Ita_GPCHGLOB
+           break
+        when-other
+           break
+ end-evaluate
+
+#Debug show 'Get_Italian_Strings <- ' #_str_cnt
+End-procedure Get_Italian_Strings
+!****************************************************************************
+Begin-procedure Get_French_Strings($ReportID)
+#Debug show 'Get_French_Strings -> '  $ReportID
+
+evaluate $ReportID
+        when = 'GPCHTX06'
+           do Get_Fra_GPCHTX06
+           break
+        when = 'GPCHAL01'
+           do Get_Fra_GPCHAL01
+           break
+        when = 'GPCHGLOB'
+           do Get_Fra_GPCHGLOB
+           break
+        when-other
+           break
+ end-evaluate
+#Debug show 'Get_French_Strings <- ' #_str_cnt
+End-procedure Get_French_Strings
+!******************************************************************************
+#include 'gpchcu03.sqc'  !custom override security
+#include 'gpchut01.sqc'  !Get Strings Values
+#include 'gpchut02.sqc'  !Pin Trans Description
+#include 'gpchut03.sqc'  !ask input parameters
+#include 'gpchut04.sqc'  !get pay entity data
+#include 'gpchut06.sqc'  !get run control parameter values
+#include 'gpchut07.sqc'  !Log Output Selection
+#include 'gpchal10.sqc'  !report sqc
+#include 'gpchal1s.sqc'  !Get Strings Values for GPCHAL01
+#include 'gpchtx6s.sqc'  !Get Strings Values for GPCHAL01
+#include 'gpchglbs.sqc'  !Get Strings Values for GPCHGLOB
+
+#include 'hrsecty.sqc'     !Get SQR Security parameters
+#include 'curdttim.sqc'    !get-current-datetime procedure
+#include 'readxlat.sqc'    !read-translate-table procedure
+#include 'datetime.sqc'    !routines for date and time formatting
+#include 'datemath.sqc'    !routines for date functions
+#include 'validdt.sqc'     !validate date routine
+#include 'number.sqc'      !routines to format numbers
+#include 'stdapi.sqc'      !routines to update run status
+#include 'sqrtrans.sqc'    !sqr strings table procedures
+#Include 'gpsspslp.sqc'    ! On-line Payslip stuff

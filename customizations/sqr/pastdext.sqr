@@ -1,0 +1,197 @@
+!***********************************************
+!  pastdext: Standard Employee Personal Data Extract
+!
+!***********************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!   This software and related documentation are provided under a       *
+!   license agreement containing restrictions on use and               *
+!   disclosure and are protected by intellectual property              *
+!   laws. Except as expressly permitted in your license agreement      *
+!   or allowed by law, you may not use, copy, reproduce,               *
+!   translate, broadcast, modify, license, transmit, distribute,       *
+!   exhibit, perform, publish or display any part, in any form or      *
+!   by any means. Reverse engineering, disassembly, or                 *
+!   decompilation of this software, unless required by law for         *
+!   interoperability, is prohibited.                                   *
+!   The information contained herein is subject to change without      *
+!   notice and is not warranted to be error-free. If you find any      *
+!   errors, please report them to us in writing.                       *
+!                                                                      *
+!   Copyright (C) 1988, 2013, Oracle and/or its affiliates.            *
+!   All Rights Reserved.                                               *
+!***********************************************************************
+! PeopleSoft, Inc.; it is not to be copied, reproduced, or transmitted *
+!                                                                      *
+!                                                                      *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/17:14:59:59                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+#include 'usarpt.sqc' !Get USA variables
+
+begin-report
+  DO Init-DateTime
+  DO Init-Number
+  DO Get-Current-DateTime
+  DO P-100-Init-Report
+  DO P-200-Process-Main
+  DO P-500-End-Report
+  DO StdApi-Term
+END-report
+
+#Include 'setup06.sqc'   !Printer and page-size initialization
+
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-100-Init-Report
+  OPEN '{IMPORTPREFIX}PASTDEXT.DAT{IMPORTSUFFIX}' as 1 for-writing record=1000;fixed_nolf
+  DO StdApi-Init
+  DO Get-Report-Language
+
+  IF $prcs_process_instance = ''
+   DO P-125-Ask-values
+  ELSE
+   DO P-150-Get-values-Pa
+  END-IF
+end-procedure
+
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-125-Ask-Values
+  INPUT $emplid_inpt               'Enter Employee ID'
+  INPUT $ben_plan_inpt             'Enter Benefit Plan'
+  LET $emplid           = rtrim($emplid_inpt,'')
+  LET $benefit_plan     = rtrim($ben_plan_inpt,'')
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-150-Get-Values-Pa
+  DO Select-Parameters-PA
+  LET $emplid           = rtrim(&pa_run_cntl.emplid,' ')
+  LET $benefit_plan     = rtrim(&pa_run_cntl.benefit_plan,' ')
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-200-Process-Main
+DO Write-Heading
+BEGIN-SELECT
+DESCR
+   let $descr = rtrim(&descr,' ')
+FROM PS_PA_PEN_PLAN_VW
+WHERE BENEFIT_PLAN = $benefit_plan
+end-select
+DO P-250-Extract-File
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-250-Extract-File
+BEGIN-SELECT
+PERS.NAME
+PERS.LANG_CD        &Empl_Language_Cd
+  if $prcs_language_option = 'R'
+!-- if Language Code not defined for the Recipient level of translation
+!-- then use the system default - $Language_Cd
+    if rtrim(&Empl_Language_Cd,' ') = ''
+       let $curr_language_cd = $Language_Cd
+    else
+       let $curr_language_cd = &Empl_Language_Cd
+    end-if
+  end-if
+NID.NATIONAL_ID
+   Do Get-Empl-Address ($Emplid,'HOME', $AddressFound)
+
+
+   let $ADDRESS1 = $GETADDR_Address1
+   let $ADDRESS2 = $GETADDR_Address2
+
+   let $CITY = $GETADDR_CITY
+   let $STATE =$GETADDR_STATE
+   let $POSTAL = $GETADDR_POSTAL
+
+
+
+FROM PS_PERSONAL_DT_FST PERS,
+     PS_PERS_NID NID
+WHERE PERS.EMPLID       = $emplid
+  AND PERS.EMPLID       = NID.EMPLID
+  AND NID.COUNTRY       = {NID_COUNTRY}
+  AND NID.NATIONAL_ID_TYPE  = $PAYROLL_NID_TYPE
+END-SELECT
+ LET $name = rtrim(&pers.name,' ')
+ unstring $name by ',' into $name_last $name_first
+ let $national_id  = substr(&nid.national_id,1,3) || '-' ||
+                     substr(&nid.national_id,4,2) || '-' ||
+                     substr(&nid.national_id,6,4)
+
+ let $addr1 = rtrim($address1,' ')
+ if $address2 = ' '
+   let $addr2 = rtrim($city,' ')   || ', ' || rtrim($state,' ')   || ' ' || rtrim($postal,' ')
+   let $addr3 = ' '
+ else
+   let $addr2 = rtrim($address2,' ')
+   let $addr3 = rtrim($city,' ')   || ', ' || rtrim($state,' ')   || ' ' || rtrim($postal,' ')
+ end-if
+ DO Write-File
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+
+BEGIN-procedure write-file
+let $quote = '"'
+
+write 1 from
+$quote $curr_language_cd $quote ','
+$quote $name_first ' ' $name_last  $quote ','
+$quote $descr        $quote ','
+$quote $addr1        $quote ','
+$quote $addr2        $quote ','
+$quote $addr3        $quote ','
+$quote $national_id  $quote ','
+$quote $reportdate   $quote
+end-procedure
+
+begin-procedure write-heading
+write 1 from 'LANG,NAME,PLAN,ADDR1,ADDR2,ADDR3,NATIONAL_ID,CURDATE'
+end-procedure
+
+!**********************************
+Begin-Procedure Report-Translation
+!**********************************
+! This is DUMMY procedure.
+! Needed for the reference from getrplng.sqc.
+End-Procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-500-End-Report
+  close 1
+end-procedure
+
+
+!***********************************************************************
+!***********************************************************************
+#include 'stdapi.sqc'    !Update Process Request API
+#include 'parnctl1.sqc'  !Get run control parameter values
+#include 'pagetval.sqc'  !Get values mask routines
+#include 'readxlat.sqc'  !read translate table
+! #Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'getrplng.sqc'  !Get the report language
+#Include 'getaddr.sqc'   !Get Employee Address
+!**************************** End Of Report ****************************

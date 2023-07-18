@@ -1,0 +1,687 @@
+!***********************************************************************
+!  GPGBEFTS: Net Payment Summary Report                                *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/18:04:04:04                                 *
+!       $Release:  HR92                                                *
+!      $Revision:  105                                                 *
+!----------------------------------------------------------------------
+!  Descr   : Provide a list of all net pPayments that would be made by *
+!            transfer, cheque or cash for audit purposes               *
+!***********************************************************************
+!  Change History                                                      *
+!----------------------------------------------------------------------
+!  Date       Change Description
+!  ----       ------------------
+!
+!***********************************************************************
+
+
+
+
+#define  TitleCol       2
+#define  DateCol        151
+
+#define  EmployeeNoCol  2  
+#define  NameCol        14  !Emplid starts at 2 for 11 chars plus 1 space = 14
+#define  MethodPayCol   45  !Name is 50 chars trimmed to 30 starts at 14 for 30 plus 1 space = 45
+#define  SortCodeCol    49 
+#define  BankNameCol    56  !Sortcode is 6 chars starts at 49 for 6 plus 1 = 56
+#define  AccountNoCol   87  !Bankname is 40 chars trimmed to 30 starts at 56 for 30 plus 1 = 87
+#define  RollNoCol      98  !Account number is 35 chars restricted to 8 for UK/Bacs starts at 87 for 10 (for title) plus 1 = 98
+#define  AccountNMCol   117 !Roll number is 20 chars starts at 98 for 18 plus 1 = 117
+#define  AmountCol      136 !Account name is 50 chars restricted to 18 in Bacs output starts at 117 for 18 plus 1 = 136
+#define  DiffCol        151 !Amount col starts at 136 for 14 (for title) plus 1 = 151
+
+#define  TotalChqCol    2
+#define  TotalCshCol    32
+#define  TotalTrnCol    62
+#define  TotalTotCol    122
+
+#define  Page_Max       45
+
+
+#include 'setenv.sqc'    !Set environment
+#include 'setup02.sqc'    !Set Orientation
+
+
+!******************************************************
+!  Begin Report
+!******************************************************
+
+Begin-Report
+   #debugf 'Begin-Report'
+
+   do Init-DateTime
+   do Init-Number
+   do Get-Current-DateTime
+   do Init-Report
+   do Process-Main
+   do Reset
+   do Stdapi-Term
+
+End-Report
+
+!******************************************************
+!  Heading
+!******************************************************
+
+Begin-Heading 6
+
+  print 'Net Payments by Surname'              (1,{TitleCol}) bold
+  print 'Date: '                               (1,{DateCol}) bold
+
+  Let $Curr_Date = edit(datenow(),'dd/mm/yyyy')
+  print $Curr_Date                             ()
+
+  print 'Pay Entity: '                         (+1,{TitleCol}) bold
+  print $PAY_ENTITY_DESCR                      ()
+  print 'Page: '                               (,{DateCol}) bold
+  page-number                                  ()
+  print ' of '                                 ()
+  last-page                                    ()
+
+  If $CAL_RUN = ''
+     print 'Period: '                             (+1,{TitleCol}) bold
+     print $CAL_PRD                               ()
+  Else
+     print 'Calendar Run: '                       (+1,{TitleCol}) bold
+     print $CAL_RUN                               ()
+  End-If
+
+  print 'Employee'                             (+3,{EmployeeNoCol}) bold
+  print 'Name'                                 (,{NameCol}) bold
+  print 'MOP'                                  (,{MethodPayCol}) bold
+  print 'Sort'                                 (,{SortCodeCol}) bold
+  print 'Bank Name'                            (,{BankNameCol}) bold
+  print 'Account No'                           (,{AccountNoCol}) bold
+  print 'Roll No'                              (,{RollNoCol}) bold
+  print 'Account Name'                         (,{AccountNMCol}) bold
+  print 'Amount Paid(£)'                       (,{AmountCol}) bold
+  print 'Diff(£) '                             (,{DiffCol}) bold
+
+End-Heading
+
+!******************************************************
+!  Procedure: Init Report
+!******************************************************
+
+Begin-Procedure Init-Report
+
+   #debugf 'Begin Init-Report'
+
+   move 'GPGBEFTS' to $ReportID
+   move 'BACS Summary Report' to $ReportTitle
+   display $ReportTitle
+
+   do Stdapi-Init
+   do Get-Run-Control-Vals
+   let #current_page = 1
+
+   #debugf 'Exit Init-Report'
+
+End-Procedure
+
+
+!******************************************************
+!  Procedure: Get-Run-Control-Vals
+!******************************************************
+
+Begin-Procedure Get-Run-Control-Vals
+
+   #debugf 'Begin Get-Run-Control-Vals'
+
+  ! Add CAL_PRD_ID to the selection and
+  ! create the PAYMENT_WHERE clause
+
+  SHOW 'OPRID:       ' $PRCS_OPRID
+  SHOW 'RUN CONTROL: ' $PRCS_RUN_CNTL_ID
+
+
+Begin-SELECT
+A.CAL_RUN_ID       &A.CAL_RUN_ID
+A.CAL_PRD_ID       &A.CAL_PRD_ID
+A.PAY_ENTITY       &A.PAY_ENTITY
+
+
+   LET $CAL_RUN = RTRIM(&A.CAL_RUN_ID,' ')
+   LET $CAL_PRD = RTRIM(&A.CAL_PRD_ID,' ')
+   LET $PAY_ENTITY = RTRIM(&A.PAY_ENTITY,' ')
+
+FROM PS_GPGB_RC_BACS A
+WHERE A.OPRID = $PRCS_OPRID
+AND A.RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+End-select
+
+
+   IF  $CAL_RUN <> ''
+      LET $PAYMENT_WHERE = 'AND A.CAL_RUN_ID = ''' || $CAL_RUN || ''''
+      SHOW 'Calendar Run being used: ' $CAL_RUN
+   ELSE
+      SHOW 'Calendar Period being used: '  $CAL_PRD
+      DO Build-Calendar-Run-Criteria
+   END-IF
+
+   SHOW 'WHERE CLAUSE: ' $PAYMENT_WHERE
+
+   #debugf 'Exit Get-Run-Control-Vals'
+
+End-Procedure
+
+
+!******************************************************
+!  Procedure: Build-Calendar-Run-Criteria
+!******************************************************
+
+Begin-Procedure Build-Calendar-Run-Criteria
+
+   #debugf 'Enter Build-Calendar-Run-Criteria'
+
+   LET #CAL_RUN_COUNT = 0
+   LET $PAYMENT_WHERE = 'AND A.CAL_RUN_ID IN ('
+
+   Begin-SELECT DISTINCT
+GBRB.CAL_RUN_ID
+
+
+   LET $WHERE_CAL_RUN_ID = RTRIM(&GBRB.CAL_RUN_ID,' ')
+
+   IF #CAL_RUN_COUNT > 0
+      LET $PAYMENT_WHERE = $PAYMENT_WHERE || ',''' ||  $WHERE_CAL_RUN_ID || ''''
+   ELSE
+     LET $PAYMENT_WHERE = $PAYMENT_WHERE || '''' ||  $WHERE_CAL_RUN_ID || ''''
+   END-IF
+
+   LET #CAL_RUN_COUNT = #CAL_RUN_COUNT + 1
+
+FROM PS_GPGB_PRD_EFTVW GBRB
+ WHERE GBRB.PAY_ENTITY = $PAY_ENTITY AND
+       GBRB.CAL_PRD_ID = $CAL_PRD
+
+END-SELECT
+
+   LET $PAYMENT_WHERE = $PAYMENT_WHERE || ')'
+
+    SHOW  'WHERE_CAL_RUN_ID --> ' $WHERE_CAL_RUN_ID
+
+   #debugf 'Exit Build-Calendar-Run-Criteria'
+End-Procedure Build-Calendar-Run-Criteria
+
+!******************************************************
+!  Procedure: Process-Main
+!******************************************************
+
+Begin-Procedure Process-Main
+   #debugf 'Begin Process-Main'
+
+   do Select-SEG-Payments
+
+   do Pay-Entity-Change
+
+   #debugf 'Exit Process-Main'
+End-Procedure Process-Main
+
+
+!******************************************************
+!  Procedure: Select-SEG-Payments
+!******************************************************
+
+Begin-Procedure Select-SEG-Payments
+
+   #debugf 'Begin Select-SEG-Payments'
+
+
+   PRINT '' (1,1,1)
+
+   LET #SEG_Total = 0
+
+BEGIN-SELECT
+F.DESCR                &CURR_ENT_DESC        () on-break PRINT=NEVER BEFORE=Pay-Entity-Change level=1
+D.PAY_ENTITY           &CURR_PAY_ENTITY
+A.EMPLID               &CURR_EMPLID
+E.NAME                 &CURR_NAME
+E.LAST_NAME_SRCH       &CURR_SURNAME
+A.CAL_RUN_ID           &CURR_CAL_RUN
+A.EMPL_RCD             &CURR_EMPL_RCD
+A.GP_PAYGROUP          &CURR_GP_PAYGROUP
+A.CAL_ID               &CURR_CAL_ID
+SUM(A.PIN_NET_VAL)     &CURR_SEG_VAL
+
+   Let #Select_Count = #Select_Count + 1
+   Let #Entity_Count = #Entity_Count + 1
+
+   Let $Pay_Entity_Descr = rtrim(&CURR_ENT_DESC,' ')
+
+   If #Entity_Count > {Page_Max}
+     do START-NEW-PAGE
+   End-If
+
+   Let $Curr_Emplid = RTRIM(&CURR_EMPLID,' ')
+   print $Curr_Emplid                                           (+1,{EmployeeNoCol})
+
+   Let $Curr_Name = SUBSTR(&CURR_NAME,1,30)
+   print $Curr_Name                                             (,{NameCol})
+
+   Let $Curr_Pay_Entity     = rtrim(&CURR_PAY_ENTITY,' ')
+
+   Let $Curr_Cal_Run        = rtrim(&CURR_CAL_RUN,' ')
+   Let $Curr_Pay_Entity     = rtrim(&CURR_PAY_ENTITY,' ')
+
+   Let #Curr_Empl_Rcd       = &CURR_EMPL_RCD
+   Let $Curr_GP_PAYGROUp    = rtrim(&CURR_GP_PAYGROUP,' ')
+   Let $Curr_Cal_ID         = rtrim(&CURR_CAL_ID,' ')
+   Let #Curr_Seg_val        = Round(&CURR_SEG_VAL,2)
+
+   Let #SEG_Total = #SEG_Total + #Curr_Seg_val
+
+   do Select-Actual-Payments
+
+
+FROM PS_GP_PYE_SEG_STAT A,
+PS_GP_PYE_PRC_STAT A1,
+PS_GP_CALENDAR B,
+PS_GP_RUN_TYPE C,
+PS_GP_PYGRP D,
+PS_PERSON_NAME E,
+PS_GP_PYENT F
+WHERE A.EMPLID = A1.EMPLID
+AND A.CAL_RUN_ID =A1.CAL_RUN_ID
+AND A.EMPL_RCD = A1.EMPL_RCD
+AND A.GP_PAYGROUP = A1.GP_PAYGROUP
+AND A.CAL_ID = A1.CAL_ID
+AND A.ORIG_CAL_RUN_ID = A1.ORIG_CAL_RUN_ID
+AND A.GP_PAYGROUP = B.GP_PAYGROUP
+AND A.CAL_ID = B.CAL_ID
+AND B.RUN_TYPE = C.RUN_TYPE
+AND A.GP_PAYGROUP = D.GP_PAYGROUP
+AND D.PAY_ENTITY = F.PAY_ENTITY
+AND A.EMPLID = E.EMPLID
+[$PAYMENT_WHERE]
+AND A.PIN_NET_VAL <> 0
+AND C.CALC_TYPE = 'P'
+AND A1.PRD_TYPE = 'C'
+GROUP BY F.DESCR, D.PAY_ENTITY, A.EMPLID, E.NAME, E.LAST_NAME_SRCH, A.CAL_RUN_ID, A.EMPL_RCD, A.GP_PAYGROUP,A.CAL_ID
+ORDER BY D.PAY_ENTITY, E.LAST_NAME_SRCH
+END-Select
+
+
+   #debugf 'Exit Select-SEG-Payments'
+
+End-Procedure
+
+!******************************************************
+!  Procedure: Select-Actual-Payments
+!******************************************************
+
+Begin-Procedure Select-Actual-Payments
+
+   #debugf 'Begin Select-Actual-Payments'
+
+
+   Let #Emplid_Distrib_Count = 0
+   Let #Emp_Distrib_Amt = 0
+
+BEGIN-SELECT
+C.PAYMENT_MTHD          &C.PAYMENT_MTHD
+C.GP_PMT_AMT            &C.GP_PMT_AMT
+C.DEBIT_DT              &C.DEBIT_DT
+C.INSTANCE              &C.INSTANCE
+
+
+  Let #Emplid_Distrib_Count = #Emplid_Distrib_Count + 1
+
+  If #Emplid_Distrib_Count > 1
+     print $Curr_Emplid                                           (+1,{EmployeeNoCol})
+     print $Curr_Name                                             (,{NameCol})
+  End-If
+  DO GET-BANK-ACCOUNT
+  Let $Curr_Pay_Mthd = RTRIM(&C.PAYMENT_MTHD ,' ')
+  print $Curr_Pay_Mthd                                         (,{MethodPayCol})
+
+  Let $Curr_SortCode = RTRIM(&A.SORT_CODE,' ')
+  print $Curr_SortCode                                         (,{SortCodeCol})
+
+  IF $Curr_SortCode <> ''
+     do Get-Bank-Details
+  print $Curr_Bank_Name                                        (,{BankNameCol})
+  END-IF
+
+  Let $Curr_Account_Nbr = SUBSTR(&A.ACCOUNT_NUMBER,1,8)
+  print $Curr_Account_Nbr                                      (,{AccountNoCol})
+
+  Let $Curr_Roll_Number = SUBSTR(&A.ROLL_NUMBER,1,18)
+  print $Curr_Roll_Number                                      (,{RollNoCol})
+
+  Let $Curr_Account_Name = SUBSTR(&A.ACCOUNT_NAME,1,18)
+  Let $Curr_Roll_Name    = SUBSTR(&A.ROLL_NAME,1,18)
+  Let $Curr_Roll_Name    = RTRIM($Curr_Roll_Name,' ')
+
+  IF $Curr_Roll_Number <> ''
+    print $Curr_Roll_Name                                      (,{AccountNMCol})
+  ELSE
+    print $Curr_Account_Name                                   (,{AccountNMCol})
+  END-IF
+
+
+  Let #Curr_Pmt_Amount = &C.GP_PMT_AMT
+  Let #Emp_Distrib_Amt = #Emp_Distrib_Amt + #Curr_Pmt_Amount
+
+  print #Curr_Pmt_Amount                                       (,{AmountCol}) edit 9,999,999.99
+
+   LET $Curr_Pay_Mthd =  RTRIM($Curr_Pay_Mthd,' ')
+
+
+  EVALUATE $Curr_Pay_Mthd
+  WHEN = 'T'
+     LET #TOTAL_TRANSFER = #TOTAL_TRANSFER + #Curr_Pmt_Amount
+     BREAK
+  WHEN = 'C'
+     LET #TOTAL_CHEQUE = #TOTAL_CHEQUE + #Curr_Pmt_Amount
+     BREAK
+  WHEN = 'A'
+     LET #TOTAL_CASH = #TOTAL_CASH + #Curr_Pmt_Amount
+     BREAK
+
+  END-EVALUATE
+
+FROM  PS_GP_PAYMENT C
+WHERE C.EMPLID              = $Curr_Emplid
+AND C.CAL_RUN_ID            = $Curr_Cal_Run
+AND C.EMPL_RCD              = #Curr_Empl_Rcd
+AND C.GP_PAYGROUP           = $Curr_GP_PAYGROUP
+AND C.CAL_ID                = $Curr_Cal_ID
+AND C.PAYMENT_MTHD          = 'T'
+AND C.PMT_TYPE='01'
+
+
+END-Select
+
+  Let #Diff_Amount = #Curr_Seg_val - #Emp_Distrib_Amt
+  If #Diff_Amount <> 0  AND #Emplid_Distrib_Count > 0
+     Let $Diff_Str = '(' || edit(#Diff_Amount,'888888.8888') || ')'
+     print $Diff_Str                                           (,{DiffCol})
+
+  End-If
+
+   If #Emplid_Distrib_Count = 0
+     do Select-Cheque-Payments
+   End-If
+
+
+   #debugf 'Exit Select-Actual-Payments'
+
+End-Procedure Select-Actual-Payments
+
+
+!******************************************************
+!  Procedure: GET-BANK-ACCOUNT
+!******************************************************
+BEGIN-PROCEDURE GET-BANK-ACCOUNT
+BEGIN-SELECT 
+A.BANK_CD               &A.SORT_CODE
+A.ACCOUNT_EC_ID         &A.ACCOUNT_NUMBER
+A.ROLL_NUMBER           &A.ROLL_NUMBER
+A.ACCOUNT_NAME          &A.ACCOUNT_NAME
+A.ROLL_NAME             &A.ROLL_NAME
+
+
+FROM PS_PYE_BANKACCT A, PS_GP_NET_DIST_DTL B
+WHERE A.EMPLID = B.EMPLID
+AND B.EMPLID              = $Curr_Emplid
+AND B.EMPL_RCD              = #Curr_Empl_Rcd
+AND B.ACCOUNT_ID = A.ACCOUNT_ID
+AND B.EFFDT = (SELECT MAX(B1.EFFDT)
+FROM PS_GP_NET_DIST_DTL B1
+WHERE B.EMPLID = B1.EMPLID
+AND B.EMPL_RCD = B1.EMPL_RCD
+AND B.RUN_TYPE = B1.RUN_TYPE
+AND B.INSTANCE = B1.INSTANCE
+AND B1.EFFDT <= &C.DEBIT_DT)
+AND B.INSTANCE = &C.INSTANCE
+
+
+END-SELECT
+END-PROCEDURE GET-BANK-ACCOUNT
+
+
+!******************************************************
+!  Procedure: Select-Cheque-Payments
+!******************************************************
+
+Begin-Procedure Select-Cheque-Payments
+
+   #debugf 'Begin Select-Cheque-Payments'
+
+
+BEGIN-SELECT
+CC.PAYMENT_MTHD          &CC.PAYMENT_MTHD
+CC.GP_PMT_AMT            &CC.GP_PMT_AMT
+
+  Let #Emplid_Distrib_Count = #Emplid_Distrib_Count + 1
+
+  If #Emplid_Distrib_Count > 1
+     print $Curr_Emplid                                           (+1,{EmployeeNoCol})
+     print $Curr_Name                                             (,{NameCol})
+  End-If
+
+  Let $Curr_Pay_Mthd = RTRIM(&CC.PAYMENT_MTHD ,' ')
+  print $Curr_Pay_Mthd                                         (,{MethodPayCol})
+
+  Let #Curr_Pmt_Amount = &CC.GP_PMT_AMT
+  print #Curr_Pmt_Amount                                       (,{AmountCol}) edit 9,999,999.99
+
+  Let #Diff_Amount = #Curr_Seg_val - #Curr_Pmt_Amount
+  If #Diff_Amount <> 0
+     Let $Diff_Str = '(' || edit(#Diff_Amount,'888888.8888') || ')'
+     print $Diff_Str                                           (,{DiffCol})
+
+  End-If
+
+   LET $Curr_Pay_Mthd =  RTRIM($Curr_Pay_Mthd,' ')
+
+  EVALUATE $Curr_Pay_Mthd
+  WHEN = 'T'
+     LET #TOTAL_TRANSFER = #TOTAL_TRANSFER + #Curr_Pmt_Amount
+     BREAK
+  WHEN = 'C'
+     LET #TOTAL_CHEQUE = #TOTAL_CHEQUE + #Curr_Pmt_Amount
+     BREAK
+  WHEN = 'A'
+     LET #TOTAL_CASH = #TOTAL_CASH + #Curr_Pmt_Amount
+     BREAK
+
+  END-EVALUATE
+
+FROM  PS_GP_PAYMENT CC
+WHERE CC.EMPLID                = $Curr_Emplid
+AND CC.CAL_RUN_ID            = $Curr_Cal_Run
+AND CC.EMPL_RCD              = #Curr_Empl_Rcd
+AND CC.GP_PAYGROUP           = $Curr_GP_PAYGROUP
+AND CC.CAL_ID                = $Curr_Cal_ID
+AND CC.PAYMENT_MTHD          = 'C'
+
+END-Select
+
+
+   #debugf 'Exit Select-Cheque-Payments'
+
+End-Procedure Select-Cheque-Payments
+
+
+
+!******************************************************
+!  Procedure: Print-Totals
+!******************************************************
+
+
+Begin-Procedure Print-Totals
+   #debugf 'Begin Print-Totals'
+
+
+     LET #TOTAL_COUNT = #TOTAL_COUNT + #Select_Count
+
+     GRAPHIC  (+4,2,162) horz-line
+
+     PRINT 'Cheque: '                       (+2,{TotalChqCol})
+     PRINT #TOTAL_CHEQUE                    () edit 999,999,999.99
+     PRINT 'Cash: '                         (,{TotalCshCol})
+     PRINT #TOTAL_CASH                      () edit 999,999,999.99
+     PRINT 'Transfer: '                     (,{TotalTrnCol})
+     PRINT #TOTAL_TRANSFER                  () edit 999,999,999.99
+     PRINT 'Total Paid: '                   (,{TotalTotCol})
+     PRINT #SEG_Total                       () edit 999,999,999.99
+
+     Let #Total_Diff = #SEG_Total - (#TOTAL_TRANSFER + #TOTAL_CASH  + #TOTAL_CHEQUE)
+     If abs(#Total_Diff) < 0.00009
+        Let #Total_Diff = 0
+     End-If
+
+     PRINT 'Difference: '                   (+1,{TotalTotCol})
+
+     PRINT #Total_Diff                      () edit 999,999,999.99
+     PRINT 'Employee Count: '               (+2,{EmployeeNoCol})
+     PRINT #Select_Count                    () edit 999999
+
+     GRAPHIC  (+1,2,162) horz-line
+     GRAPHIC  (+1,2,162) horz-line
+
+
+   #debugf 'End Print-Totals'
+End-Procedure
+
+
+
+
+!******************************************************
+!  Procedure: Reset-Totals
+!******************************************************
+
+Begin-Procedure Reset-Totals
+
+   #debugf 'Begin Reset-Totals'
+
+     LET #GRAND_TOTAL = 0
+     LET #SEG_Total = 0
+     LET #TOTAL_TRANSFER  = 0
+     LET #TOTAL_CHEQUE  = 0
+     LET #TOTAL_CASH = 0
+     LET #Select_Count = 0
+
+
+   #debugf 'End Reset-Totals'
+End-Procedure
+
+
+!******************************************************
+!  Procedure: SQL-ERROR-TRAP
+!******************************************************
+
+Begin-Procedure SQL-ERROR-TRAP
+   #debugf 'Begin SQL-ERROR-TRAP'
+
+   SHOW 'SQL-ERROR            ' $SQL-ERROR
+   SHOW 'SQL-STATUS           ' #SQL-STATUS
+   SHOW 'SQL-STATEMENT        ' $SQL-STATEMENT
+
+   do Rollback-Transaction
+
+   Let #prcs_run_status = #prcs_run_status_error
+   Let #prcs_continuejob = 0
+   do update-prcs-run-status
+
+   #debugf 'Exit SQL-ERROR-TRAP'
+
+End-Procedure
+
+
+
+
+!******************************************************
+!  Procedure: Get-Bank-Details
+!******************************************************
+
+Begin-Procedure Get-Bank-Details
+   #debugf 'Begin Get-Bank-Details'
+
+   LET $Curr_Bank_Name = ''
+
+Begin-SELECT ON-ERROR=SQL-ERROR-TRAP
+BANK_NM                &BANK_NAME
+   LET $Curr_Bank_Name = SUBSTR(&BANK_NAME,1,30)
+FROM PS_BANK_EC_TBL
+WHERE BANK_CD = $Curr_SortCode
+End-Select
+
+   #debugf 'Exit Get-Bank-Details'
+End-Procedure
+
+
+!******************************************************
+!  Procedure: START-NEW-PAGE
+!******************************************************
+
+Begin-Procedure START-NEW-PAGE
+   #debugf 'Begin START-NEW-PAGE'
+
+   If #Select_Count > 0
+      NEW-PAGE
+   End-If
+
+   Let #Entity_Count = 0
+
+   #debugf 'Exit START-NEW-PAGE'
+End-Procedure
+
+
+!******************************************************
+!  Procedure: Pay-Entity-Change
+!******************************************************
+
+Begin-Procedure Pay-Entity-Change
+
+   #debugf 'Begin Pay-Entity-Change'
+
+   If #Total_Count > 0 or #Select_Count > 0
+      do Print-Totals
+      do Reset-Totals
+      Let #Entity_Count = 0
+      NEW-PAGE
+   End-If
+
+   #debugf 'End Pay-Entity-Change'
+
+
+End-Procedure Pay-Entity-Change
+
+
+#include 'stdapi.sqc'    !Routine to update run status
+#include 'prcsapi.sqc'   !Routine to update process scheduler
+#Include 'readxlat.sqc'  !Read Translate Table Procedure
+#Include 'datemath.sqc'  !Routines for date arithmetic
+#Include 'reset.sqc'     !Reset printer Procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime Procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+

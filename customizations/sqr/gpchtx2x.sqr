@@ -1,0 +1,4359 @@
+!***********************************************************************
+! GPCHTX2X.SQR  : Source Tax Month -Quellensteuer Monat-               *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!       $Release:  HR92                                                !
+!           $Bug:  31859483                                            !
+!***********************************************************************
+#include 'setenv.sqc'    ! set Default environment
+#include 'gpchut10.sqc'  ! setenv override for Swiss Default.
+#include 'gpchut12.sqc'  ! Substitution Variables Defined.
+#include 'setup32.sqc'
+
+begin-setup
+
+
+!Array for All swissdec Cantons (size = 50 as JU has number 50 in GP_BRACKET_DTL: CH_EO_BCANTON)
+create-array name = SDTotals size = 50 
+field = Canton:char
+field = CurrMonth:char
+field = CMEarning:number
+field = CMTax:number
+field = CMCommission:number
+field = CMCount:number
+! FMB 20191101
+field = RMYear:number:48
+field = RMEarning:number:48
+field = RMTax:number:48
+field = RMCommission:number
+field = RMCount:number
+field = TotFrom:char
+field = TotUntil:char
+field = TotEarning:number
+field = TotTax:number
+field = TotCommission:number
+field = TotCount:number
+
+!declare-variable
+! date   $SDCDateOfBirth
+!date   $SDCStart
+!date   $SDCEnd
+!end-declare
+
+
+end-setup
+
+!***********************************************************************
+begin-PROGRAM
+  
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Report
+  
+  do getcurrtimedate
+ 
+ show ' $GPCH_EG_YEP_FLG = ' $GPCH_EG_YEP_FLG ' $Run_Option = ' $Run_Option ' $Rpt_Type = ' $Rpt_Type
+ show ' $ptot_domaind = ' $ptot_domaind ' #ptot_domaind = ' #ptot_domaind  ' $FMB_ptot_domainid = ' $FMB_ptot_domainid
+
+!FMB 20140210
+  do Get_TaxMode
+  
+  If $GPCH_EG_YEP_FLG = 'Y'
+    If $Run_Option = 'Y' and $Rpt_Type = 'M' and $Tx_Mode = '0'
+      do swissdec
+! FMB 20140301      do deleteType0
+      Do Update_Status($Ctl_Year,#ptot_domainid,$Comp,$providertype,$Run_Option,$SysDateTime,$Cancel_option) 
+    End-If 
+    do Stdapi-Term
+    do Get-Log
+  else
+    do swissdec
+    do Stdapi-Term
+    do Get-Log
+  End-If
+ 
+end-PROGRAM
+!***********************************************************************
+
+
+begin-procedure Get_TaxMode
+#Debug show 'In Get_TaxMode'
+
+Begin-Select on-error=give_warning
+DSETTX.GPCH_FK_MODE &DSETTX.GPCH_FK_MODE
+
+ let $Tx_Mode = &DSETTX.GPCH_FK_MODE
+
+FROM PS_GPCH_EG_DSETDTL DSETTX
+ WHERE DSETTX.COMPANY          = $comp 
+ AND  DSETTX.GPCH_EG_DOMAINID  = #ptot_domainid 
+ AND  DSETTX.GPCH_SI_PROV_TYPE = 'A'
+ AND DSETTX.EFFDT = (SELECT Max(DSETTX1.EFFDT) FROM PS_GPCH_EG_DSETDTL DSETTX1 
+  WHERE DSETTX1.COMPANY          = DSETTX.COMPANY 
+  and  DSETTX.GPCH_EG_DOMAINID   = DSETTX1.GPCH_EG_DOMAINID 
+  and  DSETTX.GPCH_SI_PROV_TYPE = DSETTX1.GPCH_SI_PROV_TYPE)
+
+End-Select
+
+#Debug show ' $Tx_Mode = ' $Tx_Mode ' $comp  = ' $comp  ' #ptot_domainid = ' #ptot_domainid
+
+#Debug show 'Out Get_TaxMode'
+end-procedure
+
+!***********************************************************************
+begin-procedure getcurrtimedate
+
+Begin-Select on-error=give_warning
+#ifdef ORACLE
+TO_CHAR(sysdate, 'Dy DD-Mon-YYYY HH24:MI:SS')    &currtimedate
+#else
+#ifdef DB2ALL
+CURRENT_TIMESTAMP &currtimedate
+#else
+CONVERT(char(30), CURRENT_TIMESTAMP,9)    &currtimedate
+#endif
+#endif
+FROM PSCLOCK
+End-Select
+
+let $currtimedate = &currtimedate
+
+end-procedure
+!***********************************************************************
+Begin-Procedure swissdec
+#Debug Show 'In swissdec '
+
+  let $Cal_Run_Id_Crit_PBD      = ' '
+!FMB 20120829  let Cal_Run_Id_Crit_A       = ' '
+
+#debug show ' $Cal_Run_Id_Crit_A = ' $Cal_Run_Id_Crit_A ' $Cal_Run_Id_M_String = ' $Cal_Run_Id_M_String
+
+  do Delete_Temp_Tables
+  !31363384  do Get_SD_Reason_tbl
+  do Insert_Temp_Tables
+  do create-SDXML
+
+  do ConvertToComponents($ReportEndDate,$yyyy_SD,$mm_SD,$dd_SD) 
+  do Format-Number(#ptot_year,$ptot_year,'9999')
+  do Format-Number(#ptot_domainid,$ptot_domainid,'999')
+  let $ptot_domainid= rtrim(ltrim($ptot_domainid,' '),' ')
+  
+  let $RequestID = $ptot_year || '-' || $ptot_company || '-' || $ptot_domainid || '-M-' || $mm_SD
+  let #MPos = length($RequestID) - 1
+
+#debug show ' $RequestID = ' $RequestID  ' #MPos = ' #MPos
+  
+  do Update_SD_PTotals
+  !31363384  do Update_EMA_CMP_Action
+  !31363384  do Update_EMA_MAN_Action
+
+#Debug Show 'Out swissdec '
+End-Procedure swissdec
+!*********************************************************************************************
+Begin-Procedure Get_Staxb_PCTR
+#Debug Show 'In Get_Staxb_PCTR'
+
+Begin-select on-error=give_warning
+FPCT.GPCH_TX_STAXB_PCT
+
+ let #Staxb_PCTR = &FPCT.GPCH_TX_STAXB_PCT
+
+from PS_GPCH_TX_FAK_PCT FPCT
+ where FPCT.COUNTRY = 'CHE'
+  and  FPCT.GPCH_TX_CANTON = $Canton
+  and  FPCT.EFFDT = (select max(FTBL.EFFDT)  from PS_GPCH_TX_FAK_TBL FTBL
+    where FTBL.COUNTRY = 'CHE'
+      and FTBL.EFFDT   <= $ReportEndDate )
+
+End-Select
+
+#Debug Show ' $ReportEndDate = ' $ReportEndDate ' $Canton = ' $Canton ' #Staxb_PCTR = ' #Staxb_PCTR
+
+#Debug Show 'Out Get_Staxb_PCTR'
+End-Procedure Get_Staxb_PCTR
+!*********************************************************************************************
+
+Begin-Procedure Update_SD_PTotals
+#Debug Show 'In Update_SD_PTotals'
+
+Begin-select on-error=give_warning
+SDP.COMPANY
+SDP.GPCH_RC_PAY_YEAR
+SDP.GPCH_EG_DOMAINID
+SDP.GPCH_EG_REQUEST_ID
+SDP.GPCH_SI_PROV_TYPE
+SDP.GPCH_SI_PROV_CD
+SDP.GPCH_EG_USERKEY
+   
+   let $Canton = &SDP.GPCH_EG_USERKEY
+#debug show '$Canton = ' $Canton
+   do AssignCantonIndex
+   
+   let #mm_SD = 4
+   
+   get $CantonAR   from SDTotals(#i) Canton
+   get $CurrMonth  from SDTotals(#i) CurrMonth
+   get #Amount1    from SDTotals(#i) CMEarning
+   get #Amount2    from SDTotals(#i) CMTax
+   get #Amount3    from SDTotals(#i) CMCommission  
+   get #CMCount    from SDTotals(#i) CMCount
+!   get #Amount4    from SDTotals(#i) RMEarning(#mm_SD)
+!   get #Amount5    from SDTotals(#i) RMTax(#mm_SD)
+   get #Amount6    from SDTotals(#i) RMCommission
+   get #RMCount    from SDTotals(#i) RMCount
+   get $fromRecap  from SDTotals(#i) TotFrom
+   get $untilRecap from SDTotals(#i) TotUntil    
+   get #Amount7    from SDTotals(#i) TotEarning
+   get #Amount8    from SDTotals(#i) TotTax
+   get #Amount9    from SDTotals(#i) TotCommission
+   get #TotCount   from SDTotals(#i) TotCount
+   
+ !FMB 20130121 Begin
+  do Get_Staxb_PCTR
+  show 'Refund from Array #Amount3 = ' #Amount3 '#Amount2 = ' #Amount2 ' #Staxb_PCTR = ' #Staxb_PCTR '#Amount6 = ' #Amount6 '#Amount9 = ' #Amount9
+
+!current month
+  let #Total_Comm_Tax_Amnt5_0 = #Amount2
+  let #Total_Comm_Tax_Amnt5_1 = (#Staxb_PCTR  * #Total_Comm_Tax_Amnt5_0) / 100
+  let #Total_Comm_Tax_Amnt5_1 = round(#Total_Comm_Tax_Amnt5_1,2)
+  let #Total_Comm_Tax_Amnt5_1 = #Total_Comm_Tax_Amnt5_1 * 20
+  let #Total_Comm_Tax_Amnt5_1 = round(#Total_Comm_Tax_Amnt5_1,0)
+  let #Total_Comm_Tax_Amnt5_1 = #Total_Comm_Tax_Amnt5_1 / 20
+  let #Amount3                = #Total_Comm_Tax_Amnt5_1
+
+! retro total  
+!  let #Total_Comm_Tax_Amnt5_0 = #Amount5
+!  let #Total_Comm_Tax_Amnt5_1 = (#Staxb_PCTR  * #Total_Comm_Tax_Amnt5_0) / 100
+!  let #Total_Comm_Tax_Amnt5_1 = round(#Total_Comm_Tax_Amnt5_1,2)
+!  let #Total_Comm_Tax_Amnt5_1 = #Total_Comm_Tax_Amnt5_1 * 20
+!  let #Total_Comm_Tax_Amnt5_1 = round(#Total_Comm_Tax_Amnt5_1,0)
+!  let #Total_Comm_Tax_Amnt5_1 = #Total_Comm_Tax_Amnt5_1 / 20
+!  let #Amount6                = #Total_Comm_Tax_Amnt5_1
+
+! year total  
+  let #Total_Comm_Tax_Amnt5_0 = #Amount8
+  let #Total_Comm_Tax_Amnt5_1 = (#Staxb_PCTR  * #Total_Comm_Tax_Amnt5_0) / 100
+  let #Total_Comm_Tax_Amnt5_1 = round(#Total_Comm_Tax_Amnt5_1,2)
+  let #Total_Comm_Tax_Amnt5_1 = #Total_Comm_Tax_Amnt5_1 * 20
+  let #Total_Comm_Tax_Amnt5_1 = round(#Total_Comm_Tax_Amnt5_1,0)
+  let #Total_Comm_Tax_Amnt5_1 = #Total_Comm_Tax_Amnt5_1 / 20
+  let #Amount9                = #Total_Comm_Tax_Amnt5_1  
+  
+  show 'Refund calculated #Amount3 = ' #Amount3 '#Amount6 = ' #Amount6 '#Amount9 = ' #Amount9
+ 
+ !FMB 20130121 End
+   
+   do Format-Number(#Amount1,$Amount1,'999999999999.99')
+   do Format-Number(#Amount2,$Amount2,'999999999999.99')
+   do Format-Number(#Amount3,$Amount3,'999999999999.99')
+!   do Format-Number(#Amount4,$Amount4,'999999999999.99')
+!   do Format-Number(#Amount5,$Amount5,'999999999999.99')
+!   do Format-Number(#Amount6,$Amount6,'999999999999.99')
+   do Format-Number(#Amount7,$Amount7,'999999999999.99')
+   do Format-Number(#Amount8,$Amount8,'999999999999.99')
+   do Format-Number(#Amount9,$Amount9,'999999999999.99')
+   
+!   do ConvertToComponents($fromRecap,$yyyy_tmp,$mm_tmp,$dd_tmp)
+!   let $fromRecap      = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp
+!   do ConvertToComponents($untilRecap,$yyyy_tmp,$mm_tmp,$dd_tmp)
+!   let $untilRecap      = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp
+  
+   let $Amount1= rtrim(ltrim($Amount1,' '),' ')
+   let $Amount2= rtrim(ltrim($Amount2,' '),' ')
+   let $Amount3= rtrim(ltrim($Amount3,' '),' ')
+!   let $Amount4= rtrim(ltrim($Amount4,' '),' ')
+!   let $Amount5= rtrim(ltrim($Amount5,' '),' ')
+!   let $Amount6= rtrim(ltrim($Amount6,' '),' ')
+   let $Amount7= rtrim(ltrim($Amount7,' '),' ')
+   let $Amount8= rtrim(ltrim($Amount8,' '),' ')
+   let $Amount9= rtrim(ltrim($Amount9,' '),' ')
+   
+ If #CMCount <> 0 or #RMCount <> 0 or #TotCount <> 0 
+   let $CurrMonthXML = '<CurrentMonth>' || $yyyy_SD || '-' ||$mm_SD || '</CurrentMonth>'
+   let $PeriodXML    = '<Period><from>'|| $fromRecap || '</from><until>' || $untilRecap || '</until></Period>'
+
+   let $MonthXML='<TotalMonth>'||$CurrMonthXML||'<TotalTaxableEarning>'||$Amount1||'</TotalTaxableEarning><TotalTaxAtSource>'||$Amount2||'</TotalTaxAtSource><TotalCommission>'||$Amount3|| '</TotalCommission></TotalMonth>'
+   ! FMB 20140103 Loop through months
+
+ let #m = 1
+ let #mm_SD = $mm_SD
+ 
+!FMB 20191101 While #m < #mm_SD
+ While #m < 48 ! FMB 20191101 for now just for 3 years retro max.
+  get #RMYear     from SDTotals(#i) RMYear(#m)
+  get #Amount4    from SDTotals(#i) RMEarning(#m)
+  get #Amount5    from SDTotals(#i) RMTax(#m)
+
+#debug show '#m= ' #m ' #Amount4 = ' #Amount4 ' #Amount5 = ' #Amount5 
+
+  If #Amount4 <> 0 or #Amount5 <> 0
+  
+    let #Total_Comm_Tax_Amnt5_0 = #Amount5
+    let #Total_Comm_Tax_Amnt5_1 = (#Staxb_PCTR  * #Total_Comm_Tax_Amnt5_0) / 100
+    let #Total_Comm_Tax_Amnt5_1 = round(#Total_Comm_Tax_Amnt5_1,2)
+    let #Total_Comm_Tax_Amnt5_1 = #Total_Comm_Tax_Amnt5_1 * 20
+    let #Total_Comm_Tax_Amnt5_1 = round(#Total_Comm_Tax_Amnt5_1,0)
+    let #Total_Comm_Tax_Amnt5_1 = #Total_Comm_Tax_Amnt5_1 / 20
+    let #Amount6                = #Total_Comm_Tax_Amnt5_1
+  
+    do Format-Number(#Amount4,$Amount4,'999999999999.99')
+    do Format-Number(#Amount5,$Amount5,'999999999999.99')
+    do Format-Number(#Amount6,$Amount6,'999999999999.99')
+
+    let $Amount4= rtrim(ltrim($Amount4,' '),' ')
+    let $Amount5= rtrim(ltrim($Amount5,' '),' ')
+    let $Amount6= rtrim(ltrim($Amount6,' '),' ')
+ 
+  !FMB 20191101   do Format-Number(#m,$rr_SD,'09')
+  
+  #debug show ' $yyyy_SD = ' $yyyy_SD ' #RMYear = ' #RMYear ' #m = ' #m
+  
+    let #CMYear = $yyyy_SD
+    let #rr_SD = #m - 12 * ( #CMYear - #RMYear )     
+    do Format-Number(#rr_SD,$rr_SD,'09')
+    do Format-Number(#RMYear,$RMYear,'9999')
+        
+!FMB 20191101    let $CurrMonthXML  = '<Month>' || $yyyy_SD || '-' ||$rr_SD || '</Month>'
+    let $CurrMonthXML  = '<Month>' || $RMYear || '-' ||$rr_SD || '</Month>'
+    let $CorrectionXML = $CorrectionXML || '<CorrectionMonth>' || $CurrMonthXML || '<TotalTaxableEarning>' || $Amount4 
+    let $CorrectionXML = $CorrectionXML || '</TotalTaxableEarning><TotalTaxAtSource>' || $Amount5 || '</TotalTaxAtSource><TotalCommission>' || $Amount6 || '</TotalCommission></CorrectionMonth>' 
+  End-If
+
+  let #Amount4 = 0
+  let #Amount5 = 0
+  let #m       = #m + 1
+ 
+ End-While
+
+   let $YearXML       = '<TotalYear>'            || $PeriodXML    || '<TotalTaxableEarning>' || $Amount7 ||      '</TotalTaxableEarning><TotalTaxAtSource>' 
+   let $YearXML = $YearXML || $Amount8 || '</TotalTaxAtSource><TotalCommission>' || $Amount9 ||      '</TotalCommission></TotalYear>' 
+ 
+   let $TotalsXML = '<TaxAtSourceTotals institutionIDRef=' || '"#' || $Canton || '">' || $MonthXML || $CorrectionXML || $YearXML ||      '</TaxAtSourceTotals>'
+  
+   do ReCreate_PTotals
+
+   let $CurrMonthXML  = ''
+   let $PeriodXML     = ''
+   let $MonthXML      = ''
+   let $CorrectionXML = ''
+   let $YearXML       = ''
+   let $TotalsXML     = ''
+   
+ ELSE
+   do ReCreate_PHeader
+ End-If
+
+from PS_GPCH_EG_PHEADER SDP
+     where SDP.COMPANY                = $ptot_company
+           and SDP.GPCH_RC_PAY_YEAR   = $ptot_year
+           and SDP.GPCH_SI_PROV_TYPE  = $ptot_provtype
+           and SDP.GPCH_EG_DOMAINID   = $ptot_domainid          
+#ifdef MICROSOFT
+          and substring(SDP.GPCH_EG_REQUEST_ID,#MPos,2) = $mm_SD
+#else
+          and substr(SDP.GPCH_EG_REQUEST_ID,#MPos,2) = $mm_SD
+#endif
+
+end-select
+    
+#Debug Show 'Out Update_SD_PTotals'
+End-Procedure Update_SD_PTotals
+!*********************************************************************************************
+Begin-Procedure ReCreate_PTotals
+#Debug show 'In ReCreate_PTotals'
+
+Begin-Sql on-error=give_warning
+ DELETE FROM PS_GPCH_EG_PTOTALS 
+   where COMPANY            = &SDP.COMPANY 
+     and GPCH_RC_PAY_YEAR   = &SDP.GPCH_RC_PAY_YEAR 
+     and GPCH_EG_DOMAINID   = &SDP.GPCH_EG_DOMAINID
+     and GPCH_EG_REQUEST_ID = &SDP.GPCH_EG_REQUEST_ID
+     and GPCH_SI_PROV_TYPE  = &SDP.GPCH_SI_PROV_TYPE 
+     and GPCH_SI_PROV_CD    = &SDP.GPCH_SI_PROV_CD
+     and GPCH_EG_USERKEY    = &SDP.GPCH_EG_USERKEY
+End-Sql
+
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCH_EG_PTOTALS VALUES
+(&SDP.COMPANY,&SDP.GPCH_RC_PAY_YEAR,&SDP.GPCH_EG_DOMAINID,&SDP.GPCH_EG_REQUEST_ID,&SDP.GPCH_SI_PROV_TYPE,&SDP.GPCH_SI_PROV_CD , &SDP.GPCH_EG_USERKEY, $TotalsXML )
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+#Debug show 'Out ReCreate_PTotals'
+End-Procedure ReCreate_PTotals
+!*********************************************************************************************
+Begin-Procedure ReCreate_PHeader
+#Debug show 'In ReCreate_PHeader'
+
+Begin-Sql on-error=give_warning
+ DELETE FROM PS_GPCH_EG_PHEADER 
+   where COMPANY            = &SDP.COMPANY 
+     and GPCH_RC_PAY_YEAR   = &SDP.GPCH_RC_PAY_YEAR 
+     and GPCH_EG_DOMAINID   = &SDP.GPCH_EG_DOMAINID
+     and GPCH_EG_REQUEST_ID = &SDP.GPCH_EG_REQUEST_ID
+     and GPCH_SI_PROV_TYPE  = &SDP.GPCH_SI_PROV_TYPE 
+     and GPCH_SI_PROV_CD    = &SDP.GPCH_SI_PROV_CD
+     and GPCH_EG_USERKEY    = &SDP.GPCH_EG_USERKEY
+End-Sql
+
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCH_EG_PHEADER VALUES
+(&SDP.COMPANY,&SDP.GPCH_RC_PAY_YEAR,&SDP.GPCH_EG_DOMAINID,&SDP.GPCH_EG_REQUEST_ID,&SDP.GPCH_SI_PROV_TYPE,&SDP.GPCH_SI_PROV_CD , &SDP.GPCH_EG_USERKEY,' ', '' )
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+#Debug show 'Out ReCreate_PTotals'
+End-Procedure ReCreate_PTotals
+!*********************************************************************************************
+
+Begin-Procedure create-SDXML
+#Debug Show 'In create-SDXML '
+
+do ConvertToComponents($ReportEndDate,$yyyy_SD,$mm_SD,$dd_SD)
+let $CurrentMonth    =  $yyyy_SD || '-' || $mm_SD 
+let $CurrentMonthXML = '<CurrentMonth>' || $CurrentMonth || '</CurrentMonth>'
+
+!FMB Hardcoded
+let $DummyReversal = '<Residence><CantonCH>ZH</CantonCH></Residence><TaxAtSourceCategory><OLD-TaxAtSourceCode>DUMMY</OLD-TaxAtSourceCode>' 
+let $DummyReversal = $DummyReversal || '</TaxAtSourceCategory><TaxableEarning>0.00</TaxableEarning>' 
+let $DummyReversal = $DummyReversal || '<AscertainedTaxableEarning>0.00</AscertainedTaxableEarning><TaxAtSource>0.00</TaxAtSource>'  
+
+let $EMPLID_Old = 'FirstRow'
+
+let $ptot_provtype = 'A'
+
+!FMB Hardcoded
+If $GPCH_EG_YEP_FLG <> 'Y'
+    let $ptot_domainid = '13'
+    let #ptot_domainid = $ptot_domainid
+End-IF
+
+begin-select on-error=give_warning  
+X22.EMPLID
+X22.EMPL_RCD
+X22.GPCH_SI_PROV_CD
+X22.SEG_BGN_DT
+X22.SEG_END_DT
+X22.GPCH_TX_CANTON
+X22.GPCH_TX_VILLAGE_CD
+X22.SETID
+X22.LOCATION
+X22.REG_TEMP
+X22.GPCH_RP_CHAR03
+X22.GPCH_RP_CHAR04
+X22.GPCH_RP_CHAR05
+X22.GPCH_TX_GRANTCODE
+X22.MAR_STATUS
+X22.GPCH_RP_AMOUNT11
+
+
+ let $EMPLID   = &X22.EMPLID
+ let $EMPL_RCD = &X22.EMPL_RCD
+#debug show ' $EMPLID = ' $EMPLID ' $EMPLID_Old = ' $EMPLID_Old
+
+ If $EMPLID <> $EMPLID_Old and $EMPLID_Old <> 'FirstRow'
+   let $final_xml = '<TaxAtSourceSalaries>' || $final_xml || '</TaxAtSourceSalaries>'
+   
+   Do Get_SourceTaxMonthlyCalculations
+
+
+#debug show 'Inside IF $EMPLID = ' $EMPLID ' $EMPLID_Old = ' $EMPLID_Old
+
+!Fill for GPCH_EG_PERSON Insert
+   let $Empl_ID       = $EMPLID_Old
+   let #Empl_RCD      = #EMPL_RCD_Old
+
+    do Insert_Employee_Data_TX
+   
+     let $final_xml          = ''
+     let $MarriagePartnerXML = ''
+     let $ChildrenXML        = ''  
+     let $ConcubinageXML     = ''
+     let $Workplace          = ''
+     let $AdditionalParticularsXML = ''
+     let $HistoryXML         = ''
+     let $MunicipalityIDXML  = ''
+     let $CurrentXML         = ''
+     let $CorrectionXML      = ''
+     let $RecapXML           = '' 
+     
+  End-If
+  
+ let $EMPLID_Old      = $EMPLID
+ let $EMPL_RCD_Old    = $EMPL_RCD
+ let $Prov_Id         = &X22.GPCH_SI_PROV_CD
+ let $ptot_providercd = &X22.GPCH_SI_PROV_CD
+ let $Canton          = &X22.GPCH_TX_CANTON
+ let $MunicipalityID  = &X22.GPCH_TX_VILLAGE_CD
+ 
+
+  If $Prov_Id <> $Prov_Id_Old
+      let $RecapXML           = '' 
+  End-If
+  
+ let $HireDt_Old      = $HireDt
+ let $Prov_Id_Old     = $Prov_Id
+
+ do AssignCantonIndex
+
+! IF $Prov_Id <> $Prov_Id_Old
+!   let $Provider_crit = ' AND P.GPCH_EG_USERKEY   = ''' || $Canton || ''' '            
+!   do Get-PTotals-Data($Provider_crit,$providertype,#Domainid_tx,$ptot_company,$ptot_year,#ptot_domainid,$ptot_providercd,$ptot_provtype,$ptot_requestid,$ptot_userkey)          
+! End-If
+ 
+! Additional Particulars
+ let $DenominationXML    = ' '
+ let $Denomination       = RTRIM(LTRIM(&X22.GPCH_RP_CHAR05,' '),' ')
+
+ If $Denomination  = '0'
+    let $DenominationXML = '<Denomination>romanCatholic</Denomination>'
+ End-If
+ If $Denomination  = '1'
+    let $DenominationXML = '<Denomination>christianCatholic</Denomination>'
+ End-If
+ If $Denomination  = '3'
+    let $DenominationXML = '<Denomination>reformedEvangelical</Denomination>'
+ End-If
+ If $Denomination = '4'
+    let $DenominationXML = '<Denomination>jewishCommunity</Denomination>'
+ End-If
+ If $Denomination  = '5'
+    let $DenominationXML = '<Denomination>otherOrNone</Denomination>'
+ End-If
+ 
+! If  $DenominationXML     = ' '
+!    let $DenominationXML = '<Denomination>otherOrNone</Denomination>'
+! End-If
+ 
+ If &X22.REG_TEMP         = 'Y'
+    let $EmploymentXML    = '<Employment>sideJob</Employment>'
+ Else
+    let $EmploymentXML    = '<Employment>mainJob</Employment>'
+ End-If
+ 
+ let $OtherActivitiesXML   = ' ' 
+
+ If &X22.GPCH_RP_CHAR03    = '0'  !CH
+   let $OtherActivitiesXML = '<OtherActivities>CH</OtherActivities>'
+ End-If
+ If &X22.GPCH_RP_CHAR03    = '1'  !abroad
+   let $OtherActivitiesXML = '<OtherActivities>abroad</OtherActivities>'
+ End-If
+ If &X22.GPCH_RP_CHAR03    = '2' !CHandAbroad
+   let $OtherActivitiesXML = '<OtherActivities>abroadAndCH</OtherActivities>'
+ End-If
+
+ let $AnnuityXML          = ' '
+   
+ If &X22.GPCH_RP_CHAR04   = 'Y'
+   let $AnnuityXML        = '<Annuity/>'
+ End-If
+ 
+ let $ConcubinageXML      = ' '
+ 
+ If &X22.MAR_STATUS       = 'Y'
+   let $ConcubinageXML    = '<Concubinage/>'
+ End-If
+ 
+ If &X22.GPCH_TX_GRANTCODE = 'Y'
+   let $GrantCodeXML    = '<GrantTaxAtSourceCode/>'
+ End-If
+ 
+ do Get_Spouse_Data  ! Retrieve  $MarriagePartnerXML as full XML snippet
+ do Get_Child_Data   ! Retrieve  &ChildrenXML as full XML snippet
+
+ 
+ let $AdditionalParticularsXML = '<AdditionalParticulars>'|| $DenominationXML || $EmploymentXML || $OtherActivitiesXML || $AnnuityXML 
+ let $AdditionalParticularsXML = $AdditionalParticularsXML || $ConcubinageXML || $MarriagePartnerXML || $ChildrenXML || '</AdditionalParticulars>'
+ 
+ IF $AdditionalParticularsXML = '<AdditionalParticulars></AdditionalParticulars>'
+  Let $AdditionalParticularsXML = ''
+ End-If
+ 
+ let $CantonXML         = '<TaxAtSourceCanton>' ||$Canton || '</TaxAtSourceCanton>'
+ let $MunicipalityIDXML = '<TaxAtSourceMunicipalityID>' ||$MunicipalityID || '</TaxAtSourceMunicipalityID>'
+
+!XML per months
+
+ do Get_Months    ! Retrieve  $CurrHeader $Current $Correction
+ 
+!History 
+ let $HistoryXML                 = '' 
+ do Get_History   ! Retrieve  &HistoryXML as full XML snippet from GPCHTXX21_TMP
+  
+!Recap
+! do Format-Number(&X22.GPCH_RP_AMOUNT11,$Amount11,'999.99')  ! Last Tax
+ do Get_Recap     ! Retrieve &RecapXML    
+
+!Final concat of components
+  let $final_xml = $final_xml || '<TaxAtSourceSalary institutionIDRef= "' || $ptot_providercd || '">' || $AdditionalParticularsXML || $CantonXML
+  let $final_xml = $final_xml || $MunicipalityIDXML || $CurrentMonthXML || $CurrentXML || $CorrectionXML || $HistoryXML || $RecapXML || '</TaxAtSourceSalary>'
+  
+  let $AdditionalParticularsXML = ''
+  let $CantonXML                = ''
+  let $MunicipalityIDXML        = ''
+!  let $CurrentMonthXML          = ''
+  let $CurrentXML               = ''
+  let $CorrectionXML            = ''
+  let $ChildrenXML              = ''
+  let $MarriagePartnerXML       = ''
+  let $HistoryXML               = ''
+  let $RecapXML                 = ''
+  let $GrantCodeXML             = ''
+  
+  
+!FMB 20120530 - End
+
+
+ 
+  FROM  PS_GPCHTXX22_TMP X22
+   where X22.PROCESS_INSTANCE = $prcs_process_instance
+
+ order by X22.EMPLID, X22.GPCH_SI_PROV_CD DESC, X22.GPCH_TX_CANTON DESC, X22.PRD_END_DT ASC
+ 
+End-Select
+
+#debug show ' Insert last row  $EMPLID_Old = ' $EMPLID_Old ' $Empl_ID = ' $Empl_ID '$ptot_provtype = ' $ptot_provtype ' $ptot_providercd = ' $ptot_providercd
+!Insert last row 
+IF $EMPLID_Old <> 'FirstRow'
+   let $Empl_ID       = $EMPLID_Old
+   let #Empl_RCD      = #EMPL_RCD_Old
+    let $final_xml = '<TaxAtSourceSalaries>' || $final_xml || '</TaxAtSourceSalaries>'
+    
+    Do Get_SourceTaxMonthlyCalculations
+
+ 
+    do Insert_Employee_Data_TX
+End-If
+    
+#Debug Show 'Out create-SDXML '
+End-Procedure create-SDXML
+
+!*********************************************************************************************
+
+Begin-Procedure Get_Recap
+#Debug Show 'In Get_Recap'
+
+begin-select on-error=give_warning  
+X23.EMPLID
+X23.EMPL_RCD
+X23.GPCH_SI_PROV_CD
+X23.SEG_BGN_DT
+X23.SEG_END_DT
+X23.GPCH_TX_CANTON
+X23.GPCH_TX_VILLAGE_CD
+X23.SETID
+X23.LOCATION
+X23.HIRE_DT
+X23.GPCH_RP_AMOUNT1
+X23.GPCH_RP_AMOUNT2
+X23.GPCH_RP_AMOUNT3
+X23.GPCH_RP_AMOUNT10
+X23.GPCH_RP_AMOUNT11
+!X23.GPCH_RP_AMOUNT12
+!X23.GPCH_RP_AMOUNT13
+!X23.GPCH_RP_AMOUNT14
+!X23.GPCH_RP_AMOUNT15
+!X23.GPCH_RP_AMOUNT16
+!X23.GPCH_RP_AMOUNT17
+!X23.GPCH_RP_AMOUNT18
+!X23.GPCH_RP_AMOUNT19
+!X23.GPCH_RP_AMOUNT20
+!X23.GPCH_RP_AMOUNT21
+X23.STATUS
+     
+ let $HireDt          = &X23.HIRE_DT 
+ let $EMPLID_Old      = $EMPLID
+ let $Prov_Id         = &X23.GPCH_SI_PROV_CD
+ let $ptot_providercd = &X23.GPCH_SI_PROV_CD
+ let $Canton          = &X23.GPCH_TX_CANTON
+ let $MunicipalityID  = &X23.GPCH_TX_VILLAGE_CD
+ 
+
+  let $SetidRecap     = &X23.Setid
+  let $LocationRecap  = &X23.Location
+  
+  let $fromRecapIn    = &X23.SEG_BGN_DT
+  let $untilRecapIn   = &X23.SEG_END_DT
+  
+  do ConvertToComponents($fromRecapIn,$yyyy_tmp,$mm_tmp,$dd_tmp)
+  let $fromRecap      = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp
+  
+  do ConvertToComponents($untilRecapIn,$yyyy_tmp,$mm_tmp,$dd_tmp)
+  let $untilRecap      = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp
+  
+  If $CategoryHist = 'GWVEX' or $CategoryHist = 'VRHEX'
+    Let #GPCH_TX_STAX_PCT = 23.00
+    do Format-Number(#GPCH_TX_STAX_PCT,$Amount11,'999.99')      ! Last Tax
+  ELSE
+    do Format-Number(&X23.GPCH_RP_AMOUNT11,$Amount11,'999.99')  ! Last Tax
+  END-IF
+
+  
+  do Format-Number(&X23.GPCH_RP_AMOUNT1,$Amount1,'999999999999.99')
+  do Format-Number(&X23.GPCH_RP_AMOUNT2,$Amount2,'999999999999.99')
+  do Format-Number(&X23.GPCH_RP_AMOUNT3,$Amount3,'999999999999.99')
+  
+! Update GPCH_RP_AMOUNT12 to ~AMOUNT18 as of accumulators
+! Amount12 = C-ChurchTaxCumulative  Amount13 = D-TerminationPayCumulative  Amount14 = E-SporadicBenefitsCumulative
+! Amount15 = F-OwnershipRightCumulative Amount16 = G-BoardOfDirectorsRenumeration
+! Amount17 = H-FamilyIncomeCumulative Amount18 = I-ChargesEffectiveCumulative Amount19 = J-ChargesLumpSumCumulative
+! Amount20 = WorkDaysCumulativeCH 
+
+! Amount21 = GrantTaxAtSourceCode  
+
+  let #Amount10 = 0.00   !Commission
+  let #Amount12 = 0.00
+  let #Amount13 = 0.00
+  let #Amount14 = 0.00
+  let #Amount15 = 0.00
+  let #Amount16 = 0.00
+  let #Amount17 = 0.00
+  let #Amount18 = 0.00
+  let #Amount19 = 0.00
+  let #Amount20 = 0.00
+! GrantTaxAtSourceCode  let #Amount21 = 0.00
+
+ If &X23.STATUS <> 'D'
+! Don't process Accumulators for  Dummy
+    do Get_Accum_Value('CH_QS_C',$EMPLID,#Empl_RCD,#Amount12,$Canton,$fromRecapIn, $untilRecapIn, #prcs_process_instance )
+    do Get_Accum_Value('CH_QS_D',$EMPLID,#Empl_RCD,#Amount13,$Canton,$fromRecapIn, $untilRecapIn, #prcs_process_instance )
+    do Get_Accum_Value('CH_QS_E',$EMPLID,#Empl_RCD,#Amount14,$Canton,$fromRecapIn, $untilRecapIn, #prcs_process_instance )
+    do Get_Accum_Value('CH_QS_F',$EMPLID,#Empl_RCD,#Amount15,$Canton,$fromRecapIn, $untilRecapIn, #prcs_process_instance )
+    do Get_Accum_Value('CH_QS_G',$EMPLID,#Empl_RCD,#Amount16,$Canton,$fromRecapIn, $untilRecapIn, #prcs_process_instance )
+    do Get_Accum_Value('CH_QS_H',$EMPLID,#Empl_RCD,#Amount17,$Canton,$fromRecapIn, $untilRecapIn, #prcs_process_instance )
+    do Get_Accum_Value('CH_QS_I',$EMPLID,#Empl_RCD,#Amount18,$Canton,$fromRecapIn, $untilRecapIn, #prcs_process_instance )
+    do Get_Accum_Value('CH_QS_J',$EMPLID,#Empl_RCD,#Amount19,$Canton,$fromRecapIn, $untilRecapIn, #prcs_process_instance )
+
+#debug show ' Get_Accum_Value $EMPLID = ' $EMPLID ' #Empl_RCD = ' #Empl_RCD ' #Amount17 = ' #Amount17
+
+! GrantTaxAtSourceCode    do Get_Accum_Value('CH_TX_XXX ',$EMPLID,#Empl_RCD,#Amount21)
+    do Get_Accum_Value('CH_TX_AWDINCH',$EMPLID,#Empl_RCD,#Amount20,$Canton,$fromRecapIn, $untilRecapIn, #prcs_process_instance )
+  
+    do Format-Number(#Amount12,$Amount12,'999999999999.99')
+    do Format-Number(#Amount13,$Amount13,'999999999999.99')
+    do Format-Number(#Amount14,$Amount14,'999999999999.99')
+    do Format-Number(#Amount15,$Amount15,'999999999999.99')
+    do Format-Number(#Amount16,$Amount16,'999999999999.99')
+    do Format-Number(#Amount17,$Amount17,'999999999999.99')
+    do Format-Number(#Amount18,$Amount18,'999999999999.99')   
+    do Format-Number(#Amount19,$Amount19,'999999999999.99')
+    do Format-Number(#Amount20,$Amount20,',888')
+! GrantTaxAtSourceCode  do Format-Number(#Amount21,$Amount21,'999999999999.99')
+
+! End Don't process for  Dummy  
+ End-If
+  
+  let $Amount1= rtrim(ltrim($Amount1,' '),' ')
+  let $Amount2= rtrim(ltrim($Amount2,' '),' ')
+  let $Amount3= rtrim(ltrim($Amount3,' '),' ')
+ 
+  let $Amount11= rtrim(ltrim($Amount11,' '),' ')
+  let $Amount12= rtrim(ltrim($Amount12,' '),' ')
+  let $Amount13= rtrim(ltrim($Amount13,' '),' ')
+  let $Amount14= rtrim(ltrim($Amount14,' '),' ')
+  let $Amount15= rtrim(ltrim($Amount15,' '),' ')
+  let $Amount16= rtrim(ltrim($Amount16,' '),' ')
+  let $Amount17= rtrim(ltrim($Amount17,' '),' ')
+  let $Amount18= rtrim(ltrim($Amount18,' '),' ')
+  let $Amount19= rtrim(ltrim($Amount19,' '),' ')
+  let $Amount20= rtrim(ltrim($Amount20,' '),' ')
+  
+! Fill Rekap  
+ get #Amount1    from SDTotals(#i) TotEarning
+ get #Amount2    from SDTotals(#i) TotTax
+ get #Amount3    from SDTotals(#i) TotCommission
+ get #TotCount   from SDTotals(#i) TotCount
+   
+ let #Amount1    = #Amount1 + &X23.GPCH_RP_AMOUNT1
+ let #Amount2    = #Amount2 + &X23.GPCH_RP_AMOUNT3
+ let #Amount3    = #Amount3 + &X23.GPCH_RP_AMOUNT10
+ let #TotCount   = #TotCount + 1
+ 
+ put $Canton     into SDTotals(#i) Canton
+ put $CurrMonth  into SDTotals(#i) CurrMonth
+ put #Amount1    into SDTotals(#i) TotEarning
+ put #Amount2    into SDTotals(#i) TotTax
+ put #Amount3    into SDTotals(#i) TotCommission
+ put #TotCount   into SDTotals(#i) TotCount
+
+! Fill Begin and From for Totals  
+ get $TotFrom  from SDTotals(#i) TotFrom
+ get $TotUntil from SDTotals(#i) TotUntil 
+ 
+ #debug show '$Canton = ' $Canton ' $EMPLID = ' $EMPLID ' $TotFrom = ' $TotFrom ' $fromRecap = ' $fromRecap ' $TotUntil = ' $TotUntil ' $untilRecap = ' $untilRecap 
+ 
+ IF $TotFrom = '' or $fromRecap < $TotFrom 
+   put $fromRecap  into SDTotals(#i) TotFrom
+#debug show ' put $fromRecap = ' $fromRecapIn
+ End-If
+ IF $TotUntil < $untilRecap
+   put $untilRecap into SDTotals(#i) TotUntil
+#debug show ' put $untilRecap = ' $untilRecapIn
+ End-If
+
+  let $RecapLocXML  = '<Recapitulation lastWorkplaceIDRef=' ||'"#' ||$ptot_company || $SetidRecap || $LocationRecap ||'"' || '>'
+
+  let $RecapXML = $RecapXML || $RecapLocXML || '<Period><from>' || $fromRecap || '</from><until>' || $untilRecap || '</until></Period><LastTax>' ||
+       $Amount11 || '</LastTax><TaxableEarningCumulative>' || $Amount1 || '</TaxableEarningCumulative><TaxAtSourceCumulative>' ||
+       $Amount3 || '</TaxAtSourceCumulative>'
+        
+  If #Amount12 <> 0.00
+     let $RecapXML = $RecapXML || '<ChurchTaxCumulative>' || $Amount12 || '</ChurchTaxCumulative>'
+  End-if   
+  If #Amount13 <> 0.00
+     let $RecapXML = $RecapXML || '<TerminationPayCumulative>' || $Amount13 || '</TerminationPayCumulative>'
+  End-if 
+  If #Amount14 <> 0.00
+     let $RecapXML = $RecapXML || '<SporadicBenefitsCumulative>' || $Amount14 || '</SporadicBenefitsCumulative>'
+  End-if
+  If #Amount15 <> 0.00
+     let $RecapXML = $RecapXML || '<OwnershipRightCumulative>' || $Amount15 || '</OwnershipRightCumulative>'
+  End-if     
+  If #Amount16 <> 0.00
+     let $RecapXML = $RecapXML || '<BoardOfDirectorsRemunerationCumulative>' || $Amount16 || '</BoardOfDirectorsRemunerationCumulative>'
+  End-if     
+  If #Amount17 <> 0.00
+     let $RecapXML = $RecapXML || '<FamilyIncomeCumulative>' || $Amount17 || '</FamilyIncomeCumulative>'
+  End-if     
+  If #Amount18 <> 0.00
+     let $RecapXML = $RecapXML || '<ChargesEffectiveCumulative>' || $Amount18 || '</ChargesEffectiveCumulative>'
+  End-if 
+  If #Amount19 <> 0.00
+     let $RecapXML = $RecapXML || '<ChargesLumpSumCumulative>' || $Amount19 || '</ChargesLumpSumCumulative>'
+  End-if
+  
+  let $RecapXML = $RecapXML || $GrantCodeXML 
+  
+  If #Amount20 <> 0.00
+     let $RecapXML = $RecapXML || '<WorkDaysCumulativeCH>' || $Amount20 || '</WorkDaysCumulativeCH>'
+  End-if
+       
+  let $RecapXML = $RecapXML || '</Recapitulation>' 
+  
+ FROM  PS_GPCHTXX23_TMP X23
+  where X23.PROCESS_INSTANCE = $prcs_process_instance
+   AND  X23.EMPLID           = $EMPLID
+!Bug 26167551   AND  X23.EMPL_RCD         = #EMPL_RCD
+   AND  X23.GPCH_SI_PROV_CD  = $ptot_providercd
+   AND  X23.GPCH_TX_CANTON   = $Canton
+ order by X23.PRD_END_DT
+  
+End-Select
+    
+#Debug Show 'Out Get_Recap '
+End-Procedure Get_Recap
+
+!*********************************************************************************************
+Begin-Procedure AssignCantonIndex
+#Debug show 'In AssignCantonIndex'
+
+ IF $Canton = 'AG'
+   let #i = 19 
+ End-If
+ IF $Canton = 'AI' 
+   let #i = 16 
+ End-If
+ IF $Canton = 'AR' 
+   let #i = 15 
+ End-If
+ IF $Canton = 'BE' 
+   let #i = 2 
+ End-If
+ IF $Canton = 'BL' 
+   let #i = 13 
+ End-If
+ IF $Canton = 'BS' 
+   let #i = 12 
+ End-If
+ IF $Canton = 'FR' 
+   let #i = 10 
+ End-If
+ IF $Canton = 'GE' 
+   let #i = 25 
+ End-If
+ IF $Canton = 'GL' 
+   let #i = 8 
+ End-If
+ IF $Canton = 'GR' 
+   let #i = 18 
+ End-If
+ IF $Canton = 'JU' 
+   let #i = 26 
+ End-If
+ IF $Canton = 'LU' 
+   let #i = 3 
+ End-If
+ IF $Canton = 'NE' 
+   let #i = 24 
+ End-If
+ IF $Canton = 'NW' 
+   let #i = 7 
+ End-If
+ IF $Canton = 'OW' 
+   let #i = 6 
+ End-If
+ IF $Canton = 'SG' 
+   let #i = 17 
+ End-If
+ IF $Canton = 'SH' 
+   let #i = 14 
+ End-If
+ IF $Canton = 'SO' 
+   let #i = 11 
+ End-If
+ IF $Canton = 'SZ' 
+   let #i = 5 
+ End-If
+ IF $Canton = 'TG' 
+   let #i = 20 
+ End-If
+ IF $Canton = 'TI' 
+   let #i = 21 
+ End-If
+ IF $Canton = 'UR' 
+   let #i = 4 
+ End-If
+ IF $Canton = 'VD' 
+   let #i = 22 
+ End-If
+ IF $Canton = 'VS' 
+   let #i = 23 
+ End-If
+ IF $Canton = 'ZG' 
+   let #i = 9 
+ End-If
+ IF $Canton = 'ZH' 
+   let #i = 1 
+ End-If
+
+#Debug show 'Out AssignCantonIndex' 
+End-Procedure AssignCantonIndex 
+
+!***************************
+! Get Country and its DESCR*
+!***************************
+Begin-Procedure GetCountry_2CHAR
+#Debug Show 'In GetCountry_2CHAR'
+
+BEGIN-SELECT
+A.COUNTRY_2CHAR
+    LET $CountryFrom = &A.COUNTRY_2CHAR
+FROM PS_COUNTRY_TBL A
+WHERE A.COUNTRY = $CountryRes
+END-SELECT
+
+#Debug show 'Out GetCountry_2CHAR' 
+End-Procedure GetCountry_2CHAR
+
+
+!*********************
+! Cross-Border Check *
+!*********************
+Begin-Procedure CrossBorder_Freq
+#Debug Show 'In CrossBorder_Freq'
+ 
+BEGIN-SELECT
+P.CB_FREQ_CHE
+    LET $KindOfResidence = &P.CB_FREQ_CHE
+FROM PS_GPCH_VSA_PMT_VW P
+WHERE P.EMPLID = &X26.EMPLID
+AND P.EFFDT = (SELECT MAX(P1.EFFDT) FROM PS_GPCH_VSA_PMT_VW P1 WHERE P.EMPLID = P1.EMPLID 
+               AND P.DEPENDENT_ID = P1.DEPENDENT_ID AND P.COUNTRY = P1.COUNTRY 
+               AND P1.EFFDT<=&X26.SEG_END_DT)
+AND (P.EXPIRATN_DT >=&X26.SEG_END_DT OR P.EXPIRATN_DT IS NULL)
+END-SELECT
+    
+#Debug show 'Out CrossBorder_Freq' 
+End-Procedure CrossBorder_Freq
+
+!*********************************************************************************************
+Begin-Procedure Get_Months
+#Debug Show 'In Get_Months '
+
+#Debug Show ' $Prov_Id = ' $Prov_Id ' $ptot_providercd = ' $ptot_providercd ' $EMPLID = ' $EMPLID ' $Canton = ' $Canton
+
+  let $Month_Old = ''
+
+Begin-Select on-error=give_warning
+X26.EMPLID
+X26.EMPL_RCD
+X26.GPCH_SI_PROV_CD
+X26.SEG_BGN_DT
+X26.SEG_END_DT
+X26.PRD_END_DT
+X26.GPCH_TX_TRF_CD
+X26.GPCH_TX_CANTON
+X26.SETID
+X26.LOCATION
+X26.ACTION
+X26.BEGIN_DT
+X26.END_DT
+X26.HIRE_DT
+X26.TERMINATION_DT
+X26.GPCH_RP_CHAR03
+X26.GPCH_RP_FROMDT1
+X26.GPCH_RP_CHAR02
+X26.GPCH_RP_CHAR01
+X26.GPCH_RP_FROMDT2
+X26.STATE
+X26.COUNTRY_FROM
+X26.COUNTRY
+X26.GPCH_RP_AMOUNT1
+X26.GPCH_RP_AMOUNT2
+X26.GPCH_RP_AMOUNT3
+X26.GPCH_RP_AMOUNT10
+X26.STATUS
+
+ let $Month  = &X26.PRD_END_DT
+ let $Status = &X26.STATUS
+
+! Complete correction (expected old/new)
+
+#debug show '$Month = ' $Month ' $Month_Old = ' $Month_Old
+ IF ( $Month <> $Month_Old and $Month_Old <> '' and $Month_Old <> $ReportEndDate ) 
+ 
+ If $AmountsCorrXML <> ''
+  let $CorrectionXML = $CorrectionXML || '<CorrectionConfirmed>' || $MonthXML ||  $AmountsCorrXML || '</CorrectionConfirmed>'
+ Else
+  let $CorrectionXML = $CorrectionXML || '<Correction>' || $MonthXML  || $OldXML || $NewXML || '</Correction>'
+ END-IF
+
+  let $OldXML         = ''
+  let $AmountsCorrXML = ''
+  let $NewXML         = ''
+  let $Declaration    = ''
+  let $Current        = ''
+  let $Workplace      = ''
+  
+ End-If
+ 
+ let $Month_Old = $Month
+  
+ do ConvertToComponents($Month_Old,$yyyy_SD,$mm_SD,$dd_SD)
+ let $MonthXML = '<Month>' || $yyyy_SD || '-' || $mm_SD || '</Month>'
+
+ let $Setid    = &X26.SETID
+ let $Location = &X26.LOCATION
+ 
+ let $Workplace = '"#' ||$ptot_company || $Setid || $Location ||'"'
+ 
+! Declaration(Event) -- in progress
+ 
+ let $Declaration = ''
+ do Get_Declaration
+ If $Declaration <> ''
+   let $Declaration  = '<DeclarationCategory>' || $Declaration  || '</DeclarationCategory>'
+! Update Declaration as processed
+   do Update_Declaration
+ End-If  
+
+! FMB 20120530 open or does STATE make here any sense ?? 
+ Let $SEG_REP_END_DT = ''
+ Let $SEG_REP_END_DT = &X26.SEG_END_DT
+ do Get_ResidenceCanton
+! Returns $CantonRes and $CountryRes
+
+ let $Code      = &X26.GPCH_TX_TRF_CD
+ 
+ ! Residence
+ 
+ If $CountryRes <> 'CHE'
+ !Condition on $CountryRes
+    do GetCountry_2CHAR
+#Debug Show ' $CountryFrom: ' $CountryFrom
+!   do CheckCBFrequeny -- need to activate
+   
+    do CrossBorder_Freq
+    
+#Debug Show '$KindOfResidence: = ' $KindOfResidence
+   If $KindOfResidence = 'W'
+   ! this procedure is used when $KindOfResidence is Weekly
+    do Get_CBLegalAddress
+#Debug Show ' $CBAddr1 = ' $CBAddr1 ' : $CBPostal = ' $CBPostal ' : $CBCity = ' $CBCity
+    If $CBAddr1 <> ' ' OR $CBAddr1 <> ''
+       let $CBStreetTag = '<Street>' || $CBAddr1 || '</Street>'
+    End-If
+    If $CBPostal <> ' ' OR $CBPostal <> ''  
+       let $CBZipCodeTag = '<ZIP-Code>' || $CBPostal || '</ZIP-Code>'   
+    End-If
+    
+    If $CBCity <> ' ' OR $CBCity <> ''
+       let $CBCityTag = '<City>' || $CBCity || '</City>'
+    End-If
+    
+    let $KindOfResidence = '<Weekly>' || $CBStreetTag || $CBZipCodeTag || $CBCityTag || '</Weekly>'
+    
+     !let $KindOfResidence = '<Weekly><Street>' || $CBAddr1 || '</Street><ZIP-Code>' || $CBPostal || '</ZIP-Code><City>' || $CBCity || '</City></Weekly>'
+   Else
+      let $KindOfResidence = '<Daily/>'
+   End-If
+#Debug Show '$CountryFrom <> CHE = ' $CountryFrom
+#Debug Show '$CountryRes <> CHE = ' $CountryRes
+   
+   let $ResidenceXML = '<Residence><AbroadCountry>' ||$CountryFrom || '</AbroadCountry><KindOfResidence>' || $KindOfResidence ||'</KindOfResidence></Residence>'  
+ Else
+#Debug Show '$CountryFrom = CHE = ' $CountryFrom
+   let $ResidenceXML = '<Residence><CantonCH>' ||$CantonRes || '</CantonCH></Residence>'
+ End-If
+ 
+ If $Code = 'GGFEX'
+   let $CodeXML = '<CategoryPredefined>specialAgreement</CategoryPredefined>'
+ Else
+   If  $Code = 'VRHEX'
+      let $CodeXML = '<CategoryPredefined>honoraryBoardOfDirectorsResidingAbroad</CategoryPredefined>'
+   Else 
+      If $Code = 'GWVEX'
+         let $CodeXML = '<CategoryPredefined>monetaryValuesServicesResidingAbroad</CategoryPredefined>'
+      Else
+         let $CodeXML = '<TaxAtSourceCode>'||$Code || '</TaxAtSourceCode>'
+      End-If
+   End-If
+ End-If      
+   
+ let $CategoryXML  = '<TaxAtSourceCategory>' || $CodeXML || '</TaxAtSourceCategory>'
+ 
+ do Format-Number(&X26.GPCH_RP_AMOUNT1,$Amount1,'999999999999.99')
+ do Format-Number(&X26.GPCH_RP_AMOUNT2,$Amount2,'999999999999.99')
+ do Format-Number(&X26.GPCH_RP_AMOUNT3,$Amount3,'999999999999.99')
+ 
+ let $Amount1= rtrim(ltrim($Amount1,' '),' ')
+ let $Amount2= rtrim(ltrim($Amount2,' '),' ')
+ let $Amount3= rtrim(ltrim($Amount3,' '),' ') 
+ 
+ let $AmountsXML = '<TaxableEarning>' ||$Amount1 || '</TaxableEarning>'
+ ! If $Amount1 <> $Amount2 ! Must be printed always <AscertainedTaxableEarning>
+  let $AmountsXML = $AmountsXML || '<AscertainedTaxableEarning>' || $Amount2 || '</AscertainedTaxableEarning>'
+ ! End-if
+ let $AmountsXML = $AmountsXML || '<TaxAtSource>' ||$Amount3 || '</TaxAtSource>'
+
+
+#debug show ' &X26.PRD_END_DT = ' &X26.PRD_END_DT ' $ReportEndDate = ' $ReportEndDate ' $Status = ' $Status 
+#debug show '$OldXML = ' $OldXML 
+#debug show '$NewXML = ' $NewXML 
+
+! Current 
+#debug show ' $Declaration = ' $Declaration ' $AmountsXML  = ' $AmountsXML 
+ If $Status = 'P' and &X26.PRD_END_DT = $ReportEndDate
+#debug show ' inside current $EMPLID = ' $EMPLID 
+   let $Current    = $Declaration || $ResidenceXML || $CategoryXML || $AmountsXML  
+   If $Current <> ''
+     let $CurrentXML = '<Current workplaceIDRef=' || $Workplace || '>' || $Current || '</Current>'
+          
+     get #Amount1 from SDTotals(#i) CMEarning
+     get #Amount2 from SDTotals(#i) CMTax
+     get #Amount3 from SDTotals(#i) CMCommission
+     get #CMCount from SDTotals(#i) CMCount
+        
+     let #Amount1 = #Amount1 + &X26.GPCH_RP_AMOUNT1
+     let #Amount2 = #Amount2 + &X26.GPCH_RP_AMOUNT3
+     let #Amount3 = #Amount3 + &X26.GPCH_RP_AMOUNT10
+     let #CMCount = #CMCount + 1
+      
+     put #Amount1 into SDTotals(#i) CMEarning
+     put #Amount2 into SDTotals(#i) CMTax
+     put #Amount3 into SDTotals(#i) CMCommission    
+     put #CMCount into SDTotals(#i) CMCount
+
+   End-If
+ END-IF
+ 
+!FMB 20140103 
+  let #mm_SD = $mm_SD
+  
+!FMB 20191101 
+  do ConvertToComponents($ReportEndDate,$yyyy_RE,$mm_RE,$dd_RE)
+  let #yyyy_RE = $yyyy_RE
+  let #yyyy_SD = $yyyy_SD
+#debug show ' #yyyy_RE = ' #yyyy_RE ' #yyyy_SD = ' #yyyy_SD
+  let #mm_SD = #mm_SD + (12 * ( #yyyy_RE - #yyyy_SD ))
+  
+#debug show ' #mm_SD = ' #mm_SD 
+ 
+! Retro Confirmed 
+  If $Status = 'M' 
+ #debug show 'In Confirmed'
+ 
+   let #ConfirmedTaxableEarning  = 0.00
+   let #ConfirmedTaxAtSource     = 0.00
+   let $ConfirmedTaxableEarning  = ''
+   let $ConfirmedTaxAtSource     = ''
+        
+   Do ReadConfirmed
+   
+   If $ConfirmedTaxableEarning  <> ''       
+   
+    Goto Confirmed    
+   END-IF
+  ELSE
+   IF $ConfirmedTaxableEarning  <> '' 
+    Goto Confirmed
+   END-IF
+
+ END-IF
+ 
+! Retro Old (reversed)  
+ If $Status = 'M' 
+#debug show ' in regular M $CategoryXML = ' $CategoryXML
+
+   let $Old   =  $CategoryXML || $AmountsXML 
+   If $Old <> ''          
+     let $OldXML = '<Old>' || $Old || '</Old>'    
+     
+     get #Amount1 from SDTotals(#i) RMEarning(#mm_SD)
+     get #Amount2 from SDTotals(#i) RMTax(#mm_SD)
+     get #Amount3 from SDTotals(#i) RMCommission
+     get #RMCount from SDTotals(#i) RMCount
+ #debug show ' #Amount2 after array M regular = ' #Amount2 ' #mm_SD = ' #mm_SD         
+     let #Amount1 = #Amount1 + &X26.GPCH_RP_AMOUNT1
+     let #Amount2 = #Amount2 + &X26.GPCH_RP_AMOUNT3
+     let #Amount3 = #Amount3 + &X26.GPCH_RP_AMOUNT10
+     let #RMCount = #RMCount + 1
+ #debug show ' #Amount2 before array M regular = ' #Amount2 ' #mm_SD = ' #mm_SD 
+!FMB 20191101
+     put #yyyy_SD into SDTotals(#i) RMYear(#mm_SD)
+     put #Amount1 into SDTotals(#i) RMEarning(#mm_SD)
+     put #Amount2 into SDTotals(#i) RMTax(#mm_SD)
+     put #Amount3 into SDTotals(#i) RMCommission 
+     put #RMCount into SDTotals(#i) RMCount  
+
+   End-If
+ END-IF
+  
+! Retro New
+ If $Status = 'P' and &X26.PRD_END_DT < $ReportEndDate
+   let $New   = $Declaration || $CategoryXML || $AmountsXML  
+   If $New <> ''
+   
+ #debug show 'In P '
+ 
+     let $NewXML = '<New>'  || $New || '</New>'
+     get #Amount1 from SDTotals(#i) RMEarning(#mm_SD)
+     get #Amount2 from SDTotals(#i) RMTax(#mm_SD)
+     get #Amount3 from SDTotals(#i) RMCommission
+     get #RMCount from SDTotals(#i) RMCount
+ #debug show ' #Amount2 after array P regular = ' #Amount2 ' #mm_SD = ' #mm_SD            
+     let #Amount1 = #Amount1 + &X26.GPCH_RP_AMOUNT1
+     let #Amount2 = #Amount2 + &X26.GPCH_RP_AMOUNT3
+     let #Amount3 = #Amount3 + &X26.GPCH_RP_AMOUNT10
+     let #RMCount = #RMCount + 1
+ #debug show ' #Amount2 before array M regular = ' #Amount2 ' #mm_SD = ' #mm_SD
+ !FMB 20191101
+     put #yyyy_SD into SDTotals(#i) RMYear(#mm_SD)
+     put #Amount1 into SDTotals(#i) RMEarning(#mm_SD)
+     put #Amount2 into SDTotals(#i) RMTax(#mm_SD)
+     put #Amount3 into SDTotals(#i) RMCommission
+     put #RMCount into SDTotals(#i) RMCount        
+     
+   End-If
+ End-If  
+ 
+ Confirmed:
+      
+From  PS_GPCHTXX26_TMP X26
+Where X26.PROCESS_INSTANCE = $prcs_process_instance
+ AND  X26.EMPLID           = $EMPLID
+!Bug 26167551 AND  X26.EMPL_RCD         = #EMPL_RCD
+ AND  X26.GPCH_SI_PROV_CD  = $ptot_providercd
+ AND  X26.GPCH_TX_CANTON   = $Canton
+order by X26.GPCH_SI_PROV_CD, X26.PRD_END_DT DESC, X26.STATUS
+
+End-Select
+
+! Process last row for corrections
+
+ IF &X26.PRD_END_DT < $ReportEndDate  and $Workplace <> ''
+ 
+  If $AmountsCorrXML <> ''
+    let $CorrectionXML = $CorrectionXML || '<CorrectionConfirmed>' || $MonthXML ||  $AmountsCorrXML || '</CorrectionConfirmed>'
+  Else
+    If $OldXML <> ''
+      let $CorrectionXML = $CorrectionXML || '<Correction>' || $MonthXML  || $OldXML || $NewXML || '</Correction>'
+    END-IF
+
+  END-IF
+
+  let $OldXML         = ''
+  let $AmountsCorrXML   = ''
+  let $NewXML         = ''
+  let $DeclarationXML = ''
+  let $Current        = ''
+  let $Workplace      = ''
+
+ End-IF
+  
+#Debug Show 'Out Get_Months '      
+End-Procedure Get_Months     
+!*********************************************************************************************
+Begin-Procedure ReadConfirmed
+#Debug Show 'In ReadConfirmed'
+
+!------------------------------------------------------------------- Find Events
+#debug show ' &X26.PRD_END_DT = ' &X26.PRD_END_DT ' $ReportEndDate = ' $ReportEndDate ' $EMPLID = ' $EMPLID
+Begin-Select on-error=give_warning
+CRPLYT.GPCH_TX_TRF_CD
+CRPLY.GPCH_RP_AMOUNT1
+CRPLY.GPCH_RP_AMOUNT2
+
+ If $Status = 'M'  
+  let $ConfirmedTaxAtSourceCode = &CRPLYT.GPCH_TX_TRF_CD
+  let #ConfirmedTaxableEarning  = &CRPLY.GPCH_RP_AMOUNT1
+  let #ConfirmedTaxAtSource     = &CRPLY.GPCH_RP_AMOUNT2
+ 
+  do Format-Number(#ConfirmedTaxableEarning,$ConfirmedTaxableEarning,'999999999999.99')
+  do Format-Number(#ConfirmedTaxAtSource,$ConfirmedTaxAtSource,'999999999999.99')
+  
+  let $ConfirmedTaxableEarning = rtrim(ltrim($ConfirmedTaxableEarning,' '),' ')
+  let $ConfirmedTaxAtSource    = rtrim(ltrim($ConfirmedTaxAtSource,' '),' ')
+  
+  let $AmountsCorrXML = '<TaxableEarning>' ||$ConfirmedTaxableEarning || '</TaxableEarning>'
+  let $AmountsCorrXML = $AmountsCorrXML || '<TaxAtSource>' || $ConfirmedTaxAtSource || '</TaxAtSource>'
+  
+  get #Amount1 from SDTotals(#i) RMEarning(#mm_SD)
+  get #Amount2 from SDTotals(#i) RMTax(#mm_SD)
+!  get #Amount3 from SDTotals(#i) RMCommission
+  get #RMCount from SDTotals(#i) RMCount
+#debug show ' #Amount2 after array P regular = ' #Amount2 ' #mm_SD = ' #mm_SD            
+  let #Amount1 = #Amount1 + #ConfirmedTaxableEarning
+  let #Amount2 = #Amount2 + #ConfirmedTaxAtSource
+!  let #Amount3 = #Amount3 + &X26.GPCH_RP_AMOUNT10
+  let #RMCount = #RMCount + 1
+#debug show ' #Amount2 before array M regular = ' #Amount2 ' #mm_SD = ' #mm_SD          
+  put #Amount1 into SDTotals(#i) RMEarning(#mm_SD)
+  put #Amount2 into SDTotals(#i) RMTax(#mm_SD)
+!  put #Amount3 into SDTotals(#i) RMCommission
+  put #RMCount into SDTotals(#i) RMCount  
+  
+ End-If
+                                 
+FROM PS_GPCH_TX_EMA CRPLY, PS_GPCH_TX_DATA CRPLYT
+WHERE  CRPLY.EMPLID            = CRPLYT.EMPLID
+  AND  CRPLY.EMPL_RCD          = CRPLYT.EMPL_RCD
+  AND  CRPLY.EFFDT             = CRPLYT.EFFDT
+  AND  CRPLY.EMPLID            = $EMPLID
+  AND CRPLY.EMPL_RCD           = #EMPL_RCD
+  AND CRPLY.GPCH_TX_SD_EMA     = 'CC'
+  AND CRPLY.GPCH_TX_STAX_CANTN = $Canton
+  AND  &X26.PRD_END_DT         between CRPLY.BEGIN_DT and CRPLY.END_DT
+  AND CRPLY.GPCH_AL_CPAY_ENDDT = $ReportEndDate
+
+
+End-select
+
+#Debug show '#ConfirmedTaxableEarning  = ' #ConfirmedTaxableEarning ' #ConfirmedTaxAtSource = ' #ConfirmedTaxAtSource ' $AmountsCorrXML = ' $AmountsCorrXML
+
+#Debug Show 'Out ReadConfirmed'      
+End-Procedure ReadConfirmed 
+!*********************************************************************************************
+Begin-Procedure Get_Declaration
+#Debug Show 'In Get_Declaration'
+
+!------------------------------------------------------------------- Find Events
+#debug show ' &X26.SEG_BGN_DT = ' &X26.SEG_BGN_DT ' &X26.SEG_END_DT = ' &X26.SEG_END_DT ' $EMPLID = ' $EMPLID
+
+Begin-Select DISTINCT on-error=give_warning
+EMA.GPCH_TX_SD_EMA
+EMA.EVENT_DT
+ 
+   let $EVENT_DT = &EMA.EVENT_DT
+   do ConvertToComponents($EVENT_DT,$yy1_TXB,$mm1_TXB,$dd1_TXB)
+   let   $ValidAsOf = $yy1_TXB||'-'||$mm1_TXB||'-'||$dd1_TXB
+   
+#debug show ' &EMA.EVENT_DT = ' &EMA.EVENT_DT
+ 
+   let $TX_SD_EMA  =  &EMA.GPCH_TX_SD_EMA 
+   
+#debug show ' $EVENT_DT = ' $EVENT_DT ' $TX_SD_EMA = ' $TX_SD_EMA
+ ! Category E(ntry)
+    If substr($TX_SD_EMA,1,1) = '1'
+      let $Declaration = $Declaration ||'<Entry><ValidAsOf>' || $ValidAsOf || '</ValidAsOf><Reason>'
+
+      If substr($TX_SD_EMA,2,1) = '1' 
+        let $Declaration = $Declaration || 'entryCompany</Reason></Entry>'
+      End-If
+  
+      If substr($TX_SD_EMA,2,1) = '2' 
+         let $Declaration = $Declaration || 'cantonChange</Reason></Entry>'
+      End-If
+ 
+      If substr($TX_SD_EMA,2,1) = '3' 
+          let $Declaration = $Declaration || 'others</Reason></Entry>'
+      End-If
+    End-If  
+
+ ! Category M(utation)
+    If substr($TX_SD_EMA,1,1) = '2'
+      let $Declaration = $Declaration ||'<Mutation><ValidAsOf>' || $ValidAsOf || '</ValidAsOf><Reason>'
+
+      If substr($TX_SD_EMA,2,1) = '1' 
+        let $Declaration = $Declaration || 'civilstate</Reason></Mutation>'
+      End-If
+      If substr($TX_SD_EMA,2,1) = '2' 
+        let $Declaration = $Declaration || 'partnerWork</Reason></Mutation>'
+      End-If      
+      If substr($TX_SD_EMA,2,1) = '3' 
+        let $Declaration = $Declaration || 'sideline</Reason></Mutation>'
+      End-If 
+      If substr($TX_SD_EMA,2,1) = '4' 
+        let $Declaration = $Declaration || 'partnerWorkIT</Reason></Mutation>'
+      End-If 
+      If substr($TX_SD_EMA,2,1) = '5' 
+        let $Declaration = $Declaration || 'residence</Reason></Mutation>'
+      End-If 
+      If substr($TX_SD_EMA,2,1) = '6' 
+        let $Declaration = $Declaration || 'childrenDeduction</Reason></Mutation>'
+      End-If 
+      If substr($TX_SD_EMA,2,1) = '7' 
+        let $Declaration = $Declaration || 'churchTax</Reason></Mutation>' 
+      End-If
+      If substr($TX_SD_EMA,2,1) = '8' 
+        let $Declaration = $Declaration || 'activityRate</Reason></Mutation>'
+      End-If 
+      If substr($TX_SD_EMA,2,1) = '9' 
+        let $Declaration = $Declaration || 'others</Reason></Mutation>'
+      End-If  
+    End-If  
+
+ !Category A(ustritt) Termination
+    If substr($TX_SD_EMA,1,1) = '3'
+      let $Declaration = $Declaration ||'<Withdrawal><ValidAsOf>' || $ValidAsOf || '</ValidAsOf><Reason>'
+    
+      If substr($TX_SD_EMA,2,1) = '1' 
+        let $Declaration = $Declaration || 'withdrawalCompany</Reason></Withdrawal>' 
+      End-If
+      If substr($TX_SD_EMA,2,1) = '2' 
+        let $Declaration = $Declaration || 'naturalization</Reason></Withdrawal>' 
+      End-If
+      If substr($TX_SD_EMA,2,1) = '3' 
+        let $Declaration = $Declaration || 'settled-C</Reason></Withdrawal>' 
+      End-If      
+      If substr($TX_SD_EMA,2,1) = '4' 
+        let $Declaration = $Declaration || 'temporary</Reason></Withdrawal>' 
+      End-If      
+      If substr($TX_SD_EMA,2,1) = '5' 
+        let $Declaration = $Declaration || 'cantonChange</Reason></Withdrawal>' 
+      End-If
+      If substr($TX_SD_EMA,2,1) = '6' 
+        let $Declaration = $Declaration || 'others</Reason></Withdrawal>' 
+      End-If    
+    End-If 
+                                 
+FROM  PS_GPCH_TX_EMA EMA
+WHERE EMA.EMPLID              = $EMPLID
+  AND EMA.EMPL_RCD            = #Empl_RCD
+  AND EMA.GPCH_TX_STAX_CANTN  = $Canton
+  AND EMA.GPCH_AL_CPAY_ENDDT  = $ReportEndDate
+  AND &X26.PRD_END_DT         between EMA.BEGIN_DT and EMA.END_DT
+  
+ ORDER BY EMA.GPCH_TX_SD_EMA, EMA.EVENT_DT
+
+End-select
+
+#Debug Show 'Out Get_Declaration'      
+End-Procedure Get_Declaration
+!*********************************************************************************************
+
+Begin-Procedure Update_Declaration
+#Debug Show 'In Update_Declaration'
+
+Begin-Sql on-error=give_warning
+Update PS_GPCH_TX_EMA set ITER_TRGR_STATUS = 'P'
+ where PS_GPCH_TX_EMA.EMPLID             = $EMPLID
+   AND PS_GPCH_TX_EMA.EMPL_RCD           = #Empl_RCD
+   AND PS_GPCH_TX_EMA.GPCH_TX_STAX_CANTN = $Canton
+   AND PS_GPCH_TX_EMA.GPCH_AL_CPAY_ENDDT = $ReportEndDate
+   AND &X26.PRD_END_DT                   between PS_GPCH_TX_EMA.BEGIN_DT and PS_GPCH_TX_EMA.END_DT
+
+End-Sql
+
+#Debug Show 'Out Update_Declaration'      
+End-Procedure Update_Declaration
+
+!*********************************************************************************************
+Begin-Procedure Get_ResidenceCanton
+#Debug Show 'In Get_ResidenceCanton'
+
+!------------------------------------------------------------------- Find Events
+#debug show ' &X26.SEG_BGN_DT = ' &X26.SEG_BGN_DT ' &X26.SEG_END_DT = ' &X26.SEG_END_DT ' $SEG_REP_END_DT: ' $SEG_REP_END_DT: ' $EMPLID = ' $EMPLID
+
+  let $CantonAddr  = ''
+  let $CantonAddr2  = ''
+  let $CountryRes = ''
+  let $CantonCity  = ''
+  let $CantonRes  = ''
+  let $CantonPostal = ''
+
+Begin-Select on-error=give_warning
+ADR.ADDRESS1
+ADR.ADDRESS2
+ADR.COUNTRY
+ADR.CITY
+ADR.STATE
+ADR.POSTAL
+
+ let $CantonAddr  = &ADR.ADDRESS1
+ let $CantonAddr2  = &ADR.ADDRESS2
+ let $CountryRes = &ADR.COUNTRY
+ let $CantonCity  = &ADR.CITY
+ let $CantonRes  = &ADR.STATE
+ let $CantonPostal = &ADR.POSTAL
+
+ If $CountryRes <> 'CHE' or $CantonRes = ''
+  let $CantonRes  = 'EX'
+ End-IF
+                                 
+FROM PS_ADDRESSES ADR
+WHERE ADR.EMPLID = $EMPLID
+  AND ADR.ADDRESS_TYPE = 'HOME'
+  AND ADR.EFFDT = ( select max(ADR1.EFFDT) from PS_ADDRESSES ADR1
+   where ADR.EMPLID = ADR1.EMPLID
+    AND  ADR.ADDRESS_TYPE = ADR1.ADDRESS_TYPE
+    AND  ADR1.EFFDT <= $SEG_REP_END_DT )
+
+End-select
+
+#Debug Show 'Out Get_ResidenceCanton'      
+End-Procedure Get_ResidenceCanton 
+
+!*********************************************************************************************
+Begin-Procedure Get_CBLegalAddress
+#Debug Show 'In Get_CBLegalAddress'
+
+!------------------------------------------------------------------- Find Events
+#debug show ' Get_CBLegalAddress -  $EMPLID = ' $EMPLID
+
+Begin-select on-error=give_warning
+CBL.COUNTRY
+CBL.ADDRESS1
+CBL.ADDRESS2
+CBL.ADDRESS3
+CBL.ADDRESS4
+CBL.CITY
+CBL.STATE
+CBL.POSTAL
+
+  let $CBCountry = &CBL.COUNTRY
+  let $CBAddr1 = &CBL.ADDRESS1
+  let $CBAddr2 = &CBL.ADDRESS2
+  let $CBAddr3 = &CBL.ADDRESS3
+  let $CBAddr4 = &CBL.ADDRESS4
+  let $CBCity = &CBL.CITY
+  let $CBState = &CBL.STATE
+  let $CBPostal = &CBL.POSTAL
+
+FROM PS_ADDRESSES CBL
+WHERE CBL.EMPLID = $EMPLID
+  AND CBL.ADDRESS_TYPE = 'LEGL'
+  AND CBL.EFFDT = ( SELECT MAX(CBL1.EFFDT) FROM PS_ADDRESSES CBL1
+   WHERE CBL.EMPLID = CBL1.EMPLID
+    AND  CBL.ADDRESS_TYPE = CBL1.ADDRESS_TYPE
+    AND  CBL1.EFFDT <= &X26.SEG_END_DT )
+
+END-SELECT
+
+#Debug Show 'Out Get_CBLegalAddress'      
+End-Procedure Get_CBLegalAddress
+ 
+!*********************************************************************************************
+Begin-Procedure Get_History
+#Debug Show 'In Get_History '
+
+Begin-Select on-error=give_warning
+X21.BEGIN_DT
+X21.END_DT
+X21.GPCH_TX_TRF_CD
+
+  Let $fromHist     = &X21.BEGIN_DT
+  Let $untilHist    = &X21.END_DT
+  
+  do ConvertToComponents($fromHist,$yyyy_tmp,$mm_tmp,$dd_tmp)
+  let $fromHist      = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp  
+  do ConvertToComponents($untilHist,$yyyy_tmp,$mm_tmp,$dd_tmp)
+  let $untilHist      = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp  
+  
+  Let $CategoryHist = rtrim(&X21.GPCH_TX_TRF_CD,' ') 
+  
+  If $CategoryHist = 'GGFEX'
+     let $CategoryHistXML = '<CategoryPredefined>specialAgreement</CategoryPredefined>'
+   Else
+     If  $CategoryHist = 'VRHEX'
+        let $CategoryHistXML = '<CategoryPredefined>honoraryBoardOfDirectorsResidingAbroad</CategoryPredefined>'
+     Else 
+        If $CategoryHist = 'GWVEX'
+           let $CategoryHistXML = '<CategoryPredefined>monetaryValuesServicesResidingAbroad</CategoryPredefined>'
+        Else
+           let $CategoryHistXML = '<TaxAtSourceCode>'||$CategoryHist || '</TaxAtSourceCode>'  
+        End-If
+     End-If
+  End-If  
+     
+  let $HistoryXML = $HistoryXML ||'<History><Period><from>' || $fromHist || '</from><until>' || $untilHist 
+  let $HistoryXML = $HistoryXML || '</until></Period><TaxAtSourceCategory>' || $CategoryHistXML || '</TaxAtSourceCategory></History>'
+            
+From  PS_GPCHTXX21_TMP X21
+Where X21.PROCESS_INSTANCE = $prcs_process_instance
+ AND  X21.EMPLID           = $EMPLID
+ AND  X21.GPCH_SI_PROV_CD  = $Prov_Id
+ AND  X21.GPCH_TX_CANTON   = $Canton
+ 
+ ORDER BY X21.BEGIN_DT
+
+End-Select
+
+#Debug Show 'Out Get_History '      
+End-Procedure Get_History      
+!*********************************************************************************************      
+Begin-Procedure  Get_Spouse_Data
+#Debug Show 'In Get_Spouse_Data '
+
+let $SPOUSE_NAME            = ''
+let $SDSNDependentBenef     = ''
+let $NATIONAL_ID_SP         = ''
+let $GPCH_TX_WCA            = ''
+let $SDSACountry = ' '
+Let $SDSASameAddressEmpl         = ' '
+Let $SDSAAddress1         = ' '
+Let $SDSAAddress2         = ' '
+Let $SDSAPostal         = ' '
+
+begin-select on-error=give_warning
+SDSN.LAST_NAME
+SDSN.DEPENDENT_BENEF
+SDSN.FIRST_NAME
+SDS.BIRTHDATE
+SDSA.SAME_ADDRESS_EMPL
+SDSA.COUNTRY
+SDSA.ADDRESS1
+SDSA.ADDRESS2
+SDSA.CITY
+SDSA.POSTAL
+
+ Let $SDSNLastname           = rtrim(&SDSN.LAST_NAME,' ') 
+ Let $SDSNDependentBenef     = rtrim(&SDSN.DEPENDENT_BENEF, ' ')
+ Let $SDSNFirstname          = rtrim(&SDSN.FIRST_NAME,' ') 
+ Let $SDSDateOfBirth         = rtrim(&SDS.BIRTHDATE,' ')
+ Let $SDSASameAddressEmpl         = rtrim(&SDSA.SAME_ADDRESS_EMPL,' ')
+ Let $SDSACountry         = rtrim(&SDSA.COUNTRY,' ')
+ Let $SDSAAddress1         = rtrim(&SDSA.ADDRESS1,' ')
+ Let $SDSAAddress2         = rtrim(&SDSA.ADDRESS2,' ')
+ Let $SDSACity         = rtrim(&SDSA.CITY,' ')
+ Let $SDSAPostal         = rtrim(&SDSA.POSTAL,' ')
+   
+ FROM  PS_DEP_BEN SDS, PS_DEP_BEN_EFF SDSE, PS_DEP_BEN_NAME SDSN, PS_DEP_BEN_ADDR SDSA
+  where SDSE.EMPLID          = $EMPLID
+    and SDSE.RELATIONSHIP    = 'SP'
+    and SDSE.EMPLID          = SDS.EMPLID
+    and SDSE.DEPENDENT_BENEF = SDS.DEPENDENT_BENEF
+    and SDSE.EFFDT = ( select max(SDSE1.EFFDT) from PS_DEP_BEN_EFF SDSE1 
+    where SDSE.EMPLID = SDSE1.EMPLID 
+    and SDSE.DEPENDENT_BENEF = SDSE1.DEPENDENT_BENEF
+    and  SDSE1.EFFDT <= $ReportEndDate  )
+    and SDSN.EMPLID = SDS.EMPLID
+        and SDSN.DEPENDENT_BENEF = SDS.DEPENDENT_BENEF
+        and SDSN.EFFDT = ( select max(SDSN1.EFFDT) from PS_DEP_BEN_NAME SDSN1 
+        where SDSN.EMPLID = SDSN1.EMPLID 
+        and SDSN.DEPENDENT_BENEF = SDSN1.DEPENDENT_BENEF
+    and  SDSN1.EFFDT <= $ReportEndDate  )
+    and SDSA.EMPLID = SDS.EMPLID
+        and SDSA.DEPENDENT_BENEF = SDS.DEPENDENT_BENEF
+        and SDSA.EFFDT = ( select max(SDSA1.EFFDT) from PS_DEP_BEN_ADDR SDSA1 
+        where SDSA.EMPLID = SDSA1.EMPLID 
+         and SDSA.DEPENDENT_BENEF = SDSA1.DEPENDENT_BENEF
+    and  SDSA1.EFFDT <= $ReportEndDate  )
+
+end-select
+
+  let $SpAddress = ' '
+  let $ComplementaryLine = ' '   
+ 
+ If $SDSASameAddressEmpl = 'Y'
+    Let $SEG_REP_END_DT = ''
+    Let $SEG_REP_END_DT = $ReportEndDate
+    Do Get_ResidenceCanton
+   If $CountryRes = 'CHE' 
+     let $SDSACountry = ' '
+   Else 
+     Do GetCountry_2CHAR
+     let $SDSACountry = '<Country>' || $CountryFrom || '</Country>'
+   End-If   
+   If $CantonAddr2 = ' ' or $CantonAddr2 = ''
+     let $SpAddress = '<SeparateAddress><Street>' || $CantonAddr || '</Street><ZIP-Code>' || $CantonPostal || '</ZIP-Code><City>' || $CantonCity || '</City>' || $SDSACountry || '</SeparateAddress>' 
+   Else
+     let $ComplementaryLine = '<SeparateAddress><ComplementaryLine>' || $CantonAddr2 || '</ComplementaryLine>'
+     let $SpAddress = $ComplementaryLine || '<Street>' || $CantonAddr || '</Street><ZIP-Code>' || $CantonPostal || '</ZIP-Code><City>' || $CantonCity || '</City>' || $SDSACountry || '</SeparateAddress>'
+   End-If        
+ Else
+   If $SDSACountry = 'CHE' 
+     let $SDSACountry = ' '
+   Else 
+      Let $SEG_REP_END_DT = ''
+      Let $SEG_REP_END_DT = $ReportEndDate
+      Do Get_ResidenceCanton
+      Do GetCountry_2CHAR
+      let $SDSACountry = '<Country>' || $CountryFrom || '</Country>'
+   End-If  
+  If $SDSAAddress2 = ' ' or $SDSAAddress2 = ''      
+   let $SpAddress = '<SeparateAddress><Street>' || $SDSAAddress1 || '</Street><ZIP-Code>' || $SDSAPostal || '</ZIP-Code><City>' || $SDSACity || '</City>' || $SDSACountry || '</SeparateAddress>'   
+  Else  
+   let $ComplementaryLine = '<SeparateAddress><ComplementaryLine>' || $SDSAAddress2 || '</ComplementaryLine>'  
+   let $SpAddress = $ComplementaryLine || '<Street>' || $SDSAAddress1 || '</Street><ZIP-Code>' || $SDSAPostal || '</ZIP-Code><City>' || $SDSACity || '</City>' || $SDSACountry || '</SeparateAddress>'   
+  End-If
+ End-If
+ 
+begin-select on-error=give_warning 
+SDSNI.NATIONAL_ID
+
+  Let $NATIONAL_ID_SP = rtrim(&SDSNI.NATIONAL_ID,' ') 
+  If $NATIONAL_ID_SP <> '' and $NATIONAL_ID_SP <> ' '
+    Let $NATIONAL_ID_SP = Substr($NATIONAL_ID_SP, 1, 3) || '.' || Substr($NATIONAL_ID_SP, 4, 4) || '.'|| Substr($NATIONAL_ID_SP, 8, 4) || '.' || Substr($NATIONAL_ID_SP, 12, 2)
+  End-IF
+  
+FROM PS_DEP_BENEF_NID SDSNI
+  where SDSNI.EMPLID                       = $EMPLID
+    and SDSNI.DEPENDENT_BENEF              = $SDSNDependentBenef
+    and rtrim(SDSNI.NATIONAL_ID_TYPE)      = 'NNSS'
+
+end-select
+
+Let $Start       = ' '
+Let $SideJob     = ' ' 
+Let $End         = ' '
+Let $Workplace   = ' '
+Let $GPCH_TX_WCA = ' '
+Let $Annuity     = ' '
+Let $PaymentXML  = ' '
+
+
+begin-select on-error=give_warning 
+TXSP.GPCH_TX_WCA
+TXSP.BEGIN_DT
+TXSP.GPCH_TX_SIDEJOB
+TXSP.END_DT
+TXSP.GPCH_TX_STAX_CANTN
+
+
+      Let $GPCH_TX_WCA   = rtrim(&TXSP.GPCH_TX_WCA, ' ')
+      If  $GPCH_TX_WCA     = '0'
+       let $WorkOrCompensatory = 'Y'
+      End-If
+      If  $GPCH_TX_WCA     = '1'
+       let $WorkOrCompensatory = 'Y'
+       let $Annuity            = 'Y'
+      End-If
+      If  $GPCH_TX_WCA     = '2'
+       let $Annuity            = 'Y'
+      End-If
+
+      Let $Start                  = rtrim(&TXSP.BEGIN_DT, ' ')
+      Let $SideJob                = rtrim(&TXSP.GPCH_TX_SIDEJOB, ' ')
+      Let $End                    = rtrim(&TXSP.END_DT, ' ')
+
+      Let $Workplace              = rtrim(&TXSP.GPCH_TX_STAX_CANTN, ' ')
+      
+FROM  PS_GPCH_TX_DEPEND TXSP
+  WHERE TXSP.EMPLID          = $Emplid
+    AND TXSP.DEPENDENT_BENEF = $SDSNDependentBenef 
+    AND TXSP.EFFDT  = ( select max(TXSP1.EFFDT) from PS_GPCH_TX_DATA TXSP1
+      where TXSP.EMPLID          = TXSP1.EMPLID
+        AND TXSP.EMPL_RCD        = TXSP1.EMPL_RCD
+        AND TXSP1.EFFDT          <= $ReportEndDate )
+
+end-select
+
+ IF $SDSNDependentBenef <> ''
+   do ConvertToComponents($SDSDateOfBirth,$yyyy_tmp,$mm_tmp,$dd_tmp)
+   let $SDSDateOfBirth = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp  
+   Let $NATIONAL_ID_SPXML = ''      
+   If $NATIONAL_ID_SP <> ''
+     Let $NATIONAL_ID_SPXML = '<Social-InsuranceIdentification><SV-AS-Number>' || $NATIONAL_ID_SP || '</SV-AS-Number></Social-InsuranceIdentification>'
+   End-If
+      
+   Let $MarriagePartnerXML = '<MarriagePartner>' || $NATIONAL_ID_SPXML || '<Lastname>' || $SDSNLastname || '</Lastname><Firstname>' || $SDSNFirstname 
+   Let $MarriagePartnerXML = $MarriagePartnerXML || '</Firstname><DateOfBirth>' ||$SDSDateOfBirth || 
+   '</DateOfBirth>' || $SpAddress
+ 
+  
+
+#debug show ' $End = ' $End  ' $ReportEndDate = ' $ReportEndDate ' $SpEmploymentXML = ' $SpEmploymentXML
+
+   IF  $Start <> ' ' and ( $End = '' or $End >= $ReportEndDate ) 
+     do ConvertToComponents($Start,$yyyy_tmp,$mm_tmp,$dd_tmp)
+     let $Start          = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp 
+
+     If $SideJob = 'Y'
+       Let $SpEmploymentXML = '<Employment>sideJob</Employment>'
+     Else 
+       Let $SpEmploymentXML = '<Employment>mainJob</Employment>'
+     End-If
+     
+     If $Workplace = '' or $Workplace = ' '
+       Let $WorkplaceXML = ' '
+     Else
+       let $WorkplaceXML = '<Workplace>' ||  $Workplace || '</Workplace>'
+     End-If
+     Let $SpEmploymentXML = $SpEmploymentXML || $WorkplaceXML || '<Start>' || $Start || '</Start>'
+
+     IF    $End <> ''   
+       do ConvertToComponents($End,$yyyy_tmp,$mm_tmp,$dd_tmp)
+       let $End        = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp 
+       Let $SpEmploymentXML = $SpEmploymentXML  || '<End>' || $End || '</End>'
+     End-If
+   
+     If $GPCH_TX_WCA  = '0'
+       Let $PaymentXML = '<Payment><WorkOrCompensatory>' || $SpEmploymentXML || '</WorkOrCompensatory></Payment>' 
+     End-If
+   
+     If $GPCH_TX_WCA  = '1'
+       Let $PaymentXML = '<Payment><WorkOrCompensatoryAndAnnuity>' || $SpEmploymentXML || '</WorkOrCompensatoryAndAnnuity></Payment>' 
+     End-If
+
+     If $GPCH_TX_WCA  = '2'
+       Let $PaymentXML = '<Payment><Annuity/></Payment>' 
+     End-If
+     
+   End-If
+
+   Let $MarriagePartnerXML = $MarriagePartnerXML || $PaymentXML || '</MarriagePartner>'
+End-If  
+      
+#Debug Show 'Out Get_Spouse_Data '
+End-Procedure Get_Spouse_Data 
+!*************************************************************************************
+begin-procedure Get_Child_Data
+#debug show 'In Get_Child_Data $EMPLID ' $EMPLID ' $ReportEndDate ' $ReportEndDate
+
+!Dependent Name + other details
+Begin-Select on-error=give_warning
+SDCN.DEPENDENT_BENEF
+SDCN.LAST_NAME
+SDCN.FIRST_NAME
+SDC.BIRTHDATE
+TXCH.BEGIN_DT
+TXCH.END_DT
+
+      Let $SDCNLastname   = rtrim(&SDCN.LAST_NAME,' ') 
+      Let $SDCNFirstname  = rtrim(&SDCN.FIRST_NAME,' ') 
+
+      Let $SDCDateOfBirth = rtrim(&SDC.BIRTHDATE,' ') 
+      do ConvertToComponents($SDCDateOfBirth,$yyyy_tmp,$mm_tmp,$dd_tmp)      
+      let $SDCDateOfBirth      = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp 
+      
+      let $SDCNDEPENDENT_BENEF = rtrim(&SDCN.DEPENDENT_BENEF, ' ')
+
+      let $Start          = rtrim(&TXCH.BEGIN_DT,' ')
+      do ConvertToComponents($Start,$yyyy_tmp,$mm_tmp,$dd_tmp)      
+      let $SDCStart       = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp 
+
+      let $End            = rtrim(&TXCH.END_DT,' ')
+      do ConvertToComponents($End,$yyyy_tmp,$mm_tmp,$dd_tmp)
+      let $SDCEndYear     = $yyyy_tmp 
+      let $SDCEnd         = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp 
+
+      If substr($CurrentMonth,1,4) <= $SDCEndYear
+        Let $ChildrenXML = $ChildrenXML || '<Children><Lastname>' || $SDCNLastname || '</Lastname><Firstname>' || $SDCNFirstname 
+        Let $ChildrenXML = $ChildrenXML || '</Firstname><DateOfBirth>' ||$SDCDateOfBirth || '</DateOfBirth><Start>' || $SDCStart || '</Start><End>' || $SDCEnd || '</End></Children>'
+      End-IF
+      
+From  PS_DEP_BEN_NAME SDCN, PS_DEP_BEN SDC, PS_DEP_BEN_EFF SDCE, PS_GPCH_TX_DEPEND TXCH
+Where SDCN.EMPLID             = $EMPLID
+      AND SDC.EMPLID          = $EMPLID
+      AND SDC.DEPENDENT_BENEF = SDCN.DEPENDENT_BENEF
+      AND SDCN.EFFDT = (Select max(SDCN1.EFFDT) 
+                            From  PS_DEP_BEN_NAME SDCN1
+                            Where SDCN1.EMPLID              = SDCN.EMPLID
+                                  AND SDCN1.DEPENDENT_BENEF = SDCN.DEPENDENT_BENEF
+                                  AND SDCN1.EFFDT <= $ReportEndDate)
+      AND SDCE.EMPLID          = $EMPLID
+      and SDCE.RELATIONSHIP    = 'C'
+      and SDCE.EMPLID          = SDC.EMPLID
+      and SDCE.DEPENDENT_BENEF = SDC.DEPENDENT_BENEF
+      and SDCE.EFFDT           = ( select max(SDCE1.EFFDT) from PS_DEP_BEN_EFF SDCE1 
+       where SDCE.EMPLID         = SDCE1.EMPLID 
+        and SDCE.DEPENDENT_BENEF = SDCE1.DEPENDENT_BENEF
+        and  SDCE1.EFFDT         <= $ReportEndDate  )
+      AND SDC.EMPLID          = TXCH.EMPLID
+      AND SDC.DEPENDENT_BENEF = TXCH.DEPENDENT_BENEF
+      AND TXCH.EFFDT = (Select max(TXCH1.EFFDT) 
+                            From  PS_GPCH_TX_DATA TXCH1
+                            Where TXCH1.EMPLID              = TXCH.EMPLID
+                                  AND TXCH1.EFFDT          <= $ReportEndDate)      
+End-Select
+
+#debug show 'Out Get_Child_Data'
+end-procedure Get_Child_Data
+!*************************************************************************************
+begin-procedure Get_Student
+#debug show 'In Get_Student $EMPLID ' $EMPLID ' $ReportEndDate ' $ReportEndDate ' $SDCNDEPENDENT_BENEF = ' $SDCNDEPENDENT_BENEF
+
+!Dependent Name + other details
+Begin-Select on-error=give_warning
+CA2.GPCH_CA_EDU_END_DT
+
+      Let $EDU_END_DT   = &CA2.GPCH_CA_EDU_END_DT 
+      If $EDU_END_DT <> ''
+        do ConvertToComponents($EDU_END_DT,$yyyyE,$mmE,$ddE)
+        let $SDCEndYear = $yyyyE
+        let $SDCEndDt   = $yyyyE || '-' || $mmE || '-' || $ddE 
+      End-IF
+
+#debug show '$SDCEndDt = ' $SDCEndDt 
+      
+From  PS_GPCH_CA_DATA2 CA2
+   Where CA2.EMPLID             = $EMPLID
+    AND  CA2.DEPENDENT_BENEF    = $SDCDEPENDENT_BENEF
+    AND  CA2.EFFDT = (Select max(CA1.EFFDT) 
+                            From  PS_GPCH_CA_DATA1 CA1
+                            Where CA2.EMPLID     = CA1.EMPLID
+                                  AND CA1.EFFDT <= $ReportEndDate)
+End-Select
+
+#debug show 'Out Get_Student'
+end-procedure Get_Student
+!*******************************************************************************************
+Begin-Procedure Delete_Temp_Tables
+#Debug Show 'In Delete_Temp_Tables '
+
+Begin-Sql on-error=give_warning
+ DELETE FROM PS_GPCHTXX20_TMP 
+End-Sql
+
+Begin-Sql on-error=give_warning
+ DELETE FROM PS_GPCHTXX21_TMP 
+End-Sql
+
+Begin-Sql on-error=give_warning
+ DELETE FROM PS_GPCHTXX22_TMP 
+End-Sql
+
+Begin-Sql on-error=give_warning
+ DELETE FROM PS_GPCHTXX23_TMP 
+End-Sql
+
+Begin-Sql on-error=give_warning
+ DELETE FROM PS_GPCHTXX25_TMP 
+End-Sql
+
+Begin-Sql on-error=give_warning
+ DELETE FROM PS_GPCHTXX26_TMP 
+End-Sql
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+ ANALYZE table PS_GPCHTXX26_TMP compute statistics
+End-Sql
+#endif
+
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCH_TX_EMA_CMP
+End-SQL
+
+#debug show 'Out Delete_Temp_Tables'
+end-procedure Delete_Temp_Tables
+!*******************************************************************************************
+Begin-Procedure Insert_Temp_Tables
+#Debug Show 'In Insert_Temp_Tables '
+!Yearly: TXX20 to TXX23
+
+      let $Tax_Tariff_Type_PBD  = 'AND PBD.GPCH_TX_TRF_TYPE IN (''D'',''A'',''I'',''S'',''O'')'
+      let $Country_From_Crit    = ''
+      let $Tax_Exempt_Crit      = ''
+      
+      
+!Select Canton from PS_GPCH_EG_PHEADER 
+! Work around to get hold of RequestID
+  do ConvertToComponents($ReportEndDate,$yyyy_SD,$mm_SD,$dd_SD) 
+
+#debug show 'Before $SD_Canton_String $ptot_company = ' $ptot_company ' $ptot_year = ' $ptot_year ' #ptot_year = ' #ptot_year '$ptot_provtype = ' $ptot_provtype ' $ptot_domainid = ' $ptot_domainid
+ 
+!FMB 20120530
+  do Format-Number(#ptot_domainid,$ptot_domainid,'888')
+  let #FMB_len   = length($ptot_domainid)
+  let $RequestID = $ptot_year || '-' || $ptot_company || '-' || $ptot_domainid || '-M-' || $mm_SD
+  let #MPos      = length($RequestID) - 1
+  
+#debug show ' $RequestID = ' $RequestID  ' #MPos = ' #MPos
+
+  let $ptot_provtype = 'A'
+!  let $ptot_domainid = '400'
+!  let $ptot_domainid = substr($FMB_ptot_domainid,1,3)
+  
+
+      
+Begin-select on-error=give_warning
+SDH.COMPANY
+SDH.GPCH_RC_PAY_YEAR
+SDH.GPCH_EG_DOMAINID
+SDH.GPCH_EG_REQUEST_ID
+SDH.GPCH_SI_PROV_TYPE
+SDH.GPCH_SI_PROV_CD
+SDH.GPCH_EG_USERKEY  
+
+  let $GPCH_EG_USER_KEY =  &SDH.GPCH_EG_USERKEY 
+ 
+ If $SD_Canton_String = ''
+  let $SD_Canton_String = '''' || $GPCH_EG_USER_KEY || '''' 
+ Else
+  let $SD_Canton_String = $SD_Canton_String || ','|| '''' || $GPCH_EG_USER_KEY || '''' 
+ End-If
+ 
+#debug show ' $SD_Canton_String inside = ' $SD_Canton_String
+ 
+from PS_GPCH_EG_PHEADER SDH
+      where SDH.COMPANY            = $ptot_company
+        and SDH.GPCH_RC_PAY_YEAR   = $ptot_year
+        and SDH.GPCH_SI_PROV_TYPE  = $ptot_provtype
+        and SDH.GPCH_EG_DOMAINID   = $ptot_domainid
+#ifdef MICROSOFT
+        and substring(SDH.GPCH_EG_REQUEST_ID,#MPos,2)    = $mm_SD
+#else
+        and substr(SDH.GPCH_EG_REQUEST_ID,#MPos,2) = $mm_SD
+#endif
+
+end-select
+
+ let $SD_CantCrit =  'AND PBD.GPCH_TX_CANTON IN (' || $SD_Canton_String || ')'
+!FMB 20120530
+ let $CantCrit    = ''
+ 
+#debug show ' $SD_CantCrit end = ' $SD_CantCrit
+ 
+#debug show ' $Cal_Run_Id_Criteria = ' $Cal_Run_Id_Criteria
+#debug show ' $Cal_Run_Id_Crit = ' $Cal_Run_Id_Crit
+#debug show ' $Ctl_Canton_Crit = ' $Ctl_Canton_Crit
+#debug show ' $Emplid_Criteria = ' $Emplid_Criteria
+#debug show ' $Tax_Tariff_Type_PBD = ' $Tax_Tariff_Type_PBD
+#debug show ' $Country_From_Crit = ' $Country_From_Crit
+
+#debug show ' $Cross_Border_Cond = ' $Cross_Border_Cond
+#debug show ' $Ctl_Canton_Crit1 = ' $Ctl_Canton_Crit1
+#debug show ' $Emplid_Criteria1 = ' $Emplid_Criteria1
+#debug show ' $CantCrit = ' $CantCrit
+
+   do getcurrtimedate
+#debug show ' Before Insert Temp Tables $currtimedate = ' $currtimedate
+
+! Most recent monthly row (max 12 rows per emplid)
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX20_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05,GPCH_TX_GRANTCODE, STATUS)
+#ifdef ORACLE
+SELECT /*+ INDEX(PBD PS_GPCH_RP_0001)*/
+#else
+SELECT
+#endif
+[$prcs_process_instance],PBD.EMPLID,PBD.EMPL_RCD,
+#ifdef ORACLE
+ '#' || PBD.GPCH_TX_CANTON
+#else
+ '#' + PBD.GPCH_TX_CANTON
+#endif
+,PBD.GPCH_AL_CPAY_ENDDT,PBD.SEG_BGN_DT,
+PBD.SEG_END_DT,PBD.PRD_END_DT,PBD.BEGIN_DT,PBD.END_DT,PBD.HIRE_DT, PBD.TERMINATION_DT,
+TXD.GPCH_TX_SIDEJOB, 
+PBD.GPCH_TX_CANTON, 
+TXD.GPCH_TX_OTHERACT, TXD.GPCH_TX_ANNUITY, 
+CASE WHEN TXD.GPCH_TX_CONCUBIN = 'Y' THEN 'Y' ELSE PBD.MAR_STATUS END, 
+PBD.GPCH_TX_VILLAGE_CD,PBD.SETID_LOCATION,PBD.LOCATION, PBD.ACTION,PBD.GPCH_RP_CHAR01, PBD.GPCH_RP_FROMDT1, PBD.GPCH_RP_CHAR02,PBD.GPCH_RP_FROMDT1,  
+PBD.COUNTRY_FROM,PBD.COUNTRY, STATE, ' ', PBD.GPCH_TX_TRF_CD,PBD.GPCH_RP_AMOUNT1 + PBD.GPCH_RP_AMOUNT2,PBD.GPCH_RP_AMOUNT22,
+PBD.GPCH_RP_AMOUNT9 + PBD.GPCH_RP_AMOUNT14 + PBD.GPCH_RP_AMOUNT19,PBD.GPCH_RP_AMOUNT4,PBD.GPCH_RP_AMOUNT11,PBD.GPCH_RP_AMOUNT12,PBD.GPCH_RP_AMOUNT13,
+PBD.GPCH_RP_AMOUNT14,PBD.GPCH_RP_AMOUNT15,PBD.GPCH_RP_AMOUNT22,PBD.GPCH_RP_AMOUNT23,PBD.GPCH_RP_AMOUNT24,PBD.GPCH_RP_AMOUNT13,
+TXD.GPCH_TX_DENOM,TXD.GPCH_TX_GRANTCODE,
+'R'
+FROM PS_GPCH_RP_0001 PBD, PS_GPCH_TX_DATA TXD
+where PBD.PAY_ENTITY = $Ctl_PayEntity
+AND   PBD.PRD_END_DT between $Ctl_Start_Dt and $ReportEndDate
+#ifdef ORACLE
+AND   PBD.GPCH_AL_CPAY_ENDDT = (select /*+ INDEX(PBD1 PS_GPCH_RP_0001)*/ max(PBD1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 PBD1
+#else
+AND   PBD.GPCH_AL_CPAY_ENDDT = (select max(PBD1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 PBD1
+#endif
+                               where PBD1.PAY_ENTITY = PBD.PAY_ENTITY
+                               AND   PBD1.EMPLID     = PBD.EMPLID
+                               AND   PBD1.EMPL_RCD   = PBD.EMPL_RCD
+                               AND   PBD1.PRD_END_DT = PBD.PRD_END_DT
+                               AND   PBD1.GPCH_AL_CPAY_ENDDT <= $ReportEndDate)
+AND PBD.EMPLID   = TXD.EMPLID
+! AND PBD.EMPL_RCD = TXD.EMPL_RCD  FMB 20191206 wieder aktiv
+AND PBD.EMPL_RCD  = CASE WHEN TXD.EMPL_RCD >= 900 THEN  PBD.EMPL_RCD ELSE TXD.EMPL_RCD END
+AND TXD.EFFDT    = ( select max(TXD1.EFFDT) from PS_GPCH_TX_DATA TXD1
+ where TXD.EMPLID   = TXD1.EMPLID
+   AND TXD.EMPL_RCD = TXD1.EMPL_RCD
+   AND TXD1.EFFDT   <= PBD.SEG_END_DT )
+[$Tax_Tariff_Type_PBD]
+[$SD_CantCrit]
+[$Cal_Run_Id_Criteria]
+[$Tax_Exempt_Crit]
+[$Emplid_Criteria]
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert GPCHTXX20_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+! Prepare Accumulator values - need to limit to period end date rather than year
+
+Begin-Sql on-error=give_warning
+delete from PS_GPCHTX011_TMP
+End-Sql
+
+Begin-Sql on-error=give_warning
+delete from PS_GPCHST023_TMP
+End-Sql
+
+Begin-Sql on-error=give_warning
+delete from PS_GPCHAL078_TMP
+End-Sql
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTX011_TMP(PROCESS_INSTANCE,GPCH_TX_CANTON,EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,
+RSLT_SEG_NUM,GPCH_TX_VILLAGE_CD,GPCH_TX_TRF_TYPE,GPCH_TX_TRF_CD,PRD_END_DT,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,SLICE_END_DT,BEGIN_DT,END_DT,BIRTHDATE,HIRE_DT,TERMINATION_DT,PAY_ENTITY,COMPANY,CITY,POSTAL,
+ACTION,MAR_STATUS,NATIONAL_ID,GPCH_AH_NNSS,GPCH_TX_CHRCH,SEX,COUNTRY_FROM,SPOUSE_NAME,GPCH_TX_SPOUSE_WL,GPCH_RP_AMOUNT1,
+GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3,GPCH_RP_AMOUNT9,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT19,
+GPCH_RP_AMOUNT20,GPCH_RP_AMOUNT21,GPCH_RP_AMOUNT22,GPCH_RP_AMOUNT26,GPCH_RP_AMOUNT27,VISA_PERMIT_TYPE,CONTRACT_TYPE,REG_TEMP,
+GPCH_RP_CHAR03,GPCH_RP_FROMDT1)
+#ifdef ORACLE
+SELECT /*+ INDEX(PBD PS_GPCH_RP_0001)*/
+#else
+SELECT
+#endif
+[$prcs_process_instance],PBD.GPCH_TX_CANTON,PBD.EMPLID,PBD.CAL_RUN_ID,PBD.EMPL_RCD,PBD.GP_PAYGROUP,PBD.CAL_ID
+,PBD.RSLT_SEG_NUM,PBD.GPCH_TX_VILLAGE_CD,PBD.GPCH_TX_TRF_TYPE,PBD.GPCH_TX_TRF_CD,PBD.PRD_END_DT
+,PBD.GPCH_AL_CPAY_ENDDT,PBD.SEG_BGN_DT,PBD.SEG_END_DT,PBD.SLICE_END_DT,PBD.BEGIN_DT,PBD.END_DT,PBD.BIRTHDATE
+,PBD.HIRE_DT,PBD.TERMINATION_DT,PBD.PAY_ENTITY,PBD.COMPANY,PBD.CITY,PBD.POSTAL,PBD.ACTION,PBD.MAR_STATUS
+,PBD.NATIONAL_ID,PBD.GPCH_AH_NNSS,PBD.GPCH_TX_CHRCH,PBD.SEX,PBD.COUNTRY_FROM,PBD.SPOUSE_NAME,PBD.GPCH_TX_SPOUSE_WL
+,PBD.GPCH_RP_AMOUNT1,PBD.GPCH_RP_AMOUNT2,PBD.GPCH_RP_AMOUNT3,PBD.GPCH_RP_AMOUNT9,PBD.GPCH_RP_AMOUNT11,PBD.GPCH_RP_AMOUNT14
+,PBD.GPCH_RP_AMOUNT15,PBD.GPCH_RP_AMOUNT19,PBD.GPCH_RP_AMOUNT20,PBD.GPCH_RP_AMOUNT21,PBD.GPCH_RP_AMOUNT22
+,PBD.GPCH_RP_AMOUNT26,PBD.GPCH_RP_AMOUNT27,PBD.VISA_PERMIT_TYPE,PBD.CONTRACT_TYPE,PBD.REG_TEMP,PBD.GPCH_RP_CHAR03,PBD.GPCH_RP_FROMDT1
+FROM PS_GPCH_RP_0001 PBD
+where PBD.PAY_ENTITY = $Ctl_PayEntity
+AND   PBD.PRD_END_DT between $Ctl_Start_Dt and $ReportEndDate
+#ifdef ORACLE
+AND   PBD.GPCH_AL_CPAY_ENDDT = (select /*+ INDEX(PBD1 PS_GPCH_RP_0001)*/ max(PBD1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 PBD1
+#else
+AND   PBD.GPCH_AL_CPAY_ENDDT = (select max(PBD1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 PBD1
+#endif
+                               where PBD1.PAY_ENTITY = PBD.PAY_ENTITY
+                               AND   PBD1.EMPLID     = PBD.EMPLID
+                               AND   PBD1.EMPL_RCD   = PBD.EMPL_RCD
+                               AND   PBD1.PRD_END_DT = PBD.PRD_END_DT
+                               AND   PBD1.GPCH_AL_CPAY_ENDDT <= $ReportEndDate)
+[$Tax_Tariff_Type_PBD]
+[$SD_CantCrit]
+[$Cal_Run_Id_Criteria]
+[$Tax_Exempt_Crit]
+[$Emplid_Criteria]
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert GPCHTX11_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+   do getcurrtimedate
+#debug show ' Before Insert GPCH_TX_EMA $currtimedate = ' $currtimedate
+
+Begin-Sql on-error=give_warning
+
+INSERT INTO PS_GPCH_TX_EMA (
+EMPLID,
+EMPL_RCD,
+EFFDT,
+GPCH_TX_SD_EMA,
+GPCH_TX_STAX_CANTN,
+GPCH_AL_CPAY_ENDDT,
+EVENT_DT,
+BEGIN_DT,
+END_DT,
+ITER_TRGR_SRC,
+ITER_TRGR_STATUS,
+GPCH_RP_AMOUNT1,
+GPCH_RP_AMOUNT2)
+
+SELECT PBD.EMPLID,
+PBD.EMPL_RCD,
+TXD.EFFDT,
+'31',
+PBD.GPCH_TX_CANTON,
+$ReportEndDate,
+PBD.TERMINATION_DT,
+PBD.PRD_END_DT,
+PBD.PRD_END_DT,
+'B',
+'U',
+0,
+0
+FROM PS_GPCHTX011_TMP PBD,
+     PS_GPCH_TX_DATA TXD
+WHERE PBD.PROCESS_INSTANCE = $prcs_process_instance
+  AND PBD.PAY_ENTITY = $Ctl_PayEntity
+  AND PBD.PRD_END_DT BETWEEN $Ctl_Start_Dt AND $ReportEndDate
+  AND PBD.GPCH_AL_CPAY_ENDDT = (SELECT MAX(PBD1.GPCH_AL_CPAY_ENDDT) FROM PS_GPCHTX011_TMP PBD1
+                                 WHERE PBD1.PAY_ENTITY = PBD.PAY_ENTITY
+                                   AND PBD1.EMPLID     = PBD.EMPLID
+                                   AND PBD1.EMPL_RCD   = PBD.EMPL_RCD
+                                   AND PBD1.GPCH_AL_CPAY_ENDDT <= $ReportEndDate)
+  AND PBD.EMPLID   = TXD.EMPLID
+  AND PBD.EMPL_RCD = TXD.EMPL_RCD
+  AND TXD.EFFDT    = (SELECT MAX(TXD1.EFFDT) FROM PS_GPCH_TX_DATA TXD1
+                       WHERE TXD.EMPLID   = TXD1.EMPLID
+                         AND TXD.EMPL_RCD = TXD1.EMPL_RCD
+                         AND TXD1.EFFDT  <= PBD.TERMINATION_DT )
+  AND NOT EXISTS (SELECT 'X' FROM PS_GPCH_TX_EMA TXE1
+                   WHERE TXE1.EMPLID         = TXD.EMPLID
+                     AND TXE1.EMPL_RCD       = TXD.EMPL_RCD
+                     AND TXE1.EFFDT          = TXD.EFFDT
+                     AND TXE1.GPCH_TX_SD_EMA = '31'
+                     AND TXE1.GPCH_TX_STAX_CANTN = PBD.GPCH_TX_CANTON)
+
+End-Sql
+
+   do getcurrtimedate
+#debug show ' after insert GPCH_TX_EMA $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+
+  let $AccumlatorNames = '''CH_QS_C'',''CH_QS_D'',''CH_QS_E'',''CH_QS_F'',''CH_QS_G'',''CH_QS_H'',''CH_QS_I'',''CH_QS_J'',''CH_TX_AWDINCH'''
+  do Extract_ERN_DED_YTD_CALC
+  
+
+! History row from ... to ...  per emplid/canton/ tarif
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX21_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,BEGIN_DT,END_DT, GPCH_TX_CANTON,HIRE_DT,GPCH_TX_TRF_CD)
+SELECT
+[$prcs_process_instance],PBD.EMPLID,PBD.EMPL_RCD,PBD.GPCH_SI_PROV_CD,min(PBD.SEG_BGN_DT),max(PBD.SEG_END_DT),
+PBD.GPCH_TX_CANTON,PBD.HIRE_DT, PBD.GPCH_TX_TRF_CD
+FROM PS_GPCHTXX20_TMP PBD
+where PBD.PROCESS_INSTANCE = $prcs_process_instance
+Group by PBD.EMPLID,PBD.EMPL_RCD,PBD.GPCH_SI_PROV_CD,PBD.GPCH_TX_CANTON,PBD.GPCH_TX_TRF_CD, PBD.HIRE_DT
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert GPCHTXX21_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+
+! Most recent per emplid / year / canton (1 row as long as there is no caton change)
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX22_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05,GPCH_TX_GRANTCODE, STATUS)
+SELECT
+[$prcs_process_instance],EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05,GPCH_TX_GRANTCODE, STATUS
+FROM PS_GPCHTXX20_TMP PBD
+where PBD.PROCESS_INSTANCE = $prcs_process_instance
+AND   PBD.PRD_END_DT = (select max(PBD1.PRD_END_DT) from PS_GPCHTXX20_TMP PBD1
+                               where PBD1.PROCESS_INSTANCE = $prcs_process_instance
+                               AND   PBD1.EMPLID           = PBD.EMPLID
+                               AND   PBD1.EMPL_RCD         = PBD.EMPL_RCD
+                               AND   PBD1.GPCH_SI_PROV_CD  = PBD.GPCH_SI_PROV_CD
+                               AND   PBD1.GPCH_TX_CANTON   = PBD.GPCH_TX_CANTON)
+[$Emplid_Criteria]
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert GPCHTXX22_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+! Totals per emplid / year / canton (1 row as long as there is no caton change)
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX23_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+SELECT
+[$prcs_process_instance],EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,max(GPCH_AL_CPAY_ENDDT),min(SEG_BGN_DT),
+max(SEG_END_DT),max(PRD_END_DT),min(BEGIN_DT),max(END_DT),HIRE_DT, max(TERMINATION_DT),min(REG_TEMP), GPCH_TX_CANTON, max(GPCH_RP_CHAR03), 
+max(GPCH_RP_CHAR04), max(MAR_STATUS), max(GPCH_TX_VILLAGE_CD),max(SETID), max(LOCATION),max(ACTION), max(GPCH_RP_CHAR01),max(GPCH_RP_FROMDT1), 
+max(GPCH_RP_CHAR02),max(GPCH_RP_FROMDT2), max(COUNTRY_FROM),max(COUNTRY),max(STATE), max(CB_FREQ_CHE), max(GPCH_TX_TRF_CD),sum(GPCH_RP_AMOUNT1), 
+sum(GPCH_RP_AMOUNT2),sum(GPCH_RP_AMOUNT3), sum(GPCH_RP_AMOUNT10),min(GPCH_RP_AMOUNT11),sum(GPCH_RP_AMOUNT12),sum(GPCH_RP_AMOUNT13), 
+sum(GPCH_RP_AMOUNT14),sum(GPCH_RP_AMOUNT15),sum(GPCH_RP_AMOUNT16),sum(GPCH_RP_AMOUNT17),sum(GPCH_RP_AMOUNT18),sum(GPCH_RP_AMOUNT19),
+max(GPCH_RP_CHAR05), max(STATUS)
+FROM PS_GPCHTXX20_TMP PBD
+where PBD.PROCESS_INSTANCE = $prcs_process_instance
+Group by PBD.EMPLID,PBD.EMPL_RCD,PBD.GPCH_SI_PROV_CD,PBD.HIRE_DT, PBD.GPCH_TX_CANTON
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert GPCHTXX23_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+! Canton row, if full canton got reversed
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX23_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION, ACTION,GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+#ifdef ORACLE
+SELECT /*+ INDEX(PBD PS_GPCH_RP_0001)*/
+#else
+SELECT
+#endif
+[$prcs_process_instance],PBD.EMPLID,PBD.EMPL_RCD, 
+#ifdef ORACLE
+ '#' || PBD.GPCH_TX_CANTON
+#else
+ '#' + PBD.GPCH_TX_CANTON
+#endif
+,min(PBD.GPCH_AL_CPAY_ENDDT),min(PBD.SEG_BGN_DT),
+max(PBD.SEG_END_DT),max(PBD.PRD_END_DT),min(PBD.BEGIN_DT),max(PBD.END_DT),min(PBD.HIRE_DT), max(PBD.TERMINATION_DT),max(PBD.REG_TEMP),
+PBD.GPCH_TX_CANTON, ' ', ' ', min(PBD.MAR_STATUS),min(PBD.GPCH_TX_VILLAGE_CD),min(PBD.SETID_LOCATION),min(PBD.LOCATION), min(PBD.ACTION),
+min(PBD.ACTION),max(PBD.TERMINATION_DT), min(PBD.GPCH_RP_CHAR03),min(PBD.GPCH_RP_FROMDT1), min(PBD.COUNTRY_FROM),min(COUNTRY),min(STATE),
+' ', min(PBD.GPCH_TX_TRF_CD),0.00,0.00,0.00,0.00,0.00,0.00,0.00, 0.00,0.00,0.00,0.00,0.00,0.00,' ', 'D'
+FROM PS_GPCH_RP_0001 PBD
+where PBD.PAY_ENTITY = $Ctl_PayEntity
+AND   PBD.PRD_END_DT between $Ctl_Start_Dt and $ReportEndDate
+AND   PBD.GPCH_AL_CPAY_ENDDT <= $ReportEndDate
+AND   not exists ( Select 'X' from PS_GPCHTXX23_TMP X23
+ where X23.PROCESS_INSTANCE = $prcs_process_instance
+  AND  X23.EMPLID           = PBD.EMPLID     
+!Bug 26167551  AND  X23.EMPL_RCD         = PBD.EMPL_RCD   
+  AND  X23.GPCH_TX_CANTON   = PBD.GPCH_TX_CANTON 
+! FMB 20181011  AND  PBD.SEG_BGN_DT between X23.SEG_BGN_DT and X23.SEG_END_DT )
+  AND PBD.SEG_BGN_DT between $Ctl_Start_Dt and $ReportEndDate )
+  
+[$Tax_Tariff_Type_PBD]
+[$SD_CantCrit]
+[$Cal_Run_Id_Criteria]
+[$Tax_Exempt_Crit]
+[$Emplid_Criteria]
+Group by PBD.EMPLID,PBD.EMPL_RCD,PBD.GPCH_TX_CANTON
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert dummy GPCHTXX23_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+! Dummy row Most recent per emplid / year / canton
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX22_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05,GPCH_TX_GRANTCODE, STATUS)
+SELECT
+[$prcs_process_instance],EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT1,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, ' ', STATUS
+FROM PS_GPCHTXX23_TMP PBD
+where PBD.PROCESS_INSTANCE = $prcs_process_instance
+AND   PBD.STATUS = 'D'
+and not exists ( select 'X'
+FROM PS_GPCHTXX22_TMP TX22
+where TX22.PROCESS_INSTANCE = $prcs_process_instance
+ AND  PBD.EMPLID = TX22.EMPLID
+ AND  PBD.EMPL_RCD = TX22.EMPL_RCD
+ AND  PBD.GPCH_TX_CANTON = TX22.GPCH_TX_CANTON )
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert dummy GPCHTXX22_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+! FMB 20140704 Delete multiple rows in case of segmentation (Rehire in same month)
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHTXX22_TMP WHERE EXISTS 
+ ( SELECT 'X' FROM PS_GPCHTXX22_TMPVW T2 
+     WHERE T2.PROCESS_INSTANCE                 = $prcs_process_instance
+       AND PS_GPCHTXX22_TMP.EMPLID             = T2.EMPLID 
+       AND PS_GPCHTXX22_TMP.EMPL_RCD           = T2.EMPL_RCD 
+       AND PS_GPCHTXX22_TMP.GPCH_SI_PROV_CD    = T2.GPCH_SI_PROV_CD 
+       AND PS_GPCHTXX22_TMP.GPCH_AL_CPAY_ENDDT = T2.GPCH_AL_CPAY_ENDDT 
+       AND PS_GPCHTXX22_TMP.PRD_END_DT         = T2.PRD_END_DT 
+       AND PS_GPCHTXX22_TMP.SEG_BGN_DT         < T2.SEG_BGN_DT ) 
+End-Sql
+
+   do getcurrtimedate
+   show ' after delete GPCHTXX22_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+  
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+! FMB 20140704 End
+
+
+! Set SideJob from GPCH_TX_DATA
+Begin-Sql on-error=give_warning
+Update PS_GPCHTXX22_TMP set REG_TEMP = (select GPCH_TX_SIDEJOB from PS_GPCH_TX_DATA TX
+    WHERE PS_GPCHTXX22_TMP.EMPLID           = TX.EMPLID
+!Bug 26167551       AND PS_GPCHTXX22_TMP.EMPL_RCD         = TX.EMPL_RCD  FMB 20191206 wieder aktiv
+AND PS_GPCHTXX22_TMP.EMPL_RCD = CASE WHEN TX.EMPL_RCD >= 900 THEN  PS_GPCHTXX22_TMP.EMPL_RCD ELSE TX.EMPL_RCD END
+!FMB 20140116      AND PS_GPCHTXX22_TMP.GPCH_TX_CANTON   = TX.GPCH_TX_CANTON
+      AND TX.EFFDT = ( select max(TX1.EFFDT) from PS_GPCH_TX_DATA TX1
+        where TX.EMPLID = TX1.EMPLID
+          AND TX.EMPL_RCD = TX1.EMPL_RCD
+!FMB 20140116          AND TX.GPCH_TX_CANTON = TX1.GPCH_TX_CANTON
+          AND TX1.EFFDT         <= PS_GPCHTXX22_TMP.GPCH_AL_CPAY_ENDDT ) )
+ WHERE PS_GPCHTXX22_TMP.PROCESS_INSTANCE = $prcs_process_instance
+   AND exists (select 'X' from PS_GPCH_TX_DATA TX
+    WHERE PS_GPCHTXX22_TMP.EMPLID           = TX.EMPLID
+!Bug 26167551      AND PS_GPCHTXX22_TMP.EMPL_RCD         = TX.EMPL_RCD FMB 20191206 wieder aktiv
+AND PS_GPCHTXX22_TMP.EMPL_RCD = CASE WHEN TX.EMPL_RCD >= 900 THEN  PS_GPCHTXX22_TMP.EMPL_RCD ELSE TX.EMPL_RCD END
+!FMB 20140116      AND PS_GPCHTXX22_TMP.GPCH_TX_CANTON   = TX.GPCH_TX_CANTON
+      AND TX.EFFDT = ( select max(TX1.EFFDT) from PS_GPCH_TX_DATA TX1
+        where TX.EMPLID = TX1.EMPLID
+          AND TX.EMPL_RCD = TX1.EMPL_RCD
+!FMB 20140116          AND TX.GPCH_TX_CANTON = TX1.GPCH_TX_CANTON
+          AND TX1.EFFDT         <= PS_GPCHTXX22_TMP.GPCH_AL_CPAY_ENDDT ) )
+
+End-Sql
+
+   do getcurrtimedate
+   show ' after update GPCHTXX22_TMP SideJob $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+! Set Denomination from GPCH_TX_DATA
+Begin-Sql on-error=give_warning
+Update PS_GPCHTXX22_TMP set GPCH_RP_CHAR05 = (select GPCH_TX_DENOM from PS_GPCH_TX_DATA TX
+    WHERE PS_GPCHTXX22_TMP.EMPLID           = TX.EMPLID
+!Bug 26167551       AND PS_GPCHTXX22_TMP.EMPL_RCD         = TX.EMPL_RCD FMB 20191206 wieder aktiv
+AND PS_GPCHTXX22_TMP.EMPL_RCD = CASE WHEN TX.EMPL_RCD >= 900 THEN  PS_GPCHTXX22_TMP.EMPL_RCD ELSE TX.EMPL_RCD END
+!FMB 20140116      AND PS_GPCHTXX22_TMP.GPCH_TX_CANTON   = TX.GPCH_TX_CANTON
+      AND TX.EFFDT = ( select max(TX1.EFFDT) from PS_GPCH_TX_DATA TX1
+        where TX.EMPLID = TX1.EMPLID
+          AND TX.EMPL_RCD = TX1.EMPL_RCD
+!FMB 20140116          AND TX.GPCH_TX_CANTON = TX1.GPCH_TX_CANTON
+          AND TX1.EFFDT         <= PS_GPCHTXX22_TMP.GPCH_AL_CPAY_ENDDT ) )
+ WHERE PS_GPCHTXX22_TMP.PROCESS_INSTANCE = $prcs_process_instance
+   AND exists (select 'X' from PS_GPCH_TX_DATA TX
+    WHERE PS_GPCHTXX22_TMP.EMPLID           = TX.EMPLID
+!Bug 26167551       AND PS_GPCHTXX22_TMP.EMPL_RCD         = TX.EMPL_RCD FMB 20191206 wieder aktiv
+AND PS_GPCHTXX22_TMP.EMPL_RCD = CASE WHEN TX.EMPL_RCD >= 900 THEN  PS_GPCHTXX22_TMP.EMPL_RCD ELSE TX.EMPL_RCD END
+!FMB 20140116      AND PS_GPCHTXX22_TMP.GPCH_TX_CANTON   = TX.GPCH_TX_CANTON
+      AND TX.EFFDT = ( select max(TX1.EFFDT) from PS_GPCH_TX_DATA TX1
+        where TX.EMPLID = TX1.EMPLID
+!Bug 26167551           AND TX.EMPL_RCD = TX1.EMPL_RCD FMB 20191206 wieder aktiv
+AND PS_GPCHTXX22_TMP.EMPL_RCD = CASE WHEN TX.EMPL_RCD >= 900 THEN  PS_GPCHTXX22_TMP.EMPL_RCD ELSE TX.EMPL_RCD END
+!FMB 20140116          AND TX.GPCH_TX_CANTON = TX1.GPCH_TX_CANTON
+          AND TX1.EFFDT         <= PS_GPCHTXX22_TMP.GPCH_AL_CPAY_ENDDT ) )
+
+End-Sql
+
+   do getcurrtimedate
+   show ' after update GPCHTXX22_TMP Denomination $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+! Set OtherAcitivies from GPCH_TX_DATA
+Begin-Sql on-error=give_warning
+Update PS_GPCHTXX22_TMP set GPCH_RP_CHAR03 = (select GPCH_TX_OTHERACT from PS_GPCH_TX_DATA TX
+    WHERE PS_GPCHTXX22_TMP.EMPLID           = TX.EMPLID
+!Bug 26167551       AND PS_GPCHTXX22_TMP.EMPL_RCD         = TX.EMPL_RCD 20191206 wieder aktiv
+AND PS_GPCHTXX22_TMP.EMPL_RCD = CASE WHEN TX.EMPL_RCD >= 900 THEN  PS_GPCHTXX22_TMP.EMPL_RCD ELSE TX.EMPL_RCD END
+!FMB 20140116      AND PS_GPCHTXX22_TMP.GPCH_TX_CANTON   = TX.GPCH_TX_CANTON
+      AND TX.EFFDT = ( select max(TX1.EFFDT) from PS_GPCH_TX_DATA TX1
+        where TX.EMPLID = TX1.EMPLID
+          AND TX.EMPL_RCD = TX1.EMPL_RCD
+!FMB 20140116          AND TX.GPCH_TX_CANTON = TX1.GPCH_TX_CANTON
+          AND TX1.EFFDT         <= PS_GPCHTXX22_TMP.GPCH_AL_CPAY_ENDDT ) )
+ WHERE PS_GPCHTXX22_TMP.PROCESS_INSTANCE = $prcs_process_instance
+   AND exists (select 'X' from PS_GPCH_TX_DATA TX
+    WHERE PS_GPCHTXX22_TMP.EMPLID           = TX.EMPLID
+!Bug 26167551       AND PS_GPCHTXX22_TMP.EMPL_RCD         = TX.EMPL_RCD 20191206 wieder aktiv
+AND PS_GPCHTXX22_TMP.EMPL_RCD = CASE WHEN TX.EMPL_RCD >= 900 THEN  PS_GPCHTXX22_TMP.EMPL_RCD ELSE TX.EMPL_RCD END
+!FMB 20140116      AND PS_GPCHTXX22_TMP.GPCH_TX_CANTON   = TX.GPCH_TX_CANTON
+      AND TX.EFFDT = ( select max(TX1.EFFDT) from PS_GPCH_TX_DATA TX1
+        where TX.EMPLID = TX1.EMPLID
+          AND TX.EMPL_RCD = TX1.EMPL_RCD
+!FMB 20140116          AND TX.GPCH_TX_CANTON = TX1.GPCH_TX_CANTON
+          AND TX1.EFFDT         <= PS_GPCHTXX22_TMP.GPCH_AL_CPAY_ENDDT ) )
+
+End-Sql
+
+   do getcurrtimedate
+   show ' after update GPCHTXX22_TMP OtherActivities $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+! Set GrantCode from GPCH_TX_DATA
+Begin-Sql on-error=give_warning
+Update PS_GPCHTXX22_TMP set GPCH_TX_GRANTCODE = (select GPCH_TX_GRANTCODE from PS_GPCH_TX_DATA TX
+    WHERE PS_GPCHTXX22_TMP.EMPLID           = TX.EMPLID
+!Bug 26167551       AND PS_GPCHTXX22_TMP.EMPL_RCD         = TX.EMPL_RCD FMB 20191206 wieder aktiv
+AND PS_GPCHTXX22_TMP.EMPL_RCD = CASE WHEN TX.EMPL_RCD >= 900 THEN  PS_GPCHTXX22_TMP.EMPL_RCD ELSE TX.EMPL_RCD END
+!FMB 20140116      AND PS_GPCHTXX22_TMP.GPCH_TX_CANTON   = TX.GPCH_TX_CANTON
+      AND TX.EFFDT = ( select max(TX1.EFFDT) from PS_GPCH_TX_DATA TX1
+        where TX.EMPLID = TX1.EMPLID
+          AND TX.EMPL_RCD = TX1.EMPL_RCD
+!FMB 20140116          AND TX.GPCH_TX_CANTON = TX1.GPCH_TX_CANTON
+          AND TX1.EFFDT         <= PS_GPCHTXX22_TMP.GPCH_AL_CPAY_ENDDT ) )
+ WHERE PS_GPCHTXX22_TMP.PROCESS_INSTANCE = $prcs_process_instance
+   AND exists (select 'X' from PS_GPCH_TX_DATA TX
+    WHERE PS_GPCHTXX22_TMP.EMPLID           = TX.EMPLID
+!Bug 26167551       AND PS_GPCHTXX22_TMP.EMPL_RCD         = TX.EMPL_RCD wieder aktiv
+AND PS_GPCHTXX22_TMP.EMPL_RCD = CASE WHEN TX.EMPL_RCD >= 900 THEN  PS_GPCHTXX22_TMP.EMPL_RCD ELSE TX.EMPL_RCD END
+!FMB 20140116      AND PS_GPCHTXX22_TMP.GPCH_TX_CANTON   = TX.GPCH_TX_CANTON
+      AND TX.EFFDT = ( select max(TX1.EFFDT) from PS_GPCH_TX_DATA TX1
+        where TX.EMPLID = TX1.EMPLID
+          AND TX.EMPL_RCD = TX1.EMPL_RCD
+!FMB 20140116          AND TX.GPCH_TX_CANTON = TX1.GPCH_TX_CANTON
+          AND TX1.EFFDT         <= PS_GPCHTXX22_TMP.GPCH_AL_CPAY_ENDDT ) )
+
+End-Sql
+
+   do getcurrtimedate
+   show ' after update GPCHTXX22_TMP GrantCode $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+   
+! FMB 20140116 Add here update for most recent Particulars in case of canton change (or probably already to consider in previous updates ? )  
+   
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+! Dummy History where Canton got fully reversed from ... to ...  per emplid/canton/ tarif
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX21_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,BEGIN_DT,END_DT, GPCH_TX_CANTON, HIRE_DT, GPCH_TX_TRF_CD)
+SELECT
+[$prcs_process_instance],PBD.EMPLID,PBD.EMPL_RCD,PBD.GPCH_SI_PROV_CD,min(PBD.SEG_BGN_DT),max(PBD.SEG_END_DT),
+PBD.GPCH_TX_CANTON,PBD.HIRE_DT, PBD.GPCH_TX_TRF_CD
+FROM PS_GPCHTXX23_TMP PBD
+where PBD.PROCESS_INSTANCE = $prcs_process_instance
+AND   PBD.STATUS = 'D'
+and not exists ( select 'X'
+FROM PS_GPCHTXX21_TMP TX21
+where TX21.PROCESS_INSTANCE = $prcs_process_instance
+ AND  PBD.EMPLID = TX21.EMPLID
+ AND  PBD.EMPL_RCD = TX21.EMPL_RCD
+ AND  PBD.GPCH_TX_CANTON = TX21.GPCH_TX_CANTON
+ AND  PBD.SEG_BGN_DT = TX21.BEGIN_DT)
+Group by PBD.EMPLID,PBD.EMPL_RCD,PBD.GPCH_SI_PROV_CD,PBD.GPCH_TX_CANTON, PBD.HIRE_DT, PBD.GPCH_TX_TRF_CD
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert dummy 1 GPCHTXX21_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+! Set Last Tax in Recap as of last row for this canton
+Begin-Sql on-error=give_warning
+Update PS_GPCHTXX23_TMP set GPCH_RP_AMOUNT11 = (select T1.GPCH_RP_AMOUNT11 from PS_GPCHTXX20_TMP T1
+ where T1.PROCESS_INSTANCE = $prcs_process_instance
+  AND  PS_GPCHTXX23_TMP.EMPLID   = T1.EMPLID
+  AND  PS_GPCHTXX23_TMP.EMPL_RCD = T1.EMPL_RCD
+  AND  PS_GPCHTXX23_TMP.GPCH_SI_PROV_CD = T1.GPCH_SI_PROV_CD
+  AND  T1.SEG_END_DT = (select max(T11.SEG_END_DT) from PS_GPCHTXX20_TMP T11
+   where T1.PROCESS_INSTANCE = $prcs_process_instance
+     and T1.EMPLID           = T11.EMPLID
+     and T1.EMPL_RCD         = T11.EMPL_RCD
+     and T1.GPCH_TX_CANTON   = T11.GPCH_TX_CANTON
+     and T11.SEG_END_DT      <= PS_GPCHTXX23_TMP.SEG_END_DT ) )
+  WHERE exists ( select 'X' from PS_GPCHTXX20_TMP T1
+ WHERE T1.PROCESS_INSTANCE              = $prcs_process_instance
+  AND  PS_GPCHTXX23_TMP.EMPLID          = T1.EMPLID
+  AND  PS_GPCHTXX23_TMP.EMPL_RCD        = T1.EMPL_RCD
+  AND  PS_GPCHTXX23_TMP.GPCH_SI_PROV_CD = T1.GPCH_SI_PROV_CD
+  AND  T1.SEG_END_DT = (select max(T11.SEG_END_DT) from PS_GPCHTXX20_TMP T11
+   where T1.PROCESS_INSTANCE = $prcs_process_instance
+     and T1.EMPLID           = T11.EMPLID
+     and T1.EMPL_RCD         = T11.EMPL_RCD
+     and T1.GPCH_TX_CANTON   = T11.GPCH_TX_CANTON
+     and T11.SEG_END_DT      <= PS_GPCHTXX23_TMP.SEG_END_DT ) )
+
+End-Sql
+
+   do getcurrtimedate
+   show ' after update GPCHTXX23_TMP set last Tax $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+   
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+!Monthly: TXX25 and TXX26
+!************** Get Positive Rows
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX25_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+#ifdef ORACLE
+SELECT /*+ INDEX(PBD PS_GPCH_RP_0001)*/
+#else
+SELECT
+#endif
+[$prcs_process_instance],PBD.EMPLID,PBD.EMPL_RCD,
+#ifdef ORACLE
+ '#' || PBD.GPCH_TX_CANTON
+#else
+ '#' + PBD.GPCH_TX_CANTON
+#endif
+,PBD.GPCH_AL_CPAY_ENDDT,PBD.SEG_BGN_DT,
+PBD.SEG_END_DT,PBD.PRD_END_DT,PBD.BEGIN_DT,PBD.END_DT,PBD.HIRE_DT, PBD.TERMINATION_DT,PBD.REG_TEMP, PBD.GPCH_TX_CANTON, ' ', ' ', PBD.MAR_STATUS, 
+PBD.GPCH_TX_VILLAGE_CD,PBD.SETID_LOCATION, PBD.LOCATION,ACTION, PBD.ACTION,PBD.TERMINATION_DT, PBD.GPCH_RP_CHAR03,PBD.GPCH_RP_FROMDT1,  
+PBD.COUNTRY_FROM,COUNTRY,STATE, ' ', PBD.GPCH_TX_TRF_CD,PBD.GPCH_RP_AMOUNT1 + PBD.GPCH_RP_AMOUNT2,PBD.GPCH_RP_AMOUNT22,
+PBD.GPCH_RP_AMOUNT9 + PBD.GPCH_RP_AMOUNT14 + PBD.GPCH_RP_AMOUNT19,PBD.GPCH_RP_AMOUNT4,PBD.GPCH_RP_AMOUNT11,PBD.GPCH_RP_AMOUNT12,PBD.GPCH_RP_AMOUNT13,
+PBD.GPCH_RP_AMOUNT14,PBD.GPCH_RP_AMOUNT15,PBD.GPCH_RP_AMOUNT22, PBD.GPCH_RP_AMOUNT23,PBD.GPCH_RP_AMOUNT24,PBD.GPCH_RP_AMOUNT13,' ', 'P'
+FROM PS_GPCH_RP_0001 PBD
+WHERE PBD.PAY_ENTITY        = $Ctl_PayEntity
+and PBD.GPCH_AL_CPAY_ENDDT  = $ReportEndDate
+AND   PBD.PRD_END_DT between $Ctl_Start_Dt and $ReportEndDate
+AND   PBD.GPCH_TX_TRF_TYPE IN ('D','A','I','S','O') 
+
+!AND ( PBD.GPCH_TX_TRF_TYPE IN ('D','A','I','S','O')
+! or exists ( select 'X' from PS_GPCH_TX_DATA TXD, PS_GPCH_TX_EMA EMA
+!  where PBD.EMPLID = TXD.EMPLID and PBD.EMPL_RCD = TXD.EMPL_RCD and PBD.GPCH_TX_CANTON = TXD.GPCH_TX_CANTON and
+!        PBD.EMPLID = EMA.EMPLID and PBD.EMPL_RCD = EMA.EMPL_RCD and TXD.EFFDT = EMA.EFFDT and
+!        ( EMA.ITER_TRGR_STATUS <> 'P' or EMA.GPCH_AL_CPAY_ENDDT = $ReportEndDate )  and
+        
+!#ifdef Oracle
+!       ( TO_DATE(PBD.SEG_BGN_DT,'DD-MON-YY')-1 )  
+!#Else
+!       ( DATEADD(dd,-1,PBD.SEG_BGN_DT))
+!#Endif 
+!        between EMA.BEGIN_DT and EMA.END_DT ))
+        
+![$Tax_Tariff_Type_PBD]
+[$SD_CantCrit]
+[$Cal_Run_Id_Crit]
+[$Ctl_Canton_Crit1]
+[$Emplid_Criteria1]
+[$CantCrit]
+
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert GPCHTXX25_TMP Positive $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+
+
+
+!************** Get Negative Rows  
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX25_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+#ifdef ORACLE
+SELECT /*+ INDEX(PBD PS_GPCH_RP_0001)*/
+#else
+SELECT
+#endif
+[$prcs_process_instance],PBD.EMPLID,PBD.EMPL_RCD, 
+#ifdef ORACLE
+ '#' || PBD.GPCH_TX_CANTON
+#else
+ '#' + PBD.GPCH_TX_CANTON
+#endif
+,PBD.GPCH_AL_CPAY_ENDDT,PBD.SEG_BGN_DT,
+PBD.SEG_END_DT,PBD.PRD_END_DT,PBD.BEGIN_DT,PBD.END_DT,PBD.HIRE_DT, PBD.TERMINATION_DT,PBD.REG_TEMP, PBD.GPCH_TX_CANTON, ' ', ' ', PBD.MAR_STATUS, 
+PBD.GPCH_TX_VILLAGE_CD,PBD.SETID_LOCATION, PBD.LOCATION, PBD.ACTION, PBD.ACTION,PBD.TERMINATION_DT, PBD.GPCH_RP_CHAR03,PBD.GPCH_RP_FROMDT1,  
+PBD.COUNTRY_FROM,PBD.COUNTRY,PBD.STATE, ' ', PBD.GPCH_TX_TRF_CD,( PBD.GPCH_RP_AMOUNT1 + PBD.GPCH_RP_AMOUNT2 ) * -1,PBD.GPCH_RP_AMOUNT22 * -1,
+( PBD.GPCH_RP_AMOUNT9 + PBD.GPCH_RP_AMOUNT14 + PBD.GPCH_RP_AMOUNT19 ) * -1,PBD.GPCH_RP_AMOUNT4 * -1,PBD.GPCH_RP_AMOUNT11,PBD.GPCH_RP_AMOUNT12,
+PBD.GPCH_RP_AMOUNT13, PBD.GPCH_RP_AMOUNT14,PBD.GPCH_RP_AMOUNT15,PBD.GPCH_RP_AMOUNT22,PBD.GPCH_RP_AMOUNT23,PBD.GPCH_RP_AMOUNT24,PBD.GPCH_RP_AMOUNT13,
+' ', 'M'
+FROM PS_GP_PYE_PRC_STAT A, PS_GPCH_RP_0001 PBD
+WHERE A.EMPLID             = PBD.EMPLID
+AND   A.EMPL_RCD           = PBD.EMPL_RCD
+AND   A.CAL_ID             = PBD.CAL_ID
+AND   A.GP_PAYGROUP        = PBD.GP_PAYGROUP
+#ifdef ORACLE
+AND   PBD.GPCH_AL_CPAY_ENDDT = (SELECT /*+ INDEX(PBD1 PS_GPCH_RP_0001)*/  max(PBD1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 PBD1
+#else
+AND   PBD.GPCH_AL_CPAY_ENDDT = (SELECT max(PBD1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 PBD1
+#endif
+                                WHERE PBD.EMPLID              = PBD1.EMPLID
+                                AND   PBD.EMPL_RCD            = PBD1.EMPL_RCD
+                                AND   PBD.CAL_ID              = PBD1.CAL_ID
+                                AND   PBD.GP_PAYGROUP         = PBD1.GP_PAYGROUP
+                                AND   PBD1.GPCH_AL_CPAY_ENDDT < $ReportEndDate)
+AND   A.SEL_ACTION         in ('R','Z')
+AND   A.CALC_TYPE          = 'P'
+AND   PBD.PAY_ENTITY       = $Ctl_PayEntity
+AND   PBD.PRD_END_DT between $Ctl_Start_Dt and $ReportEndDate
+AND ( PBD.GPCH_TX_TRF_TYPE IN ('D','A','I','S','O') or exists ( select 'X' from PS_GPCH_TX_EMA EMA
+  where PBD.EMPLID             = EMA.EMPLID 
+    AND PBD.EMPL_RCD           = EMA.EMPL_RCD 
+    AND PBD.GPCH_TX_CANTON     = EMA.GPCH_TX_STAX_CANTN 
+    AND EMA.GPCH_AL_CPAY_ENDDT = $ReportEndDate   
+    AND
+#ifdef Oracle
+       ( TO_DATE(PBD.SEG_BGN_DT,'DD-MON-YY')-1 )  
+#Else
+#ifdef DB2ALL
+       DATE(DAYS(PBD.SEG_BGN_DT) + (-1))
+#Else
+       ( DATEADD(dd,-1,PBD.SEG_BGN_DT))
+#Endif 
+#Endif
+        between EMA.BEGIN_DT and EMA.END_DT ))
+
+[$SD_CantCrit]
+[$Cal_Run_Id_Crit_A]
+[$Ctl_Canton_Crit1]
+[$Emplid_Criteria1]
+[$CantCrit]
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert GPCHTXX25_TMP Negative $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+! Old row / (New row) does not have a tax tariff 
+Begin-Sql on-error=give_warning
+Update PS_GPCHTXX25_TMP set GPCH_TX_TRF_CD = (select T1.GPCH_TX_TRF_CD from PS_GPCHTXX25_TMPVW T1
+ where T1.PROCESS_INSTANCE = $prcs_process_instance
+  AND  PS_GPCHTXX25_TMP.EMPLID   = T1.EMPLID
+!Bug 26167551  AND  PS_GPCHTXX25_TMP.EMPL_RCD = T1.EMPL_RCD
+  AND  PS_GPCHTXX25_TMP.GPCH_SI_PROV_CD = T1.GPCH_SI_PROV_CD
+  AND  PS_GPCHTXX25_TMP.SEG_BGN_DT = T1.SEG_BGN_DT
+  AND  PS_GPCHTXX25_TMP.SEG_END_DT = T1.SEG_END_DT
+  AND  PS_GPCHTXX25_TMP.PRD_END_DT = T1.PRD_END_DT
+  AND  T1.GPCH_TX_TRF_CD <> ' '
+  AND  PS_GPCHTXX25_TMP.STATUS     <> T1.STATUS ) 
+ where PS_GPCHTXX25_TMP.PROCESS_INSTANCE = $prcs_process_instance
+  and  PS_GPCHTXX25_TMP.GPCH_TX_TRF_CD   = ' '
+  and exists ( select 'X' from PS_GPCHTXX25_TMPVW T1
+ where T1.PROCESS_INSTANCE = $prcs_process_instance
+  AND  PS_GPCHTXX25_TMP.EMPLID   = T1.EMPLID
+!Bug 26167551   AND  PS_GPCHTXX25_TMP.EMPL_RCD = T1.EMPL_RCD
+  AND  PS_GPCHTXX25_TMP.GPCH_SI_PROV_CD = T1.GPCH_SI_PROV_CD
+  AND  PS_GPCHTXX25_TMP.SEG_BGN_DT = T1.SEG_BGN_DT
+  AND  PS_GPCHTXX25_TMP.SEG_END_DT = T1.SEG_END_DT
+  AND  PS_GPCHTXX25_TMP.PRD_END_DT = T1.PRD_END_DT
+  AND  T1.GPCH_TX_TRF_CD <> ' '
+  AND  PS_GPCHTXX25_TMP.STATUS     <> T1.STATUS )
+
+End-Sql
+
+   do getcurrtimedate
+   show ' after update GPCHTXX25_TMP missing TRF_CD $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+   
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+! Dummy reversal rows for stand alone rows (retro hire / ter (real or canton change) )
+! Only new row = Positive row exists
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX26_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS )
+SELECT
+[$prcs_process_instance],EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT1,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,0,0,0,0,0,0,0,0,0,0,0,0,0,GPCH_RP_CHAR05, 'M'
+FROM PS_GPCHTXX25_TMP PBD
+where PBD.PROCESS_INSTANCE = $prcs_process_instance
+AND   PBD.STATUS           = 'P'
+AND   PBD.PRD_END_DT       < $ReportEndDate
+
+AND NOT EXISTS ( SELECT 'X' from PS_GPCHTXX25_TMP PBD1 
+ where PBD1.PROCESS_INSTANCE = $prcs_process_instance
+  AND  PBD.EMPLID            = PBD1.EMPLID
+!Bug 26167551   AND  PBD.EMPL_RCD          = PBD1.EMPL_RCD
+  AND  PBD.GPCH_SI_PROV_CD   = PBD1.GPCH_SI_PROV_CD
+  AND  PBD.SEG_END_DT        = PBD1.SEG_END_DT
+  AND  PBD1.STATUS           = 'M' )
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert dummy GPCHTXX25_TMP retro hire $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+! Only old row = Negative row exists
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX26_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+SELECT
+[$prcs_process_instance],EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT1,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,0,0,0,0,0,0,0,0,0,0,0,0,0,GPCH_RP_CHAR05, 'P'
+FROM PS_GPCHTXX25_TMP PBD
+where PBD.PROCESS_INSTANCE = $prcs_process_instance
+AND   PBD.STATUS           = 'M'
+AND   PBD.PRD_END_DT       < $ReportEndDate
+
+AND NOT EXISTS ( SELECT 'X' from PS_GPCHTXX25_TMP PBD1 
+ where PBD1.PROCESS_INSTANCE = $prcs_process_instance
+  AND  PBD.EMPLID            = PBD1.EMPLID
+!Bug 26167551  AND  PBD.EMPL_RCD          = PBD1.EMPL_RCD
+  AND  PBD.GPCH_SI_PROV_CD   = PBD1.GPCH_SI_PROV_CD
+  AND  PBD.SEG_END_DT        = PBD1.SEG_END_DT
+  AND  PBD1.STATUS           = 'P' )
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert dummy GPCHTXX26_TMP retro hire $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+! FMB 20140704 Accumulate GPCHTXX26 rows in case of segmentation (e.g. REH in same month)
+
+Begin-Sql on-error=give_warning
+UPDATE PS_GPCHTXX26_TMP 
+ SET PS_GPCHTXX26_TMP.GPCH_RP_AMOUNT1 = PS_GPCHTXX26_TMP.GPCH_RP_AMOUNT1 + 
+ ( SELECT SUM(T2.GPCH_RP_AMOUNT1 ) FROM PS_GPCHTXX26_TMPVW T2
+    WHERE T2.PROCESS_INSTANCE                 = $prcs_process_instance 
+      AND PS_GPCHTXX26_TMP.EMPLID             = T2.EMPLID 
+      AND PS_GPCHTXX26_TMP.EMPL_RCD           = T2.EMPL_RCD 
+      AND PS_GPCHTXX26_TMP.GPCH_SI_PROV_CD    = T2.GPCH_SI_PROV_CD
+      AND PS_GPCHTXX26_TMP.GPCH_AL_CPAY_ENDDT = T2.GPCH_AL_CPAY_ENDDT 
+      AND PS_GPCHTXX26_TMP.PRD_END_DT         = T2.PRD_END_DT 
+      AND PS_GPCHTXX26_TMP.SEG_BGN_DT         > T2.SEG_BGN_DT ),
+   PS_GPCHTXX26_TMP.GPCH_RP_AMOUNT3 = PS_GPCHTXX26_TMP.GPCH_RP_AMOUNT3 +    
+  ( SELECT SUM(T2.GPCH_RP_AMOUNT3 ) FROM PS_GPCHTXX26_TMPVW T2
+     WHERE T2.PROCESS_INSTANCE                 = $prcs_process_instance 
+       AND PS_GPCHTXX26_TMP.EMPLID             = T2.EMPLID 
+       AND PS_GPCHTXX26_TMP.EMPL_RCD           = T2.EMPL_RCD 
+       AND PS_GPCHTXX26_TMP.GPCH_SI_PROV_CD    = T2.GPCH_SI_PROV_CD
+       AND PS_GPCHTXX26_TMP.GPCH_AL_CPAY_ENDDT = T2.GPCH_AL_CPAY_ENDDT 
+       AND PS_GPCHTXX26_TMP.PRD_END_DT         = T2.PRD_END_DT 
+      AND PS_GPCHTXX26_TMP.SEG_BGN_DT         > T2.SEG_BGN_DT ),
+   PS_GPCHTXX26_TMP.GPCH_RP_AMOUNT10 = PS_GPCHTXX26_TMP.GPCH_RP_AMOUNT10 +   
+  ( SELECT SUM(T2.GPCH_RP_AMOUNT10 ) FROM PS_GPCHTXX26_TMPVW T2
+     WHERE T2.PROCESS_INSTANCE                 = $prcs_process_instance 
+       AND PS_GPCHTXX26_TMP.EMPLID             = T2.EMPLID 
+       AND PS_GPCHTXX26_TMP.EMPL_RCD           = T2.EMPL_RCD 
+       AND PS_GPCHTXX26_TMP.GPCH_SI_PROV_CD    = T2.GPCH_SI_PROV_CD
+       AND PS_GPCHTXX26_TMP.GPCH_AL_CPAY_ENDDT = T2.GPCH_AL_CPAY_ENDDT 
+       AND PS_GPCHTXX26_TMP.PRD_END_DT         = T2.PRD_END_DT 
+      AND PS_GPCHTXX26_TMP.SEG_BGN_DT         > T2.SEG_BGN_DT )
+  WHERE EXISTS ( SELECT 'X' FROM PS_GPCHTXX26_TMPVW T2
+   WHERE T2.PROCESS_INSTANCE                 = $prcs_process_instance  
+     AND PS_GPCHTXX26_TMP.EMPLID             = T2.EMPLID 
+     AND PS_GPCHTXX26_TMP.EMPL_RCD           = T2.EMPL_RCD 
+     AND PS_GPCHTXX26_TMP.GPCH_SI_PROV_CD    = T2.GPCH_SI_PROV_CD
+     AND PS_GPCHTXX26_TMP.GPCH_AL_CPAY_ENDDT = T2.GPCH_AL_CPAY_ENDDT 
+     AND PS_GPCHTXX26_TMP.PRD_END_DT         = T2.PRD_END_DT 
+     AND PS_GPCHTXX26_TMP.SEG_BGN_DT         > T2.SEG_BGN_DT )
+End-Sql
+
+   do getcurrtimedate
+   show ' after accumulate GPCHTXX26_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+! Delete GPCHTXX26 rows in case of segmentation (e.g. REH in same month)
+
+Begin-Sql on-error=give_warning
+DELETE FROM PS_GPCHTXX26_TMP WHERE EXISTS 
+ ( SELECT 'X' FROM PS_GPCHTXX26_TMPVW T2 
+     WHERE T2.PROCESS_INSTANCE                 = $prcs_process_instance
+       AND PS_GPCHTXX26_TMP.EMPLID             = T2.EMPLID 
+       AND PS_GPCHTXX26_TMP.EMPL_RCD           = T2.EMPL_RCD 
+       AND PS_GPCHTXX26_TMP.GPCH_SI_PROV_CD    = T2.GPCH_SI_PROV_CD 
+       AND PS_GPCHTXX26_TMP.GPCH_AL_CPAY_ENDDT = T2.GPCH_AL_CPAY_ENDDT 
+       AND PS_GPCHTXX26_TMP.PRD_END_DT         = T2.PRD_END_DT 
+       AND PS_GPCHTXX26_TMP.SEG_BGN_DT         < T2.SEG_BGN_DT ) 
+End-Sql
+
+   do getcurrtimedate
+   show ' after delete GPCHTXX26_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+!FMB 20140704 end
+   
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+
+! Curent row for sure. Retro only rows with a difference on compared fields
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX26_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+SELECT
+[$prcs_process_instance],PBD.EMPLID,PBD.EMPL_RCD,PBD.GPCH_SI_PROV_CD,PBD.GPCH_AL_CPAY_ENDDT,PBD.SEG_BGN_DT,
+PBD.SEG_END_DT,PBD.PRD_END_DT,PBD.BEGIN_DT,END_DT,PBD.HIRE_DT, PBD.TERMINATION_DT,PBD.REG_TEMP, PBD.GPCH_TX_CANTON, PBD.GPCH_RP_CHAR03, 
+PBD.GPCH_RP_CHAR04, PBD.MAR_STATUS, 
+PBD.GPCH_TX_VILLAGE_CD,PBD.SETID, PBD.LOCATION,PBD.ACTION, PBD.GPCH_RP_CHAR01,PBD.GPCH_RP_FROMDT1, PBD.GPCH_RP_CHAR02,PBD.GPCH_RP_FROMDT1,  
+PBD.COUNTRY_FROM,PBD.COUNTRY,PBD.STATE, PBD.CB_FREQ_CHE, PBD.GPCH_TX_TRF_CD,PBD.GPCH_RP_AMOUNT1,PBD.GPCH_RP_AMOUNT2,PBD.GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+PBD.GPCH_RP_AMOUNT17,PBD.GPCH_RP_AMOUNT18,PBD.GPCH_RP_AMOUNT19,PBD.GPCH_RP_CHAR05, PBD.STATUS
+FROM PS_GPCHTXX25_TMP PBD
+where PBD.PROCESS_INSTANCE = $prcs_process_instance
+ and ( not exists ( select 'X' from PS_GPCHTXX25_TMP PBD1
+  where PBD1.PROCESS_INSTANCE = $prcs_process_instance
+    and PBD1.GPCH_AL_CPAY_ENDDT <> PBD.GPCH_AL_CPAY_ENDDT
+    and PBD1.EMPLID          = PBD.EMPLID
+!Bug 26167551     and PBD1.EMPL_RCD        = PBD.EMPL_RCD
+    and PBD1.GPCH_SI_PROV_CD = PBD.GPCH_SI_PROV_CD
+    and PBD1.SEG_BGN_DT      = PBD.SEG_BGN_DT
+    and PBD1.SEG_END_DT      = PBD.SEG_END_DT
+    and PBD1.PRD_END_DT      = PBD.PRD_END_DT
+    and PBD1.REG_TEMP        = PBD.REG_TEMP
+    and PBD1.GPCH_TX_CANTON  = PBD.GPCH_TX_CANTON
+    and PBD1.GPCH_TX_TRF_CD  = PBD.GPCH_TX_TRF_CD
+    and PBD1.GPCH_RP_AMOUNT1 = PBD.GPCH_RP_AMOUNT1 * -1
+    and PBD1.GPCH_RP_AMOUNT2 = PBD.GPCH_RP_AMOUNT2 * -1
+    and PBD1.GPCH_RP_AMOUNT3 = PBD.GPCH_RP_AMOUNT3 * -1 )
+!      Or  exists ( select 'X' from PS_GPCH_TX_EMA SDE
+!   where PBD.EMPLID             = SDE.EMPLID
+!     and PBD.EMPL_RCD           = SDE.EMPL_RCD
+!     and PBD.GPCH_TX_CANTON     = SDE.GPCH_TX_STAX_CANTN
+!     and SDE.GPCH_TX_SD_EMA     = '35' 
+!     and SDE.END_DT             = PBD.PRD_END_DT 
+!     and SDE.GPCH_AL_CPAY_ENDDT = $ReportEndDate )
+       )
+
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert GPCHTXX26_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+! Insert dummy current month with previous month' attributes (taken from most recent GPCHTXX22_TMP)
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX26_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+SELECT
+[$prcs_process_instance],X22.EMPLID,X22.EMPL_RCD,
+#ifdef ORACLE
+ '#' || X22.GPCH_TX_CANTON
+#else
+ '#'  + X22.GPCH_TX_CANTON
+#endif
+,EMA.GPCH_AL_CPAY_ENDDT,X22.SEG_BGN_DT,
+EMA.GPCH_AL_CPAY_ENDDT,EMA.GPCH_AL_CPAY_ENDDT,X22.BEGIN_DT,X22.END_DT,X22.HIRE_DT, X22.TERMINATION_DT,X22.REG_TEMP, X22.GPCH_TX_CANTON, 
+X22.GPCH_RP_CHAR03, X22.GPCH_RP_CHAR04, X22.MAR_STATUS, 
+X22.GPCH_TX_VILLAGE_CD,X22.SETID, X22.LOCATION,X22.ACTION, X22.GPCH_RP_CHAR01,X22.GPCH_RP_FROMDT1, X22.GPCH_RP_CHAR02,X22.GPCH_RP_FROMDT1,  
+X22.COUNTRY_FROM,X22.COUNTRY,X22.STATE, X22.CB_FREQ_CHE, X22.GPCH_TX_TRF_CD,0,0,0,0,0,0,0,0,0,0,0,0,0,X22.GPCH_RP_CHAR05, 'P'
+FROM PS_GPCH_TX_EMA EMA, PS_GPCHTXX22_TMP X22
+where EMA.GPCH_AL_CPAY_ENDDT = $ReportEndDate
+  and EMA.END_DT             = $ReportEndDate
+  and EMA.EMPLID             = X22.EMPLID
+!Bug 26167551   and EMA.EMPL_RCD           = X22.EMPL_RCD 
+  and EMA.GPCH_TX_STAX_CANTN = X22.GPCH_TX_CANTON
+  and X22.PROCESS_INSTANCE   = $prcs_process_instance
+  and X22.SEG_BGN_DT       = ( select max(X221.SEG_BGN_DT) from PS_GPCHTXX22_TMP X221
+   where X221.PROCESS_INSTANCE = $prcs_process_instance
+     and X22.EMPLID            = X221.EMPLID
+!Bug 26167551      and X22.EMPL_RCD          = X221.EMPL_RCD
+     and X22.GPCH_TX_CANTON    = X221.GPCH_TX_CANTON
+     and X221.SEG_BGN_DT       <= $ReportEndDate )
+
+and not exists ( select 'X' from PS_GPCHTXX26_TMP T
+ where T.PROCESS_INSTANCE   = $prcs_process_instance
+   and T.EMPLID             = X22.EMPLID
+!Bug 26167551    and T.EMPL_RCD           = X22.EMPL_RCD
+   and T.GPCH_SI_PROV_CD    =
+#ifdef Oracle
+                              '#' || EMA.GPCH_TX_STAX_CANTN
+#Else   
+                              '#' +  EMA.GPCH_TX_STAX_CANTN
+#Endif 
+   and T.GPCH_AL_CPAY_ENDDT = $ReportEndDate
+   and T.SEG_BGN_DT         = X22.SEG_BGN_DT
+   and T.SEG_END_DT         = X22.SEG_END_DT
+   and T.PRD_END_DT         = X22.PRD_END_DT )
+  
+
+End-Sql
+
+   do getcurrtimedate
+   show ' after insert dummy GPCHTXX26_TMP $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+   
+! FMB 20191101 fill manual corrections coming from PS_GP_PYE_OVRD
+
+Begin-Sql on-error=give_warning
+
+ DELETE FROM PS_GPCH_TX_PRY_OVR
+   WHERE  COMPANY             = $Ctl_PayEntity
+    AND   GPCH_AL_CPAY_ENDDT  = $ReportEndDate
+    
+End-SQL
+
+   show ' after delete GPCH_TX_PRY_OVR $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCH_TX_PRY_OVR 
+ SELECT P.EMPLID,P.EMPL_RCD,P.CAL_ID,$Ctl_PayEntity,C.PRD_END_DT, 
+(SELECT SOVR_VAL_CHAR FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_REP_FOR' ) ),   ! AS CH_TX_VJ_REP_FOR,
+(SELECT SOVR_VAL_CHAR FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_EMA' )),        ! AS CCH_TX_VJ_EMA,
+(SELECT SOVR_VAL_CHAR FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_CANT_O' ) ),    ! AS CH_TX_VJ_CANT_O,
+(SELECT SOVR_VAL_CHAR FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_MUNICD_O' ) ),  ! AS CH_TX_VJ_MUNICD_O,
+(SELECT SOVR_VAL_CHAR FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_TXCODE_O' ) ),  ! AS CH_TX_VJ_TXCODE_O,
+(SELECT S.SOVR_VAL_NUM FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_TAXABLE_O' ) ), ! AS CH_TX_VJ_TAXABLE_O,
+(SELECT S.SOVR_VAL_NUM FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_LOOKUP_O' ) ),  ! AS CH_TX_VJ_LOOKUP_O,
+(SELECT S.SOVR_VAL_NUM FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_TAXAMT_O' ) ),  ! AS CH_TX_VJ_TAXAMT_O,
+(SELECT SOVR_VAL_CHAR FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_CANT_N' ) ),    ! AS CH_TX_VJ_CANT_N,
+(SELECT SOVR_VAL_CHAR FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_MUNICD_N' ) ),  ! AS CH_TX_VJ_MUNICD_N,
+(SELECT SOVR_VAL_CHAR FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_TXCODE_N' ) ),  ! AS CH_TX_VJ_TXCODE_N,
+(SELECT S.SOVR_VAL_NUM FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_TAXABLE_N' ) ), ! AS CH_TX_VJ_TAXABLE_N,
+(SELECT S.SOVR_VAL_NUM FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_LOOKUP_N' ) ),  ! AS CH_TX_VJ_LOOKUP_N,
+(SELECT S.SOVR_VAL_NUM FROM PS_GP_PI_MNL_SOVR S WHERE P.EMPLID = S.EMPLID AND P.EMPL_RCD =S.EMPL_RCD AND P.CAL_ID = S.CAL_ID AND P.INSTANCE = S.INSTANCE AND P.PIN_NUM = S.PIN_NUM 
+AND S.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_TAXAMT_N' ) ),  ! AS CH_TX_VJ_TAXAMT_N,
+' ', ' '
+  FROM PS_GP_PI_MNL_SOVR P, PS_GP_CAL_RUN_DTL C
+  WHERE P.PIN_NUM = (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM= 'CH_TX_VJ_MCO') AND P.PIN_SOVR_NUM= (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_NM = 'CH_TX_VJ_TO_REP' )  
+    AND P.SOVR_VAL_CHAR = C.CAL_RUN_ID           
+    AND C.CALC_TYPE   = 'P'
+    AND C.PAY_ENTITY  = $Ctl_PayEntity
+    AND C.CAL_SEQ_NUM = ( SELECT MAX(C1.CAL_SEQ_NUM) FROM PS_GP_CAL_RUN_DTL C1 WHERE C.CAL_RUN_ID = C1.CAL_RUN_ID AND C.PAY_ENTITY = C1.PAY_ENTITY AND C.CALC_TYPE = C1.CALC_TYPE)
+    AND C.PRD_END_DT  = $ReportEndDate
+
+End-Sql
+
+   show ' after insert GPCH_TX_PRY_OVR $currtimedate = ' $currtimedate ' #sql-count = ' #sql-count
+
+begin-SELECT
+OVR.EMPLID
+OVR.EMPL_RCD
+OVR.COMPANY
+OVR.GPCH_AL_CPAY_ENDDT
+OVR.GPCH_RP_CHAR04
+OVR.GPCH_TX_SD_EMA
+OVR.GPCH_TX_CANTON
+OVR.GPCH_TX_STAX_CANTN
+OVR.GPCH_TX_VILLAGE_CD
+OVR.GPCH_TX_VILLAGE_L
+OVR.GPCH_TX_TRF_CD
+OVR.GPCH_RP_CHAR02
+OVR.GPCH_RP_AMOUNT1
+OVR.GPCH_RP_AMOUNT2
+OVR.GPCH_RP_AMOUNT3
+OVR.GPCH_RP_AMOUNT4
+OVR.GPCH_RP_AMOUNT5
+OVR.GPCH_RP_AMOUNT6
+OVR.STATUS
+ 
+    let $OVR_emplid      = &OVR.EMPLID
+    let $OVR_emplrcd     = &OVR.EMPL_RCD
+    let $OVR_company     = &OVR.COMPANY
+    let $OVR_cpay_enddt  = &OVR.GPCH_AL_CPAY_ENDDT
+    
+!    let $OVR_prd_end_dt  = &OVR.GPCH_RP_CHAR04
+    Let $OVR_tx_rep_for   = &OVR.GPCH_RP_CHAR04
+    Let $day = substr(&OVR.GPCH_RP_CHAR04,1,4) || '/' || substr(&OVR.GPCH_RP_CHAR04,5,2) || '/01'
+    Let $first_day = strtodate($day, 'YYYY/MM/DD')
+    Let $last_day = dateadd(dateadd(strtodate($day, 'YYYY/MM/DD'), 'month', 1), 'day', -1)
+    Let $OVR_prd_end_dt = dateadd(dateadd(strtodate($day, 'YYYY/MM/DD'), 'month', 1), 'day', -1)
+    
+    let $OVR_tx_ema      = &OVR.GPCH_TX_SD_EMA
+    let $OVR_tx_cantonO  = &OVR.GPCH_TX_CANTON
+    let $OVR_tx_cantonN  = &OVR.GPCH_TX_STAX_CANTN
+    let $OVR_tx_villageO = &OVR.GPCH_TX_VILLAGE_CD
+    let $OVR_tx_villageN = &OVR.GPCH_TX_VILLAGE_L
+    let $OVR_tx_trf_cdO  = &OVR.GPCH_TX_TRF_CD
+    let $OVR_tx_trf_cdN  = &OVR.GPCH_RP_CHAR02
+    let #Base_old        = &OVR.GPCH_RP_AMOUNT1 * -1
+    let #Base_new        = &OVR.GPCH_RP_AMOUNT4 
+    let #Ascertained_old = &OVR.GPCH_RP_AMOUNT2 * -1
+    let #Ascertained_new = &OVR.GPCH_RP_AMOUNT5 
+    let #Tax_old         = &OVR.GPCH_RP_AMOUNT3 * -1
+    let #Tax_new         = &OVR.GPCH_RP_AMOUNT6 
+
+    Do OVR_Temp_Tables
+
+ FROM PS_GPCH_TX_PRY_OVR OVR
+  WHERE OVR.GPCH_AL_CPAY_ENDDT = $ReportEndDate
+
+end-SELECT
+ 
+! FMB 20191101 end
+
+
+#ifdef ORACLE
+Begin-Sql on-error=give_warning
+commit
+End-Sql
+#endif
+
+#Debug Show 'Out Insert_Temp_Tables '
+End-Procedure Insert_Temp_Tables
+!***********************************************************************
+
+begin-procedure OVR_Temp_Tables
+#Debug Show 'In OVR_Temp_Tables '
+
+   show ' Previous Year old $ReportEndDate = ' $ReportEndDate
+
+! Trigger Additional-TAG for not existing canton new
+
+let $OVR_ProviderCd_New = '#' ||$OVR_tx_cantonN
+let $OVR_ProviderCd_Old = '#' ||$OVR_tx_cantonO
+
+Begin-Sql on-error=give_warning
+Insert into PS_GPCHTXX22_TMP select PROCESS_INSTANCE, EMPLID, EMPL_RCD, $OVR_ProviderCd_New, GPCH_AL_CPAY_ENDDT, SEG_BGN_DT, SEG_END_DT, PRD_END_DT, BEGIN_DT, END_DT, HIRE_DT, TERMINATION_DT, REG_TEMP, $OVR_tx_cantonN,
+ GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, $OVR_tx_villageN, SETID, LOCATION, ACTION, GPCH_RP_CHAR01, GPCH_RP_FROMDT1, GPCH_RP_CHAR02, GPCH_RP_FROMDT2, COUNTRY_FROM, COUNTRY, STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,
+ 0,0,0,0,0,0,0,0,0,0,0,0,0,GPCH_RP_CHAR05, GPCH_TX_GRANTCODE, STATUS
+ from PS_GPCHTXX22_TMP where PROCESS_INSTANCE   = $prcs_process_instance and EMPLID = $OVR_emplid
+ and not exists ( select 'x' from PS_GPCHTXX22_TMP A where A.PROCESS_INSTANCE   = $prcs_process_instance and A.EMPLID = $OVR_emplid and A.GPCH_SI_PROV_CD = $OVR_ProviderCd_New )
+ 
+End-Sql
+
+ #debug show 'After OVR GPCHTXX22_TMP new'
+
+! Trigger/Update History- and Recap-TAG for not existing canton(s) (we have only these 2 amounts) ... we may remove update on Recap after discussion
+! Anyway if Canton New = Canton Old
+ 
+! Trigger History-TAG for not existing canton new ...  per emplid/canton/ tarif
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX21_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,BEGIN_DT,END_DT, GPCH_TX_CANTON,HIRE_DT,GPCH_TX_TRF_CD)
+ SELECT [$prcs_process_instance],PBD.EMPLID,PBD.EMPL_RCD, $OVR_ProviderCd_New ,$OVR_prd_end_dt,$OVR_prd_end_dt,$OVR_tx_cantonN,PBD.HIRE_DT, $OVR_tx_trf_cdN
+ FROM PS_GPCHTXX21_TMP PBD
+ where PBD.PROCESS_INSTANCE   = $prcs_process_instance and PBD.EMPLID = $OVR_emplid
+   and PBD.BEGIN_DT =  ( select min(A.BEGIN_DT) from PS_GPCHTXX21_TMP A where A.PROCESS_INSTANCE   = $prcs_process_instance and A.EMPLID = $OVR_emplid  )
+   and not exists ( select 'x' from PS_GPCHTXX21_TMP A where A.PROCESS_INSTANCE   = $prcs_process_instance and A.EMPLID = $OVR_emplid and A.GPCH_SI_PROV_CD = $OVR_ProviderCd_New and A.BEGIN_DT = $OVR_prd_end_dt )
+ 
+End-Sql
+
+ #debug show 'After OVR GPCHTXX21_TMP new'
+! Trigger/Update Recap-TAG for not existing canton(s)
+
+! Totals per emplid / year / canton (1 row as long as there is no caton change)
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX23_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+SELECT
+[$prcs_process_instance],PBD.EMPLID,PBD.EMPL_RCD, $OVR_ProviderCd_New,$OVR_cpay_enddt,$OVR_prd_end_dt,
+$OVR_prd_end_dt,$OVR_prd_end_dt,PBD.BEGIN_DT,PBD.END_DT,PBD.HIRE_DT, PBD.TERMINATION_DT,PBD.REG_TEMP, $OVR_tx_cantonN, PBD.GPCH_RP_CHAR03, PBD.GPCH_RP_CHAR04, PBD.MAR_STATUS, 
+$OVR_tx_villageN,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+PBD.COUNTRY_FROM,PBD.COUNTRY,PBD.STATE, PBD.CB_FREQ_CHE, PBD.GPCH_TX_TRF_CD,0,0,0,0,0,0,0,0,0,0,0,0,0, PBD.GPCH_RP_CHAR05, PBD.STATUS
+FROM PS_GPCHTXX23_TMP PBD
+where PBD.PROCESS_INSTANCE = $prcs_process_instance and PBD.EMPLID = $OVR_emplid
+   and PBD.BEGIN_DT =  ( select min(A.BEGIN_DT) from PS_GPCHTXX23_TMP A where A.PROCESS_INSTANCE   = $prcs_process_instance and A.EMPLID = $OVR_emplid  )
+   and not exists ( select 'x' from PS_GPCHTXX23_TMP A where A.PROCESS_INSTANCE   = $prcs_process_instance and A.EMPLID = $OVR_emplid and A.GPCH_SI_PROV_CD = $OVR_ProviderCd_New )
+
+End-Sql
+
+ #debug show 'After OVR GPCHTXX23_TMP new' 
+ 
+Begin-Sql on-error=give_warning
+
+Update PS_GPCHTXX23_TMP set 
+   GPCH_RP_AMOUNT1 = GPCH_RP_AMOUNT1 + #Base_new,  
+   GPCH_RP_AMOUNT3 = GPCH_RP_AMOUNT3 + #Tax_new 
+
+where PS_GPCHTXX23_TMP.PROCESS_INSTANCE   = $prcs_process_instance
+  and PS_GPCHTXX23_TMP.EMPLID             = $OVR_emplid
+  and PS_GPCHTXX23_TMP.GPCH_SI_PROV_CD  = $OVR_ProviderCd_New
+  and PS_GPCHTXX23_TMP.GPCH_AL_CPAY_ENDDT = $OVR_cpay_enddt
+!  and PS_GPCHTXX23_TMP.PRD_END_DT         = $OVR_cpay_enddt
+ 
+End-Sql
+
+#debug show 'After OVR update New = Old' 
+
+! If Canton new <> Canton old then need to do the same for canton old 
+ 
+ If $OVR_tx_cantonN <> $OVR_tx_cantonO 
+ 
+! Trigger Additional-TAG for not existing canton old
+
+Begin-Sql on-error=give_warning
+Insert into PS_GPCHTXX22_TMP select PROCESS_INSTANCE, EMPLID, EMPL_RCD, $OVR_ProviderCd_Old, GPCH_AL_CPAY_ENDDT, SEG_BGN_DT, SEG_END_DT, PRD_END_DT, BEGIN_DT, END_DT, HIRE_DT, TERMINATION_DT, REG_TEMP, $OVR_tx_cantonN,
+ GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, $OVR_tx_villageO, SETID, LOCATION, ACTION, GPCH_RP_CHAR01, GPCH_RP_FROMDT1, GPCH_RP_CHAR02, GPCH_RP_FROMDT2, COUNTRY_FROM, COUNTRY, STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,
+ 0,0,0,0,0,0,0,0,0,0,0,0,0,GPCH_RP_CHAR05, GPCH_TX_GRANTCODE, STATUS
+ from PS_GPCHTXX22_TMP where PROCESS_INSTANCE   = $prcs_process_instance and EMPLID = $OVR_emplid
+ and not exists ( select 'x' from PS_GPCHTXX22_TMP A where A.PROCESS_INSTANCE   = $prcs_process_instance and A.EMPLID = $OVR_emplid and A.GPCH_SI_PROV_CD = $OVR_ProviderCd_Old )
+ 
+End-Sql
+
+ #debug show 'After OVR GPCHTXX22_TMP old' 
+
+! If Canton new <> Canton old then need to do the same for canton old 
+ 
+! Trigger History-TAG for not existing canton old 
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX21_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,BEGIN_DT,END_DT, GPCH_TX_CANTON,HIRE_DT,GPCH_TX_TRF_CD)
+SELECT [$prcs_process_instance],PBD.EMPLID,PBD.EMPL_RCD, $OVR_ProviderCd_Old,$OVR_prd_end_dt,$OVR_prd_end_dt,$OVR_tx_cantonO,PBD.HIRE_DT, $OVR_tx_trf_cdO
+FROM PS_GPCHTXX21_TMP PBD
+where PROCESS_INSTANCE   = $prcs_process_instance and EMPLID = $OVR_emplid
+  and BEGIN_DT = ( select  min(A.BEGIN_DT) from PS_GPCHTXX21_TMP A where A.PROCESS_INSTANCE   = $prcs_process_instance and A.EMPLID = $OVR_emplid  )
+  and not exists ( select 'x' from PS_GPCHTXX21_TMP A where A.PROCESS_INSTANCE   = $prcs_process_instance and A.EMPLID = $OVR_emplid and A.GPCH_SI_PROV_CD = $OVR_ProviderCd_Old and A.BEGIN_DT = $OVR_prd_end_dt )
+
+End-Sql
+
+ #debug show 'After OVR GPCHTXX21_TMP old'
+
+! Totals per emplid / year / canton (1 row as long as there is no caton change)
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX23_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+SELECT
+[$prcs_process_instance],PBD.EMPLID,PBD.EMPL_RCD, $OVR_ProviderCd_Old,$OVR_cpay_enddt,$OVR_prd_end_dt,
+$OVR_prd_end_dt,$OVR_prd_end_dt,PBD.BEGIN_DT,PBD.END_DT,PBD.HIRE_DT, PBD.TERMINATION_DT,PBD.REG_TEMP, $OVR_tx_cantonO, PBD.GPCH_RP_CHAR03, PBD.GPCH_RP_CHAR04, PBD.MAR_STATUS, 
+$OVR_tx_villageO,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+PBD.COUNTRY_FROM,PBD.COUNTRY,PBD.STATE, PBD.CB_FREQ_CHE, PBD.GPCH_TX_TRF_CD,0,0,0,0,0,0,0,0,0,0,0,0,0, PBD.GPCH_RP_CHAR05, PBD.STATUS
+FROM PS_GPCHTXX23_TMP PBD
+where PBD.PROCESS_INSTANCE = $prcs_process_instance and PBD.EMPLID = $OVR_emplid
+   and PBD.BEGIN_DT =  ( select min(A.BEGIN_DT) from PS_GPCHTXX23_TMP A where A.PROCESS_INSTANCE   = $prcs_process_instance and A.EMPLID = $OVR_emplid  )
+   and not exists ( select 'x' from PS_GPCHTXX23_TMP A where A.PROCESS_INSTANCE   = $prcs_process_instance and A.EMPLID = $OVR_emplid and A.GPCH_SI_PROV_CD = $OVR_ProviderCd_Old )
+
+End-Sql
+
+ #debug show 'After OVR GPCHTXX23_TMP old'
+ 
+     End-If
+ 
+! Update new & old canton
+
+Begin-Sql on-error=give_warning
+
+Update PS_GPCHTXX23_TMP set 
+   GPCH_RP_AMOUNT1 = GPCH_RP_AMOUNT1 + #Base_old,   
+   GPCH_RP_AMOUNT3 = GPCH_RP_AMOUNT3 + #Tax_old 
+
+where PS_GPCHTXX23_TMP.PROCESS_INSTANCE   = $prcs_process_instance
+  and PS_GPCHTXX23_TMP.EMPLID             = $OVR_emplid
+  and PS_GPCHTXX23_TMP.GPCH_SI_PROV_CD    = $OVR_ProviderCd_Old 
+  and PS_GPCHTXX23_TMP.GPCH_AL_CPAY_ENDDT = $OVR_cpay_enddt
+!  and PS_GPCHTXX23_TMP.PRD_END_DT         = $OVR_cpay_enddt 
+  and exists ( select 'X' from PS_GPCHTXX23_TMP
+    where PS_GPCHTXX23_TMP.PROCESS_INSTANCE   = $prcs_process_instance
+      and PS_GPCHTXX23_TMP.EMPLID             = $OVR_emplid
+      and PS_GPCHTXX23_TMP.GPCH_SI_PROV_CD    = $OVR_ProviderCd_Old  
+      and PS_GPCHTXX23_TMP.GPCH_AL_CPAY_ENDDT = $OVR_cpay_enddt )
+  !    and PS_GPCHTXX23_TMP.PRD_END_DT         = $OVR_cpay_enddt ) 
+      
+End-Sql
+      
+ #debug show 'After OVR update old' 
+  
+  
+! Correction Canton old / old values - use $OVR_prd_end_dt
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX26_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+SELECT
+[$prcs_process_instance],X22.EMPLID,X22.EMPL_RCD,$OVR_ProviderCd_Old, $OVR_prd_end_dt,X22.SEG_BGN_DT,
+$OVR_prd_end_dt,$OVR_prd_end_dt,X22.BEGIN_DT,X22.END_DT,X22.HIRE_DT, X22.TERMINATION_DT,X22.REG_TEMP, $OVR_tx_cantonO, 
+X22.GPCH_RP_CHAR03, X22.GPCH_RP_CHAR04, X22.MAR_STATUS, 
+$OVR_tx_villageO,X22.SETID, X22.LOCATION,X22.ACTION, X22.GPCH_RP_CHAR01,X22.GPCH_RP_FROMDT1, X22.GPCH_RP_CHAR02,X22.GPCH_RP_FROMDT1,  
+X22.COUNTRY_FROM,X22.COUNTRY,X22.STATE, X22.CB_FREQ_CHE, 
+$OVR_tx_trf_cdO,
+#Base_old,#Ascertained_old,#Tax_old,0,0,0,0,0,0,0,0,0,0,X22.GPCH_RP_CHAR05, 'M'
+FROM PS_GPCHTXX22_TMP X22
+where  X22.EMPLID             = $OVR_emplid
+   and X22.PROCESS_INSTANCE   = $prcs_process_instance
+   and X22.GPCH_TX_CANTON     = $OVR_tx_cantonO
+   and X22.SEG_BGN_DT        = ( select max(X221.SEG_BGN_DT) from PS_GPCHTXX22_TMP X221
+   where X221.PROCESS_INSTANCE = $prcs_process_instance
+     and X22.EMPLID            = X221.EMPLID
+     and X22.GPCH_TX_CANTON    = X221.GPCH_TX_CANTON
+     and X221.SEG_BGN_DT       <= $ReportEndDate )
+  
+
+End-Sql
+
+! Correction Canton new / new values - use $OVR_cpay_enddt
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX26_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+SELECT
+[$prcs_process_instance],X22.EMPLID,X22.EMPL_RCD, $OVR_ProviderCd_New, $OVR_cpay_enddt,X22.SEG_BGN_DT,
+$OVR_prd_end_dt,$OVR_prd_end_dt,X22.BEGIN_DT,X22.END_DT,X22.HIRE_DT, X22.TERMINATION_DT,X22.REG_TEMP, $OVR_tx_cantonN, 
+X22.GPCH_RP_CHAR03, X22.GPCH_RP_CHAR04, X22.MAR_STATUS, 
+$OVR_tx_villageO,X22.SETID, X22.LOCATION,X22.ACTION, X22.GPCH_RP_CHAR01,X22.GPCH_RP_FROMDT1, X22.GPCH_RP_CHAR02,X22.GPCH_RP_FROMDT1,  
+X22.COUNTRY_FROM,X22.COUNTRY,X22.STATE, X22.CB_FREQ_CHE, 
+$OVR_tx_trf_cdN,
+#Base_new,#Ascertained_new,#Tax_new,0,0,0,0,0,0,0,0,0,0,X22.GPCH_RP_CHAR05, 'P'
+FROM PS_GPCHTXX22_TMP X22
+where  X22.EMPLID             = $OVR_emplid
+   and X22.PROCESS_INSTANCE   = $prcs_process_instance
+   and X22.GPCH_TX_CANTON     = $OVR_tx_cantonN   
+   and X22.SEG_BGN_DT        = ( select max(X221.SEG_BGN_DT) from PS_GPCHTXX22_TMP X221
+   where X221.PROCESS_INSTANCE = $prcs_process_instance
+     and X22.EMPLID            = X221.EMPLID
+     and X22.GPCH_TX_CANTON    = X221.GPCH_TX_CANTON
+     and X221.SEG_BGN_DT       <= $ReportEndDate )
+  
+
+End-Sql
+
+ If $OVR_tx_cantonN <> $OVR_tx_cantonO 
+ 
+! Correction Canton new / dummy row with 0 - use $OVR_prd_end_dt
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX26_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+SELECT
+[$prcs_process_instance],X22.EMPLID,X22.EMPL_RCD, $OVR_ProviderCd_New, $OVR_prd_end_dt,X22.SEG_BGN_DT,
+$OVR_prd_end_dt,$OVR_prd_end_dt,X22.BEGIN_DT,X22.END_DT,X22.HIRE_DT, X22.TERMINATION_DT,X22.REG_TEMP, $OVR_tx_cantonN, 
+X22.GPCH_RP_CHAR03, X22.GPCH_RP_CHAR04, X22.MAR_STATUS, 
+$OVR_tx_villageN,X22.SETID, X22.LOCATION,X22.ACTION, X22.GPCH_RP_CHAR01,X22.GPCH_RP_FROMDT1, X22.GPCH_RP_CHAR02,X22.GPCH_RP_FROMDT1,  
+X22.COUNTRY_FROM,X22.COUNTRY,X22.STATE, X22.CB_FREQ_CHE, 
+$OVR_tx_trf_cdN,
+0,0,0,0,0,0,0,0,0,0,0,0,0,X22.GPCH_RP_CHAR05, 'M'
+FROM PS_GPCHTXX22_TMP X22
+where  X22.EMPLID             = $OVR_emplid
+   and X22.PROCESS_INSTANCE   = $prcs_process_instance
+   and X22.GPCH_TX_CANTON     = $OVR_tx_cantonO
+   and X22.SEG_BGN_DT         = ( select max(X221.SEG_BGN_DT) from PS_GPCHTXX22_TMP X221
+   where X221.PROCESS_INSTANCE = $prcs_process_instance
+     and X22.EMPLID            = X221.EMPLID
+     and X22.GPCH_TX_CANTON    = X221.GPCH_TX_CANTON
+     and X221.SEG_BGN_DT       <= $ReportEndDate )
+  
+
+End-Sql
+
+! Correction Canton old / dummy row with 0 - use $OVR_cpay_enddt
+
+Begin-Sql on-error=give_warning
+INSERT INTO PS_GPCHTXX26_TMP(PROCESS_INSTANCE,EMPLID,EMPL_RCD,GPCH_SI_PROV_CD,GPCH_AL_CPAY_ENDDT,SEG_BGN_DT,
+SEG_END_DT,PRD_END_DT,BEGIN_DT,END_DT,HIRE_DT, TERMINATION_DT,REG_TEMP, GPCH_TX_CANTON, GPCH_RP_CHAR03, GPCH_RP_CHAR04, MAR_STATUS, 
+GPCH_TX_VILLAGE_CD,SETID, LOCATION,ACTION, GPCH_RP_CHAR01,GPCH_RP_FROMDT1, GPCH_RP_CHAR02,GPCH_RP_FROMDT2,  
+COUNTRY_FROM,COUNTRY,STATE, CB_FREQ_CHE, GPCH_TX_TRF_CD,GPCH_RP_AMOUNT1,GPCH_RP_AMOUNT2,GPCH_RP_AMOUNT3
+,GPCH_RP_AMOUNT10,GPCH_RP_AMOUNT11,GPCH_RP_AMOUNT12,GPCH_RP_AMOUNT13, GPCH_RP_AMOUNT14,GPCH_RP_AMOUNT15,GPCH_RP_AMOUNT16,
+GPCH_RP_AMOUNT17,GPCH_RP_AMOUNT18,GPCH_RP_AMOUNT19,GPCH_RP_CHAR05, STATUS)
+SELECT
+[$prcs_process_instance],X22.EMPLID,X22.EMPL_RCD, $OVR_ProviderCd_Old, $OVR_cpay_enddt,X22.SEG_BGN_DT,
+$OVR_prd_end_dt,$OVR_prd_end_dt,X22.BEGIN_DT,X22.END_DT,X22.HIRE_DT, X22.TERMINATION_DT,X22.REG_TEMP, $OVR_tx_cantonO, 
+X22.GPCH_RP_CHAR03, X22.GPCH_RP_CHAR04, X22.MAR_STATUS, 
+$OVR_tx_villageO,X22.SETID, X22.LOCATION,X22.ACTION, X22.GPCH_RP_CHAR01,X22.GPCH_RP_FROMDT1, X22.GPCH_RP_CHAR02,X22.GPCH_RP_FROMDT1,  
+X22.COUNTRY_FROM,X22.COUNTRY,X22.STATE, X22.CB_FREQ_CHE, 
+$OVR_tx_trf_cdO,
+0,0,0,0,0,0,0,0,0,0,0,0,0,X22.GPCH_RP_CHAR05, 'P'
+FROM PS_GPCHTXX22_TMP X22
+where  X22.EMPLID             = $OVR_emplid
+   and X22.PROCESS_INSTANCE   = $prcs_process_instance
+   and X22.GPCH_TX_CANTON     = $OVR_tx_cantonN
+   and X22.SEG_BGN_DT        = ( select max(X221.SEG_BGN_DT) from PS_GPCHTXX22_TMP X221
+   where X221.PROCESS_INSTANCE = $prcs_process_instance
+     and X22.EMPLID            = X221.EMPLID
+     and X22.GPCH_TX_CANTON    = X221.GPCH_TX_CANTON
+     and X221.SEG_BGN_DT       <= $ReportEndDate )
+  
+
+End-Sql
+  
+ End-If
+
+! Set Status to processed
+
+Begin-Sql on-error=give_warning
+
+Update PS_GPCH_TX_PRY_OVR set STATUS = 'P'
+
+where PS_GPCH_TX_PRY_OVR.EMPLID             = $OVR_emplid
+  and PS_GPCH_TX_PRY_OVR.GPCH_AL_CPAY_ENDDT = $OVR_cpay_enddt
+  and PS_GPCH_TX_PRY_OVR.GPCH_RP_CHAR04     = $OVR_tx_rep_for
+  and PS_GPCH_TX_PRY_OVR.COMPANY            = $OVR_company
+  
+
+End-Sql
+
+
+#Debug Show 'Out OVR_Temp_Tables '
+end-procedure OVR_Temp_Tables
+
+!***********************************************************************
+begin-procedure Init-Report
+#debug show 'In Init-Report'
+
+let #ptot_year = $ptot_year
+
+  alter-printer
+  point-size = 9
+
+  do Stdapi-Init
+  let $Tax_Tariff_Type_PBD = ''
+  
+ #debug show ' $prcs_process_instance = ' $prcs_process_instance
+
+  if $prcs_process_instance = ''
+    do ask-input
+  else
+    do Get-Report-Parameters
+!FMB 20120530    do Get-Base-Language
+  end-if
+  
+  let $providertype ='A'
+  if $GPCH_EG_YEP_FLG = 'Y'
+!FMB 20120530    do Get-Provider($providertype,$prcs_oprid,$prcs_run_cntl_id,$prov_crit)            
+!FMB 20120530    If rtrim($prov_crit,' ') <>''
+!FMB 20120530      let $Provider_crit = ' AND P.GPCH_SI_PROV_CD   = ''' || $prov_crit || ''' '
+!FMB 20120530    else
+!FMB 20120530      let $Provider_crit = ' '
+!FMB 20120530    End-If
+
+  let $FMB_ptot_domainid = #ptot_domainid
+         
+
+    do Check_Run_Report(#ptot_domainid,$Ctl_Year,$comp,$providertype,$Run_Option,$Cancel_option,$Rpt_Type)
+    Let $Ctl_PayEntity = $comp    
+    
+  end-if 
+   
+  move 'GPCHTX2X' to $ReportID
+
+     #debug show ' Report ID : ' $ReportID  ' ReportTitle : '  $ReportTitle
+
+  if #count_Emplid <> 0
+     let $Emplid_Criteria1          = ' AND PBD.EMPLID IN  ( ' || $Emplid-String || ')'
+     let $Emplid_Criteria2          = ' AND CAN.EMPLID IN  ( ' || $Emplid-String || ')'
+     let $Emplid_Criteria3          = ' AND VIL.EMPLID IN  ( ' || $Emplid-String || ')'
+
+  else
+     let $Emplid_Criteria1          = ' '
+     let $Emplid_Criteria2          = ' '
+     let $Emplid_Criteria3          = ' '
+
+  end-if
+
+#debug show 'Out Init-Report'
+end-procedure
+!***********************************************************************
+begin-procedure Get-Values
+
+    let $language_cd                 = RTRIM($PRCS_LANGUAGE_CD,' ')
+    let $lang_item                   = $language_cd
+    Let $GPCH_EG_YEP_FLG = &GPCH_RUN_CNTL.GPCH_EG_YEP_FLG
+    let $Ctl_Canton                  = RTRIM(&GPCH_RUN_CNTL.GPCH_TX_CANTON,' ')
+    let $Ctl_Print_Vill_Total        = RTRIM(&GPCH_RUN_CNTL.GPCH_RC_FINAL_PR,' ')
+    let $Ctl_Quarter_Opt             = RTRIM(&GPCH_RUN_CNTL.GPCH_RC_YEAR_OPT,' ')
+    let $Quarter                     = RTRIM(&GPCH_RUN_CNTL.GPCH_FK_QUARTER,' ')
+    let $Ctl_Year                    = RTRIM(to_char(&GPCH_RUN_CNTL.GPCH_RC_PAY_YEAR), ' ')
+    let #Domainid                    = &GPCH_RUN_CNTL.GPCH_TX_DOMAINID  !domainid for IASC
+    let  #Domainid_tx                 = &GPCH_RUN_CNTL.GPCH_EG_DOMAINID !regular domainid for dashboard
+    let $IASC_PrintXML               = RTRIM(&GPCH_RUN_CNTL.GPCH_RC_PRN_COMP,' ')
+     Let $comp                  = rtrim(&GPCH_RUN_CNTL.COMPANY,' ') !Only for use in status tbl
+    if $Ctl_Canton <> ''
+       let $Ctl_Canton_Crit1         = ' AND PBD.GPCH_TX_CANTON    = ''' || $Ctl_Canton || ''' '
+       let $Ctl_Canton_Crit2         = ' AND CAN.GPCH_TX_CANTON    = ''' || $Ctl_Canton || ''' '
+       let $Ctl_Canton_Crit3         = ' AND VIL.GPCH_TX_CANTON    = ''' || $Ctl_Canton || ''' '
+    else
+       let $Ctl_Canton_Crit1         = ' '
+       let $Ctl_Canton_Crit2         = ' '
+       let $Ctl_Canton_Crit3         = ' '
+    end-if
+    If $GPCH_EG_YEP_FLG ='Y'
+!FMB 20120530    
+!     let $VDCrit_String ='VD'
+!     let $Ctl_Canton_CritVD         = 'AND PBD1.GPCH_TX_CANTON    = ''' || $VDCrit_String|| ''' '
+      let $Ctl_Canton_CritVD = ' '  
+    else
+      let $Ctl_Canton_CritVD = ' '
+  
+    End-If
+
+
+end-procedure
+!***********************************************************************
+Begin-Procedure Get_Date_Values
+#Debug Show 'Get_Date_Values -> '  $Ctl_Curr_Pay_End_Dt ' , ' $ReportEndDate
+
+  let #Date_Type= {DateType}
+
+  if $Final_Date = 'N'
+
+      if $Ctl_Curr_Pay_End_Dt <> ''
+         do Get_Beg_Mnth($Ctl_Curr_Pay_End_Dt,$ReportBeginDate)
+         do Get_End_Mnth($Ctl_Curr_Pay_End_Dt,$ReportEndDate)
+      end-if
+
+  end-if
+
+
+  if $ReportEndDate <> ''
+
+      do ConvertToComponents($ReportEndDate  ,$yy11,$mm11,$dd11)
+      do ConvertToComponents($ReportBeginDate,$yy10,$mm10,$dd10)
+      do Format-DateTime($ReportBeginDate,$Ctl_B_Date,{DEFCMP},'','')
+      do Format-DateTime($ReportEndDate  ,$Ctl_E_Date,{DEFCMP},'','')
+
+      let $CMP_Start_Dt = $yy11 || '01' || '01' || '0000'
+      do Format-DateTime($CMP_start_Dt, $out, {DEFCMP},'','native')
+      let $YearBeginDate = rtrim($out, ' ')
+
+      #Debug Show 'YearBeginDate ' $YearBeginDate
+
+      Evaluate #Date_Type
+      when = 1
+             let $from_to_format = $dd10 || '{PTDateDelim}' ||
+             $mm10 || '{PTDateDelim}' || ' - ' || $dd11 ||
+             '{PTDateDelim}' || $mm11 || '{PTDateDelim}' || $yy11
+      break
+      when = 2
+             let $from_to_format = $mm10 || '{PTDateDelim}'
+             || $dd10 || '{PTDateDelim}' || ' - ' || $yy11
+             || '{PTDateDelim}' || $mm11 || '{PTDateDelim}' || $dd11
+      break
+      when-other
+            let $from_to_format = $mm10 || '{PTDateDelim}'
+            || $dd10 || '{PTDateDelim}' || ' - ' || $mm11
+            || '{PTDateDelim}' || $dd11 || '{PTDateDelim}' || $yy11
+      break
+      End-Evaluate
+
+  end-if
+
+#Debug Show 'Get_Date_Values <- '
+End-Procedure Get_Date_Values
+!***********************************************************************
+begin-heading 13
+
+end-heading
+!***********************************************************************
+begin-procedure Ask-Input
+  let $Emplid-String            = ''
+  let $temp-value               = ''
+  let #count_Emplid             = 0
+  let $Emplid_Criteria1         = ''
+
+
+  input $Ctl_Curr_Pay_End_Dt    'Current Pay End Date ' type=date
+  input $Ctl_PayEntity          'Pay Entity '           type=char
+  more:
+  input $Ask_Emplid             'EMPLID, you can select mmore again Yes(Y) No(N)'
+
+  if $Ask_Emplid = 'Y'
+         input $Ctl_Emplid  'EMPLID '
+         if $Ctl_Emplid <> ''
+         let $temp-value                = rtrim($Ctl_Emplid,' ')
+         let $Emplid-String             = $Emplid-String || '''' || $temp-value || '''' || ','
+         let #count_Emplid              = #count_Emplid + 1
+         end-if
+         goto more
+  end-if
+
+  if #count_Emplid <> 0
+
+         let $Emplid-String               = rtrim($Emplid-String,',')
+         let $Emplid_Criteria1            = ' AND PBD.EMPLID  IN ( ' || $Emplid-String || ')'
+
+  end-if
+
+  input $Ctl_Canton 'Canton '
+
+end-procedure Ask-Input
+!***********************************************************************
+Begin-Procedure deleteType0
+#debug show 'In deleteType0'
+let #ptot_year = $ptot_year
+ 
+Begin-Sql on-error=give_warning
+
+ DELETE FROM PS_GPCH_EG_PERSON PER
+   WHERE  GPCH_EG_DOMAINID  = #ptot_domainid 
+      AND GPCH_RC_PAY_YEAR  = #ptot_year 
+      AND COMPANY = $ptot_company 
+      AND GPCH_SI_PROV_TYPE = '0'
+      AND EMPLID NOT IN (select EMPLID from PS_GPCH_EG_PERSON EP1
+       WHERE EP1.GPCH_SI_PROV_TYPE ='A'
+         AND EP1.GPCH_EG_DOMAINID = #ptot_domainid 
+         AND EP1.GPCH_RC_PAY_YEAR = #ptot_year 
+         AND EP1.COMPANY = $ptot_company)
+End-SQL
+
+#debug show 'Out deleteType0'
+End-procedure deleteType0
+!***********************************************************************
+!31363384  Begin-Procedure Get_SD_Reason_tbl
+!31363384  #debug show 'In Get_SD_Reason_tbl'
+!31363384  begin-SELECT
+!31363384  LCD5.LANGUAGE_CD
+!31363384    let $BASE_LANG1 = rtrim(ltrim(&LCD5.LANGUAGE_CD,' '),' ')
+!31363384  FROM  PSOPTIONS LCD5
+!31363384  end-SELECT
+!31363384   let $TX_EMA_CMP_lgrec = ''
+!31363384   let $LANGUAGE_CD1 = ''
+!31363384   If $BASE_LANG1 <> $language_cd
+!31363384      Do Check_lang_cd    
+!31363384   end-if
+!31363384   If $BASE_LANG1 = $language_cd or ($BASE_LANG1 <> $language_cd and $TX_SDR_LNG = '')
+!31363384     let $TX_EMA_CMP_lgrec = ', PS_GPCH_TX_SDREASO SD'
+!31363384   else
+!31363384     let $TX_EMA_CMP_lgrec = ', PS_GPCH_TX_SDR_LNG SD'
+!31363384     let $LANGUAGE_CD1 = 'and SD.LANGUAGE_CD = ''' || $language_cd || ''' '   
+!31363384   end-if 
+!31363384  #debug show '$TX_EMA_CMP_lgrec: ' $TX_EMA_CMP_lgrec ' $LANGUAGE_CD1: ' $LANGUAGE_CD1 
+!31363384  #debug show 'Out Get_SD_Reason_tbl'
+!31363384  End-procedure Get_SD_Reason_tbl
+!***********************************************************************
+
+
+Begin-Procedure Insert_Employee_Data_TX
+#debug show 'In Insert_Employee_Data_TX'
+let #ptot_year = $ptot_year
+ 
+Begin-Sql on-error=give_warning
+
+ DELETE FROM PS_GPCH_EG_PERSON WHERE  GPCH_EG_DOMAINID= #ptot_domainid AND GPCH_SI_PROV_CD=$ptot_providercd 
+ AND GPCH_RC_PAY_YEAR = #ptot_year AND COMPANY = $ptot_company  AND  EMPLID = $Empl_ID AND EMPL_RCD = #Empl_RCD 
+ AND GPCH_SI_PROV_TYPE='A' and BEGIN_DT= $ReportEndDate and END_DT= $ReportEndDate
+End-SQL
+
+
+Begin-Sql on-error=give_warning
+
+ Insert into PS_GPCH_EG_PERSON (GPCH_EG_DOMAINID,GPCH_RC_PAY_YEAR,COMPANY,GPCH_SI_PROV_TYPE,
+ GPCH_SI_PROV_CD,EMPLID,EMPL_RCD,BEGIN_DT,END_DT,GPCH_IF_VER,GPCH_EG_PRSN_XML) 
+ values (#ptot_domainid,#ptot_year,$ptot_company,$ptot_provtype,$ptot_providercd,$Empl_ID,#Empl_RCD,
+ $ReportEndDate,$ReportEndDate,1,$final_xml)
+
+End-SQL
+
+ ! Begin-Sql on-error=give_warning
+ ! Insert into PS_GPCH_TX_EMA_CMP
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate, N.HIRE_DT, SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),' ', N.PRD_END_DT,  TO_CHAR(N.HIRE_DT,'DD.MM.YYYY') ,SD.DESCR, 'VOR'  
+ !   from PS_GPCH_RP_0001 N [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '11'
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID     = $Empl_ID
+ !   and N.EMPL_RCD   = #Empl_RCD
+ !   and N.PRD_END_DT = $ReportEndDate 
+ !   and N.HIRE_DT between N.PRD_BGN_DT and N.PRD_END_DT
+ !    UNION  
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate, N.PRD_BGN_DT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),' ', N.PRD_END_DT,  N.GPCH_TX_CANTON ,SD.DESCR, 'VOR'
+ !   from PS_GPCH_RP_0001 N, PS_GPCH_RP_0001 O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '12' 
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPL_RCD           = #Empl_RCD
+ !   and N.EMPLID             = O.EMPLID 
+ !   and N.EMPL_RCD           = O.EMPL_RCD
+ !   and N.PRD_END_DT         = $ReportEndDate
+ !   and O.GPCH_AL_CPAY_ENDDT = (select max(O1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 O1 
+ !                               where O.EMPLID = O1.EMPLID and  O1.GPCH_AL_CPAY_ENDDT < N.GPCH_AL_CPAY_ENDDT )
+ !   and O.PRD_END_DT         = (select max(O2.PRD_END_DT) from PS_GPCH_RP_0001 O2
+ !                               WHERE O2.EMPLID = O.EMPLID AND O2.EMPL_RCD = O.EMPL_RCD
+ !                               AND O2.GP_PAYGROUP = O.GP_PAYGROUP
+ !                               AND O2.CAL_RUN_ID = O.CAL_RUN_ID
+ !                               AND O2.RSLT_SEG_NUM = O.RSLT_SEG_NUM)
+ !   and N.GPCH_TX_CANTON <> O.GPCH_TX_CANTON
+ !    UNION
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate, O.PRD_END_DT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),O.MAR_STATUS, N.PRD_END_DT,N.MAR_STATUS,SD.DESCR, 'VOR'
+ !   from PS_GPCH_RP_0001 N, PS_GPCH_RP_0001 O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '21'
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPL_RCD           = #Empl_RCD
+ !   and N.EMPLID             = O.EMPLID 
+ !   and N.EMPL_RCD           = O.EMPL_RCD 
+ !   and N.PRD_END_DT         = $ReportEndDate
+ !   and O.GPCH_AL_CPAY_ENDDT = (select max(O1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 O1 
+ !                               where O.EMPLID = O1.EMPLID and  O1.GPCH_AL_CPAY_ENDDT < N.GPCH_AL_CPAY_ENDDT )
+ !   and O.PRD_END_DT         = (select max(O2.PRD_END_DT) from PS_GPCH_RP_0001 O2
+ !                               WHERE O2.EMPLID = O.EMPLID AND O2.EMPL_RCD = O.EMPL_RCD
+ !                               AND O2.GP_PAYGROUP = O.GP_PAYGROUP
+ !                               AND O2.CAL_RUN_ID = O.CAL_RUN_ID
+ !                               AND O2.RSLT_SEG_NUM = O.RSLT_SEG_NUM)
+ !   and N.MAR_STATUS <> O.MAR_STATUS
+ !    UNION
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate,O.EFFDT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),O.GPCH_TX_WCA, N.EFFDT,  N.GPCH_TX_WCA,  SD.DESCR, 'VOR'
+ !   from PS_GPCH_TX_DEPEND N, PS_GPCH_TX_DEPEND O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '22'
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPL_RCD           = #Empl_RCD
+ !   and N.EMPLID             = O.EMPLID
+ !   and N.EMPL_RCD           = O.EMPL_RCD
+ !   and N.DEPENDENT_BENEF    = O.DEPENDENT_BENEF
+ !   and LAST_DAY(N.EFFDT)    = $ReportEndDate
+ !   and O.EFFDT              = (select max(O1.EFFDT) from PS_GPCH_TX_DEPEND O1 
+ !                                where O.EMPLID = O1.EMPLID and O.EMPL_RCD = O1.EMPL_RCD 
+ !                                and O.DEPENDENT_BENEF    = O1.DEPENDENT_BENEF 
+ !                                and  O1.EFFDT < N.EFFDT ) 
+ !   and O.GPCH_TX_WCA    <> N.GPCH_TX_WCA 
+ !    UNION
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate,O.EFFDT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),O.GPCH_TX_SIDEJOB, N.EFFDT,  N.GPCH_TX_SIDEJOB,SD.DESCR,'VOR'
+ !   from PS_GPCH_TX_DATA N, PS_GPCH_TX_DATA O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '23'
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPL_RCD           = #Empl_RCD
+ !   and N.EMPLID             = O.EMPLID
+ !   and N.EMPL_RCD           = O.EMPL_RCD
+ !   and LAST_DAY(N.EFFDT)    = $ReportEndDate
+ !   and O.EFFDT              = ( select max(O1.EFFDT) from PS_GPCH_TX_DATA O1 where O.EMPLID = O1.EMPLID and O.EMPL_RCD = O1.EMPL_RCD and  O1.EFFDT < N.EFFDT )
+ !   and O.GPCH_TX_SIDEJOB    <> N.GPCH_TX_SIDEJOB  
+ !    UNION
+ !   select N.EMPLID, #Empl_RCD, $ptot_company, $ReportEndDate,O.EFFDT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),substr(O.ADDRESS1,1,8), N.EFFDT,  substr(N.ADDRESS1,1,8),SD.DESCR, 'VOR'
+ !   from PS_ADDRESSES N, PS_ADDRESSES O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '25' 
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPLID             = O.EMPLID
+ !   and N.ADDRESS_TYPE       = O.ADDRESS_TYPE
+ !   and LAST_DAY(N.EFFDT)    = $ReportEndDate
+ !   and O.EFFDT              = ( select max(O1.EFFDT) from PS_ADDRESSES O1 where O.EMPLID = O1.EMPLID and O.ADDRESS_TYPE = O1.ADDRESS_TYPE and  O1.EFFDT < N.EFFDT )
+ !   and N.ADDRESS1          <> O.ADDRESS1 
+ !    UNION
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate,O.PRD_END_DT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),  To_Char(O.GPCH_RP_AMOUNT20,'99'), N.PRD_END_DT,  To_Char(N.GPCH_RP_AMOUNT20,'99'),SD.DESCR, 'VOR'
+ !   from PS_GPCH_RP_0001 N, PS_GPCH_RP_0001 O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '26' 
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPL_RCD           = #Empl_RCD
+ !   and N.EMPLID             = O.EMPLID 
+ !   and N.EMPL_RCD           = O.EMPL_RCD
+ !   and N.PRD_END_DT         = $ReportEndDate
+ !   and O.GPCH_AL_CPAY_ENDDT = (select max(O1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 O1 
+ !                               where O.EMPLID = O1.EMPLID and  O1.GPCH_AL_CPAY_ENDDT < N.GPCH_AL_CPAY_ENDDT )
+ !   and O.PRD_END_DT         = (select max(O2.PRD_END_DT) from PS_GPCH_RP_0001 O2
+ !                               WHERE O2.EMPLID = O.EMPLID AND O2.EMPL_RCD = O.EMPL_RCD
+ !                               AND O2.GP_PAYGROUP = O.GP_PAYGROUP
+ !                               AND O2.CAL_RUN_ID = O.CAL_RUN_ID
+ !                               AND O2.RSLT_SEG_NUM = O.RSLT_SEG_NUM)
+ !   and N.GPCH_RP_AMOUNT20 <> O.GPCH_RP_AMOUNT20
+ !    UNION
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate,O.EFFDT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),O.GPCH_TX_DENOM, N.EFFDT,  N.GPCH_TX_DENOM,SD.DESCR, 'VOR'
+ !   from PS_GPCH_TX_DATA N, PS_GPCH_TX_DATA O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '27' 
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPL_RCD           = #Empl_RCD
+ !   and N.EMPLID             = O.EMPLID
+ !   and N.EMPL_RCD           = O.EMPL_RCD
+ !   and LAST_DAY(N.EFFDT)    = $ReportEndDate
+ !   and O.EFFDT              = ( select max(O1.EFFDT) from PS_GPCH_TX_DATA O1 where O.EMPLID = O1.EMPLID and O.EMPL_RCD = O1.EMPL_RCD and  O1.EFFDT < N.EFFDT )
+ !   and O.GPCH_TX_DENOM    <> N.GPCH_TX_DENOM
+ !    UNION
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate,O.PRD_END_DT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),To_Char(O.FTE *100,'999'), N.PRD_END_DT,  To_Char(N.FTE *100,'999'),SD.DESCR, 'VOR'
+ !   from PS_GPCH_RP_0001 N, PS_GPCH_RP_0001 O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '28' 
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPL_RCD           = #Empl_RCD
+ !   and N.EMPLID             = O.EMPLID
+ !   and N.EMPL_RCD           = O.EMPL_RCD
+ !   and N.PRD_END_DT         = $ReportEndDate
+ !   and O.GPCH_AL_CPAY_ENDDT = (select max(O1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 O1 
+ !                               where O.EMPLID = O1.EMPLID and O1.GPCH_AL_CPAY_ENDDT < N.GPCH_AL_CPAY_ENDDT)
+ !   and O.PRD_END_DT         = (select max(O2.PRD_END_DT) from PS_GPCH_RP_0001 O2
+ !                               WHERE O2.EMPLID = O.EMPLID AND O2.EMPL_RCD = O.EMPL_RCD
+ !                               AND O2.GP_PAYGROUP = O.GP_PAYGROUP
+ !                               AND O2.CAL_RUN_ID = O.CAL_RUN_ID
+ !                               AND O2.RSLT_SEG_NUM = O.RSLT_SEG_NUM)
+ !   and N.FTE <> O.FTE
+ !    UNION
+ !    select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate,N.PRD_END_DT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),   TO_CHAR(N.TERMINATION_DT,'DD.MM.YYYY') , NULL, ' ', SD.DESCR, 'VOR'
+ !    from PS_GPCH_RP_0001 N [$TX_EMA_CMP_lgrec]
+ !    where SD.GPCH_TX_SD_EMA = '31' 
+ !    [$LANGUAGE_CD1]
+ !    and N.EMPLID     = $Empl_ID
+ !    and N.EMPL_RCD   = #Empl_RCD
+ !    and N.PRD_END_DT = $ReportEndDate 
+ !    and N.TERMINATION_DT between N.PRD_BGN_DT and N.PRD_END_DT
+ !     UNION  
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate,N.PRD_BGN_DT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),' ', N.PRD_END_DT,  N.VISA_PERMIT_TYPE ,SD.DESCR, 'VOR'
+ !   from PS_GPCH_RP_0001 N, PS_GPCH_RP_0001 O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '32' 
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPL_RCD           = #Empl_RCD
+ !   and N.EMPLID             = O.EMPLID
+ !   and N.EMPL_RCD           = O.EMPL_RCD
+ !   and N.PRD_END_DT         = $ReportEndDate
+ !   and O.GPCH_AL_CPAY_ENDDT = ( select max(O1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 O1 
+ !                                where O.EMPLID = O1.EMPLID and  O1.GPCH_AL_CPAY_ENDDT < N.GPCH_AL_CPAY_ENDDT )
+ !   and O.PRD_END_DT         = (select max(O2.PRD_END_DT) from PS_GPCH_RP_0001 O2
+ !                               WHERE O2.EMPLID = O.EMPLID AND O2.EMPL_RCD = O.EMPL_RCD
+ !                               AND O2.GP_PAYGROUP = O.GP_PAYGROUP
+ !                               AND O2.CAL_RUN_ID = O.CAL_RUN_ID
+ !                               AND O2.RSLT_SEG_NUM = O.RSLT_SEG_NUM)
+ !   and N.VISA_PERMIT_TYPE = ' ' and O.VISA_PERMIT_TYPE <> N.VISA_PERMIT_TYPE
+ !    UNION
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate,N.PRD_BGN_DT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),' ', N.PRD_END_DT,  N.VISA_PERMIT_TYPE ,SD.DESCR, 'VOR'
+ !   from PS_GPCH_RP_0001 N, PS_GPCH_RP_0001 O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '33' 
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPL_RCD           = #Empl_RCD
+ !   and N.EMPLID             = O.EMPLID
+ !   and N.EMPL_RCD           = O.EMPL_RCD
+ !   and N.PRD_END_DT         = $ReportEndDate
+ !   and O.GPCH_AL_CPAY_ENDDT = ( select max(O1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 O1 
+ !                                where O.EMPLID = O1.EMPLID and  O1.GPCH_AL_CPAY_ENDDT < N.GPCH_AL_CPAY_ENDDT )
+ !   and O.PRD_END_DT         = (select max(O2.PRD_END_DT) from PS_GPCH_RP_0001 O2
+ !                               WHERE O2.EMPLID = O.EMPLID AND O2.EMPL_RCD = O.EMPL_RCD
+ !                               AND O2.GP_PAYGROUP = O.GP_PAYGROUP
+ !                               AND O2.CAL_RUN_ID = O.CAL_RUN_ID
+ !                               AND O2.RSLT_SEG_NUM = O.RSLT_SEG_NUM)
+ !   and N.VISA_PERMIT_TYPE = 'C' and O.VISA_PERMIT_TYPE <> N.VISA_PERMIT_TYPE
+ !    UNION
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate,O.EFFDT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),O.GPCH_TX_SIDEJOB, N.EFFDT,  N.GPCH_TX_SIDEJOB ,SD.DESCR, 'VOR'
+ !   from PS_GPCH_TX_DATA N, PS_GPCH_TX_DATA O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '34' 
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPL_RCD           = #Empl_RCD
+ !   and N.EMPLID             = O.EMPLID
+ !   and N.EMPL_RCD           = O.EMPL_RCD
+ !   and LAST_DAY(N.EFFDT)    = $ReportEndDate
+ !   and O.EFFDT              = ( select max(O1.EFFDT) from PS_GPCH_TX_DATA O1 where O.EMPLID = O1.EMPLID and O.EMPL_RCD = O1.EMPL_RCD and  O1.EFFDT < N.EFFDT )
+ !   and O.GPCH_TX_SIDEJOB    <> N.GPCH_TX_SIDEJOB    
+ !    UNION
+ !   select N.EMPLID, N.EMPL_RCD, $ptot_company, $ReportEndDate,O.PRD_END_DT,SD.GPCH_TX_SD_EMA,substr(SD.DESCR,1,1),O.GPCH_TX_CANTON, NULL,
+ !   ' ',  SD.DESCR, 'VOR'
+ !   from PS_GPCH_RP_0001 N, PS_GPCH_RP_0001 O [$TX_EMA_CMP_lgrec]
+ !   where SD.GPCH_TX_SD_EMA = '35' 
+ !   [$LANGUAGE_CD1]
+ !   and N.EMPLID             = $Empl_ID
+ !   and N.EMPL_RCD           = #Empl_RCD
+ !   and N.EMPLID             = O.EMPLID
+ !   and N.EMPL_RCD           = O.EMPL_RCD
+ !   and N.PRD_END_DT         = $ReportEndDate
+ !   and O.GPCH_AL_CPAY_ENDDT = (select max(O1.GPCH_AL_CPAY_ENDDT) from PS_GPCH_RP_0001 O1 
+ !                               where O.EMPLID = O1.EMPLID and  O1.GPCH_AL_CPAY_ENDDT < N.GPCH_AL_CPAY_ENDDT )
+ !   and O.PRD_END_DT         = (select max(O2.PRD_END_DT) from PS_GPCH_RP_0001 O2
+ !                               WHERE O2.EMPLID = O.EMPLID AND O2.EMPL_RCD = O.EMPL_RCD
+ !                               AND O2.GP_PAYGROUP = O.GP_PAYGROUP
+ !                               AND O2.CAL_RUN_ID = O.CAL_RUN_ID
+ !                               AND O2.RSLT_SEG_NUM = O.RSLT_SEG_NUM)
+ !   and O.GPCH_TX_CANTON    <> N.GPCH_TX_CANTON
+ ! End-Sql   
+ ! #debug show 'Out Insert_Employee_Data_TX'
+End-procedure Insert_Employee_Data_TX
+
+!***********************************************************************
+!31363384  Begin-Procedure Check_lang_cd
+!31363384  #debug show 'In Check_lang_cd'
+!31363384   let $TX_SDR_LNG = ''
+!31363384  begin-SELECT
+!31363384  SDLN.LANGUAGE_CD
+!31363384    let $TX_SDR_LNG = rtrim(ltrim(&SDLN.LANGUAGE_CD,' '),' ')
+!31363384  FROM  PS_GPCH_TX_SDR_LNG SDLN
+!31363384  WHERE SDLN.LANGUAGE_CD = $language_cd
+!31363384  end-SELECT
+!31363384  
+!31363384  #debug show 'Out Check_lang_cd'
+!31363384  End-procedure Check_lang_cd
+
+!***********************************************************************
+!31363384  Begin-Procedure Update_EMA_CMP_Action
+!31363384  #debug show 'Update_EMA_CMP_Action'
+!31363384   
+!31363384  begin-SELECT
+!31363384  CMP.EMPLID
+!31363384  CMP.EMPL_RCD
+!31363384  CMP.COMPANY
+!31363384  CMP.GPCH_AL_CPAY_ENDDT
+!31363384  CMP.GPCH_TX_SD_EMA
+!31363384  CMP.BGN_DT
+!31363384  CMP.END_DT 
+!31363384     let $Cmp_emplid = &CMP.EMPLID
+!31363384     let $Cmp_emplrcd = &CMP.EMPL_RCD
+!31363384     let $Cmp_company = &CMP.COMPANY
+!31363384     let $Cmp_cpy_enddt = &CMP.GPCH_AL_CPAY_ENDDT
+!31363384     let $Cmp_tx_ema =  &CMP.GPCH_TX_SD_EMA
+!31363384     let $Cmp_bgn_dt = &CMP.BGN_DT
+!31363384     let $Cmp_end_dt = &CMP.END_DT   
+!31363384        Do Check_complete_entry
+!31363384      If $Ema_emplid <> ''
+!31363384        Do Update_complete_entry
+!31363384      else
+!31363384        Do Update_proposed_entry
+!31363384      end-if
+!31363384  FROM PS_GPCH_TX_EMA_CMP CMP 
+!31363384  WHERE CMP.GPCH_AL_CPAY_ENDDT = $ReportEndDate
+!31363384  end-SELECT
+!31363384  
+!31363384  #debug show 'Update_EMA_CMP_Action'
+!31363384  End-procedure Update_EMA_CMP_Action
+!31363384  
+!***********************************************************************
+!31363384  Begin-Procedure Check_complete_entry
+!31363384  #debug show 'Check_complete_entry'
+!31363384    let $Ema_emplid = ''
+!31363384  begin-SELECT
+!31363384  EMA.EMPLID
+!31363384  
+!31363384     let $Ema_emplid = &EMA.EMPLID
+!31363384       
+!31363384  FROM PS_GPCH_TX_EMA EMA 
+!31363384  WHERE EMA.EMPLID = $Cmp_emplid
+!31363384  AND EMA.EMPL_RCD = $Cmp_emplrcd
+!31363384  AND EMA.GPCH_AL_CPAY_ENDDT = $ReportEndDate
+!31363384  AND EMA.GPCH_TX_SD_EMA = $Cmp_tx_ema
+!31363384  end-SELECT
+!31363384  
+!31363384  #debug show 'Check_complete_entry'
+!31363384  End-procedure Check_complete_entry
+
+!*****************************************************
+!31363384  Begin-Procedure Update_complete_entry
+!31363384  Begin-Sql on-error=give_warning
+!31363384  UPDATE PS_GPCH_TX_EMA_CMP CMP1 SET CMP1.ACTION = 'CMP' 
+!31363384  WHERE CMP1.EMPLID = $Cmp_emplid
+!31363384  AND CMP1.EMPL_RCD = $Cmp_emplrcd
+!31363384  AND CMP1.COMPANY = $Cmp_company 
+!31363384  AND CMP1.GPCH_AL_CPAY_ENDDT=$ReportEndDate
+!31363384  AND CMP1.GPCH_TX_SD_EMA = $Cmp_tx_ema
+!31363384  AND CMP1.BGN_DT = $Cmp_bgn_dt
+!31363384  End-Sql
+!31363384  #debug show 'Update_complete_entry'
+!31363384  End-procedure Update_complete_entry
+
+!*****************************************************
+!31363384  Begin-Procedure Update_proposed_entry
+!31363384  Begin-Sql on-error=give_warning
+!31363384  UPDATE PS_GPCH_TX_EMA_CMP CMP1 SET CMP1.ACTION = 'PRO' 
+!31363384  WHERE CMP1.EMPLID = $Cmp_emplid
+!31363384  AND CMP1.EMPL_RCD = $Cmp_emplrcd
+!31363384  AND CMP1.COMPANY = $Cmp_company 
+!31363384  AND CMP1.GPCH_AL_CPAY_ENDDT=$ReportEndDate
+!31363384  AND CMP1.GPCH_TX_SD_EMA = $Cmp_tx_ema
+!31363384  AND CMP1.BGN_DT = $Cmp_bgn_dt
+!31363384  End-Sql
+!31363384  #debug show 'Update_proposed_entry'
+!31363384  End-procedure Update_proposed_entry
+
+!***********************************************************************
+!31363384  Begin-Procedure Update_EMA_MAN_Action
+!31363384  #debug show 'Update_EMA_MAN_Action'
+!31363384     let $Ema1_emplid = ''
+!31363384     let #Ema1_emplrcd = ''
+!31363384     let $Ema1_effdt = ''
+!31363384     let $Ema1_tx_ema =  ''
+!31363384     let $Ema1_cpy_enddt = ''
+!31363384     let $Ema1_bgn_dt = ''
+!31363384     let $Ema1_end_dt = ''
+!31363384   
+!31363384  begin-SELECT
+!31363384  EMA1.EMPLID
+!31363384  EMA1.EMPL_RCD
+!31363384  EMA1.EFFDT
+!31363384  EMA1.GPCH_TX_SD_EMA
+!31363384  EMA1.GPCH_AL_CPAY_ENDDT
+!31363384  EMA1.BEGIN_DT
+!31363384  EMA1.END_DT
+!31363384     
+!31363384     let $Ema1_emplid = &EMA1.EMPLID
+!31363384     let $Ema1_emplrcd = &EMA1.EMPL_RCD
+!31363384     let $Ema1_effdt = &EMA1.EFFDT
+!31363384     let $Ema1_tx_ema =  &EMA1.GPCH_TX_SD_EMA
+!31363384     let $Ema1_cpy_enddt = &EMA1.GPCH_AL_CPAY_ENDDT
+!31363384     let $Ema1_bgn_dt = &EMA1.BEGIN_DT
+!31363384     let $Ema1_end_dt = &EMA1.END_DT
+!31363384        Do Check_EMA_CMP_entry
+!31363384      !If $Cmp2_emplid = ''
+!31363384      !  Do Insert_manual_entry
+!31363384      !end-if
+!31363384  FROM PS_GPCH_TX_EMA EMA1 
+!31363384  WHERE EMA1.GPCH_AL_CPAY_ENDDT = $ReportEndDate
+!31363384  end-SELECT
+!31363384       Do Get_manual_entry
+!31363384  #debug show 'Update_EMA_MAN_Action'
+!31363384  End-procedure Update_EMA_MAN_Action
+
+!***********************************************************************
+!31363384  Begin-Procedure Check_EMA_CMP_entry
+!31363384  #debug show 'Check_EMA_CMP_entry'
+!31363384    let $Cmp2_emplid = ''
+!31363384  begin-SELECT
+!31363384  CMP2.EMPLID
+!31363384   
+!31363384     let $Cmp2_emplid = &CMP.EMPLID     
+!31363384       
+!31363384  FROM PS_GPCH_TX_EMA_CMP CMP2 
+!31363384  WHERE CMP2.EMPLID = $Ema1_emplid
+!31363384  AND CMP2.EMPL_RCD = #Ema1_emplrcd
+!31363384  AND CMP2.GPCH_AL_CPAY_ENDDT = $ReportEndDate
+!31363384  AND CMP2.GPCH_TX_SD_EMA = $Ema1_tx_ema
+!31363384  end-SELECT
+!31363384  
+!31363384  #debug show 'Update_EMA_CMP_Action'
+!31363384  End-procedure Update_EMA_CMP_Action
+
+!*****************************************************
+!Begin-Procedure Insert_manual_entry 
+!Begin-Sql on-error=give_warning
+!Insert into PS_GPCH_TX_EMA_CMP VALUES ($Ema1_emplid,#Ema1_emplrcd,$ptot_company,$Ema1_cpy_enddt,$Ema1_bgn_dt,$Ema1_tx_ema,' ',' ',$Ema1_end_dt,' ',' ','MAN')
+!End-Sql
+!#debug show 'Insert_manual_entry' 
+!End-procedure Insert_manual_entry
+
+!*****************************************************
+!31363384  Begin-Procedure Get_manual_entry
+!31363384     let $Cmp3_emplid = ''
+!31363384     let $Cmp3_emplrcd = ''
+!31363384     let $Cmp3_company = ''
+!31363384     let $Cmp3_cpy_enddt = ''
+!31363384     let $Cmp3_tx_ema =  ''
+!31363384     let $Cmp3_bgn_dt = ''
+!31363384  begin-SELECT
+!31363384  CMP3.EMPLID
+!31363384  CMP3.EMPL_RCD
+!31363384  CMP3.COMPANY
+!31363384  CMP3.GPCH_AL_CPAY_ENDDT
+!31363384  CMP3.GPCH_TX_SD_EMA
+!31363384  CMP3.BGN_DT 
+!31363384     let $Cmp3_emplid = &CMP3.EMPLID
+!31363384     let $Cmp3_emplrcd = &CMP3.EMPL_RCD
+!31363384     let $Cmp3_company = &CMP3.COMPANY
+!31363384     let $Cmp3_cpy_enddt = &CMP3.GPCH_AL_CPAY_ENDDT
+!31363384     let $Cmp3_tx_ema =  &CMP3.GPCH_TX_SD_EMA
+!31363384     let $Cmp3_bgn_dt = &CMP3.BGN_DT   
+!31363384     Do Update_manual_entry_descr
+!31363384     
+!31363384  FROM PS_GPCH_TX_EMA_CMP CMP3 
+!31363384  WHERE CMP3.GPCH_AL_CPAY_ENDDT = $ReportEndDate
+!31363384  AND CMP3.ACTION = 'MAN'
+!31363384  end-SELECT
+!31363384  #debug show 'Get_manual_entry'
+!31363384  End-procedure Get_manual_entry
+!*****************************************************
+!31363384  Begin-Procedure Update_manual_entry_descr
+!31363384  Begin-Sql on-error=give_warning
+!31363384  UPDATE PS_GPCH_TX_EMA_CMP CMP4 SET CMP4.GPCH_RC_DESCR1 = (SELECT substr(SDRS.DESCR,1,1) 
+!31363384  FROM PS_GPCH_TX_SDREASO SDRS WHERE SDRS.GPCH_TX_SD_EMA = $Cmp3_tx_ema),
+!31363384  CMP4.GPCH_RC_DESCR2 = (SELECT SDRS1.DESCR FROM PS_GPCH_TX_SDREASO SDRS1 
+!31363384  WHERE SDRS1.GPCH_TX_SD_EMA = $Cmp3_tx_ema) 
+!31363384  WHERE CMP4.EMPLID = $Cmp3_emplid
+!31363384  AND CMP4.EMPL_RCD = $Cmp3_emplrcd
+!31363384  AND CMP4.COMPANY = $Cmp3_company 
+!31363384  AND CMP4.GPCH_AL_CPAY_ENDDT=$ReportEndDate
+!31363384  AND CMP4.GPCH_TX_SD_EMA = $Cmp3_tx_ema
+!31363384  AND CMP4.BGN_DT = $Cmp3_bgn_dt
+!31363384  End-Sql
+!31363384  #debug show 'Update_manual_entry_descr'
+!31363384  End-procedure Update_manual_entry_descr
+!*****************************************************
+begin-procedure Get_End_Mnth($Dte1,:$Dte2)
+ if rtrim($Dte1,' ') <> ''
+  do ConvertToComponents($Dte1,$tmp1_yy,$tmp1_mm,$tmp1_dd)
+  let  #tmp1_mm  = to_number($tmp1_mm)
+  let  #tmp1_yy  = to_number($tmp1_yy)
+
+  if #tmp1_mm = 2
+     move 28 to #MonthDays1
+     if (((mod(#tmp1_yy,4) = 0) and (mod(#tmp1_yy,100) != 0)) or
+        (mod(#tmp1_yy,400) = 0))
+         add 1 to #MonthDays1
+     end-if
+   else
+     if #tmp1_mm = 4 or #tmp1_mm = 6 or #tmp1_mm = 9 or #tmp1_mm = 11
+         move 30 to #MonthDays1
+     else
+         move 31 to #MonthDays1
+     end-if
+   end-if
+
+   let $MonthDays1 = to_char(#MonthDays1)
+   let $E_DT_tmp1 = $tmp1_yy  || $tmp1_mm  || $MonthDays1 || '0000'
+   do Format-DateTime($E_DT_tmp1,$Dte2, {DEFCMP},'','native')
+ end-if
+end-procedure
+!*************************************************************************************
+begin-procedure Get_Beg_Mnth($Dte1,:$Dte2)
+ if rtrim($Dte1,' ') <> ''
+  do ConvertToComponents($Dte1,$tmp1_yy,$tmp1_mm,$tpm1_dd)
+
+  let $B_DT_tmp1 = $tmp1_yy  || $tmp1_mm  || '01' || '0000'
+  do Format-DateTime($B_DT_tmp1,$Dte2, {DEFCMP},'','native')
+ end-if
+end-procedure
+
+!***************************************************************************************
+Begin-Procedure Get_Canton_Name  !Get Canton name
+#Debug Show '-> Get_Canton_Name '
+
+#Debug Show '<- Get_Canton_Name '
+End-Procedure Get_Canton_Name
+!***********************************************************************
+Begin-Procedure Get_Village_Name  !Get Canton name
+#Debug Show '-> Get_Village_Name '
+
+#Debug Show '<- Get_Village_Name '
+End-Procedure Get_Village_Name
+!***********************************************************************
+begin-procedure Get_Company_Name
+#DEBUG show '-> Get_Company_Name   ' $Ctl_Company ' , ' $BASE_LANG ' , ' $language_cd  ' , ' $Tax_Language
+
+
+#DEBUG show '<- Get_Company_Name   ' $Cpdescr
+end-procedure Get_Company_Name
+!************************************************************************************************
+Begin-procedure Get_English_Strings($ReportID)
+#Debug show 'Get_English_Strings -> '  $ReportID
+
+#Debug show 'Get_English_Strings <- ' #_str_cnt
+End-procedure Get_English_Strings
+!****************************************************************************
+Begin-procedure Get_German_Strings($ReportID)
+#Debug show 'Get_German_Strings -> '  $ReportID
+
+#Debug show 'Get_German_Strings <- ' #_str_cnt
+End-procedure Get_German_Strings
+!****************************************************************************
+Begin-procedure Get_Italian_Strings($ReportID)
+#Debug show 'Get_Italian_Strings -> '  $ReportID
+
+#Debug show 'Get_Italian_Strings <- ' #_str_cnt
+End-procedure Get_Italian_Strings
+!****************************************************************************
+Begin-procedure Get_French_Strings($ReportID)
+#Debug show 'Get_French_Strings -> '  $ReportID
+
+#Debug show 'Get_French_Strings <- ' #_str_cnt
+End-procedure Get_French_Strings
+
+!****************************************************************************
+Begin-procedure Get_SourceTaxMonthlyCalculations
+#Debug show 'Get_SourceTaxMonthlyCalculations -> '  $ReportID
+
+! Source Tax Calculation details
+
+let $MontlyCalculationsXML = ''
+
+let $MaxVer_Criteria  = '  AND ADJ.EMPLID = SSS.EMPLID and ADJ.EMPL_RCD = SSS.EMPL_RCD and ADJ.CAL_RUN_ID = SSS.CAL_RUN_ID ' ||
+  ' and ADJ.CAL_ID = SSS.CAL_ID and ADJ.GP_PAYGROUP = SSS.GP_PAYGROUP AND ADJ.ORIG_CAL_RUN_ID = SSS.ORIG_CAL_RUN_ID ' ||
+  ' and ADJ.RSLT_SEG_NUM  = SSS.RSLT_SEG_NUM AND SSS.RSLT_VER_NUM = ( select max(S1.RSLT_VER_NUM) ' ||
+  ' from PS_GP_PYE_SEG_STAT S1 where SSS.EMPLID = S1.EMPLID and SSS.EMPL_RCD = S1.EMPL_RCD and ' ||
+  ' SSS.GP_PAYGROUP = S1.GP_PAYGROUP and SSS.CAL_ID = S1.CAL_ID and SSS.RSLT_SEG_NUM = S1.RSLT_SEG_NUM ) '
+
+
+Begin-Select on-error=give_warning
+ADJ.GPCH_TX_CANTON
+ADJ.GPCH_TX_TRF_CD
+ADJ.SEG_BGN_DT
+ADJ.SEG_END_DT
+ADJ.STATUS
+ADJ.GPCH_RP_AMOUNT1
+ADJ.GPCH_RP_AMOUNT2
+ADJ.GPCH_RP_AMOUNT3
+ADJ.GPCH_RP_AMOUNT4
+ADJ.GPCH_RP_AMOUNT5
+ADJ.GPCH_RP_AMOUNT6
+
+      let $FStatus = &ADJ.STATUS
+      let $FPeriodFrom = &ADJ.SEG_BGN_DT
+      let $FPeriodTo = &ADJ.SEG_END_DT 
+      let $TaxSourceCode = &ADJ.GPCH_TX_TRF_CD 
+      let $FCanton = &ADJ.GPCH_TX_CANTON 
+      
+      
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<GPCH_RP_TX_ADJ>'
+  
+      do ConvertToComponents($FPeriodFrom,$yyyy_tmp,$mm_tmp,$dd_tmp)
+      let $FPeriodFrom      = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp
+  
+      do ConvertToComponents($FPeriodTo,$yyyy_tmp,$mm_tmp,$dd_tmp)
+      let $FPeriodTo      = $yyyy_tmp || '-' || $mm_tmp || '-' || $dd_tmp
+
+      do Format-Number(&ADJ.GPCH_RP_AMOUNT1,$MonthlyEarnings,'999999.99')
+      do Format-Number(&ADJ.GPCH_RP_AMOUNT2,$VariableEarnings,'999999.99')
+      do Format-Number(&ADJ.GPCH_RP_AMOUNT3,$EarningsYTD,'999999999.99')
+      do Format-Number(&ADJ.GPCH_RP_AMOUNT4,$Lookup,'999999.99')
+      do Format-Number(&ADJ.GPCH_RP_AMOUNT5,$TaxPct,'999.99')
+      do Format-Number(&ADJ.GPCH_RP_AMOUNT6,$TaxContribution,'999999.99')
+
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<FPeriodFrom>' || $FPeriodFrom || '</FPeriodFrom>'
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<FPeriodTo>' || $FPeriodTo || '</FPeriodTo>'
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<FCanton>' || $FCanton || '</FCanton>'
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<FTaxAtSourceCode>' || $TaxSourceCode || '</FTaxAtSourceCode>'
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<FStatus>' || $FStatus || '</FStatus>'
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<FTaxableEarning>' || ltrim($MonthlyEarnings, ' ') || '</FTaxableEarning>'
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<FTaxableAperiodic>' || ltrim($VariableEarnings, ' ') || '</FTaxableAperiodic>'
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<FTaxableEarningCumulative>' || ltrim($EarningsYTD, ' ') || '</FTaxableEarningCumulative>'
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<FAscertainedTaxableEarning>' || ltrim($Lookup, ' ') || '</FAscertainedTaxableEarning>'
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<FLastTax>' || ltrim($TaxPct, ' ') || '</FLastTax>'
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '<FTaxAtSource>' || ltrim($TaxContribution, ' ') || '</FTaxAtSource>'
+
+      Let $MontlyCalculationsXML = $MontlyCalculationsXML || '</GPCH_RP_TX_ADJ>'
+
+From  PS_GPCH_RP_TX_ADJ ADJ, PS_GP_PYE_SEG_STAT SSS
+Where ADJ.EMPLID = $EMPLID_Old
+      AND ADJ.EMPL_RCD = #Empl_RCD 
+      AND EXISTS ( SELECT 'X'
+           FROM PS_GPCHTXX20_TMP T20
+           where T20.PROCESS_INSTANCE = $prcs_process_instance
+             AND ADJ.EMPLID = T20.EMPLID
+             AND ADJ.EMPL_RCD = T20.EMPL_RCD
+             AND ADJ.GPCH_TX_CANTON = T20.GPCH_TX_CANTON
+             AND ADJ.SEG_BGN_DT = T20.SEG_BGN_DT
+             AND ADJ.SEG_END_DT = T20.SEG_END_DT )
+
+      [$MaxVer_Criteria]
+      
+End-Select
+
+   if $MontlyCalculationsXML <> ''
+       let $final_xml = $final_xml || '  <TaxAtSourceMonthlyValues4YearlyReport>' || $MontlyCalculationsXML || '</TaxAtSourceMonthlyValues4YearlyReport> '
+   end-if
+
+#Debug show 'Get_SourceTaxMonthlyCalculations <- ' #_str_cnt
+End-procedure Get_SourceTaxMonthlyCalculations
+!*************************************************************************************
+#include 'gpchut01.sqc'
+#include 'gpchut02.sqc'
+#include 'gpchut04.sqc'  !get company informations
+#include 'gpchut06.sqc'  !get run control parameter values
+#include 'gpchut07.sqc'  !get Log
+#include 'gpchut11.sqc'  !get Tax and Fak Values
+!FMB 20120530 #include 'gpchtx02.sqc'  !get Report Data
+#include 'curdttim.sqc'  !get-current-datetime procedure
+#include 'readxlat.sqc'  !read-translate-table procedure
+#include 'datetime.sqc'  !routines for date and time formatting
+#include 'validdt.sqc'   !validate date routine
+#include 'number.sqc'    !routines to format numbers
+#include 'stdapi.sqc'    !routines to update run status
+#include 'datemath.sqc'  !function for date-calculation
+#include 'sqrtrans.sqc'  !sqr strings table procedures
+!FMB 20120530 #include 'gpchtx1s.sqc'    ! Get Strings Values for GPCHTX01
+!FMB 20120530 #include 'gpchtx2s.sqc'    ! Get Strings Values for GPCHTX02
+!FMB 20120530 #include 'gpchglbs.sqc'    ! Get Strings Values for GPCHGLOB

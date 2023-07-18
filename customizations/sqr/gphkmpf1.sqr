@@ -1,0 +1,2021 @@
+!***********************************************************************
+!  GPHKMPF1: MPF Remittance Statement                                  *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2014, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2014/10/14:20:14:49                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  111                                                 !
+!                                                                      *
+!***********************************************************************
+!  Modification History:                                               *
+!                                                                      *
+!  Date         Incident                                               *
+! ----------    -----------                                            *
+! DD/MM/YYYY                                                           *
+! 1536761001    Changes made to display Grand-Total seperately for each*
+! 21/07/2006    section - New employees and Existing employees.        *
+!                                                                      *
+! 1538513001   Two new columns named Last emplyment Date and           *
+! 21/07/2006   Term Code in Existing Employee section was included to  *
+!              capture termination details of the employee.            *
+! 21/12/2006   A new section "Additional Information for Terminated    *
+!              Employees Section" has been added.                      *
+!                                                                      *
+!***********************************************************************
+#Include 'setenv.sqc'  !Set environment
+
+#define Quote ''''
+
+begin-setup
+#include 'setupdb.sqc'
+  page-size 60 198
+  declare printer
+      type          = HPLASERJET
+      orientation   = LANDSCAPE
+      font          = 5
+      point-size    = 8
+      LINES-INCH    = 5.9
+
+   declare-variable
+      date    $Prcs_CompStartDt
+      date    $TermCompDate
+      date    $HirDate
+end-declare
+
+end-setup
+
+begin-report
+  Let $OutputGenerated = 'N'
+
+  do Init-DateTime
+  do Init-Number
+  do Stdapi-Init
+
+  do Select-Parameters
+  Do Get-Schemes
+  do Stdapi-Term
+end-Report
+!
+!*************************************
+! Get-Schemes                        *
+! Process Each Recipients            *
+!*************************************
+Begin-Procedure Get-Schemes
+BEGIN-SELECT
+A.RECIPIENT_ID
+A.GPHK_MPF_REG_NO
+A1.DESCR
+
+    Let $Recipient  = &A.RECIPIENT_ID
+    Let $MPF_RegNo  = &A.GPHK_MPF_REG_NO
+    Let $RecpntName = &A1.DESCR
+
+    Do Get-Pay-Entity-List
+
+   FROM PS_GPHK_RECPNT_SBL A, PS_RECIPIENT A1
+  WHERE A1.RECIPIENT_ID = A.RECIPIENT_ID
+    AND A.GPHK_MPF_REG_NO <> ' '
+ORDER BY A.RECIPIENT_ID
+END-SELECT
+End-Procedure
+!
+!*************************************
+! Get-Pay-Entity-List                *
+! Process Pay Entity List Attached   *
+! Recipient                          *
+!*************************************
+Begin-Procedure Get-Pay-Entity-List
+BEGIN-SELECT
+B.PAY_ENTITY
+B.GPHK_MPF_PRTC_NO
+B.CONTACT_ID
+B.GPHK_CONTACTPHONE
+
+
+     Let $PayEntity = &B.PAY_ENTITY
+     Let $ContactID = &B.CONTACT_ID
+     Let $CntctPhone= &B.GPHK_CONTACTPHONE
+     Let $MPFPrtcnNo= &B.GPHK_MPF_PRTC_NO
+
+
+     Let $NewEmpl_Found   = 'N'
+     Let $ExistEmpl_Found = 'N'
+     let $TermEmpl_Found  = 'N'
+
+     Let $EE_PRN_StartDt = ''
+     Let $EE_PRN_EndDt = ''
+
+     Let #Sum_A = 0
+     Let #Sum_B = 0
+     Let #Sum_C = 0
+     Let #Sum_D = 0
+     Let #Sum_E = 0
+     Let #Sum_F = 0
+     Let #Temp_A = 0
+     Let #Temp_B = 0
+     Let #Temp_C = 0
+     Let #Temp_D = 0
+     Let #Temp_E = 0
+     Let #Temp_F = 0
+
+     Do Get-Contactname
+     Do Identify-New-Employees
+     if $NewEmpl_Found   = 'Y'
+      Do Print-Section-Total
+     End-if
+
+     Do Identify-Existing-Employees
+     if $ExistEmpl_Found = 'Y'
+      Do Print-Section-Total
+     End-if
+
+     Do Identify-Empl-Termination
+     if $TermEmpl_Found = 'Y'
+      Let $EmpTermSecCal = '1'
+      Do Print-Section-Total
+     End-if
+
+
+     if $NewEmpl_Found   = 'Y' or $ExistEmpl_Found = 'Y' or $TermEmpl_Found = 'Y'
+        Do Print-Page-Bottom
+        new-page
+        let #LC = 1
+     else
+        Do Get-PayEntity-Details
+        Do Print-No-Data-Message
+        Do Print-NewEmpl-ColHeading
+        Do Print-Page-Bottom
+        new-page
+     End-if
+
+   FROM PS_GPHK_RCP_PYNT_S B
+   WHERE B.RECIPIENT_ID = $Recipient
+
+End-SELECT
+End-Procedure
+!
+
+
+!*************************************
+! Get-ContactName    for each        *
+! for each Recipient                 *
+!*************************************
+Begin-Procedure Get-Contactname
+BEGIN-SELECT
+P.NAME
+      Let $ContactName = ''
+      Let $ContactName = &P.NAME
+   FROM PS_GPHK_RCP_PYNT_S B1,
+   PS_PERSONAL_DT_FST P
+   WHERE B1.RECIPIENT_ID = $Recipient
+   AND B1.PAY_ENTITY = $PayEntity
+   AND B1.CONTACT_ID = P.EMPLID
+End-SELECT
+End-Procedure
+
+Begin-Procedure Print-No-Data-Message
+   if $OutputGenerated = 'Y'
+      !new-page
+   end-if
+   Let #LC = 1
+   Print 'Name of Scheme'   (#LC,1)   BOLD
+   Print ':'                (#LC,25)  BOLD
+   Print $Recipient         (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'Scheme Registration No.' (#LC,1)  BOLD
+   Print ':'                       (#LC,25) BOLD
+   Print $MPF_RegNo                (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'MANDATORY PROVIDENT FUND SCHEMES ORDINANCE (CAP.485)' (#LC,60) BOLD
+
+   Let #LC = #LC + 1
+   Print 'REMITTANCE STATEMENT' (#LC,85) BOLD
+    Let #LC = #LC + 1
+   Print 'Name of Employer' (#LC,1)  BOLD
+   Print ':'                (#LC,25) BOLD
+   Print $PayEntityName     (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'Name of Contact Person' (#LC,1) BOLD
+   Print ':'                      (#LC,25) BOLD
+   Print $ContactName             (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'Address'          (#LC,1) BOLD
+   Print ':'                (#LC,25) BOLD
+   Print $PE_Address        (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'Telephone No.'    (#LC,1) BOLD
+   Print ':'                (#LC,25) BOLD
+   Print $CntctPhone        (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'Employer Participation No.' (#LC,1)  BOLD
+   Print ':'                          (#LC,25) BOLD
+   Print $MPFPrtcnNo                  (#LC,30)
+
+   Print 'Contribution for the Period from '  (#LC,55) BOLD
+   Print $Prn_FromDate                   (#LC,90)
+
+   Print 'To'                         (#LC,102) BOLD
+   Print $Prn_ToDate                      (#LC,106)
+   Let #LC = #LC + 2
+
+
+End-Procedure
+!
+!*************************************
+! Identify-New-Employees             *
+! Identify New Employee Details      *
+!*************************************
+Begin-Procedure Identify-New-Employees
+
+   Let $FirstNewEmployee = 'Y'
+   Let #SrNo = 1
+   let $PrcsID = 'NEW'
+
+BEGIN-SELECT DISTINCT
+TC.EMPLID
+TC.GPHK_PERIOD_TYPE
+TCP.NAME
+
+   Let $Emplid   = &TC.EMPLID
+   Let $EmplName = &TCP.NAME
+
+   Let $NewEmpl_Found   = 'Y'
+   Do Get-EE-EmplDate
+
+   Let $ICType = 'ID_NO'
+   Do Get-EE-ICID-No
+
+   if rtrim($EE_IdNo,' ') = ''
+      Do Get-EE-MPF-NO
+   else
+      Let $EE_IdNo = edit($EE_IdNo,'xxxxxxxx(x)')
+   End-if
+
+   Let $EE_Data_Printed = 'N'
+   Do Get-NE-Dates
+
+   if $EE_Data_Printed = 'Y'
+
+     LET #LC = #LC + 1
+
+     graphic (#LC,77,80) box 1 0 8
+     Print 'Sub-Total:'     (#LC,77) BOLD
+
+     Print #Tot_A (#LC,88) edit '99,999.99'
+     Print #Tot_B (#LC,100) edit '99,999.99'
+     Print #Tot_C (#LC,112) edit '99,999.99'
+     Print #Tot_D (#LC,124) edit '99,999.99'
+     Print #Tot_E (#LC,136) edit '99,999.99'
+     Print #Tot_F (#LC,148) edit '99,999.99'
+
+     let #Temp_A = round(#Tot_A, 2)
+     let #Temp_B = round(#Tot_B, 2)
+     let #Temp_C = round(#Tot_C, 2)
+     let #Temp_D = round(#Tot_D, 2)
+     let #Temp_E = round(#Tot_E, 2)
+     let #Temp_F = round(#Tot_F, 2)
+
+
+    Let #Sum_A = #Sum_A + #Temp_A
+    Let #Sum_B = #Sum_B + #Temp_B
+    Let #Sum_C = #Sum_C + #Temp_C
+    Let #Sum_D = #Sum_D + #Temp_D
+    Let #Sum_E = #Sum_E + #Temp_E
+    Let #Sum_F = #Sum_F + #Temp_F
+
+     Let #Temp_A = 0
+     Let #Temp_B = 0
+     Let #Temp_C = 0
+     Let #Temp_D = 0
+     Let #Temp_E = 0
+     Let #Temp_F = 0
+
+     Let #Tot_A = 0
+     Let #Tot_B = 0
+     Let #Tot_C = 0
+     Let #Tot_D = 0
+     Let #Tot_E = 0
+     Let #Tot_F = 0
+
+     LET #LC = #LC + 2
+  end-if
+
+   Let #SrNo = #SrNo + 1
+
+    FROM PS_GPHK_MPF_RSLT TC,
+         PS_GP_PYGRP TC1,
+         PS_PERSON_NAME TCP,
+         PS_GP_PYE_PRC_STAT TCA,
+         PS_GP_PYE_SEG_STAT TCB
+      WHERE TC.GP_PAYGROUP = TC1.GP_PAYGROUP
+        AND TC1.PAY_ENTITY = $PayEntity
+        AND TC.EMPLID     = TCB.EMPLID
+        AND TC.EMPLID     = TCP.EMPLID
+        AND TC.EMPL_RCD   = TCB.EMPL_RCD
+        AND TC.CAL_RUN_ID = TCB.CAL_RUN_ID
+        AND TC.CAL_ID     = TCB.CAL_ID
+        AND TC.GP_PAYGROUP= TCB.GP_PAYGROUP
+        AND TC.RSLT_SEG_NUM=TCB.RSLT_SEG_NUM
+        AND TCB.EMPLID     = TCA.EMPLID
+        AND TCB.EMPL_RCD   = TCA.EMPL_RCD
+        AND TCB.CAL_RUN_ID = TCA.CAL_RUN_ID
+        AND TCB.CAL_ID     = TCA.CAL_ID
+        AND TCB.GP_PAYGROUP= TCA.GP_PAYGROUP
+        AND TCB.RSLT_VER_NUM=TCA.RSLT_VER_NUM
+        AND TCB.RSLT_REV_NUM=TCA.RSLT_REV_NUM
+        AND TCA.PYMT_DT BETWEEN $FromDate AND $ToDate
+        AND TC.GPHK_PERIOD_TYPE = '100'
+        [$Pincode_list1]
+END-SELECT
+End-Procedure
+!
+!*************************************
+! Get-NE-Dates                       *
+! Get the new employee Dates         *
+!*************************************
+Begin-Procedure Get-NE-Dates
+   let $FirstPeriod = 'Y'
+
+BEGIN-SELECT DISTINCT
+NED.START_DT
+NED.END_DATE
+    Let $Prcs_StartDt = &NED.START_DT
+    Let $Prcs_EndDt   = &NED.END_DATE
+
+    Do Get-Amounts
+    if #ERMandAmt <> 0 or #ERMandBaseAmt <> 0 or #ERVolAmt <> 0  or #ERVolBaseAmt <> 0 or #EEMandAmt <> 0  or #EEMandBaseAmt <> 0  or #EEVolAmt <> 0  or #EEVolBaseAmt <> 0
+          Let $NewEmpl_Found = 'Y'
+          Let $EE_Data_Printed = 'Y'
+
+
+
+       if #LC > 48
+            new-page
+            Let #LC = 1
+                Do Print-NewEmpl-ColHeading
+                do Print-New-Empl-Detail
+            else
+                do Print-New-Empl-Detail
+       End-if
+    End-if
+
+   FROM PS_GPHK_MPF_RSLT NED
+     WHERE NED.EMPLID = $Emplid
+       AND NED.GPHK_PERIOD_TYPE <= '100'
+      AND NED.START_DT >= (select distinct (LAST_HIRE_DT) from PS_JOB WHERE EMPLID=NED.EMPLID AND EFFDT=(SELECT MAX(EFFDT) FROM PS_JOB WHERE EMPLID=NED.EMPLID))
+ORDER BY NED.START_DT
+End-SELECT
+
+End-Procedure
+!
+!*************************************
+! Print-New-Empl-Detail              *
+! Print New Employee Details         *
+!*************************************
+Begin-Procedure Print-New-Empl-Detail
+   if $FirstNewEmployee = 'Y'
+      Let #LC = 1
+      let $FirstNewEmployee = 'N'
+      Do Get-PayEntity-Details
+      Do Print-NewEmpl-Heading
+      Do Print-NewEmpl-ColHeading
+   End-if
+   if $FirstPeriod = 'Y'
+      Let $OutputGenerated = 'Y'
+      Print #SrNo          (#LC,2)  EDIT '999'
+      Print $EmplName      (#LC,6)
+      Print $EE_IdNo       (#LC,33)
+      if rtrim($EmplDate,' ') <> ''
+         Print $EmplDate           (#LC,160)
+      End-if
+      Let $FirstPeriod = 'N'
+   end-if
+
+   if rtrim($ER_PRN_StartDt,' ') <> ''
+      Print $ER_PRN_StartDt          (#LC,46)
+   end-if
+   if rtrim($EE_PRN_StartDt,' ') <> ''
+      Print $EE_PRN_StartDt          (#LC,60)
+      Let $EE_PRN_StartDt = ''
+   end-if
+
+   Print #ERMandBaseAmt      (#LC,74)  edit '99,999,999.99'
+   Print #ERMandAmt          (#LC,88) edit '99,999.99'
+   Print #ERVolAmt           (#LC,100) edit '99,999.99'
+   Print #EEMandAmt          (#LC,112) edit '99,999.99'
+   Print #EEVolAmt           (#LC,124) edit '99,999.99'
+   let #ERTotal = #ERMandAmt + #EEMandAmt
+   let #EETotal = #ERVolAmt + #EEVolAmt
+   Print #ERTotal            (#LC,136) edit '99,999.99'
+   Print #EETotal            (#LC,148) edit '99,999.99'
+
+   Let #LC = #Lc + 1
+   if rtrim($ER_PRN_EndDt,' ') <> ''
+      Print $ER_PRN_EndDt            (#LC,46)
+   end-if
+   if rtrim($EE_PRN_EndDt,' ') <> ''
+      Print $EE_PRN_EndDt            (#LC,60)
+      Let $EE_PRN_EndDt = ''
+   end-if
+   Let #LC = #Lc + 2
+   Let #Tot_A = #Tot_A + #ERMandAmt
+   Let #Tot_B = #Tot_B + #ERVolAmt
+
+   Let #Tot_C = #Tot_C + #EEMandAmt
+   Let #Tot_D = #Tot_D + #EEVolAmt
+
+   Let #Tot_E = #Tot_E + #ERTotal
+   Let #Tot_F = #Tot_F + #EETotal
+End-Procedure
+!
+!*************************************
+! Print-NewEmpl-Heading              *
+! Print New Employee Detail Heading  *
+!*************************************
+!
+Begin-Procedure Print-NewEmpl-Heading
+   Print 'Name of Scheme'   (#LC,1)   BOLD
+   Print ':'                (#LC,25)  BOLD
+   Print $Recipient         (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'Scheme Registration No.' (#LC,1)  BOLD
+   Print ':'                       (#LC,25) BOLD
+   Print $MPF_RegNo                (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'MANDATORY PROVIDENT FUND SCHEMES ORDINANCE (CAP.485)' (#LC,60) BOLD
+
+   Let #LC = #LC + 1
+   Print 'REMITTANCE STATEMENT' (#LC,85) BOLD
+    Let #LC = #LC + 1
+   Print 'Name of Employer' (#LC,1)  BOLD
+   Print ':'                (#LC,25) BOLD
+   Print $PayEntityName     (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'Name of Contact Person' (#LC,1) BOLD
+   Print ':'                      (#LC,25) BOLD
+   Print $ContactName             (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'Address'          (#LC,1) BOLD
+   Print ':'                (#LC,25) BOLD
+   Print $PE_Address        (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'Telephone No.'    (#LC,1) BOLD
+   Print ':'                (#LC,25) BOLD
+   Print $CntctPhone        (#LC,30)
+
+   Let #LC = #LC + 1
+   Print 'Employer Participation No.' (#LC,1)  BOLD
+   Print ':'                          (#LC,25) BOLD
+   Print $MPFPrtcnNo                  (#LC,30)
+
+   Print 'Contribution for the Period from '  (#LC,55) BOLD
+   Print $Prn_FromDate                   (#LC,90)
+
+   Print 'To'                         (#LC,102) BOLD
+   Print $Prn_ToDate                      (#LC,106)
+   Let #LC = #LC + 2
+   End-Procedure
+!
+!********************************************
+! Print-NewEmpl-ColHeading                  *
+! Print New Employee Detail Column Heading  *
+!********************************************
+!
+
+   Begin-Procedure Print-NewEmpl-ColHeading
+   Print 'Part I - For New Employees (Note 1)' (#LC,1)
+   graphic (#LC,5,7) Vert-Line
+   graphic (#LC,32,7) Vert-Line
+   graphic (#LC,45,7) Vert-Line
+   graphic (#LC,73,7) Vert-Line
+   graphic (#LC,86,7) Vert-Line
+   graphic (#LC,110,7) Vert-Line
+   graphic (#LC,134,7) Vert-Line
+
+   Let #LC = #LC + 1
+   graphic (#LC,159,14) box 7
+   graphic (#LC,1,158) box 7
+
+   Print 'Employer''s Contributions'  (#LC,88)
+   Print 'Employee''s Contributions'  (#LC,112)
+   Print 'Total ($)'                  (#LC,143)
+   Let #LC = #LC + 1
+
+   graphic (#LC,86,73) Horz-Line
+   graphic (#LC,98,5) Vert-Line
+   graphic (#LC,122,5) Vert-Line
+   graphic (#LC,146,5) Vert-Line
+
+   Let #LC = #LC + 1
+   Print 'Relevant Contribution' (#LC,49)
+   Print '(a)'                   (#LC,92)
+   Print '(b)'                   (#LC,103)
+   Print '(c)'                   (#LC,115)
+   Print '(d)'                   (#LC,127)
+   Print '(a) + (c)'             (#LC,137)
+   Print '(b) + (d)'             (#LC,149)
+   graphic (#LC,86,73) Horz-Line
+
+
+   Let #LC = #LC + 1
+   Print 'Period'                (#LC,56)
+
+   Print 'Relevant'              (#LC,75)
+   Print 'Mandatory'             (#LC,89)
+   Print 'Voluntary'             (#LC,100)
+
+   Print 'Mandatory'             (#LC,112)
+   Print 'Voluntary'             (#LC,124)
+
+   Print 'Mandatory'             (#LC,136)
+   Print 'Voluntary'             (#LC,148)
+
+   Print 'Date of'               (#LC,162)
+
+   Let #LC = #LC + 1
+   Print 'Income'                (#LC,75)
+   Print 'Contributions'         (#LC,87)
+   Print 'Contributions'         (#LC,99)
+
+   Print 'Contributions'         (#LC,111)
+   Print 'Contributions'         (#LC,123)
+
+   Print 'Contributions'         (#LC,135)
+   Print 'Contributions'         (#LC,147)
+
+   Print 'Employment'            (#LC,161)
+
+   graphic (#LC,45,28) Horz-Line
+   graphic (#LC,59,2)  Vert-Line
+
+   Print 'HKID Card No'          (#LC,33)
+
+   Let #LC = #LC + 1
+   Print 'No.'                   (#LC,2)
+   Print 'Name of Employee'      (#LC,6)
+   Print 'or Scheme'             (#LC,35)
+
+   Print 'For Employer''s'       (#LC,46)
+   Print 'For Employee''s'       (#LC,60)
+   Let #LC = #LC + 1
+   Print 'Membership No.'        (#LC,33)
+
+   Print 'Contributions'         (#LC,46)
+   Print 'Contributions'         (#LC,60)
+   Print '($)'                   (#LC,78)
+   Print '($)'                   (#LC,92)
+   Print '($)'                   (#LC,102)
+   Print '($)'                   (#LC,115)
+   Print '($)'                   (#LC,127)
+   Print '($)'                   (#LC,139)
+   Print '($)'                   (#LC,151)
+   Print '(MM/DD/YYYY)'            (#LC,159)
+
+   Let #LC = #LC + 3
+
+End-Procedure
+!
+!*************************************
+! Process-Existing-Employees         *
+! Generate Existing Employee Details *
+!*************************************
+Begin-Procedure Identify-Existing-Employees
+   Let $FirstExistEmployee = 'Y'
+   Let #SrNo = 1
+   let $PrcsID = 'EXI'
+   let $ExceptionEmplFound = 'N'
+BEGIN-SELECT DISTINCT
+TCE.EMPLID
+TCE.GPHK_PERIOD_TYPE
+
+   Let $Emplid   = &TCE.EMPLID
+   Do Get-Cal-Prd-Bgn-Dt
+   Do Get-Exception-Empl
+   if $ExceptionEmplFound = 'N'
+   Do Process-Exist-Employees
+   Let #SrNo = #SrNo + 1
+   end-if
+
+    FROM PS_GPHK_MPF_RSLT TCE,
+         PS_GP_PYGRP TCE1,
+         PS_GP_PYE_PRC_STAT TCEA,
+         PS_GP_PYE_SEG_STAT TCEB
+
+      WHERE TCE.GP_PAYGROUP = TCE1.GP_PAYGROUP
+        AND TCE1.PAY_ENTITY = $PayEntity
+        AND TCE.EMPLID      = TCEB.EMPLID
+        AND TCE.EMPL_RCD    = TCEB.EMPL_RCD
+        AND TCE.CAL_RUN_ID  = TCE.ORIG_CAL_RUN_ID
+      AND TCEA.CAL_RUN_ID = TCEA.ORIG_CAL_RUN_ID
+      AND TCEB.CAL_RUN_ID = TCEB.ORIG_CAL_RUN_ID
+        AND TCE.CAL_RUN_ID  = TCEB.CAL_RUN_ID
+        AND TCE.CAL_ID      = TCEB.CAL_ID
+        AND TCE.GP_PAYGROUP = TCEB.GP_PAYGROUP
+        AND TCE.RSLT_SEG_NUM = TCEB.RSLT_SEG_NUM
+        AND TCEB.EMPLID      = TCEA.EMPLID
+        AND TCEB.EMPL_RCD    = TCEA.EMPL_RCD
+        AND TCEB.CAL_RUN_ID  = TCEA.CAL_RUN_ID
+        AND TCEB.CAL_ID      = TCEA.CAL_ID
+        AND TCEB.GP_PAYGROUP = TCEA.GP_PAYGROUP
+        AND TCEB.RSLT_VER_NUM= TCEA.RSLT_VER_NUM
+        AND TCEB.RSLT_REV_NUM= TCEA.RSLT_REV_NUM
+        AND TCEA.PYMT_DT BETWEEN $FromDate AND $ToDate
+        AND TCE.GPHK_PERIOD_TYPE = (SELECT MAX(TCE2.GPHK_PERIOD_TYPE) FROM PS_GPHK_MPF_RSLT TCE2
+                                     WHERE TCE2.EMPLID      = TCE.EMPLID
+                                   )
+        AND TCE.GPHK_PERIOD_TYPE > '100'
+        [$Pincode_list2]
+END-SELECT
+End-Procedure !Identify-Existing-Employees
+
+!
+!****************************************
+! Get-Exception-Empl                    *
+! Need not to print information of      *
+! Employees who has got terminated b/w  *
+! Last Prd-End-Date and Month Begin Date*
+! Since this employee would have been   *
+! remitted in the previous month        *
+!****************************************
+Begin-Procedure Get-Exception-Empl
+ Let $ExceptionEmplFound = 'N'
+ Let $LatestTermDt = ''
+ let $LatestRehDt =  ''
+Begin-Select
+J.EFFDT
+ Let $LatestTermDt = dateadd(&J.EFFDT,'DAY',-1)
+ Let $LatestTermDt = ltrim(rtrim($LatestTermDt , ' '),' ')
+FROM PS_JOB J
+WHERE J.JOB_INDICATOR = 'P'
+      AND J.EMPLID = $Emplid
+      AND (J.ACTION = 'TER')
+      AND J.EFFDT = (SELECT MAX(J1.EFFDT)  FROM PS_JOB J1
+                           WHERE J1.JOB_INDICATOR = 'P'
+                             AND J1.EMPLID  = J.EMPLID
+                             AND (J1.ACTION = 'TER' )
+                             AND (J1.EFFDT < $FromDate )
+                             AND (J1.EFFDT >=$Prd_Bgn_Dt )
+                             AND J1.EFFSEQ = (SELECT MAX(J2.EFFSEQ)  FROM PS_JOB J2
+                                                    WHERE J2.JOB_INDICATOR = 'P'
+                                                        AND J2.EMPLID  = J1.EMPLID
+                                                        AND (J2.ACTION = 'TER' )
+                                                        AND (J2.EFFDT < $FromDate)
+                                                        AND (J1.EFFDT >=$Prd_Bgn_Dt )
+                                               )
+                      )
+End-Select
+
+
+  if $LatestTermDt <> ''
+   let $ExceptionEmplFound = 'Y'
+  end-if
+
+End-Procedure !Get-Exception-Empl
+
+
+!
+!*************************************
+! Process-Exist-Employees            *
+! Generate New Employee Details      *
+!*************************************
+Begin-Procedure Process-Exist-Employees
+  Let $FirstPeriod = 'Y'
+  Let $CalInProcess = ''
+  Let #Tot_A = 0
+  Let #Tot_B = 0
+  Let #Tot_C = 0
+  Let #Tot_D = 0
+  Let #Tot_E = 0
+  Let #Tot_F = 0
+
+BEGIN-SELECT DISTINCT
+CE.GP_PAYGROUP
+CE.EMPLID
+CE.START_DT
+CE.END_DATE
+CE3.NAME
+
+   Let $EmplName     = &CE3.NAME
+   Let $Prcs_StartDt = &CE.START_DT
+   Let $Prcs_CompStartDt = &CE.START_DT
+   let $Prcs_EndDt   = &CE.END_DATE
+   
+   DO Get-Amounts
+   Let $ExistEmpl_Found   = 'Y'
+   Let $ICType = 'ID_NO'
+   Do Get-EE-ICID-No
+
+   if rtrim($EE_IdNo,' ') = ''
+      Do Get-EE-MPF-NO
+   else
+      Let $EE_IdNo = edit($EE_IdNo,'xxxxxxxx(x)')
+   End-if
+
+   Do Get-EE-EmplDate
+   Do Get-EE-TermDate
+   Do Print-Exist-Empl-Detail
+   
+   if #LC > 48
+     if $NewEmpl_Found   = 'N'
+         new-page
+         Let #LC = 1
+         Do Print-Exist-Empl-Heading
+      end-if
+   end-if
+
+   Let $FirstExistEmployee = 'N'
+
+   FROM PS_GPHK_MPF_RSLT CE,
+        PS_GP_PYGRP CE1,
+        PS_PERSON_NAME CE3,
+        PS_GP_PYE_PRC_STAT TCEA1,
+        PS_GP_PYE_SEG_STAT TCEB1
+
+      WHERE CE.GP_PAYGROUP     = CE1.GP_PAYGROUP
+        AND CE1.PAY_ENTITY     = $PayEntity
+        AND CE.EMPLID          = CE3.EMPLID
+        AND CE.EMPLID          = $Emplid
+      AND CE.CAL_RUN_ID      = CE.ORIG_CAL_RUN_ID
+      AND TCEA1.CAL_RUN_ID   = TCEA1.ORIG_CAL_RUN_ID
+      AND TCEB1.CAL_RUN_ID   = TCEB1.ORIG_CAL_RUN_ID
+        AND CE.EMPLID          = TCEB1.EMPLID
+        AND CE.EMPL_RCD        = TCEB1.EMPL_RCD
+        AND CE.CAL_RUN_ID      = TCEB1.CAL_RUN_ID
+        AND CE.CAL_ID          = TCEB1.CAL_ID
+        AND CE.GP_PAYGROUP     = TCEB1.GP_PAYGROUP
+        AND CE.RSLT_SEG_NUM    = TCEB1.RSLT_SEG_NUM
+        AND TCEB1.EMPLID       = TCEA1.EMPLID
+        AND TCEB1.EMPL_RCD     = TCEA1.EMPL_RCD
+        AND TCEB1.CAL_RUN_ID   = TCEA1.CAL_RUN_ID
+        AND TCEB1.CAL_ID       = TCEA1.CAL_ID
+        AND TCEB1.GP_PAYGROUP  = TCEA1.GP_PAYGROUP
+        AND TCEB1.RSLT_VER_NUM = TCEA1.RSLT_VER_NUM
+        AND TCEB1.RSLT_REV_NUM = TCEA1.RSLT_REV_NUM
+        AND TCEA1.PYMT_DT BETWEEN $FromDate AND $ToDate
+        AND CE.GPHK_PERIOD_TYPE = '101'
+ ORDER BY CE.START_DT
+END-SELECT
+
+  if $ExistEmpl_Found = 'Y'
+     if #LC > 48
+        Do Print-Exist-Empl-Heading
+     end-if
+     LET #LC = #LC + 2
+     graphic (#LC,77,80) box 1 0 8
+     Print 'Sub-Total:'     (#LC,77) BOLD
+
+     Print #Tot_A (#LC,88) edit '99,999.99'
+     Print #Tot_B (#LC,100) edit '99,999.99'
+     Print #Tot_C (#LC,112) edit '99,999.99'
+     Print #Tot_D (#LC,124) edit '99,999.99'
+     Print #Tot_E (#LC,136) edit '99,999.99'
+     Print #Tot_F (#LC,148) edit '99,999.99'
+
+     let #Temp_A = round(#Tot_A, 2)
+     let #Temp_B = round(#Tot_B, 2)
+     let #Temp_C = round(#Tot_C, 2)
+     let #Temp_D = round(#Tot_D, 2)
+     let #Temp_E = round(#Tot_E, 2)
+     let #Temp_F = round(#Tot_F, 2)
+
+    Let #Sum_A = #Sum_A + #Temp_A
+    Let #Sum_B = #Sum_B + #Temp_B
+    Let #Sum_C = #Sum_C + #Temp_C
+    Let #Sum_D = #Sum_D + #Temp_D
+    Let #Sum_E = #Sum_E + #Temp_E
+    Let #Sum_F = #Sum_F + #Temp_F
+
+     Let #Temp_A = 0
+     Let #Temp_B = 0
+     Let #Temp_C = 0
+     Let #Temp_D = 0
+     Let #Temp_E = 0
+     Let #Temp_F = 0
+
+
+     Let #Tot_A = 0
+     Let #Tot_B = 0
+     Let #Tot_C = 0
+     Let #Tot_D = 0
+     Let #Tot_E = 0
+     Let #Tot_F = 0
+
+     LET #LC = #LC + 1
+  end-if
+End-Procedure
+!
+!*************************************
+! Print-Exist-Empl-Heading           *
+! Print Exist Employee Detail Heading*
+!*************************************
+!
+Begin-Procedure Print-Exist-Empl-Heading
+   if $NewEmpl_Found   = 'N'
+      Let #LC = 1
+      Print 'Name of Scheme'   (#LC,1)   BOLD
+      Print ':'                (#LC,25)  BOLD
+      Print $Recipient         (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'Scheme Registration No.' (#LC,1)  BOLD
+      Print ':'                       (#LC,25) BOLD
+      Print $MPF_RegNo                (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'MANDATORY PROVIDENT FUND SCHEMES ORDINANCE (CAP.485)' (#LC,60) BOLD
+
+      Let #LC = #LC + 1
+      Print 'REMITTANCE STATEMENT' (#LC,85) BOLD
+       Let #LC = #LC + 1
+      Print 'Name of Employer' (#LC,1)  BOLD
+      Print ':'                (#LC,25) BOLD
+      Print $PayEntityName     (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'Name of Contact Person' (#LC,1) BOLD
+      Print ':'                      (#LC,25) BOLD
+      Print $ContactName             (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'Address'          (#LC,1) BOLD
+      Print ':'                (#LC,25) BOLD
+      Print $PE_Address        (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'Telephone No.'    (#LC,1) BOLD
+      Print ':'                (#LC,25) BOLD
+      Print $CntctPhone        (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'Employer Participation No.' (#LC,1)  BOLD
+      Print ':'                          (#LC,25) BOLD
+      Print $MPFPrtcnNo                  (#LC,30)
+
+      Print 'Contribution for the Period from '  (#LC,55) BOLD
+      Print $Prn_FromDate                   (#LC,90)
+
+      Print 'To'                         (#LC,102) BOLD
+      Print $Prn_ToDate                      (#LC,106)
+      Let #LC = #LC + 2
+   else
+      Let #LC = 1
+      new-page
+   End-if
+   Print 'Part II - For Existing Employees (Note 2)' (#LC,1)
+   Let $OutputGenerated = 'Y'
+
+   graphic (#LC,5,7) Vert-Line
+   graphic (#LC,45,7) Vert-Line
+   graphic (#LC,73,7) Vert-Line
+   graphic (#LC,86,7) Vert-Line
+   graphic (#LC,110,7) Vert-Line
+   graphic (#LC,134,7) Vert-Line
+   graphic (#LC,174,7) Vert-Line
+
+   Let #LC = #LC + 1
+   graphic (#LC,159,38) box 7
+   graphic (#LC,1,158) box 7
+
+
+   Print 'Employer''s Contributions'  (#LC,88)
+   Print 'Employee''s Contributions'  (#LC,112)
+   Print 'Total ($)'                  (#LC,143)
+   Print 'Termination Details'        (#LC,178)
+   Let #LC = #LC + 1
+   Print '(If applicable)'            (#LC,180)
+
+   graphic (#LC,86,73) Horz-Line
+   graphic (#LC,90,20) Horz-Line
+   graphic (#LC,98,5) Vert-Line
+   graphic (#LC,122,5) Vert-Line
+   graphic (#LC,146,5) Vert-Line
+   graphic (#LC,188,5) Vert-Line
+   graphic (#LC,174,23) Horz-Line
+
+
+   Let #LC = #LC + 1
+   Print '(a)'                   (#LC,92)
+   Print '(b)'                   (#LC,103)
+   Print '(c)'                   (#LC,115)
+   Print '(d)'                   (#LC,127)
+   Print '(a) + (c)'             (#LC,137)
+   Print '(b) + (d)'             (#LC,149)
+
+   Let #LC = #LC + 1
+
+   Print 'Relevant'              (#LC,75)
+   Print 'Mandatory'             (#LC,89)
+   Print 'Voluntary'             (#LC,100)
+
+   Print 'Mandatory'             (#LC,112)
+   Print 'Voluntary'             (#LC,124)
+
+   Print 'Mandatory'             (#LC,136)
+   Print 'Voluntary'             (#LC,148)
+
+   Print 'Date of'               (#LC,162)
+   Print 'Last Employment'       (#LC,174)
+   Print 'Term'                  (#LC,190)
+
+   Let #LC = #LC + 1
+   Print 'Income'                (#LC,75)
+   Print 'Contributions'         (#LC,87)
+   Print 'Contributions'         (#LC,99)
+
+   Print 'Contributions'         (#LC,111)
+   Print 'Contributions'         (#LC,123)
+
+   Print 'Contributions'         (#LC,135)
+   Print 'Contributions'         (#LC,147)
+
+   Print 'Employment'            (#LC,161)
+   Print 'Date'                  (#LC,178)
+   Print 'Code'                  (#LC,190)
+
+   Print 'HKID Card No'          (#LC,46)
+
+   Let #LC = #LC + 1
+   Print 'No.'                   (#LC,2)
+   Print 'Name of Employee'      (#LC,6)
+   Print 'or Scheme'             (#LC,47)
+
+   Let #LC = #LC + 1
+   Print 'Membership No.'        (#LC,46)
+
+   Print '($)'                   (#LC,78)
+   Print '($)'                   (#LC,92)
+   Print '($)'                   (#LC,102)
+   Print '($)'                   (#LC,115)
+   Print '($)'                   (#LC,127)
+   Print '($)'                   (#LC,139)
+   Print '($)'                   (#LC,151)
+   Print ' (MM/DD/YYYY)'            (#LC,159)
+   Print ' (MM/DD/YYYY)'            (#LC,174)
+   Let #LC = #LC + 1
+   
+End-Procedure
+!
+!*************************************
+! Print-Exist-Empl-Detail            *
+! Print Exist Employee Details       *
+!*************************************
+Begin-Procedure Print-Exist-Empl-Detail
+   if $FirstExistEmployee = 'Y'
+      Let #LC = 1
+      Do Get-PayEntity-Details
+      Do Print-Exist-Empl-Heading
+   End-if
+   if $FirstPeriod = 'Y'
+      Let #LC = #LC + 1
+      Print #SrNo          (#LC,2)  EDIT '999'
+      Print $EmplName      (#LC,6)
+      Print $EE_IdNo       (#LC,46)
+      if rtrim($EmplDate,' ') <> ''
+         Print $EmplDate           (#LC,160)
+         End-if
+
+      if rtrim($TermDate,' ') <> ''
+      if $TermCompDate > $HirDate
+         Print $TermDate           (#LC,175)
+      End-if
+      End-if
+
+      Let $FirstPeriod = 'N'
+   end-if
+   
+   Print #ERMandBaseAmt      (#LC,73)  edit '99,999,999.99'
+   Print #ERMandAmt          (#LC,88) edit '99,999.99'
+   Print #ERVolAmt           (#LC,100) edit '99,999.99'
+   Print #EEMandAmt          (#LC,112) edit '99,999.99'
+   Print #EEVolAmt           (#LC,124) edit '99,999.99'
+   let #ERTotal = #ERMandAmt + #EEMandAmt
+   let #EETotal = #ERVolAmt + #EEVolAmt
+   Print #ERTotal            (#LC,136) edit '99,999.99'
+   Print #EETotal            (#LC,148) edit '99,999.99'
+
+
+   Let #LC = #Lc + 1
+
+   Let #Tot_A = #Tot_A + #ERMandAmt
+   Let #Tot_B = #Tot_B + #ERVolAmt
+
+   Let #Tot_C = #Tot_C + #EEMandAmt
+   Let #Tot_D = #Tot_D + #EEVolAmt
+
+   Let #Tot_E = #Tot_E + #ERTotal
+   Let #Tot_F = #Tot_F + #EETotal
+
+
+
+End-Procedure
+
+
+!***********************************************************************
+! Identify-Empl-Termination                                            *
+! Identify Terminated Employee in 1st contribution period Details      *
+!***********************************************************************
+Begin-Procedure Identify-Empl-Termination
+   Let $FirstTermEmployee = 'Y'
+   let $Empl-Term-After-Prd = 'N'
+   Let #SrNo = 1
+   let $PrcsID = 'TER'
+
+
+BEGIN-SELECT DISTINCT
+TC1.EMPLID
+TC1.GPHK_PERIOD_TYPE
+TCP1.NAME
+
+   Let $Emplid   = &TC1.EMPLID
+   Do Get-EE-TermDate
+
+ If $TermCompDate  <> ''
+
+   If $TermCompDate <= $ToDate
+
+
+        Let $Emplid   = &TC1.EMPLID
+        Let $EmplName = &TCP1.NAME
+
+        Let $TermEmpl_Found   = 'Y'
+
+        Do Get-Cal-Prd-End-Dt
+
+        if $TermCompDate > $Prd_End_Dt
+          let $Empl-Term-After-Prd = 'Y'
+
+        end-if
+
+        Let $ICType = 'ID_NO'
+        Do Get-EE-ICID-No
+
+        if rtrim($EE_IdNo,' ') = ''
+           Do Get-EE-MPF-NO
+        else
+           Let $EE_IdNo = edit($EE_IdNo,'xxxxxxxx(x)')
+        End-if
+
+        Let $EE_Data_Printed = 'N'
+
+        Do Get-TE-Dates
+
+        if $EE_Data_Printed = 'Y'
+
+          LET #LC = #LC + 1
+         if $Empl-Term-After-Prd = 'Y'
+          graphic (#LC,88,83) box 1 0 8
+
+          Print 'Sub-Total:'     (#LC,88) BOLD
+
+          Print #Tot_A (#LC,100) edit '99,999.99'
+          Print #Tot_B (#LC,112) edit '99,999.99'
+          Print #Tot_C (#LC,124) edit '99,999.99'
+          Print #Tot_D (#LC,136) edit '99,999.99'
+          Print #Tot_E (#LC,148) edit '99,999.99'
+          Print #Tot_F (#LC,161) edit '99,999.99'
+
+          let #Temp_A = round(#Tot_A, 2)
+          let #Temp_B = round(#Tot_B, 2)
+          let #Temp_C = round(#Tot_C, 2)
+          let #Temp_D = round(#Tot_D, 2)
+          let #Temp_E = round(#Tot_E, 2)
+          let #Temp_F = round(#Tot_F, 2)
+
+
+
+         Let #Sum_A = #Sum_A + #Temp_A
+         Let #Sum_B = #Sum_B + #Temp_B
+         Let #Sum_C = #Sum_C + #Temp_C
+         Let #Sum_D = #Sum_D + #Temp_D
+         Let #Sum_E = #Sum_E + #Temp_E
+         Let #Sum_F = #Sum_F + #Temp_F
+
+          Let #Temp_A = 0
+          Let #Temp_B = 0
+          Let #Temp_C = 0
+          Let #Temp_D = 0
+          Let #Temp_E = 0
+          Let #Temp_F = 0
+
+
+          Let #Tot_A = 0
+          Let #Tot_B = 0
+          Let #Tot_C = 0
+          Let #Tot_D = 0
+          Let #Tot_E = 0
+          Let #Tot_F = 0
+          let $Empl-Term-After-Prd = 'N'
+         end-if
+          LET #LC = #LC + 2
+
+        end-if
+
+     Let #SrNo = #SrNo + 1
+   End-if
+  End-if
+FROM PS_GPHK_MPF_RSLT TC1,
+         PS_GP_PYGRP TC11,
+         PS_PERSON_NAME TCP1,
+         PS_GP_PYE_PRC_STAT TCA1,
+         PS_GP_PYE_SEG_STAT TCB1
+WHERE TC1.GP_PAYGROUP = TC11.GP_PAYGROUP
+AND TC11.PAY_ENTITY = $PayEntity
+AND TC1.EMPLID     = TCB1.EMPLID
+AND TC1.EMPLID     = TCP1.EMPLID
+AND TC1.EMPL_RCD   = TCB1.EMPL_RCD
+AND TC1.CAL_RUN_ID = TCB1.CAL_RUN_ID
+AND TC1.CAL_ID     = TCB1.CAL_ID
+AND TC1.GP_PAYGROUP= TCB1.GP_PAYGROUP
+AND TC1.RSLT_SEG_NUM=TCB1.RSLT_SEG_NUM
+AND TCB1.EMPLID     = TCA1.EMPLID
+AND TCB1.EMPL_RCD   = TCA1.EMPL_RCD
+AND TCB1.CAL_RUN_ID = TCA1.CAL_RUN_ID
+AND TCB1.CAL_ID     = TCA1.CAL_ID
+AND TCB1.GP_PAYGROUP= TCA1.GP_PAYGROUP
+AND TCB1.RSLT_VER_NUM=TCA1.RSLT_VER_NUM
+AND TCB1.RSLT_REV_NUM=TCA1.RSLT_REV_NUM
+AND TCA1.PYMT_DT BETWEEN $FromDate AND $ToDate
+AND TC1.GPHK_PERIOD_TYPE = '100'
+[$Pincode_list3]
+!order by TCP1.NAME
+END-SELECT
+End-Procedure
+
+!
+!*********************************************
+! Get-Cal-Prd-End-Dt                         *
+! Get calander period end date. Cal period   *
+! end date may not be month end date         *
+!*********************************************
+Begin-Procedure Get-Cal-Prd-End-Dt
+Begin-Select
+MAX(PS1.PRD_END_DT) &PS1.PRD_END_DT
+ LET $Prd_End_Dt = &PS1.PRD_END_DT
+
+FROM PS_GP_PYE_PRC_STAT PS1
+WHERE PS1.EMPLID      = $Emplid
+AND   PS1.PRD_END_DT <= $ToDate
+End-Select
+End-Procedure !Get-Cal-Prd-End-Dt
+
+!
+!*********************************************
+! Get-Cal-Prd-Bgn-Dt                         *
+! Get calander period begin date. Cal period *
+! begin date may not be month begin date     *
+!*********************************************
+Begin-Procedure Get-Cal-Prd-Bgn-Dt
+Begin-Select
+MAX(PS2.PRD_BGN_DT) &PS2.PRD_BGN_DT
+ LET $Prd_Bgn_Dt = &PS2.PRD_BGN_DT
+
+FROM PS_GP_PYE_PRC_STAT PS2
+WHERE PS2.EMPLID      = $Emplid
+AND   PS2.PRD_BGN_DT <= $FromDate
+End-Select
+End-Procedure !Get-Cal-Prd-Bgn-Dt
+
+
+!
+!*********************************************
+! Get-TE-Dates                               *
+! Get the termination employee Dates         *
+!*********************************************
+Begin-Procedure Get-TE-Dates
+let $FirstPeriod = 'Y'
+
+BEGIN-SELECT DISTINCT
+TED.EMPLID
+TED.START_DT
+TED.END_DATE
+    Let $Prcs_StartDt = &TED.START_DT
+    Let $Prcs_EndDt   = &TED.END_DATE
+
+    Do Get-Amounts
+       if #ERMandAmt <> 0 or #ERMandBaseAmt <> 0 or #ERVolAmt <> 0  or #ERVolBaseAmt <> 0 or #EEMandAmt <> 0  or #EEMandBaseAmt <> 0  or #EEVolAmt <> 0  or #EEVolBaseAmt <> 0
+
+           Let $TermEmpl_Found = 'Y'
+           Let $EE_Data_Printed = 'Y'
+
+
+          !let #LC =50
+          if #LC > 48
+            new-page
+            Let #LC = 1
+                Do Print-TermEmpl-ColHeading
+                do Print-Term-Empl-Detail
+
+            else
+                do Print-Term-Empl-Detail
+
+         end-if
+
+
+    End-if
+
+FROM PS_GPHK_MPF_RSLT TED
+WHERE TED.EMPLID =$Emplid
+AND TED.END_DATE =(SELECT MAX(TED1.END_DATE)
+                   FROM PS_GPHK_MPF_RSLT TED1
+                   WHERE TED1.EMPLID =$Emplid
+                   AND TED1.END_DATE<=$ToDate)
+ORDER BY TED.START_DT,TED.EMPLID
+
+End-SELECT
+End-Procedure
+
+!
+!************************************************
+! Print-TermEmpl-ColHeading                     *
+! Print Termination Info Detail Column Heading  *
+!************************************************
+!
+
+Begin-Procedure Print-TermEmpl-ColHeading
+   if $NewEmpl_Found   = 'N'
+      Let #LC = 1
+      Print 'Name of Scheme'   (#LC,1)   BOLD
+      Print ':'                (#LC,25)  BOLD
+      Print $Recipient         (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'Scheme Registration No.' (#LC,1)  BOLD
+      Print ':'                       (#LC,25) BOLD
+      Print $MPF_RegNo                (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'MANDATORY PROVIDENT FUND SCHEMES ORDINANCE (CAP.485)' (#LC,60) BOLD
+
+      Let #LC = #LC + 1
+      Print 'REMITTANCE STATEMENT' (#LC,85) BOLD
+       Let #LC = #LC + 1
+      Print 'Name of Employer' (#LC,1)  BOLD
+      Print ':'                (#LC,25) BOLD
+      Print $PayEntityName     (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'Name of Contact Person' (#LC,1) BOLD
+      Print ':'                      (#LC,25) BOLD
+      Print $ContactName             (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'Address'          (#LC,1) BOLD
+      Print ':'                (#LC,25) BOLD
+      Print $PE_Address        (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'Telephone No.'    (#LC,1) BOLD
+      Print ':'                (#LC,25) BOLD
+      Print $CntctPhone        (#LC,30)
+
+      Let #LC = #LC + 1
+      Print 'Employer Participation No.' (#LC,1)  BOLD
+      Print ':'                          (#LC,25) BOLD
+      Print $MPFPrtcnNo                  (#LC,30)
+
+      Print 'Contribution for the Period from '  (#LC,55) BOLD
+      Print $Prn_FromDate                   (#LC,90)
+
+      Print 'To'                         (#LC,102) BOLD
+      Print $Prn_ToDate                      (#LC,106)
+      Let #LC = #LC + 2
+   else
+     new-page
+     let #LC = 1
+     Print 'Part III - Additional Employee Termination Information Section' (#LC,1)
+
+     graphic (#LC,86,8) Vert-Line
+     Let #LC = #LC + 1
+     graphic (#LC,1,172) box 8
+     graphic (#LC,5,27) box 8
+     graphic (#LC,46,28) box 8
+     Let #LC = #LC + 1
+     graphic (#LC,98,6) Vert-Line
+     graphic (#LC,122,6) Vert-Line
+     graphic (#LC,146,6) Vert-Line
+     Print 'Last Payroll Deatils' (#LC,122)
+     graphic (#LC,86,87) Horz-Line
+     Let #LC = #LC + 1
+     graphic (#LC,110,5) Vert-Line
+     graphic (#LC,134,5) Vert-Line
+     graphic (#LC,159,5) Vert-Line
+     Print 'Employer''s Contributions'  (#LC,102)
+     Print 'Employee''s Contributions'  (#LC,126)
+     Print 'Total'                      (#LC,157)
+     graphic (#LC,98,75) Horz-Line
+
+
+     Let #LC = #LC + 1
+     Print 'Last Contribution Period' (#LC,49)
+     Print '(a)'                   (#LC,103)
+     Print '(b)'                   (#LC,115)
+     Print '(c)'                   (#LC,127)
+     Print '(d)'                   (#LC,137)
+     Print '(a) + (c)'             (#LC,149)
+     Print '(b) + (d)'             (#LC,162)
+     graphic (#LC,98,75) Horz-Line
+
+
+     Let #LC = #LC + 1
+     Print '(MM/DD/YYYY)'          (#LC,52)
+
+     Print 'Term'                  (#LC,78)
+     Print 'Relevent'              (#LC,89)
+     Print 'Mandatory'             (#LC,100)
+     Print 'Voluntary'             (#LC,112)
+     Print 'Mandatory'             (#LC,124)
+     Print 'Voluntary'             (#LC,136)
+     Print 'Mandatory'             (#LC,148)
+     Print 'Voluntary'             (#LC,162)
+     Let #LC = #LC + 1
+     Print 'HKID Card No'          (#LC,33)
+     Print 'Code'                  (#LC,78)
+     Print 'Income'                (#LC,89)
+     Print 'Contributions'         (#LC,99)
+     Print 'Contributions'         (#LC,111)
+     Print 'Contributions'         (#LC,123)
+     Print 'Contributions'         (#LC,135)
+     Print 'Contributions'         (#LC,147)
+     Print 'Contributions'         (#LC,161)
+
+     graphic (#LC,46,28) Horz-Line
+     graphic (#LC,86,87) Horz-Line
+     graphic (#LC,57,2)  Vert-Line
+
+     Let #LC = #LC + 1
+     Print 'No.'                   (#LC,2)
+     Print 'Name of Employee'      (#LC,6)
+     Print 'or Scheme'             (#LC,35)
+     Print 'To(Date of Cessation'  (#LC,58)
+     Let #LC = #LC + 1
+     Print 'Membership No.'        (#LC,33)
+
+     Print 'From'                  (#LC,49)
+     Print 'of employment)'        (#LC,60)
+     Print '($)'                   (#LC,92)
+     Print '($)'                   (#LC,102)
+     Print '($)'                   (#LC,115)
+     Print '($)'                   (#LC,127)
+     Print '($)'                   (#LC,139)
+     Print '($)'                   (#LC,151)
+     Print '($)'                   (#LC,164)
+
+     Let #LC = #LC + 3
+   end-if
+
+End-Procedure
+
+!
+!***********************************************************************
+! Print-Term-Empl-Detail                                               *
+! Print Terminated Employee in 1st contribution period Details         *
+!***********************************************************************
+Begin-Procedure Print-Term-Empl-Detail
+   if $FirstTermEmployee = 'Y'
+      Let #LC = 1
+      let $FirstTermEmployee = 'N'
+      Do Get-PayEntity-Details
+      Do Print-TermEmpl-ColHeading
+   End-if
+   if $FirstPeriod = 'Y'
+      Let $OutputGenerated = 'Y'
+      Print #SrNo          (#LC,2)  EDIT '999'
+      Print $EmplName      (#LC,6)
+      Print $EE_IdNo       (#LC,33)
+      Let $FirstPeriod = 'N'
+   end-if
+
+   if rtrim($EE_PRN_StartDt,' ') <> ''
+
+      Print $EE_PRN_StartDt          (#LC,46)
+      Let $EE_PRN_StartDt = ''
+   end-if
+
+
+   if rtrim($EE_PRN_EndDt,' ') <> ''
+      Print $EE_PRN_EndDt            (#LC,60)
+      Let $EE_PRN_EndDt = ''
+   end-if
+   if $Empl-Term-After-Prd = 'Y'
+      Print #ERMandBaseAmt      (#LC,85)  edit '99,999,999.99'
+      Print #ERMandAmt          (#LC,100) edit '99,999.99'
+      Print #ERVolAmt           (#LC,112) edit '99,999.99'
+      Print #EEMandAmt          (#LC,124) edit '99,999.99'
+      Print #EEVolAmt           (#LC,136) edit '99,999.99'
+      let #ERTotal = #ERMandAmt + #EEMandAmt
+      let #EETotal = #ERVolAmt + #EEVolAmt
+      Print #ERTotal            (#LC,148) edit '99,999.99'
+      Print #EETotal            (#LC,161) edit '99,999.99'
+
+      !Let #LC = #Lc + 1
+      Let #LC = #Lc + 2
+      Let #Tot_A = #Tot_A + #ERMandAmt
+      Let #Tot_B = #Tot_B + #ERVolAmt
+
+      Let #Tot_C = #Tot_C + #EEMandAmt
+      Let #Tot_D = #Tot_D + #EEVolAmt
+
+      Let #Tot_E = #Tot_E + #ERTotal
+      Let #Tot_F = #Tot_F + #EETotal
+    end-if
+
+
+
+
+End-Procedure
+!
+!*************************************
+! Select-Parameters                  *
+! Retrieve Run control parameters    *
+!*************************************
+Begin-Procedure Select-Parameters
+Begin-SELECT
+RC.PAY_ENTITY
+RC.FROMDATE
+RC.TO_DATE
+RC.GPHK_CATEGORY
+
+     Let $PayEntity = &RC.PAY_ENTITY
+     Let $FromDate  = &RC.FROMDATE
+     let $ToDate    = &RC.TO_DATE
+     Let $Category  = &RC.GPHK_CATEGORY
+ IF $Category = 'R'
+     Let $Pincode_list1 = ' AND TC.PIN_CODE NOT LIKE (''%DL%'')' 
+     Let $Pincode_list2 = ' AND TCE.PIN_CODE NOT LIKE (''%DL%'')' 
+     Let $Pincode_list3 = ' AND TC1.PIN_CODE NOT LIKE (''%DL%'')' 
+ ELSE
+     Let $Pincode_list1 = ' AND TC.PIN_CODE LIKE (''%DL%'')' 
+     Let $Pincode_list2 = ' AND TCE.PIN_CODE LIKE (''%DL%'')' 
+     Let $Pincode_list3 = ' AND TC1.PIN_CODE LIKE (''%DL%'')' 
+ END-IF  
+
+     Do Format-DateTime($FromDate, $Prn_FromDate, {DEFDATE},'','')
+     Do Format-DateTime($ToDate, $Prn_ToDate, {DEFDATE},'','')
+
+  FROM PS_GPHK_MPF_RUNCTL RC
+    WHERE RC.OPRID         = $PRCS_OPRID
+        AND RC.RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+End-SELECT
+End-Procedure
+!
+!
+!********************************************************************
+! Procedure :   Get-State-Descr
+!********************************************************************
+Begin-Procedure Get-State-Descr
+Begin-SELECT
+SCD.DESCR
+   LET $StateDescr = &SCD.DESCR
+    FROM PS_STATE_NAMES_TBL SCD
+  WHERE SCD.STATE = $StateCode
+   AND  SCD.COUNTRY = 'HKG'
+End-SELECT
+End-Procedure  Get-State-Descr
+!
+!*************************************
+! Get-Amounts                        *
+! Get Deduction Amounts              *
+!*************************************
+Begin-Procedure Get-Amounts
+  Let #ERMandAmt     = 0
+  Let #ERMandBaseAmt = 0
+  Let #ERVolAmt      = 0
+  Let #ERVolBaseAmt  = 0
+
+  Let #EEMandAmt     = 0
+  Let #EEMandBaseAmt = 0
+  Let #EEVolAmt      = 0
+  Let #EEVolBaseAmt  = 0
+
+Begin-SELECT DISTINCT
+GA.PIN_CODE         &PinCode
+GA.GPHK_BASE_AMOUNT &BaseAmt
+GA.AMOUNT           &MPFAmt
+GA.START_DT         &StartDt
+GA.END_DATE         &EndDt
+GA.ORIG_CAL_RUN_ID  &GA.ORIG_CAL_RUN_ID
+    Let $PinCode = rtrim(&PinCode,' ')
+    LET $ORIG_CAL_RUN_ID=&GA.ORIG_CAL_RUN_ID
+    
+    if substr($PinCode,1,2) = 'ER'
+       Let $ERStartDt = &StartDt
+       Let $EREndDt = &EndDt
+       Do Format-DateTime($ERStartDt, $ER_Prn_StartDt, {DEFDATE},'','')
+       Do Format-DateTime($EREndDt, $ER_Prn_EndDt, {DEFDATE},'','')
+
+       if $PrcsId = 'NEW'
+          if $PinCode = 'ERMPFMN2 HKG'
+             Let #ERMandAmt     = #ERMandAmt     + &MPFAmt
+             Let #ERMandBaseAmt = #ERMandBaseAmt + &BaseAmt
+          end-if
+          if $PinCode = 'ERMPFVOL2 HKG'
+             Let #ERVolAmt     = #ERVolAmt     + &MPFAmt
+             Let #ERVolBaseAmt = #ERVolBaseAmt + &BaseAmt
+          end-if
+
+       else
+          if $PinCode = 'ERMPFMN1 HKG'
+             Let #ERMandAmt     = #ERMandAmt     + &MPFAmt
+             Let #ERMandBaseAmt = #ERMandBaseAmt + &BaseAmt
+          end-if
+          if $PinCode = 'ERMPFVOL1 HKG'
+             Let #ERVolAmt     = #ERVolAmt     + &MPFAmt
+             Let #ERVolBaseAmt = #ERVolBaseAmt + &BaseAmt
+          end-if            
+       End-if
+
+       If $Category = 'C'
+          if $PinCode = 'ERMPFNDLVOL HKG' OR $PinCode = 'ERMPFDLVOL HKG'
+             Let #ERVolAmt     = #ERVolAmt     + &MPFAmt
+             Let #ERVolBaseAmt = #ERVolBaseAmt + &BaseAmt
+          Else
+             Let #ERMandAmt     = #ERMandAmt     + &MPFAmt
+             Let #ERMandBaseAmt = #ERMandBaseAmt + &BaseAmt
+       End-if     
+       End-If     
+
+    end-if
+    if substr($PinCode,1,2) = 'EE'
+       Let $EEStartDt = &StartDt
+       Let $EEEndDt = &EndDt
+       Do Format-DateTime($EEStartdt, $EE_Prn_StartDt, {DEFDATE},'','')
+       Do Format-DateTime($EEEndDt, $EE_Prn_EndDt, {DEFDATE},'','')
+
+       if $PrcsID = 'NEW'
+          if $PinCode = 'EEMPFMN2 HKG'
+             Let #EEMandAmt     = #EEMandAmt     + &MPFAmt
+             Let #EEMandBaseAmt = #EEMandBaseAmt + &BaseAmt
+          end-if
+          if $PinCode = 'EEMPFVOL2 HKG'
+             Let #EEVolAmt     = #EEVolAmt     + &MPFAmt
+             Let #EEVolBaseAmt = #EEVolBaseAmt + &BaseAmt
+          end-if          
+       else
+          if $PinCode = 'EEMPFMN1 HKG'
+             Let #EEMandAmt     = #EEMandAmt     + &MPFAmt
+             Let #EEMandBaseAmt = #EEMandBaseAmt + &BaseAmt
+          end-if
+          if $PinCode = 'EEMPFVOL1 HKG'
+             Let #EEVolAmt     = #EEVolAmt     + &MPFAmt
+             Let #EEVolBaseAmt = #EEVolBaseAmt + &BaseAmt
+          end-if          
+       End-if
+
+       If $Category = 'C'
+      if $PinCode = 'EEMPFDLVOL HKG' OR $PinCode = 'EEMPFNDLVOL HKG'
+             Let #EEVolAmt     = #EEVolAmt     + &MPFAmt
+             Let #EEVolBaseAmt = #EEVolBaseAmt + &BaseAmt
+       Else
+             Let #EEMandAmt     = #EEMandAmt     + &MPFAmt
+             Let #EEMandBaseAmt = #EEMandBaseAmt + &BaseAmt
+       End-if     
+       End-If         
+    end-if
+    let #ERMandAmt = round(#ERMandAmt,2)
+    let #ERVolAmt = round(#ERVolAmt,2)
+    let #EEMandAmt = round(#EEMandAmt,2)
+    let #EEVolAmt = round(#EEVolAmt,2)
+
+   FROM PS_GPHK_MPF_RSLT GA
+    WHERE GA.EMPLID      = $Emplid
+      AND GA.START_DT    = $Prcs_StartDt
+      AND GA.END_DATE    = $Prcs_EndDt
+    AND GA.CAL_RUN_ID  = GA.ORIG_CAL_RUN_ID
+END-SELECT
+    DO Check-Offcycle-Employees
+End-Procedure
+!
+!*************************************
+! Get-EE-ICID-No                     *
+! Get Employee IC No or Scheme No    *
+!*************************************
+Begin-Procedure Get-EE-ICID-No
+   Let $EE_IdNo = ''
+Begin-SELECT
+PN.NATIONAL_ID
+   Let $EE_IdNo = &PN.NATIONAL_ID
+
+    FROM PS_PERS_NID PN
+ WHERE PN.EMPLID = $Emplid
+   AND PN.COUNTRY = 'HKG'
+   AND PN.NATIONAL_ID_TYPE = $ICType
+End-SELECT
+End-Procedure
+!
+!*************************************
+! Get-EE-EmplDate                    *
+! Get Employment Date                *
+!*************************************
+Begin-Procedure Get-EE-EmplDate
+   Let $EmplDate = ''
+Begin-SELECT
+JOB.EFFDT
+   Let $EmplDate = &JOB.EFFDT
+     Do Format-DateTime($EmplDate, $EmplDate, {DEFDATE},'','')
+
+   FROM PS_JOB JOB
+    WHERE JOB.JOB_INDICATOR = 'P'
+      AND JOB.EMPLID = $Emplid
+      AND (JOB.ACTION = 'HIR' OR JOB.ACTION = 'REH')
+      AND JOB.EFFDT = (SELECT MAX(JOB1.EFFDT) FROM PS_JOB JOB1
+                           WHERE JOB1.JOB_INDICATOR = 'P'
+                             AND JOB1.EMPLID  = JOB.EMPLID
+                             AND (JOB1.ACTION = 'HIR' OR JOB1.ACTION = 'REH')
+                      )
+End-SELECT
+End-Procedure
+
+
+!
+!*************************************************
+! Get-REH-EmplDate                               *
+! Get Max Employment Rehired Date                *
+!*************************************************
+Begin-Procedure Get-REH-EmplDate
+   Let $HirDate = ''
+Begin-SELECT
+JOB8.EFFDT
+   Let $HirDate = &JOB8.EFFDT
+
+
+   FROM PS_JOB JOB8
+    WHERE JOB8.JOB_INDICATOR = 'P'
+      AND JOB8.EMPLID = $Emplid
+      AND (JOB8.ACTION = 'REH')
+      AND JOB8.EFFDT = (SELECT MAX(JOBR1.EFFDT) FROM PS_JOB JOBR1
+                           WHERE JOBR1.JOB_INDICATOR = 'P'
+                             AND JOBR1.EMPLID  = JOB8.EMPLID
+                             AND ( JOBR1.ACTION = 'REH')
+                      )
+End-SELECT
+End-Procedure
+
+!
+!*************************************
+! Get-EE-TermDate                    *
+! Get Employment Date                *
+!*************************************
+Begin-Procedure Get-EE-TermDate
+   Let $TermDate = ''
+   Let $TermCompDate = ''
+Begin-SELECT
+JOB3.EFFDT
+    Do Get-REH-EmplDate
+    Let $TermDate = dateadd(&JOB3.EFFDT,'DAY',-1)
+    Let $TermCompDate = $TermDate
+     Do Format-DateTime($TermDate, $TermDate, {DEFDATE},'','')
+
+FROM PS_JOB JOB3
+WHERE JOB3.JOB_INDICATOR = 'P'
+      AND JOB3.EMPLID = $Emplid
+      AND (JOB3.ACTION = 'TER')
+      AND JOB3.EFFDT = (SELECT MAX(JOB2.EFFDT)  FROM PS_JOB JOB2
+                           WHERE JOB2.JOB_INDICATOR = 'P'
+                             AND JOB2.EMPLID  = JOB3.EMPLID
+                             AND (JOB2.ACTION = 'TER' )
+                             AND (JOB2.EFFDT BETWEEN $FromDate AND $ToDate )
+
+
+                            AND JOB2.EFFSEQ = (SELECT MAX(JOB4.EFFSEQ)  FROM PS_JOB JOB4
+                                                    WHERE JOB4.JOB_INDICATOR = 'P'
+                                                        AND JOB4.EMPLID  = JOB2.EMPLID
+                                                        AND (JOB4.ACTION = 'TER' )
+                                                        AND (JOB4.EFFDT BETWEEN $FromDate AND $ToDate )
+
+                                               )
+                      )
+End-SELECT
+End-Procedure
+
+!
+!*************************************
+! Get-EE-MPF-NO                      *
+! Get Membership Number              *
+!*************************************
+Begin-Procedure Get-EE-MPF-NO
+   Let $EE_IdNo = ''
+Begin-SELECT
+MPFNO.GPHK_MEMBERSHIP_NO  &MPF_No
+
+     Let $EE_IdNo = &MPF_No
+
+   FROM PS_GPHK_MEMBERSHIP MPFNO
+  WHERE MPFNO.EMPLID = $Emplid
+   AND  MPFNO.RECIPIENT_ID = $Recipient
+End-SELECT
+End-Procedure
+!
+!*************************************
+! Get-PayEntity-Details              *
+! Get Pay Entity Address Details     *
+!*************************************
+!
+Begin-Procedure Get-PayEntity-Details
+Begin-SELECT
+PED.DESCR
+GPD.ADDRESS1
+GPD.ADDRESS2
+GPD.ADDRESS3
+GPD.CITY
+GPD.STATE
+
+    Let $StateCode = &GPD.STATE
+
+    Let $StateDescr = ''
+    Do Get-State-Descr
+    Let $PE_Address = rtrim(&GPD.ADDRESS1,' ')
+    if rtrim(&GPD.ADDRESS2,' ') <> ''
+       Let $PE_Address =$PE_Address || ' ' || rtrim(&GPD.ADDRESS2,' ')
+    End-if
+    if rtrim(&GPD.ADDRESS3,' ') <> ''
+       Let $PE_Address =$PE_Address || ' ' || rtrim(&GPD.ADDRESS3,' ')
+    End-if
+    if rtrim(&GPD.CITY,' ') <> ''
+       Let $PE_Address =$PE_Address || ' ' || rtrim(&GPD.CITY,' ')
+    End-if
+    Let $PE_Address =$PE_Address || ' ' || $StateDescr
+
+    Let $PayEntityName = &PED.DESCR
+    FROM PS_GP_PYENT PED, PS_GP_PYENT_DTL GPD
+         WHERE PED.PAY_ENTITY = GPD.PAY_ENTITY
+           AND PED.PAY_ENTITY = $PayEntity
+           AND GPD.EFFDT = (SELECT MAX(GPD1.EFFDT) FROM PS_GP_PYENT_DTL GPD1
+                              WHERE GPD1.PAY_ENTITY = GPD.PAY_ENTITY
+                           )
+End-SELECT
+End-Procedure
+!
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'datemath.sqc'  !Routines for date arithmetic
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Routines to Update Run Status
+
+
+Begin-procedure Print-Page-Bottom
+    if #LC > 45
+       new-page
+       Let #LC = 2
+    else
+       Let #LC = #LC + 2
+    end-if
+    print 'Date  :' (#LC,1)
+    print '_'       (#LC,50,45) fill
+    Let #LC = #LC + 1
+    print '(Signature of the employer)'       (#LC,60)
+    Let #LC = #LC + 1
+    print 'Note: If the employer is not an individual, this statement' (#LC,50)
+    Let #LC = #LC + 1
+    print 'must be signed by a duly authorised signatory.'             (#LC,54)
+    Let #LC = #LC + 1
+    print 'Notes:'  (#LC,1) underline
+    Let #LC = #LC + 1
+    PRINT '(1)'     (#LC,1)
+    PRINT 'Employers should state clearly in this remittance statement for each new employee:' (#LC,5)
+    Let #LC = #LC + 1
+    print '(a)   the relevant income for each of the relevant contribution periods included in this statement; and' (#LC,5)
+    Let #LC = #LC + 1
+    print '(b)   the respective employer''s and employee''s contributions for each of these periods,' (#LC,5)
+    Let #LC = #LC + 1
+    print 'so as to enable the scheme trustee to check the arithmetic accuracy of the contributions.' (#LC,5)
+    Let #LC = #LC + 1
+    print '(2)' (#LC,1)
+    print 'Employees who do not have any relevant income (such as those on no-paid leave) should also be reported in this part.' (#LC,5)
+End-Procedure
+!
+
+Begin-procedure Print-Section-Total
+if #LC > 45
+       new-page
+       Let #LC = 2
+    else
+       Let #LC = #LC + 2
+    end-if
+
+    if $EmpTermSecCal <> '1'
+    graphic (#LC,76,81) box 1 0 8
+     Print 'Grand-Total:'     (#LC,76) BOLD
+
+     Print #Sum_A (#LC,88) edit '99,999.99'
+     Print #Sum_B (#LC,100) edit '99,999.99'
+     Print #Sum_C (#LC,112) edit '99,999.99'
+     Print #Sum_D (#LC,124) edit '99,999.99'
+     Print #Sum_E (#LC,136) edit '99,999.99'
+     Print #Sum_F (#LC,148) edit '99,999.99'
+
+     LET #LC = #LC + 1
+
+
+     Let #Sum_A = 0
+     Let #Sum_B = 0
+     Let #Sum_C = 0
+     Let #Sum_D = 0
+     Let #Sum_E = 0
+     Let #Sum_F = 0
+    else
+     let $EmpTermSecCal = '0'
+     graphic (#LC,88,83) box 1 0 8
+     Print 'Grand-Total:'     (#LC,88) BOLD
+
+     Print #Sum_A (#LC,100) edit '99,999.99'
+     Print #Sum_B (#LC,112) edit '99,999.99'
+     Print #Sum_C (#LC,124) edit '99,999.99'
+     Print #Sum_D (#LC,136) edit '99,999.99'
+     Print #Sum_E (#LC,148) edit '99,999.99'
+     Print #Sum_F (#LC,161) edit '99,999.99'
+
+     LET #LC = #LC + 1
+
+
+     Let #Sum_A = 0
+     Let #Sum_B = 0
+     Let #Sum_C = 0
+     Let #Sum_D = 0
+     Let #Sum_E = 0
+     Let #Sum_F = 0
+    end-if
+
+
+End-Procedure Print-Section-Total
+
+!*******************************************************
+! Check-Offcycle-Employees                               *
+! Check Off cycle employees               *
+!********************************************************
+Begin-procedure Check-Offcycle-Employees
+
+Begin-Select DISTINCT
+ 
+OFFP.OFF_CYCLE_ID    &OFF.OFF_CYCLE_ID   
+OFFP.CAL_RUN_ID      &OFF.CAL_RUN_ID
+RSLT.CAL_ID     &RSLT.CAL_ID
+
+    Let $Off_Cal_Run_id=''
+    Let $Off_Cal_Run_id=&OFF.CAL_RUN_ID
+      
+     if $Off_Cal_Run_id <> ''
+      Do Off-Cycle-Calculation
+     End-if     
+
+FROM PS_GP_OFFCYCLE OFFP, PS_GPHK_MPF_RSLT RSLT 
+WHERE RSLT.EMPLID = $Emplid
+AND OFFP.GP_PAYGROUP=RSLT.GP_PAYGROUP
+AND RSLT.CAL_RUN_ID <> RSLT.ORIG_CAL_RUN_ID 
+AND RSLT.CAL_RUN_ID=OFFP.CAL_RUN_ID
+AND RSLT.ORIG_CAL_RUN_ID =$ORIG_CAL_RUN_ID
+
+End-Select
+End-Procedure
+
+!*******************************************************
+! Off-Cycle-Calculation                                *
+! Off Cycle Calculation if an offcycle exists          *
+!*******************************************************
+Begin-procedure Off-Cycle-Calculation 
+
+Begin-Select distinct
+
+ST.ORIG_CAL_RUN_ID  &ST.ORIG_CAL_RUN_ID
+ST.RSLT_VER_NUM     &ST.RSLT_VER_NUM
+ST.RSLT_REV_NUM     &ST.RSLT_REV_NUM
+ST.PRIOR_VER_NUM    &ST.PRIOR_VER_NUM
+ST.PRIOR_REV_NUM    &ST.PRIOR_REV_NUM  
+
+    Let $Off_Orig_Cal_id=&ST.ORIG_CAL_RUN_ID
+    LET #Ver_Num=&ST.RSLT_VER_NUM
+    LET #Rev_Num=&ST.RSLT_REV_NUM
+    let #Prior_Ver_Num=&ST.PRIOR_VER_NUM
+    LET #Prior_Rev_Num=&ST.PRIOR_REV_NUM  
+    
+    let #NewPrior_Ver_Num=#Prior_Ver_Num+1
+    
+    if #Ver_Num = #NewPrior_Ver_Num AND #Rev_Num = #Prior_Rev_Num
+      do Add-Offcycle-Amounts
+      DO Adjust-Offcycle-Amounts
+    end-if
+
+FROM PS_GP_PYE_PRC_STAT ST
+WHERE ST.EMPLID = $Emplid
+AND ST.CAL_RUN_ID= $Off_Cal_Run_id
+AND ST.CALC_TYPE='P'
+
+End-Select
+End-Procedure
+
+!*************************************
+! Add-Offcycle-Amounts               *
+! Add Offcycle Amounts               *
+!*************************************
+Begin-Procedure Add-Offcycle-Amounts
+
+Begin-SELECT DISTINCT
+
+AD.PIN_CODE         &AD.PinCode
+AD.GPHK_BASE_AMOUNT &AD.BaseAmt
+AD.AMOUNT           &AD.MPFAmt
+
+    Let $PinCodeA = rtrim(&AD.PinCode,' ')
+
+    if $PinCodeA = 'ERMPFMN1 HKG'
+       Let #ERMandAmt     = #ERMandAmt     + &AD.MPFAmt
+       Let #ERMandBaseAmt = #ERMandBaseAmt + &AD.BaseAmt
+    end-if
+    if $PinCodeA = 'ERMPFVOL1 HKG'
+       Let #ERVolAmt     = #ERVolAmt     + &AD.MPFAmt
+       Let #ERVolBaseAmt = #ERVolBaseAmt + &AD.BaseAmt
+    end-if            
+
+    if $PinCodeA = 'EEMPFMN1 HKG'
+       Let #EEMandAmt     = #EEMandAmt     + &AD.MPFAmt
+       Let #EEMandBaseAmt = #EEMandBaseAmt + &AD.BaseAmt
+    end-if
+    if $PinCodeA = 'EEMPFVOL1 HKG'
+       Let #EEVolAmt     = #EEVolAmt     + &AD.MPFAmt
+       Let #EEVolBaseAmt = #EEVolBaseAmt + &AD.BaseAmt
+    end-if          
+
+   FROM PS_GPHK_MPF_RSLT AD
+    WHERE AD.EMPLID      = $Emplid
+      AND AD.START_DT    = $Prcs_StartDt
+      AND AD.END_DATE    = $Prcs_EndDt
+      AND AD.CAL_RUN_ID  = $Off_Cal_Run_id
+      
+END-SELECT
+End-Procedure
+
+!*************************************
+! Adjust-Offcycle-Amounts            *
+! Adjust amounts related to          *
+! offcycle calendars                 *
+!*************************************
+Begin-Procedure Adjust-Offcycle-Amounts
+
+Begin-SELECT DISTINCT
+Sub.PIN_CODE         &Sub.PinCode
+Sub.GPHK_BASE_AMOUNT &Sub.BaseAmt
+Sub.AMOUNT           &Sub.MPFAmt
+
+    Let $PinCodeS = rtrim(&Sub.PinCode,' ')
+
+    if $PinCodeS = 'ERMPFMN1 HKG'
+       Let #ERMandAmt     = #ERMandAmt     - &Sub.MPFAmt
+       Let #ERMandBaseAmt = #ERMandBaseAmt - &Sub.BaseAmt
+    end-if
+    
+    if $PinCodeS = 'ERMPFVOL1 HKG'
+       Let #ERVolAmt     = #ERVolAmt     - &Sub.MPFAmt
+       Let #ERVolBaseAmt = #ERVolBaseAmt - &Sub.BaseAmt
+    end-if            
+
+    if $PinCodeS = 'EEMPFMN1 HKG'
+       Let #EEMandAmt     = #EEMandAmt     - &Sub.MPFAmt
+       Let #EEMandBaseAmt = #EEMandBaseAmt - &Sub.BaseAmt
+    end-if
+    
+    if $PinCodeS = 'EEMPFVOL1 HKG'
+       Let #EEVolAmt     = #EEVolAmt     - &Sub.MPFAmt
+       Let #EEVolBaseAmt = #EEVolBaseAmt - &Sub.BaseAmt
+    end-if          
+
+   FROM PS_GPHK_MPF_RSLT Sub
+    WHERE Sub.EMPLID      = $Emplid
+      AND Sub.START_DT    = $Prcs_StartDt
+      AND Sub.END_DATE    = $Prcs_EndDt
+      AND Sub.CAL_RUN_ID  = $Off_Orig_Cal_id
+      
+END-SELECT
+End-Procedure

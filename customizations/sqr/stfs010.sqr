@@ -1,0 +1,1204 @@
+!-----------------------------------------------------------------------
+! Report Name: STFS010.SQR - Variable Accounting Accrual Report
+!-----------------------------------------------------------------------
+!
+!
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!-----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:02:52:19                                 
+!       $Release:  HR92                                                
+!      $Revision:  101                                                 
+!
+!-----------------------------------------------------------------------
+! Program Descr: The SAR Accounting Accrual Report will be used by the
+! company to aid in the compliance of FASB Interpretation No. 28,
+! Accounting for Stock Appreciation Rights and Other Variable Stock
+! Option or Award Plans.  Since Stock Appreciation Rights are considered
+! variable awards a company must accrue the expense associated with the
+! award until it is exercised.  At the end of every reporting period the
+! accrual must be adjusted based upon the current stock price and the
+! shares that remain outstanding under the award. Report will be created
+! for employees by grant number for a specified As Of Date for a
+! particular Group ID and Stock ID.  Subtotals are provided for each
+! grant and for all grants within an Option Type. Grand totals are
+! provided at the end for all Option Types.
+!-----------------------------------------------------------------------
+! Options:       None
+! Tables:        ST_GRANT
+!                ST_GRNT_VST_DTL
+!                ST_GRANT_EXER
+!                ST_EXER_RELEASE
+!                ST_STFS010_TBL
+!                PERSON_NAME
+! Sorts:         Stock ID, Group ID, Option Type, Name, Grant Number
+!-----------------------------------------------------------------------
+
+  #include 'setenv.sqc'
+
+!-----------------------------------------------------------------------
+Begin-Setup
+!-----------------------------------------------------------------------
+
+  #include 'ptpsl177.sqc'
+
+End-Setup
+
+!-----------------------------------------------------------------------
+! Procedure: Begin-Program
+! Descr:     Main Report procedure.
+!-----------------------------------------------------------------------
+Begin-Program
+
+  do Init-Report
+
+! Build the temporary table ST_STFS010_TBL
+  do Select-Vesting-Info
+  do Get-Shares-Exercised
+  do Process-Shares-Exercised
+
+  do Main-Process
+
+  do Delete-Temp-Files
+  do Reset
+  do Successful-EOJ
+
+  show 'Process ended at:   ' $SysDateTime      !standard output info to sqr.log
+
+End-Program
+
+!-----------------------------------------------------------------------
+! Section: Heading Procedures
+! Descr:   This sections contains all procedures for
+!          printing the optional heading.
+!-----------------------------------------------------------------------
+Begin-Heading 7
+
+  #Include 'stdhdg01.sqc'
+
+  print $StockIdLbl                                        (-1,001,008)
+  print ':'                                                (  ,   ,001)
+  print $StockId                                           (  , +3,010)
+
+  do Format-DateTime ($AsOfDate, $Date, {DEFDATE}, '', '')
+  print $AsOfLbl                                           (  ,075,010)
+  print ':'                                                (  ,   ,001)
+  print $Date                                              (  , +1,010)
+  print '-'                                                (  , +1,001)
+  print #CurrentPrice                                      (  , +1,   ) edit $999.999999
+
+  print $GroupIdLbl                                        (+1,001,008)
+  print ':'                                                (  ,   ,001)
+  print $GroupId                                           (  , +3,010)
+
+  if $PriorDt <> ''
+    do Format-DateTime ($PriorDt, $Date, {DEFDATE}, '', '')
+    print $PriorPeriodLbl                                  (  ,069,016)
+    print ':'                                              (  ,   ,001)
+    print $Date                                            (  , +1,010)
+    print '-'                                              (  , +1,001)
+    print #PriorPrice                                      (  , +1,   ) edit $999.999999
+  end-if
+
+  print $GrantNbrLbl                                       (+2,001,012)
+  print $OptionLbl                                         (  ,015,006)
+  print $GrantPriceLbl                                     (  ,025,011)
+  print $SharesLbl                                         (  ,061,006)
+  print $SharesLbl                                         (  ,080,006)
+  print $TotalLbl                                          (  ,104,005)
+  print $CurrentLbl                                        (  ,125,007)
+  print $PriorLbl                                          (  ,150,005)
+  print $PeriodLbl                                         (  ,172,006)
+
+  print $GrantDtLbl                                        (+1,001,012)
+  print $TypeLbl                                           (  ,015,004)
+  print $CompPerShareLbl                                   (  ,022,014)
+  print $VestDtLbl                                         (  ,038,009)
+  print $VestingLbl                                        (  ,060,007)
+  print $OutstandingLbl                                    (  ,075,011)
+  print $CompensationLbl                                   (  ,097,012)
+  print $AccrualLbl                                        (  ,125,007)
+  print $AccrualLbl                                        (  ,148,007)
+  print $AccrualLbl                                        (  ,171,007)
+
+  print '-'                                                (+1,001,177) fill bold
+
+End-Heading
+
+!-----------------------------------------------------------------------
+! Procedure: Init-Report
+! Descr:     Report initialization procedure.  Set titles, parameters.
+!            This is called from the Begin-Program procedure.
+!-----------------------------------------------------------------------
+Begin-Procedure Init-Report
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Define-Prcs-Vars
+  do Get-Run-Control-Parms
+  let $ReportId = 'STFS010'
+
+  do Get-Report-Language    ! Procedure that decides the report language
+                            ! and then calls 'Report-Translation' procedure
+                            ! that reads the language dep. text.
+
+  if $prcs_process_instance = ''
+  else
+    let #Instance = to_number($prcs_process_instance)
+    do Get-SQR-Parms
+  end-if
+
+  do Init-Variables
+  let $CurrentTime = DateNow()
+  show 'Process started at: ' $SysDateTime      !standard output info to sqr.log
+
+End-Procedure Init-Report
+
+!-----------------------------------------------------------------------
+! Procedure: Report-Translation
+! Descr:     This procedure is used to read language-dependent text from
+!            the database.
+!-----------------------------------------------------------------------
+Begin-Procedure Report-Translation
+
+  do Init_Report_Translation('STOCK', $Language_Cd)
+  do Append_Report_Translation ($ReportId)
+
+  do Get_Field_Information ('STOCK',  'STOCK_ID',      $StockIdLbl,     #DW)
+  do Get_Field_Information ('STOCK',  'GRANT',         $GrantLbl,       #DW)
+  do Get_Field_Information ('STOCK',  'PRICE',         $PriceLbl,       #DW)
+  do Get_Field_Information ('STOCK',  'DATE',          $DateLbl,        #DW)
+  do Get_Field_Information ('STOCK',  'ASOFDATE',      $AsOfLbl,        #DW)
+  do Get_Field_Information ('STOCK',  'SHARES',        $SharesLbl,      #DW)
+  do Get_Field_Information ('STOCK',  'NUMBER',        $NumberLbl,      #DW)
+  do Get_Field_Information ('STOCK',  'TOTAL',         $TotalLbl,       #DW)
+  do Get_Field_Information ('STOCK',  'NAME',          $NameLbl,        #DW)
+  do Get_Field_Information ('STOCK',  'EMPLID',        $EmplidLbl,      #DW)
+  do Get_Field_Information ('STOCK',  'GRANT_NBR',     $GrantNbrLbl,    #DW)
+  do Get_Field_Information ('STOCK',  'GRANT_DT',      $GrantDtLbl,     #DW)
+  do Get_Field_Information ('STOCK',  'GRANT_PRICE',   $GrantPriceLbl,  #DW)
+  do Get_Field_Information ('STOCK',  'ST_OPTION_TYPE',$OptionTypeLbl,  #DW)
+  do Get_Field_Information ('STFS010','TOTAL_COMP',    $TotalCompLbl,   #DW)
+  do Get_Field_Information ('STFS010','COMP_PER_SHARE',$CompPerShareLbl,#DW)
+  do Get_Field_Information ('STFS010','VEST_DT',       $VestDtLbl,      #DW)
+  do Get_Field_Information ('STFS010','VESTING',       $VestingLbl,     #DW)
+  do Get_Field_Information ('STFS010','OUTSTANDING',   $OutstandingLbl, #DW)
+  do Get_Field_Information ('STFS010','ACCRUAL',       $AccrualLbl,     #DW)
+  do Get_Field_Information ('STFS010','PRIOR_PERIOD',  $PriorPeriodLbl, #DW)
+  do Get_Field_Information ('STFS010','COMPENSATION',  $CompensationLbl,#DW)
+  do Get_Field_Information ('STFS010','OPTION',        $OptionLbl,      #DW)
+  do Get_Field_Information ('STFS010','TYPE',          $TypeLbl,        #DW)
+  do Get_Field_Information ('STFS010','PRIOR',         $PriorLbl,       #DW)
+  do Get_Field_Information ('STFS010','CURRENT',       $CurrentLbl,     #DW)
+  do Get_Field_Information ('STFS010','PERIOD',        $PeriodLbl,      #DW)
+  do Get_Field_Information ('STFS010','GROUP_ID',      $GroupIdLbl,     #DW)
+  do Get_Field_Information ('STFS010','TOTAL_NSAR',    $TotalNsarLbl,   #DW)
+  do Get_Field_Information ('STFS010','TOTAL_ISAR',    $TotalIsarLbl,   #DW)
+  do Get_Field_Information ('STFS010','TOTAL_REPRICED',$TotalRepriceLbl,#DW)
+  do Get_Field_Information ('STFS010','TOTAL_REPORT',  $TotalReportLbl, #DW)
+  do Get_Field_Information ('STFS010','REPORT_TITLE',  $ReportTitle,    #DW)
+
+End-Procedure Report-Translation
+
+!-----------------------------------------------------------------------
+! Procedure: Init-Variables
+! Descr:     Initializes all report variables
+!-----------------------------------------------------------------------
+Begin-Procedure Init-Variables
+
+  let #Count           = 0
+  let #TotalCount      = 0
+  let $StockId         = rtrim($RC_STOCK_ID,' ')
+  let $AsOfDate        = rtrim($RC_ASOFDATE,' ')
+  let $GroupId         = rtrim($RC_ST_GROUP_ID,' ')
+  let $PriorDt         = rtrim($RC_ST_PRIOR_ASOFDATE,' ')
+  let $SuppressDetails = rtrim($RC_ST_SUPPR_DTLS,' ')
+  do Convert-To-DTU-Date($AsOfDate,$AsOfDateDtu)
+  do Convert-To-DTU-Date($PriorDt ,$PriorDtDtu )
+  do Create-Array
+  let $FmvDate         = $AsOfDate
+  do Get-Fmv-Price
+  let #CurrentPrice    = #FmvPrice
+
+  let $FmvDate         = $PriorDt
+  do Get-Fmv-Price
+  let #PriorPrice      = #FmvPrice
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Create-Array
+! Descr:   Creates array used for computing
+!-----------------------------------------------------------------------
+Begin-Procedure Create-Array
+
+  create-array name  = Exer        -
+               size  = 50          -
+               field = VestDt:char -
+               field = Vest:number -
+               field = Exer:number
+
+  create-array name  = Comp                     -
+               size  = 1000                     -
+               field = VestDt:char              -
+               field = SharesVested:number      -
+               field = SharesOutstanding:number -
+               field = CurrentComp:number       -
+               field = CAccrual:number          -
+               field = PAccrual:number          -
+               field = TAccrual:number
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Fmv-Price
+! Descr:   Retrieve the info to be passed to the FMV function
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Fmv-Price
+
+Begin-Select
+
+A1.FMV_METHOD
+A1.FMV_HOLIDAY_RULE
+A1.FMV_WEEKEND_RULE
+
+  let $FmvMethod   = rtrim(&a1.fmv_method, ' ')
+  let $HolidayRule = rtrim(&a1.fmv_holiday_rule, ' ')
+  let $WeekendRule = rtrim(&a1.fmv_weekend_rule, ' ')
+  do Get_FMV_Prices ($FmvMethod,$StockId,$FmvDate,$HolidayRule,$WeekendRule,#FmvPrice)
+
+from  PS_STOCK_DTL A1
+where A1.STOCK_ID = $StockId
+  and A1.EFFDT    = (select MAX(EFFDT)
+                       from PS_STOCK_DTL
+                      where STOCK_ID  = A1.STOCK_ID
+                        and EFFDT    <= $FmvDate )
+  
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Select-Vesting-Info
+! Descr:   Selects values to insert into ST_STFS010_TBL.
+!-----------------------------------------------------------------------
+Begin-Procedure Select-Vesting-Info
+
+Begin-Select
+
+XB.EMPLID
+XB.STOCK_ID
+XB.STOCK_PLAN
+XB.GRANT_NBR
+XC.VEST_DT
+XB.GRANT_PRICE
+XC.SHARES_VESTED
+XC.EXPIRATN_DT
+XC.TERM_EXPIRATN_DT
+XB.ST_CANCEL_REASON
+XB.ST_CANCEL_DT
+
+  let $MSCancelDt  = rtrim(&xb.st_cancel_dt,' ')
+  let $MSTermExpDt = rtrim(&xc.term_expiratn_dt,' ')
+
+  do Insert-Vesting-Info
+
+from PS_ST_GRANT        XB,
+     PS_ST_GRNT_VST_DTL XC,
+     PS_ST_STFS010_TAO  XD
+where XB.EMPLID      = XC.EMPLID
+  and XB.STOCK_ID    = XC.STOCK_ID
+  and XB.GRANT_NBR   = XC.GRANT_NBR
+  and XB.EMPLID      = XD.EMPLID
+  and XB.STOCK_ID    = XD.STOCK_ID
+  and XB.GRANT_NBR   = XD.GRANT_NBR
+  and XC.VEST_EFFDT  = (select MAX(VEST_EFFDT)
+                          from PS_ST_GRNT_VST_DTL
+                         where EMPLID     = XC.EMPLID
+                           and STOCK_ID   = XC.STOCK_ID
+                           and GRANT_NBR  = XC.GRANT_NBR)
+  and XC.SEQ_NUM     = (select MAX(SEQ_NUM)
+                          from PS_ST_GRNT_VST_DTL
+                         where EMPLID     = XC.EMPLID
+                           and STOCK_ID   = XC.STOCK_ID
+                           and GRANT_NBR  = XC.GRANT_NBR
+                           and VEST_EFFDT = XC.VEST_EFFDT)
+  and XB.GRANT_STATUS = 'A'
+  and XB.GRANT_DT    <= $AsOfDate
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Insert-Vesting-Info
+! Descr:   Inserts vesting info into a temp table as the first step in creating
+!          the vesting schedule.  CurrentTime and Instance are used to 
+!          eliminate the chance of data being accessed by two different runs
+!          of the report at the same time.
+!-----------------------------------------------------------------------
+Begin-Procedure Insert-Vesting-Info
+
+  let $Procedure = 'Insert-Vesting-Temp'
+  let $SQL-Statement = 'Procedure: ' || $Procedure
+
+Begin-Sql     on-error = SQL-Error
+
+INSERT into PS_ST_STFS010_TBL
+
+(DATETIME_STAMP
+,PROCESSINSTANCE
+,EMPLID
+,STOCK_ID
+,STOCK_PLAN
+,GRANT_NBR
+,VEST_DT
+,GRANT_PRICE
+,SHARES_VESTED
+,SHARES_EXERCISED
+,EXPIRATN_DT
+,TERM_EXPIRATN_DT
+,ST_CANCEL_REASON
+,ST_CANCEL_DT)
+
+VALUES
+
+  ($CurrentTime
+  ,#Instance
+  ,&xb.emplid
+  ,&xb.stock_id
+  ,&xb.stock_plan
+  ,&xb.grant_nbr
+  ,&xc.vest_dt
+  ,&xb.grant_price
+  ,&xc.shares_vested
+  ,0
+  ,&xc.expiratn_dt,
+
+! Workaround for TPRD T-MLEAN-Q54CT
+#ifdef MICROSOFT
+   $MSTermExpDt
+  ,&xb.st_cancel_reason
+  ,$MSCancelDt)
+#else
+   &xc.term_expiratn_dt
+  ,&xb.st_cancel_reason
+  ,&xb.st_cancel_dt)
+#endif
+
+End-Sql
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Shares-Exercised
+! Descr:   Sums all exercises for a particular emplid, stock_id, grant_nbr
+!          and vest_dt. Report lumps the sum in a particular vesting date and
+!          then trickles the excess down to the next higher vesting date.
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Shares-Exercised
+
+Begin-Select
+
+XD.EMPLID
+XD.STOCK_ID
+XD.GRANT_NBR
+XE.VEST_DT
+SUM(XD.SHARES_EXERCISED) &SumExer
+
+  do Update-Shares-ExercisedA
+
+from PS_ST_GRANT_EXER   XD,
+     PS_ST_STFS010_TBL  XE
+where XD.EMPLID           = XE.EMPLID
+  and XD.GRANT_NBR        = XE.GRANT_NBR
+  and XD.STOCK_ID         = XE.STOCK_ID
+  and XD.EXERCISE_STATUS  = 'A'
+  and XD.STOCK_ID         = $StockId
+  and XD.EXERCISE_DT     <= $AsOfDate
+  and XE.DATETIME_STAMP   = $CurrentTime
+  and XE.PROCESSINSTANCE  = #Instance
+  and XE.VEST_DT          = (select MIN(VEST_DT)
+                             from  PS_ST_STFS010_TBL
+                             where EMPLID          = XD.EMPLID
+                               and GRANT_NBR       = XD.GRANT_NBR
+                               and STOCK_ID        = XD.STOCK_ID
+                               and STOCK_PLAN      = XD.STOCK_PLAN
+                               and DATETIME_STAMP  = $CurrentTime
+                               and PROCESSINSTANCE = #Instance
+                               and (XD.EXERCISE_DT < EXPIRATN_DT
+                               and (XD.EXERCISE_DT < TERM_EXPIRATN_DT
+                                or TERM_EXPIRATN_DT is null)))
+group by XD.EMPLID,
+         XD.STOCK_ID,
+         XD.GRANT_NBR,
+         XE.VEST_DT
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Update-Shares-ExercisedA
+! Descr:   Updates the temp table with the sum of shares_eXFrcised for a given
+!          emplid, stock_id, grant_nbr, and vest_dt.
+!-----------------------------------------------------------------------
+Begin-Procedure Update-Shares-ExercisedA
+
+  let $Procedure = 'Update-Shares-ExercisedA'
+  let $SQL-Statement = 'Procedure: ' || $Procedure
+
+Begin-Sql     on-error = SQL-Error
+
+update PS_ST_STFS010_TBL
+  set SHARES_EXERCISED = &SumExer
+where EMPLID          = &xd.emplid
+  and STOCK_ID        = &xd.stock_id
+  and GRANT_NBR       = &xd.grant_nbr
+  and VEST_DT         = &xe.vest_dt
+  and DATETIME_STAMP  = $CurrentTime
+  and PROCESSINSTANCE = #Instance
+
+End-Sql
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Process-Shares-Exercised
+! Descr:   For each emplid and grant_nbr put info into array and call
+!          Update-Shares-ExercisedB.
+!-----------------------------------------------------------------------
+Begin-Procedure Process-Shares-Exercised
+
+  let #x = 0
+
+Begin-Select
+
+XF.EMPLID       () on-break print=never level=1 procedure=Update-Shares-ExercisedB  save=$OldEmp
+XF.STOCK_ID     
+XF.STOCK_PLAN   
+XF.GRANT_NBR    () on-break print=never level=1 procedure=Update-Shares-ExercisedB  save=$OldGrant
+XF.VEST_DT
+XF.SHARES_VESTED
+XF.SHARES_EXERCISED
+
+  put &xf.vest_dt &xf.shares_vested &xf.shares_exercised into Exer(#x) VestDt Vest Exer
+  add 1 to #x
+
+from PS_ST_STFS010_TBL XF
+where XF.STOCK_ID        = $StockId
+  and XF.DATETIME_STAMP  = $CurrentTime
+  and XF.PROCESSINSTANCE = #Instance
+order by 1,4,5
+
+End-Select
+
+  do Update-Shares-ExercisedB    !to process last on-break
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Update-Shares-ExercisedB
+! Descr:   For each row in the array, check if shares eXFrcised are greater
+!          than shares vested for a particular vest date. If so, trickle down
+!          the eXDess to the next vesting date.
+!-----------------------------------------------------------------------
+Begin-Procedure Update-Shares-ExercisedB
+
+  let #TotalRow  = 0
+  let #Remainder = 0
+
+  while #totalRow <= #x         !to run thru all elements
+    get $VestDtArray #ShrVestArray #ShrExerArray from Exer(#totalRow) VestDt Vest Exer
+    let #ShareToExer = #ShrExerArray + #Remainder
+    if #ShareToExer > #ShrVestArray
+      let #UpdateExer  = #ShrVestArray
+      let #Remainder   = #ShareToExer  - #ShrVestArray
+      do Update-Shares-ExercisedC
+    else
+      if #Remainder > #ShrExerArray
+        let #UpdateExer = #Remainder
+        do Update-Shares-ExercisedC
+        let #Remainder = 0
+      end-if
+    end-if
+    add 1 to #totalRow
+  end-while
+
+  clear-array  name=Exer
+  let #x = 0
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Update-Shares-ExercisedC
+! Descr:   Updates the temp table.
+!-----------------------------------------------------------------------
+Begin-Procedure Update-Shares-ExercisedC
+
+ let $Procedure     = 'Update-Shares-ExercisedC'
+ let $SQL-Statement = 'Procedure: ' || $Procedure
+
+Begin-Sql     on-error = SQL-Error
+
+update PS_ST_STFS010_TBL
+  set SHARES_EXERCISED = #UpdateExer
+where EMPLID          = $OldEmp
+  and STOCK_ID        = $StockId
+  and GRANT_NBR       = $OldGrant
+  and VEST_DT         = $VestDtArray
+  and DATETIME_STAMP  = $CurrentTime
+  and PROCESSINSTANCE = #Instance
+
+End-Sql
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Main-Process
+! Descr:
+!-----------------------------------------------------------------------
+Begin-Procedure Main-Process
+
+  do Select-Isars
+  let $TotalTypeLbl = $TotalIsarLbl
+  do Print-Option-Type-Summary
+
+  do Select-Nsars
+  let $TotalTypeLbl = $TotalNsarLbl
+  do Print-Option-Type-Summary
+
+  do Select-Repriced-Grants
+  let $TotalTypeLbl = $TotalRepriceLbl
+  do Print-Option-Type-Summary
+
+  do Print-Report-Summary
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Select-Isars
+! Descr:
+!-----------------------------------------------------------------------
+Begin-Procedure Select-Isars
+
+Begin-Select
+
+A.EMPLID
+A.GRANT_NBR
+
+  let $Emplid   = rtrim(&a.emplid,' ')
+  let $GrantNbr = rtrim(&a.grant_nbr,' ')
+
+  do Select-Grant-Info
+
+from PS_ST_STFS010_TAO A
+where A.STOCK_ID       = $StockId
+  and A.ST_OPTION_TYPE = 'ISAR'
+order by A.GRANT_NBR
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Select-Nsars
+! Descr:
+!-----------------------------------------------------------------------
+Begin-Procedure Select-Nsars
+
+Begin-Select
+
+B.EMPLID
+B.GRANT_NBR
+
+  let $Emplid     = rtrim(&b.emplid,' ')
+  let $GrantNbr   = rtrim(&b.grant_nbr,' ')
+ 
+  do Select-Grant-Info
+
+from PS_ST_STFS010_TAO B
+where B.STOCK_ID       = $StockId
+  and B.ST_OPTION_TYPE = 'NSAR'
+order by B.GRANT_NBR
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Select-Repriced-Grants
+! Descr:
+!-----------------------------------------------------------------------
+Begin-Procedure Select-Repriced-Grants
+
+Begin-Select
+
+D.EMPLID
+D.GRANT_NBR
+
+  let $Emplid   = rtrim(&d.emplid,' ')
+  let $GrantNbr = rtrim(&d.grant_nbr,' ')
+
+  do Select-Grant-Info
+
+from PS_ST_GRANT D
+where D.STOCK_ID           = $StockId
+  and D.EMPLID             = D.EMPLID
+  and D.STOCK_ID           = D.STOCK_ID
+  and D.GRANT_NBR          = D.GRANT_NBR
+  and D.GRANT_STATUS       = 'A'
+  and D.GRANT_DT          <= $AsOfDate
+  and D.REPRICE_GRANT_NBR <> ' '
+  and not exists (select 'X'
+                   from PS_ST_STFS010_TAO CC
+                  where CC.EMPLID      = D.EMPLID
+                    and CC.STOCK_ID    = D.STOCK_ID
+                    and CC.GRANT_NBR   = D.GRANT_NBR )
+order by D.GRANT_NBR
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Select-Grant-Info
+! Descr:
+!-----------------------------------------------------------------------
+Begin-Procedure Select-Grant-Info
+
+Begin-Select
+
+E.GRANT_DT
+E.GRANT_PRICE
+E.SHARES_GRANTED
+E.ST_OPTION_TYPE
+E.REPRICE_GRANT_NBR
+E.ST_CANCEL_DT
+E.ST_CANCEL_REASON
+
+  let $GrantDt          = rtrim(&e.grant_dt,' ')
+  let #GrantPrice       = &e.grant_price
+  let #SharesGranted    = &e.shares_granted
+  let $OptionType       = rtrim(&e.st_option_type,' ')
+  let $RepriceNbr       = rtrim(&e.reprice_grant_nbr,' ')
+  let $CancelDt         = rtrim(&e.st_cancel_dt,' ')
+  let $CancelReason     = rtrim(&e.st_cancel_reason,' ')
+  let $CancelReasonXlat = ''
+  let #Count            = 0
+  let #RepriceFmv       = 0
+  let #RepriceAdjust    = 0
+
+  if $RepriceNbr <> ''
+    do Get-Repriced-Grant-Price
+  end-if
+
+  let #CurrentCompPerShare = #CurrentPrice - #GrantPrice - #RepriceAdjust
+  let #PriorPerShare       = #PriorPrice   - #GrantPrice - #RepriceAdjust
+
+  if #CurrentCompPerShare < 0
+    let #CurrentCompPerShare = 0
+  end-if
+  if #PriorPerShare < 0
+    let #PriorPerShare       = 0
+  end-if
+
+  do Convert-To-DTU-Date($GrantDt,$GrantDtDtu)
+  do Select-Vesting
+
+  if #SharesOutstanding > 0
+    do Print-Details
+  end-if
+
+  let #GrantOutstanding = 0
+  let #GrantComp        = 0
+  let #GrantCAccrual    = 0
+  let #GrantPAccrual    = 0
+  let #GrantTAccrual    = 0
+
+  clear-array name = Comp
+
+from PS_ST_GRANT E
+where E.EMPLID    = $Emplid
+  and E.STOCK_ID  = $StockId
+  and E.GRANT_NBR = $GrantNbr
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Repriced-Grant-Price
+! Descr:
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Repriced-Grant-Price
+
+  let #NewRepriceFmv = 0
+  let #OldRepriceFmv = 0
+
+Begin-Select
+
+K.GRANT_PRICE
+K.GRANT_DT
+
+  let #RepricePrice  = &k.grant_price
+  let $RepriceDt     = rtrim(&k.grant_dt,' ')
+  let $FmvDate       = $GrantDt
+  do Get-Fmv-Price
+  let #NewRepriceFmv = #FmvPrice
+  let $FmvDate       = $RepriceDt
+  do Get-Fmv-Price
+  let #OldRepriceFmv = #FmvPrice
+
+  if #OldRepriceFmv < #NewRepriceFmv
+    let #RepriceFmv = #OldRepriceFmv
+  else
+    let #RepriceFmv = #NewRepriceFmv
+  end-if
+
+  let #RepriceAdjust = #RepriceFmv - #RepricePrice
+
+  if #RepriceAdjust < 0
+    let #RepriceAdjust = 0
+  end-if
+
+from PS_ST_GRANT K
+where K.EMPLID    = $Emplid
+  and K.STOCK_ID  = $StockId
+  and K.GRANT_NBR = $RepriceNbr
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Select-Vesting
+! Descr:   
+!-----------------------------------------------------------------------
+Begin-Procedure Select-Vesting
+
+Begin-Select
+
+F.VEST_DT
+F.SHARES_VESTED
+
+  let $VestDt            = rtrim(&f.vest_dt,' ')
+  let #SharesVested      = &f.shares_vested
+  let #SharesOutstanding = 0
+  let #PriorOutstanding  = 0
+  let #CurrentComp       = 0
+  let #PriorComp         = 0
+  let #COutstanding      = 0
+  let #CComp             = 0
+  let #CAccrual          = 0
+  let #PAccrual          = 0
+  let #TAccrual          = 0
+  let #Count             = #Count    + 1
+  do Convert-To-DTU-Date($VestDt,$VestDtDtu)
+  do dtu-diff-days($GrantDtDtu, $VestDtDtu, #VestDays)
+  let #VestDays          = #VestDays + 1
+
+  do Current-Outstand-Term
+  do Current-Outstand-Other
+
+  if $PriorDt <> ''
+    do Prior-Outstand-Term
+    do Prior-Outstand-Other
+  end-if
+  let #TAccrual          = #CAccrual - #PAccrual
+  put $VestDt #SharesVested #SharesOutstanding #CurrentComp #CAccrual #PAccrual #TAccrual into Comp(#Count) VestDt SharesVested SharesOutstanding CurrentComp CAccrual PAccrual TAccrual
+
+  let #GrantOutstanding  = #GrantOutstanding + #SharesOutstanding
+  let #GrantComp         = #GrantComp        + #CurrentComp
+  let #GrantCAccrual     = #GrantCAccrual    + #CAccrual
+  let #GrantPAccrual     = #GrantPAccrual    + #PAccrual
+  let #GrantTAccrual     = #GrantTAccrual    + #TAccrual
+
+from  PS_ST_GRNT_VST_DTL F
+where F.EMPLID     = $Emplid
+  and F.STOCK_ID   = $StockId
+  and F.GRANT_NBR  = $GrantNbr
+  and F.VEST_EFFDT = (select MAX(FF.VEST_EFFDT)
+                        from PS_ST_GRNT_VST_DTL FF
+                       where FF.EMPLID      = F.EMPLID
+                         and FF.STOCK_ID    = F.STOCK_ID
+                         and FF.GRANT_NBR   = F.GRANT_NBR )
+  and F.SEQ_NUM    = (select MAX(FFF.SEQ_NUM)
+                        from PS_ST_GRNT_VST_DTL FFF
+                       where FFF.EMPLID     = F.EMPLID
+                         and FFF.STOCK_ID   = F.STOCK_ID
+                         and FFF.GRANT_NBR  = F.GRANT_NBR
+                         and FFF.VEST_EFFDT = F.VEST_EFFDT )
+ORDER BY F.VEST_DT ASC
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Current-Outstand-Term
+! Descr:   Retrieves outstanding shares due to termination
+!-----------------------------------------------------------------------
+Begin-Procedure Current-Outstand-Term
+
+Begin-Select
+
+G.SHARES_VESTED
+G.SHARES_EXERCISED
+
+  let #SharesOutstanding = &g.shares_vested - &g.shares_exercised
+  do Calculate-Current
+
+from PS_ST_STFS010_TBL G
+where G.DATETIME_STAMP     = $CurrentTime
+  and G.PROCESSINSTANCE    = #Instance
+  and G.EMPLID             = $Emplid
+  and G.STOCK_ID           = $StockId
+  and G.GRANT_NBR          = $GrantNbr
+  and G.VEST_DT            = $VestDt
+  and (G.ST_CANCEL_REASON  = 'TER'
+   or G.ST_CANCEL_REASON   = ' ')
+  and (( G.ST_CANCEL_DT   <= $AsOfDate
+  and G.ST_CANCEL_DT       > G.VEST_DT )
+   or G.ST_CANCEL_DT       > $AsOfDate
+   or G.ST_CANCEL_DT is null)
+  and G.VEST_DT            < G.EXPIRATN_DT
+  and G.EXPIRATN_DT        > $AsOfDate
+  and (G.TERM_EXPIRATN_DT  > $AsOfDate
+   or G.TERM_EXPIRATN_DT  is null)
+ORDER BY G.VEST_DT ASC
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Current-Outstand-Other
+! Descr:   Retrieves outstanding shares due to other reasons than
+!          termination (such as Reprice or Rescind).
+!-----------------------------------------------------------------------
+Begin-Procedure Current-Outstand-Other
+
+Begin-Select
+
+H.SHARES_VESTED
+H.SHARES_EXERCISED
+
+  let #SharesOutstanding = &h.shares_vested - &h.shares_exercised
+  do Calculate-Current
+
+from PS_ST_STFS010_TBL H
+where H.DATETIME_STAMP     = $CurrentTime
+  and H.PROCESSINSTANCE    = #Instance
+  and H.EMPLID             = $Emplid
+  and H.STOCK_ID           = $StockId
+  and H.GRANT_NBR          = $GrantNbr
+  and H.VEST_DT            = $VestDt
+  and H.ST_CANCEL_REASON  <> 'TER'
+  and H.ST_CANCEL_REASON  <> ' '
+  and H.ST_CANCEL_DT       > $AsOfDate
+  and H.VEST_DT            < H.EXPIRATN_DT
+  and (H.VEST_DT           < H.TERM_EXPIRATN_DT
+   or H.TERM_EXPIRATN_DT  is null)
+  and H.EXPIRATN_DT        > $AsOfDate
+  and (H.TERM_EXPIRATN_DT  > $AsOfDate
+   or H.TERM_EXPIRATN_DT  is null)
+ORDER BY H.VEST_DT ASC
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Calculate-Current
+! Descr:   
+!-----------------------------------------------------------------------
+Begin-Procedure Calculate-Current
+
+  if $VestDtDtu < $AsOfDateDtu
+    do dtu-diff-days($GrantDtDtu, $VestDtDtu, #PeriodDays)
+  else
+    do dtu-diff-days($GrantDtDtu, $AsOfDateDtu, #PeriodDays)
+  end-if
+
+  let #PeriodDays  = #PeriodDays + 1
+  let #CurrentComp = #SharesOutstanding  * #CurrentCompPerShare
+  let #CAccrual    = (#CurrentComp / #VestDays) * #PeriodDays
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Prior-Outstand-Term
+! Descr:   Retrieves outstanding shares due to termination
+!-----------------------------------------------------------------------
+Begin-Procedure Prior-Outstand-Term
+
+Begin-Select
+
+I.SHARES_VESTED
+I.SHARES_EXERCISED
+
+  let #PriorOutstanding = &i.shares_vested - &i.shares_exercised
+  do Calculate-Prior
+
+from PS_ST_STFS010_TBL I
+where I.DATETIME_STAMP     = $CurrentTime
+  and I.PROCESSINSTANCE    = #Instance
+  and I.EMPLID             = $Emplid
+  and I.STOCK_ID           = $StockId
+  and I.GRANT_NBR          = $GrantNbr
+  and I.VEST_DT            = $VestDt
+  and (I.ST_CANCEL_REASON  = 'TER'
+   or I.ST_CANCEL_REASON   = ' ')
+  and (( I.ST_CANCEL_DT   <= $PriorDt
+  and I.ST_CANCEL_DT       > I.VEST_DT )
+   or I.ST_CANCEL_DT       > $PriorDt
+   or I.ST_CANCEL_DT is null)
+  and I.VEST_DT            < I.EXPIRATN_DT
+  and I.EXPIRATN_DT        > $PriorDt
+  and (I.TERM_EXPIRATN_DT  > $PriorDt
+   or I.TERM_EXPIRATN_DT  is null)
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Prior-Outstand-Other
+! Descr:   Retrieves outstanding shares due to other reasons than
+!          termination (such as Reprice or Rescind).
+!-----------------------------------------------------------------------
+Begin-Procedure Prior-Outstand-Other
+
+Begin-Select
+
+J.SHARES_VESTED
+J.SHARES_EXERCISED
+
+  let #PriorOutstanding = &j.shares_vested - &j.shares_exercised
+  do Calculate-Prior
+
+from PS_ST_STFS010_TBL J
+where J.DATETIME_STAMP     = $CurrentTime
+  and J.PROCESSINSTANCE    = #Instance
+  and J.EMPLID             = $Emplid
+  and J.STOCK_ID           = $StockId
+  and J.GRANT_NBR          = $GrantNbr
+  and J.VEST_DT            = $VestDt
+  and J.ST_CANCEL_REASON  <> 'TER'
+  and J.ST_CANCEL_REASON  <> ' '
+  and J.ST_CANCEL_DT       > $PriorDt
+  and J.VEST_DT            < J.EXPIRATN_DT
+  and (J.VEST_DT           < J.TERM_EXPIRATN_DT
+   or J.TERM_EXPIRATN_DT  is null)
+  and J.EXPIRATN_DT        > $PriorDt
+  and (J.TERM_EXPIRATN_DT  > $PriorDt
+   or J.TERM_EXPIRATN_DT  is null)
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Calculate-Prior
+! Descr:   
+!-----------------------------------------------------------------------
+Begin-Procedure Calculate-Prior
+
+  if $VestDtDtu < $PriorDtDtu
+    do dtu-diff-days($GrantDtDtu, $VestDtDtu, #PeriodDays)
+  else
+    do dtu-diff-days($GrantDtDtu, $PriorDtDtu , #PeriodDays)
+  end-if
+
+  let #PeriodDays  = #PeriodDays + 1
+
+  if #PeriodDays >= 0
+    let #PriorComp = #PriorOutstanding  * #PriorPerShare
+    let #PAccrual  = (#PriorComp / #VestDays) * #PeriodDays
+  else
+    let #PAccrual  = 0
+  end-if
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Delete-Temp-Files
+! Descr:   Deletes the ST_STFS010_TBL
+!          Temporary Files
+!-----------------------------------------------------------------------
+Begin-Procedure Delete-Temp-Files
+
+  let $Procedure = 'Delete-Temp'
+  let $SQL-Statement = 'Procedure: ' || $Procedure
+
+Begin-Sql     on-error = SQL-Error
+
+delete from PS_ST_STFS010_TBL
+ where DATETIME_STAMP  = $CurrentTime
+   and PROCESSINSTANCE = #Instance
+
+End-Sql
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Print-Details
+! Descr:   
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Details
+
+  let #Loop        = 1
+  let #OptionCount = #OptionCount  + 1
+
+  if $SuppressDetails = 'N'
+    while #Loop <= #Count
+      get $VestDt #SharesVested #SharesOutstanding #CurrentComp #CAccrual #PAccrual #TAccrual from Comp(#Loop) VestDt SharesVested SharesOutstanding CurrentComp CAccrual PAccrual TAccrual
+      if #Loop = 1
+        print $GrantNbr                                    (+1,001,010)
+        print $OptionType                                  (  ,015,006)
+        print #GrantPrice                                  (  ,025,011) edit $999.999999
+        do Format-DateTime ($VestDt,$Date, {DEFDATE}, '', '')
+        print $Date                                        (  ,038,010)
+      end-if
+      if #Loop = 2
+        do Format-DateTime ($GrantDt,$Date, {DEFDATE}, '', '')
+        print $Date                                        (+1,001,010)
+        print #CurrentCompPerShare                         (  ,025,011) edit $999.999999
+        do Format-DateTime ($VestDt,$Date, {DEFDATE}, '', '')
+        print $Date                                        (  ,038,010)
+      end-if
+      if #Loop > 2
+        do Format-DateTime ($VestDt,$Date, {DEFDATE}, '', '')
+        print $Date                                        (+1,038,010)
+      end-if
+      print #SharesVested                                  (  ,050,017) edit 99,999,999.999999
+      print #SharesOutstanding                             (  ,069,017) edit 99,999,999.999999
+      print #CurrentComp                                   (  ,088,021) edit $9,999,999,999.999999
+      print #CAccrual                                      (  ,111,021) edit $9,999,999,999.999999
+      print #PAccrual                                      (  ,134,021) edit $9,999,999,999.999999
+      print #TAccrual                                      (  ,157,021) edit $9,999,999,999.999999
+      let #Loop = #Loop + 1
+    end-while
+    if #Count = 1
+      do Format-DateTime ($GrantDt,$Date, {DEFDATE}, '', '')
+      print $Date                                          (+1,001,010)
+      print #CurrentCompPerShare                           (  ,025,011) edit $999.999999
+    end-if
+    print #SharesGranted                                   (+1,050,017) bold edit 99,999,999.999999
+    print #GrantOutstanding                                (  ,069,017) bold edit 99,999,999.999999
+    print #GrantComp                                       (  ,088,021) bold edit $9,999,999,999.999999
+    print #GrantCAccrual                                   (  ,111,021) bold edit $9,999,999,999.999999
+    print #GrantPAccrual                                   (  ,134,021) bold edit $9,999,999,999.999999
+    print #GrantTAccrual                                   (  ,157,021) bold edit $9,999,999,999.999999
+    if $CancelReason <> ''
+      do Format-DateTime ($CancelDt,$CancelDt, {DEFDATE}, '', '')
+      move $CancelReason to $FieldValue
+      move 'ST_CANCEL_REASON' to $Fieldname
+      do Read-Translate-Table
+      let $CancelReasonXlat    = rtrim($Xlatshortname,' ') || ' - ' || $CancelDt
+      print $CancelReasonXlat                              (  ,015,030)
+    end-if
+    print ''                                               (+1,   ,   )
+  end-if
+
+  let #TypeGranted      = #TypeGranted     + #SharesGranted
+  let #TypeOutstanding  = #TypeOutstanding + #GrantOutstanding
+  let #TypeComp         = #TypeComp        + #GrantComp
+  let #TypeCAccrual     = #TypeCAccrual    + #GrantCAccrual
+  let #TypePAccrual     = #TypePAccrual    + #GrantPAccrual
+  let #TypeTAccrual     = #TypeTAccrual    + #GrantTAccrual
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Print-Option-Type-Summary
+! Descr:   
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Option-Type-Summary
+
+  if #OptionCount > 0
+    print $TotalTypeLbl                                    (+1,015,   ) bold
+    print ':'                                              (  ,   ,001) bold
+    print #TypeGranted                                     (  ,050,017) bold edit 99,999,999.999999
+    print #TypeOutstanding                                 (  ,069,017) bold edit 99,999,999.999999
+    print #TypeComp                                        (  ,088,021) bold edit $9,999,999,999.999999
+    print #TypeCAccrual                                    (  ,111,021) bold edit $9,999,999,999.999999
+    print #TypePAccrual                                    (  ,134,021) bold edit $9,999,999,999.999999
+    print #TypeTAccrual                                    (  ,157,021) bold edit $9,999,999,999.999999
+    print ''                                               (+1,   ,   )
+  end-if
+
+  let #GrandGranted     = #GrandGranted     + #TypeGranted
+  let #GrandOutstanding = #GrandOutstanding + #TypeOutstanding
+  let #GrandComp        = #GrandComp        + #TypeComp
+  let #GrandCAccrual    = #GrandCAccrual    + #TypeCAccrual
+  let #GrandPAccrual    = #GrandPAccrual    + #TypePAccrual
+  let #GrandTAccrual    = #GrandTAccrual    + #TypeTAccrual
+  let #TypeGranted      = 0
+  let #TypeOutstanding  = 0
+  let #TypeComp         = 0
+  let #TypeCAccrual     = 0
+  let #TypePAccrual     = 0
+  let #TypeTAccrual     = 0
+  let #OptionCount      = 0
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Print-Report-Summary
+! Descr:   
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Report-Summary
+
+  print $TotalReportLbl                                    (+1,015,012) bold
+  print ':'                                                (  ,   ,001) bold
+  print #GrandGranted                                      (  ,050,017) bold edit 99,999,999.999999
+  print #GrandOutstanding                                  (  ,069,017) bold edit 99,999,999.999999
+  print #GrandComp                                         (  ,088,021) bold edit $9,999,999,999.999999
+  print #GrandCAccrual                                     (  ,111,021) bold edit $9,999,999,999.999999
+  print #GrandPAccrual                                     (  ,134,021) bold edit $9,999,999,999.999999
+  print #GrandTAccrual                                     (  ,157,021) bold edit $9,999,999,999.999999
+
+End-Procedure
+!-----------------------------------------------------------------------
+! SQC Includes
+!-----------------------------------------------------------------------
+#include 'strunctl.sqc'   ! Stock Admin's Run Control Record
+#include 'stgetfmv.sqc'   ! Get Grant FMV
+#include 'prcsapi.sqc'
+#include 'prcsdef.sqc'    ! Update Process Open_Trans variable declaration
+#include 'eoj.sqc'        ! End of Report Format
+#include 'sqrtrans.sqc'   ! Access Strings Table
+#include 'sqlerr.sqc'     ! SQL error processing
+#include 'reset.sqc'      ! Reset printer procedure
+#include 'curdttim.sqc'   ! Get-Current-DateTime procedure
+#include 'datemath.sqc'
+#include 'datetime.sqc'   ! Routines for date and time formatting
+                          ! Procedures: Init-Datetime
+                          ! Procedures: Format-DateTime
+                          ! Procedures: Diff-Date
+#include 'number.sqc'     ! Procedures: Init-Number
+#include 'askaod.sqc'     ! Prompts for date range
+#include 'getrplng.sqc'   ! Gets the report language
+#include 'readxlat.sqc'   ! Gets the report language

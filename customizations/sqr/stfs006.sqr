@@ -1,0 +1,291 @@
+!-----------------------------------------------------------------------
+! Report Name: STFS006.SQR - Stock Purchase Valuation Audit Report
+!-----------------------------------------------------------------------
+!
+!
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!-----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:02:51:58                                 
+!       $Release:  HR92                                                
+!      $Revision:  101                                                 
+!
+!-----------------------------------------------------------------------
+! Program Descr: This report prints any grants that have not been valued
+!                or contain an 'open' valuation record
+!-----------------------------------------------------------------------
+! Options:       None
+! Tables:        ST_GRANT
+!                ST_GRANT_VALUE
+!                ST_VALUE_TBL
+!-----------------------------------------------------------------------
+
+  #include 'setenv.sqc'
+
+!-----------------------------------------------------------------------
+Begin-Setup
+!-----------------------------------------------------------------------
+
+  #include 'ptpsp125.sqc'
+
+End-Setup
+
+!-----------------------------------------------------------------------
+! Procedure: Begin-Program
+! Descr:     Main Report procedure
+!-----------------------------------------------------------------------
+Begin-Program
+
+  do Init-Report
+  do Main-Process
+  do Reset
+  do Successful-EOJ
+
+End-Program
+
+!-----------------------------------------------------------------------
+! Section: Heading Procedures
+! Descr:   This sections contains all procedures for
+!          printing the optional heading
+!-----------------------------------------------------------------------
+Begin-Heading 7
+
+  #Include 'stdhdg01.sqc'
+
+  print $StockIdLbl                                        (-1,001,008)
+  print ':'                                                (  ,   ,001)
+  print $StockId                                           (  , +3,010)
+
+  print $Xlatlongname                                      (  ,   ,   ) center
+
+  do Format-DateTime ($RC_FromDate, $Date, {DEFDATE}, '', '')
+  print $FromLbl                                           (+1,048,004)
+  print ':'                                                (  ,   ,001)
+  print $Date                                              (  , +1,010)
+
+  do Format-DateTime ($RC_ThruDate, $Date, {DEFDATE}, '', '')
+  print $ThruLbl                                           (  ,067,004)
+  print ':'                                                (  ,   ,001)
+  print $Date                                              (  , +1,010)
+
+  print $PeriodLbl                                         (+2,056,006)
+  print $PeriodLbl                                         (  ,074,006)
+  print $OfferingIDLbl                                     (+1,001,012)
+  print $OfferingDescrLbl                                  (  ,018,020)
+  print $BeginDtLbl                                        (  ,056,010)
+  print $EndDtLbl                                          (  ,074,008)
+  print '-'                                                (+1,001,125) fill Bold
+
+End-Heading
+
+!-----------------------------------------------------------------------
+! Procedure: Init-Report
+! Descr:     Report initialization procedure.  Set titles, parameters
+!            This is called from the Begin-Program procedure
+!-----------------------------------------------------------------------
+Begin-Procedure Init-Report
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Define-Prcs-Vars
+  do Get-Run-Control-Parms
+  let $ReportId = 'STFS006'
+
+  do Get-Report-Language    ! Procedure that decides the report language
+                            ! and then calls 'Report-Translation' procedure
+                            ! that reads the language dep. text.
+
+  if $prcs_process_instance = ''
+    do Ask-Stock-Values
+  else
+    do Get-SQR-Parms
+  end-if
+
+  do Init-Variables
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Report-Translation
+! Descr:     This procedure is used to read language-dependent text from
+!            the database
+!-----------------------------------------------------------------------
+Begin-Procedure Report-Translation
+
+  do Init_Report_Translation('STOCK', $Language_Cd)
+  do Append_Report_Translation ($ReportId)
+
+  do Get_Field_Information ('STOCK'  ,'STOCK_ID',     $StockIdLbl,      #DW)
+  do Get_Field_Information ('STOCK'  ,'OFFERING_ID',  $OfferingIDLbl,   #DW)
+  do Get_Field_Information ('STOCK'  ,'DATE',         $DateLbl,         #DW)
+  do Get_Field_Information ('STOCK'  ,'FROM',         $FromLbl,         #DW)
+  do Get_Field_Information ('STOCK'  ,'THRU',         $ThruLbl,         #DW)
+  do Get_Field_Information ('STOCK'  ,'DESCRIPTION',  $OfferingDescrLbl,#DW)
+  do Get_Field_Information ('STFS006','PERIOD',       $PeriodLbl,       #DW)
+  do Get_Field_Information ('STFS006','BEGIN_DT',     $BeginDtLbl,      #DW)
+  do Get_Field_Information ('STFS006','END_DT',       $EndDtLbl,        #DW)
+  do Get_Field_Information ('STFS006','REPORT_TITLE', $ReportTitle,     #DW)
+
+End-Procedure Report-Translation
+
+!-----------------------------------------------------------------------
+! Procedure: Ask-Stock-Values
+! Descr:
+!-----------------------------------------------------------------------
+Begin-Procedure Ask-Stock-Values
+
+INPUT $RC_STOCK_ID         MAXLEN=10  'Enter Stock ID'          TYPE=CHAR
+INPUT $RC_ST_VALUE_METHOD  MAXLEN=1   'Enter Valuation Method'  TYPE=CHAR
+INPUT $RC_FromDate         MAXLEN=10  'Enter From Date'         TYPE=DATE
+INPUT $RC_ThruDate         MAXLEN=10  'Enter Through Date'      TYPE=DATE
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Procedure: Init-Variables
+! Descr:     Initializes all report variables
+!-----------------------------------------------------------------------
+Begin-Procedure Init-Variables
+
+  let #Count             = 0
+  let #TotalCount        = 0
+  let $StockId           = rtrim($RC_STOCK_ID,' ')
+  let $RC_FromDate       = rtrim($RC_FromDate,' ')
+  let $RC_ThruDate       = rtrim($RC_ThruDate,' ')
+  let $ValuationMethod   = rtrim($RC_ST_VALUE_METHOD,' ')
+
+  move $ValuationMethod to $FieldValue
+  move 'ST_VALUE_METHOD' to $Fieldname
+  do Read-Translate-Table
+  let $Xlatlongname = rtrim($Xlatlongname,' ')
+
+  do Get-Rules
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Get-Rules
+! Descr:   Retrieve the info to be passed to the FMV function
+!-----------------------------------------------------------------------
+Begin-Procedure Get-Rules
+
+Begin-Select
+
+A1.FMV_METHOD
+A1.FMV_HOLIDAY_RULE
+A1.FMV_WEEKEND_RULE
+
+  let $Fmv_Method  = rtrim(&a1.fmv_method, ' ')
+  let $HolidayRule = rtrim(&a1.fmv_holiday_rule, ' ')
+  let $WeekendRule = rtrim(&a1.fmv_weekend_rule, ' ')
+
+from  PS_STOCK_DTL A1
+where A1.STOCK_ID = $StockId
+  and A1.EFFDT    = (select MAX(EFFDT)
+                       from PS_STOCK_DTL
+                      where STOCK_ID  = A1.STOCK_ID
+                        and EFFDT    <= $AsOfToday )
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Main-Process
+! Descr:
+!-----------------------------------------------------------------------
+Begin-Procedure Main-Process
+
+Begin-Select
+
+A.OFFERING_ID
+A.DESCR
+A.PERIOD_BEGIN_DT
+A.PERIOD_END_DT
+
+  let $OfferingID    = rtrim(&a.offering_id, ' ')
+  let $OfferingDescr = rtrim(&a.descr, ' ')
+  let $PeriodBeginDt = rtrim(&a.period_begin_dt, ' ')
+  let $PeriodEndDt   = rtrim(&a.period_end_dt, ' ')
+  do Print-Detail
+
+from  PS_ST_OFFERING_PD A
+where A.STOCK_ID        = $StockId
+  and A.OFFERING_STATUS = 'A'
+  and A.PERIOD_BEGIN_DT between $RC_FromDate and $RC_ThruDate
+  and not exists (select 'X'
+                  from PS_ST_OFFER_VALUE  B,
+                       PS_ST_OFFR_VAL_DTL C,
+                       PS_ST_VALUE_TBL    D
+                  where B.STOCK_ID        = A.STOCK_ID
+                    and B.STOCK_PLAN_TYPE = A.STOCK_PLAN_TYPE
+                    and B.STOCK_PLAN      = A.STOCK_PLAN
+                    and B.OFFERING_ID     = A.OFFERING_ID
+                    and B.STOCK_ID        = C.STOCK_ID
+                    and B.STOCK_PLAN_TYPE = C.STOCK_PLAN_TYPE
+                    and B.STOCK_PLAN      = C.STOCK_PLAN
+                    and B.OFFERING_ID     = C.OFFERING_ID
+                    and B.STOCK_ID        = D.STOCK_ID
+                    and B.ST_VALUATION_ID = D.ST_VALUATION_ID
+                    and D.ST_VALUE_METHOD = $ValuationMethod)
+
+End-Select
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! Section: Print-Detail
+! Descr:   Prints the report detail
+!-----------------------------------------------------------------------
+Begin-Procedure Print-Detail
+
+  do Format-DateTime ($PeriodBeginDt, $PeriodBeginDt, {DEFDATE}, '', '')
+  do Format-DateTime ($PeriodEndDt,   $PeriodEndDt,   {DEFDATE}, '', '')
+
+  print $OfferingID                                        (+1,001,010)
+  print $OfferingDescr                                     (  ,018,030)
+  print $PeriodBeginDt                                     (  ,056,010)
+  print $PeriodEndDt                                       (  ,074,010)
+
+End-Procedure
+
+!-----------------------------------------------------------------------
+! SQC Includes
+!-----------------------------------------------------------------------
+#include 'strunctl.sqc'   ! Stock Admin's Run Control Record
+#include 'stgetfmv.sqc'   ! Get Grant FMV
+#include 'prcsapi.sqc'
+#include 'prcsdef.sqc'    ! Update Process Open_Trans variable declaration
+#include 'eoj.sqc'        ! End of Report Format
+#include 'sqrtrans.sqc'   ! Access Strings Table
+#include 'reset.sqc'      ! Reset printer procedure
+#include 'curdttim.sqc'   ! Get-Current-DateTime procedure
+#include 'datemath.sqc'
+#include 'datetime.sqc'   ! Routines for date and time formatting
+                          ! Procedures: Init-Datetime
+                          ! Procedures: Format-DateTime
+                          ! Procedures: Diff-Date
+                          ! Procedures: many others.
+#include 'number.sqc'     ! Procedures: Init-Number
+#include 'getrplng.sqc'   ! Gets the report language
+#include 'readxlat.sqc'   ! Gets the report language

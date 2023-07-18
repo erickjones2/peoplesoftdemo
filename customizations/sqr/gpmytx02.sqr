@@ -1,0 +1,2351 @@
+!***********************************************************************
+!  GPMYTX02: Notification of new Employee report -  *
+!          This program creates the CP22 form to be submitted to the   *
+!          IRB of Malaysia.
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2018, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!       $Release:  HR92                                                *
+!           $Bug:  27231262                                            *
+!                                                                      *
+!***********************************************************************
+!27/05/04         717891000   if employee has both Primary Name        *
+!                             and Legal Name then it is required to    *
+!                             print Legal Name. If Legal Name is not   *
+!                             available, then the Primary Name should  *
+!                             be printed.                              *
+!23/08/04         1114071000  Incorrect Join results in no report being*
+!                             generated                                *
+!28/07/06       1520873002    Incorrect join for PAYGROUP changed to   *
+!                             GP_PAYGROUP. Changes made to procedure   *
+!                             Get-Empls                                *
+!               1331446000    Report format channged to comply with    *
+!                             latest format. New procedure 'Get-Home-  *
+!                             Address' added to fix issues related to  *
+!                             address.                                 *
+!***********************************************************************
+
+#Include 'setenv.sqc'  !Set environment
+
+begin-setup
+  page-size 83 125
+
+    declare printer
+      type          = HPLASERJET
+      orientation   = portrait
+      top-margin    = 0.30
+      left-margin   = 0.2
+      font          = 5
+      point-size    = 8
+      line-size     = 10
+end-setup
+
+begin-report
+  do Init-DateTime
+  do Init-Number
+
+  do Init-Report
+  do Stdapi-Term
+end-Report
+
+!***********************************************************************
+!  Procedure: Init-Report                                              *
+!             The main driving procedure                               *
+!***********************************************************************
+begin-Procedure Init-Report
+
+  do Stdapi-Init
+  do Select-Parameters
+
+  !show $curr_language_cd
+  move 'GPMYTX02' to $ReportID
+  do Init_Report_Translation ($ReportID, $curr_language_cd) ! from settrans.sqc
+  do Add_Report_Translation($ReportID, $curr_language_cd)
+  do Append_Report_Translation ('GPMYTX02')
+
+  do Format-DateTime($To_Dt,$Out,{DEFYMD},'','')
+  let #CurrYear = substr($Out,1,4)
+  let #PrevYear = #CurrYear - 1
+  move #PrevYear to $PrevYear
+  let $YearEnd = '31/12/'|| $PrevYear
+  do Format-DateTime($YearEnd,$YearEnd,{DEFDMY},'','native')
+  do Convert-to-DTU-Date($YearEnd,$YearEnd)
+  do Initialise-Variables
+  do Get-Empls
+  do main
+
+end-procedure
+
+!***********************************************************************
+!  Procedure: Initialise-Variables                                     *
+!             Initialise variables for use within the program.         *
+!***********************************************************************
+begin-procedure Initialise-Variables
+
+  let #StdFont     = 5                  !Times Roman Font
+  let #StdPntSize  = 8                  !standard text point-size
+  let #HdrPntSize  = 10                 !large text point-size
+  let #ShdrPntSize = 7                  !Small header point size
+  let #LawPntSize  = 6                  !Law text point-size
+
+  let #PntSize12   = 12                 !To print form title (MT)
+  let #PntSize11   = 11                 ! (MT)
+  let #PntSize9    = 9                  ! (MT)
+end-procedure
+
+!***********************************************************************
+! Procedure: Select-Parameters                                         *
+!***********************************************************************
+Begin-Procedure  Select-Parameters
+!code to checked if org_unit ='' and tax_nbr=''
+begin-SELECT
+SP.OPRID
+SP.RUN_CNTL_ID
+SP.GPMY_ORG_LINK_OPTN  &GPMY_ORG_LINK_OPTN
+SP.ORG_LINK_UNIT       &ORG_LINK_UNIT
+SP.GPMY_TAX_NBR    &CompRef
+SP.GPMY_FROM_DT    &FromDate
+SP.GPMY_TO_DT      &To_Dt
+
+         MOVE &GPMY_ORG_LINK_OPTN TO $GPMY_ORG_LINK_OPTN
+         Move &ORG_LINK_UNIT to $Company
+         let $Company=rtrim($Company,' ')
+         Move &CompRef to $E_File_Nbr
+         let $E_File_Nbr=rtrim($E_File_Nbr,' ')
+         Move &FromDate to $FromDate
+         Move &To_Dt to $To_Dt
+         do Format-DateTime($FromDate,  $Today_YMD, {DEFYMD}, '', '')
+         Let $TaxYear = substr($Today_YMD,1,4)
+         Let #TaxYear = edit($TaxYear,'9999')
+
+ FROM PS_GPMY_RPT_RC SP
+WHERE SP.OPRID          = $Prcs_OprID
+AND   SP.RUN_CNTL_ID    = $Prcs_Run_Cntl_ID
+end-SELECT
+
+  let $GPMY_ORG_LINK_OPTN =  rtrim($GPMY_ORG_LINK_OPTN, ' ')
+
+  if rtrim($company,' ') = ''
+             let $company = '%'
+  end-if
+
+  if rtrim($E_File_Nbr,' ') = ''
+           let $E_File_Nbr = '%'
+  end-if
+end-Procedure
+
+!***********************************************************************
+!  Procedure: Get-Empls                                                *
+!             Selects Employees from the child run control record for  *
+!             processing.                                              *
+!***********************************************************************
+begin-procedure Get-Empls
+
+IF $Company = '%'
+ LET $Company_Where = 'LIKE ''' || $Company
+ELSE
+ LET $Company_Where = '= ''' || $Company
+END-IF
+
+let $SlctCompany='J.COMPANY ' || $Company_Where
+
+    Evaluate $GPMY_ORG_LINK_OPTN
+      when = 'CO'
+        let $SlctCompany = 'J.COMPANY ' || $Company_Where
+      when = 'DE'
+        let $SlctCompany = 'J.DEPTID ' || $Company_Where
+      when = 'ET'
+        let $SlctCompany = 'J.ESTABID ' || $Company_Where
+      when = 'LO'
+        let $SlctCompany = 'J.LOCATION ' || $Company_Where
+      when = 'PG'
+        let $SlctCompany = 'J.GP_PAYGROUP ' || $Company_Where
+    end-evaluate
+
+concat '''' with $SlctCompany
+let $SlctEmpls = ' AND J.EMPLID IN ('
+let $SlctEmpls1 = ''
+let $Multiple = 'N'
+begin-SELECT
+EMPLID
+
+  if rtrim(&Emplid,' ') <> ''
+    let $Empls_Exist = 'Y'
+    let $Emplid = rtrim(&Emplid,' ')
+    if $Multiple = 'N'
+      let $SlctEmpls1 = ''''||$Emplid||''''
+    else
+      let $SlctEmpls1 = $SlctEmpls1||','||''''||$Emplid||''''
+    end-if
+
+
+  end-if
+
+  let $Multiple = 'Y'
+
+FROM PS_GPMY_EMPL_RC
+WHERE OPRID       =  $Prcs_OprID
+AND   RUN_CNTL_ID =  $Prcs_Run_Cntl_ID
+end-SELECT
+
+concat $SlctEmpls1 with $SlctEmpls
+concat ')' with $SlctEmpls
+
+
+  if $Empls_Exist <> 'Y'
+     let $SlctEmpls = ''
+     let $SlctCriteria = $SlctCompany
+
+  end-if
+
+
+end-procedure
+
+!*********************************************************************************
+!  Procedure: Get-ManagerLegal-Name                                                     *
+!             Gets the Legal name of an employees.                               *
+!*********************************************************************************
+begin-procedure Get-ManagerLegal-Name
+begin-SELECT
+NAMESMn.NAME
+
+    let $MnLegalName = &NAMESMn.NAME
+
+FROM PS_NAMES NAMESMn
+WHERE NAMESMn.EMPLID = $ResponcibleId
+AND NAMESMn.EFFDT=(SELECT MAX(NAMES11.EFFDT)
+                   FROM PS_NAMES NAMES11
+                   WHERE NAMES11.EMPLID=NAMESMn.EMPLID
+                   AND NAMES11.NAME_TYPE = NAMESMn.NAME_TYPE
+                   AND NAMES11.EFFDT <= $To_Dt)
+AND NAMESMn.NAME_TYPE = 'LEG'
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+!  Procedure: Main                                                     *
+!             Selects new hires within the specified date range for the*
+!             E File Number specified.                                 *
+!***********************************************************************
+begin-procedure Main
+
+   move ' ' to $SlctCriteria
+   let $SlctCriteria =  $SlctCompany || $SlctEmpls
+   let $start_date=''
+
+   IF $Company = '%'
+     LET $Where_Org_Link = 'AND D.ORG_LINK_UNIT LIKE ''' || $Company || ''''
+   ELSE
+     LET $Where_Org_Link = 'AND D.ORG_LINK_UNIT = ''' || $Company || ''''
+   END-IF
+
+   IF $E_File_Nbr = '%'
+     LET $Where_Tax_Nbr = 'AND D.GPMY_TAX_NBR LIKE ''' || $E_File_Nbr || ''''
+   ELSE
+     LET $Where_Tax_Nbr = 'AND D.GPMY_TAX_NBR = ''' || $E_File_Nbr || ''''
+   END-IF
+
+
+
+begin-SELECT
+
+DISTINCT(J.EMPLID)       &J.EMPLID
+J.EMPL_RCD
+J.REG_TEMP
+J.MONTHLY_RT
+J.JOBCODE
+J.ACTION      &J.ACTION
+J.EFFDT
+D.GPMY_TAX_NBR
+E.GPMY_EMPL_TAX_NBR
+E.GPMY_SPOUSE_NAME
+E.GPMY_SPOUSE_OLDIC
+E.GPMY_SPOUSE_NEWIC
+E.GPMY_SPOUSE_TAXNBR
+F.GPMY_REGISTERED_NM
+F.COUNTRY       &F.COUNTRY
+F.PHONE
+F.ADDRESS1
+F.ADDRESS2
+F.ADDRESS3
+F.ADDRESS4
+F.CITY
+F.STATE     &F.STATE
+F.POSTAL
+F.NAME
+F.GPMY_RESPONSIBLEID
+F.JOBTITLE
+
+
+    move    &F.STATE to $state
+    move    &F.COUNTRY to $country
+
+    Do Get-Descr
+
+
+  let $Co_Addr1 = rtrim(&F.ADDRESS1,' ') ||' ' || rtrim(&F.ADDRESS2,' ')
+  let $Co_Addr2 = rtrim(&F.ADDRESS3,' ') ||' ' || rtrim(&F.ADDRESS4,' ')
+  let $Co_Addr3 = rtrim(&F.CITY,' ') ||' ' ||rtrim(&S.DESCR,' ') ||' ' || rtrim(&F.POSTAL,' ') ||' ' ||rtrim(&C.DESCR,' ')
+  let $Co_Addr3 = ltrim(rtrim($Co_Addr3,' '),' ')
+
+
+  move &J.EFFDT to $start_date
+
+  let   $EE_File_Nbr =  &D.GPMY_TAX_NBR
+  move &J.Emplid to $Emplid
+
+  move &J.Reg_Temp to $Reg_Temp
+
+        let $MnLegalName = ''
+
+        let $ResponcibleId = rtrim(&F.GPMY_RESPONSIBLEID, ' ')
+        do Get-ManagerLegal-Name
+
+
+      IF $MnLegalName = '' or $MnLegalName = ' '
+       move &F.NAME to $NameMn
+      ELSE
+       move $MnLegalName to $NameMn
+      END-IF
+
+  let #EE_Monthly_Rt   = 0
+  let #EE_Monthly_Rt = #EE_Monthly_Rt + &J.Monthly_Rt
+  do prepare-employer-details
+  do Get-Employee-Data
+
+FROM PS_JOB J,PS_GPMY_TAX_ORG_DT C, PS_GPMY_TAX_ORG D, PS_GPMY_TAX_PYE E, PS_GPMY_TAX_TBL F, PS_GPMY_TAX_ORG_VW TAX1
+WHERE [$SlctCriteria]
+AND J.EMPLID=E.EMPLID
+AND E.GPMY_TAX_NBR=F.GPMY_TAX_NBR
+AND E.EFFDT= (SELECT MAX(EE.EFFDT) FROM PS_GPMY_TAX_PYE EE WHERE EE.EMPLID=J.EMPLID AND EE.GPMY_TAX_NBR=F.GPMY_TAX_NBR AND ( (EE.EFFDT>=J.EFFDT) and (EE.EFFDT BETWEEN $FROMDATE  AND $To_Dt )))
+!AND E.EFFDT=J.EFFDT
+AND C.EFF_STATUS='A'
+AND C.GPMY_ORG_LINK_OPTN = $GPMY_ORG_LINK_OPTN
+[$Where_Org_Link]
+!AND D.ORG_LINK_UNIT LIKE $Company
+[$Where_Tax_Nbr]
+!AND D.GPMY_TAX_NBR LIKE $E_File_Nbr
+AND C.EFFDT = (SELECT MAX(CC.EFFDT) FROM PS_GPMY_TAX_ORG_VW CC
+               WHERE CC.GPMY_ORG_LINK_OPTN = $GPMY_ORG_LINK_OPTN
+                 AND CC.ORG_LINK_UNIT = D.ORG_LINK_UNIT
+                 AND CC.EFFDT <= J.EFFDT)
+AND J.EFFDT BETWEEN $FromDate AND $To_Dt
+AND J.ACTION IN ('HIR','REH')
+AND J.EMPLID=E.EMPLID
+AND J.EMPL_RCD=E.EMPL_RCD
+
+AND F.GPMY_TAX_NBR = D.GPMY_TAX_NBR
+!AND F.GPMY_TAX_NBR LIKE $E_File_Nbr
+AND F.EFFDT    = (SELECT MAX(F1.EFFDT)
+                  FROM PS_GPMY_TAX_TBL F1
+                  WHERE F1.GPMY_TAX_NBR  = F.GPMY_TAX_NBR
+                  AND F1.EFFDT <= J.EFFDT)
+ORDER BY J.EMPLID, J.EMPL_RCD
+
+end-SELECT
+end-procedure
+
+
+!***********************************************************************
+!  Procedure: prepare-employer-details                                 *
+!             Gets the data for the employer                           *
+!***********************************************************************
+begin-procedure prepare-employer-details
+
+
+  let $Co_Name = rtrim(&F.GPMY_REGISTERED_NM, ' ')
+
+  uppercase $Co_Name
+
+
+  move &F.PHONE to $registered_phone
+  move $NameMn  to $Responsible_person
+  move &F.JOBTITLE to $jobtitle
+  move &E.GPMY_EMPL_TAX_NBR to $tax_file_nbr_mys
+
+
+end-procedure
+
+!***********************************************************************
+!  Procedure: Get-Employee-Data                                        *
+!             Gets the data for the selected employees.                *
+!***********************************************************************
+begin-procedure Get-Employee-Data
+
+begin-SELECT
+P1.NAME
+
+P4.BIRTHDATE
+P3.MAR_STATUS
+P3.SEX
+
+
+
+
+   let $EELegalName = ''
+
+   do Get-Legal-Name
+   do Get-Home-Address
+   do Get-Mailing-Address
+   do Get-Citizenship-Data
+   do Get-IC-Nbr
+   do Get-Child-Count
+   do Get-Prev-Employer
+
+
+   do Get-Allowances-Data
+   if $Reg_Temp = 'T'
+   do Get-Expected-Duration
+   end-if
+   do Prepare-Data
+   do LanguageCode
+   do Print-Form
+   let #EE_Monthly_Rt = 0
+   new-page
+
+FROM PS_NAMES P1,PS_PERS_DATA_EFFDT P3, PS_PERSON P4
+WHERE P1.EMPLID = $Emplid
+AND P1.EMPLID=P3.EMPLID
+AND P3.EMPLID=P4.EMPLID
+AND P1.EFFDT=(SELECT MAX(P11.EFFDT) FROM PS_NAMES P11
+              WHERE P11.EMPLID=P1.EMPLID
+                AND P11.NAME_TYPE = P1.NAME_TYPE
+                AND P11.EFFDT <= $To_Dt)
+
+
+
+AND P3.EFFDT=(SELECT MAX(P31.EFFDT) FROM PS_PERS_DATA_EFFDT P31 WHERE P31.EMPLID=P3.EMPLID
+                AND P31.EFFDT <= $To_Dt)
+
+AND P1.NAME_TYPE = 'PRI'
+
+end-SELECT
+
+end-procedure
+
+!*********************************************************************************
+!  Procedure: Get-Legal-Name                                                     *
+!             Gets the Legal name of an employees.                               *
+!*********************************************************************************
+begin-procedure Get-Legal-Name
+
+begin-SELECT
+NAMES.NAME
+
+    let $EELegalName = &NAMES.NAME
+
+FROM PS_NAMES NAMES
+WHERE NAMES.EMPLID = $Emplid
+AND NAMES.EFFDT=(SELECT MAX(NAMES1.EFFDT)
+                 FROM PS_NAMES NAMES1
+                 WHERE NAMES1.EMPLID=NAMES.EMPLID
+                 AND NAMES1.NAME_TYPE = NAMES.NAME_TYPE
+                 AND NAMES1.EFFDT <= $To_Dt)
+AND NAMES.NAME_TYPE = 'LEG'
+end-SELECT
+
+end-procedure
+
+
+!*********************************************************************************
+!  Procedure: Get-Mailing-Address                                                *
+!             Gets the Present Correspondence Address for the selected employees.*
+!*********************************************************************************
+begin-procedure Get-Mailing-Address
+
+let $Addr1_Oth=''
+let $Addr2_Oth=''
+let $Addr3_Oth=''
+let $Addr4_Oth=''
+!let $descr =''
+
+
+
+begin-SELECT
+P.ADDRESS1
+P.ADDRESS2
+P.ADDRESS3
+P.ADDRESS4
+P.COUNTRY       &P.COUNTRY
+P.CITY
+P.STATE         &P.STATE
+P.POSTAL
+
+    move    &P.STATE to $state
+    move    &P.COUNTRY to $country
+    Do Get-Descr
+
+  let $Addr1_Oth = rtrim(&P.ADDRESS1,' ') ||' ' || rtrim(&P.ADDRESS2,' ')
+  let $Addr2_Oth = rtrim(&P.ADDRESS3,' ') ||' ' || rtrim(&P.ADDRESS4,' ')
+  let $Addr3_Oth = rtrim(&P.CITY,' ') ||' ' ||rtrim(&S.DESCR,' ') ||' ' || rtrim(&P.POSTAL,' ')
+  let $Addr4_Oth = rtrim(&C.DESCR,' ')
+
+FROM PS_ADDRESSES P
+WHERE P.EMPLID = $Emplid
+AND P.EFFDT=(SELECT MAX(P21.EFFDT) FROM PS_ADDRESSES P21 WHERE P21.EMPLID=P.EMPLID
+                          AND P21.ADDRESS_TYPE='MAIL'
+                          AND P21.EFFDT <= $To_Dt )
+AND P.ADDRESS_TYPE='MAIL'
+
+end-SELECT
+
+end-procedure
+
+!*********************************************************************************
+!  Procedure: Get-Home-Address                                                *
+!             Gets the Present Residential Address for the selected employees.*
+!*********************************************************************************
+begin-procedure Get-Home-Address
+
+let $Addr1_Home=''
+let $Addr2_Home=''
+let $Addr3_Home=''
+let $Addr4_Home=''
+!let $descr =''
+
+
+begin-SELECT
+PADD.ADDRESS1
+PADD.ADDRESS2
+PADD.ADDRESS3
+PADD.ADDRESS4
+PADD.COUNTRY    &PADD.COUNTRY
+PADD.CITY
+PADD.STATE      &PADD.STATE
+PADD.POSTAL
+
+    move    &PADD.STATE to $state
+    move    &PADD.COUNTRY to $country
+
+    Do Get-Descr
+
+  let $Addr1_Home = ltrim(rtrim((rtrim(&PADD.ADDRESS1,' ') ||' ' || rtrim(&PADD.ADDRESS2,' ')),' '),' ')
+  let $Addr2_Home = ltrim(rtrim((rtrim(&PADD.ADDRESS3,' ') ||' ' || rtrim(&PADD.ADDRESS4,' ')),' '),' ')
+  let $Addr3_Home = ltrim(rtrim((rtrim(&PADD.CITY,' ') ||' ' ||rtrim(&S.DESCR,' ') ||' ' || rtrim(&PADD.POSTAL,' ')),' '),' ')
+  let $Addr4_Home = rtrim(&C.DESCR,' ')
+  
+  If(ltrim(rtrim($Addr2_Home,' '),' ')='')
+       If (ltrim(rtrim($Addr3_Home,' '),' ')='')
+            let $Addr2_Home = $Addr4_Home
+            let $Addr3_Home =''
+            let $Addr4_Home = ''
+        else
+          let $Addr2_Home = $Addr3_Home
+          let $Addr3_Home = $Addr4_Home
+          let $Addr4_Home = ''
+        End-If    
+  End-If
+  
+ 
+
+FROM PS_ADDRESSES PADD
+WHERE PADD.EMPLID = $Emplid
+AND PADD.EFFDT=(SELECT MAX(P21.EFFDT) FROM PS_ADDRESSES P21 WHERE P21.EMPLID=PADD.EMPLID
+                                            AND P21.ADDRESS_TYPE='HOME'
+                                            AND P21.EFFDT <= $To_Dt)
+AND PADD.ADDRESS_TYPE='HOME'
+
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+!  Procedure:Get-Descr
+!             Gets Country Description                         *
+!                                         *
+!***********************************************************************
+begin-procedure Get-Descr
+let $descr =''
+begin-SELECT
+C.DESCR
+
+    let $descr = rtrim(&C.DESCR,' ')
+FROM PS_COUNTRY_TBL C
+WHERE C.COUNTRY = $country
+end-SELECT
+
+
+let $descr =''
+begin-SELECT
+S.DESCR
+    let $descr = rtrim(&S.DESCR,' ')
+FROM PS_STATE_TBL S
+WHERE S.STATE = $state
+AND   S.COUNTRY = $country
+end-SELECT
+
+
+
+end-procedure
+
+!***********************************************************************
+!  Procedure: Get-IC-Nbr
+!             Gets the IC-Number from PERS_NID                         *
+!                                         *
+!***********************************************************************
+begin-procedure Get-IC-Nbr
+
+
+begin-SELECT
+M.NATIONAL_ID
+M.NATIONAL_ID_TYPE
+
+     if rtrim(&M.NATIONAL_ID_TYPE,' ')='NEWIC'
+        move &M.NATIONAL_ID to $newic_nbr
+     else
+        move &M.NATIONAL_ID to $oldic_nbr
+     end-if
+
+FROM PS_PERS_NID M
+
+WHERE M.EMPLID = $Emplid
+AND M.COUNTRY='MYS'
+
+end-SELECT
+
+if $newic_nbr <> '' and $oldic_nbr <> ''
+   move $newic_nbr to $IC_Nbr
+end-if
+
+if $newic_nbr <> '' and $oldic_nbr = ''
+   move $newic_nbr to $IC_Nbr
+end-if
+
+if $oldic_nbr <> '' and $newic_nbr = ''
+   move $oldic_nbr to $IC_Nbr
+end-if
+
+if $newic_nbr = '' and $oldic_nbr = ''
+   move $passport_nbr to $IC_Nbr
+end-if
+
+end-procedure
+
+!***********************************************************************
+!  Procedure: Get-Child-Count                                          *
+!             Counts the number of children under 18 years of age as at*
+!             the end of the previous year.                            *
+!***********************************************************************
+begin-procedure Get-Child-Count
+  let #ChildCnt = 0
+
+begin-SELECT
+D.BIRTHDATE
+D.DEPENDENT_BENEF
+E.NAME
+F.RELATIONSHIP
+  move &D.BIRTHDATE to $BirthDate
+  if $BirthDate <= $To_Dt
+   do Convert-to-DTU-Date($BirthDate,$BirthDate)
+   do DTU-Diff-Years($BirthDate,$YearEnd,#Age)
+   if #Age < 18
+     let #ChildCnt = #ChildCnt + 1
+   end-if
+  end-if
+  if &F.RELATIONSHIP = 'SP'
+     MOVE &E.NAME to $husb_name
+  end-if
+FROM PS_DEP_BEN D, PS_DEP_BEN_NAME E, PS_DEP_BEN_EFF F
+
+WHERE D.EMPLID = $Emplid
+AND D.BIRTHDATE <= $To_Dt
+AND D.EMPLID = E.EMPLID
+AND D.EMPLID = F.EMPLID
+AND E.EMPLID = F.EMPLID
+AND D.DEPENDENT_BENEF = E.DEPENDENT_BENEF
+AND D.DEPENDENT_BENEF = F.DEPENDENT_BENEF
+AND E.DEPENDENT_BENEF = F.DEPENDENT_BENEF
+AND F.RELATIONSHIP IN ('C', 'SP')
+AND E.EFFDT = (SELECT MAX(E1.EFFDT) FROM PS_DEP_BEN_NAME E1 WHERE
+E.EMPLID = E1.EMPLID AND E.DEPENDENT_BENEF = E1.DEPENDENT_BENEF
+AND E1.EFFDT <= $To_Dt)
+AND F.EFFDT = (SELECT MAX(F1.EFFDT) FROM PS_DEP_BEN_EFF F1 WHERE
+F.EMPLID = F1.EMPLID AND F.DEPENDENT_BENEF = F1.DEPENDENT_BENEF
+AND F1.EFFDT <= $To_Dt)
+end-SELECT
+end-procedure
+
+!***********************************************************************
+!  Procedure: Get-Citizenship-Data                                     *
+!             Gets the citizenship data for the selected employees to  *
+!             be printed on the form.                                  *
+!***********************************************************************
+begin-procedure Get-Citizenship-Data
+
+begin-SELECT
+CP.EMPLID
+CP.PASSPORT_NBR
+     if &CP.EMPLID <> $PrevEmpl
+        move &CP.EMPLID to $PrevEmpl
+     end-if
+     move &CP.PASSPORT_NBR to $passport_nbr
+
+FROM PS_CITIZEN_PSSPRT CP
+WHERE CP.EMPLID = $Emplid
+AND CP.DEPENDENT_ID = ' '
+AND CP.DT_ISSUED <= $To_Dt
+AND CP.EXPIRATN_DT >= $To_Dt
+end-SELECT
+end-procedure
+
+
+!***********************************************************************
+!  Procedure: Get-Prev-Employer                                        *
+!             Gets the previous employer data for the selected employees*
+!             to be printed on the form.                               *
+!***********************************************************************
+begin-procedure Get-Prev-Employer
+
+let $PrevEmplyer_Addr=''
+let $PrevEmployer=''
+
+begin-SELECT
+PE.EMPLID
+PE.EMPLOYER
+PE.CITY
+PE.STATE
+PE.COUNTRY
+     move &PE.EMPLOYER to $PrevEmployer
+     let $PrevEmplyer_Addr = rtrim(&PE.CITY,' ') || ' ' || rtrim(&PE.STATE,' ') || ' ' || rtrim(&PE.COUNTRY,' ')
+FROM PS_PRIORWORK_EXPER PE
+WHERE PE.EMPLID = $Emplid
+AND PE.END_DT=(SELECT MAX(PE1.END_DT) FROM PS_PRIORWORK_EXPER PE1 WHERE PE1.EMPLID=PE.EMPLID
+               AND PE1.END_DT < $start_date)
+end-SELECT
+end-procedure
+
+
+!***********************************************************************
+!  Procedure: Get-Expected-Duration                                    *
+!             Gets the expected duration of employment for temporary   *
+!             employee and on contract basis.                          *
+!***********************************************************************
+begin-procedure Get-Expected-Duration
+let $expct_duration=' '
+begin-SELECT
+DISTINCT(CD.EMPLID)
+CD.CONTRACT_BEGIN_DT
+CD.CONTRACT_END_DT
+
+   if &CD.CONTRACT_BEGIN_DT <> '' and &CD.CONTRACT_END_DT <> ''
+     let #Date_Diff=datediff(&CD.CONTRACT_END_DT,&CD.CONTRACT_BEGIN_DT,'MONTH')
+     let $expct_duration=edit(#Date_Diff,'999.99') || ' Months'
+
+   else
+     let $expct_duration=' '
+   end-if
+
+
+FROM PS_CONTRACT_DATA CD, PS_JOB JJ
+WHERE CD.EMPLID = $Emplid
+AND CD.CONTRACT_STATUS='A'
+AND CD.CONTRACT_NUM = JJ.CONTRACT_NUM
+AND JJ.EMPLID = CD.EMPLID
+AND JJ.EMPL_RCD = &J.EMPL_RCD
+AND JJ.EFFDT = &J.EFFDT
+end-SELECT
+
+end-procedure
+
+!***********************************************************************
+!  Procedure: Prepare-Data                                             *
+!             Prepares the data that is to be printed on the form.     *
+!***********************************************************************
+begin-procedure Prepare-Data
+
+   IF $EELegalName = '' or $EELegalName = ' '
+     move &P1.NAME to $Name
+   ELSE
+     move $EELegalName to $Name
+   END-IF
+
+  uppercase $Name
+
+
+  let $FieldName = 'MAR_STATUS'
+  let $FieldValue = &P3.MAR_STATUS
+  let $Fieldvalue1 = &P3.SEX
+  do Read-Translate-Table
+  !let $Mar_Status = rtrim($XlatLongName,' ')
+  let $Mar_Status = rtrim($FieldValue,' ')
+
+  let $sex = rtrim($FieldValue1,' ')
+
+
+  uppercase $Mar_Status
+    uppercase $sex
+
+  if $Reg_Temp = 'R'
+     let $Nature_Employment = 'PERMANENT'
+  else
+     let $Nature_Employment = 'TEMPORARY'
+  end-if
+
+  move $start_date  to $START_DT
+
+  if &P3.MAR_STATUS = 'M'
+
+       let $HUSB_Name = &E.GPMY_SPOUSE_NAME
+       uppercase $HUSB_Name
+
+       if rtrim(&E.GPMY_SPOUSE_NEWIC, ' ') = ''
+          let $Husb_IC_Nbr = rtrim(&E.GPMY_SPOUSE_OLDIC, ' ')
+       else
+          let $Husb_IC_Nbr = rtrim(&E.GPMY_SPOUSE_NEWIC, ' ')
+       end-if
+       let $Husb_TFN = rtrim(&E.GPMY_SPOUSE_TAXNBR, ' ')
+    else
+       let $HUSB_Name = ' '
+       let $Husb_IC_Nbr = ' '
+       let $Husb_TFN = ' '
+  end-if
+
+
+end-procedure
+
+
+!***********************************************************************
+!  Procedure: Get-Allowances-Data                                             *
+!             Cash Allowances details   *
+!***********************************************************************
+begin-procedure Get-Allowances-Data
+
+    Let $Allowance=' '
+
+    Let #Allowance_val=0
+
+    Let  #loc=63
+    Let  #cnt=1
+
+
+
+Begin-Select DISTINCT
+P.PIN_NM   &P.PIN_NM
+ER.GP_AMT  &ER.AMT
+
+          Move  &P.PIN_NM  to $Allowance
+          Move &ER.AMT to   #Allowance_val
+
+           let $Allowance=ltrim(rtrim($Allowance,' '), ' ')
+
+          evaluate $Allowance
+
+            when='MEAL ALLOW'
+            Let $Allowance_Meal='MEAL'
+            Let #Allowance_Meal=#Allowance_val
+
+            if  #Allowance_Meal<>0
+           do Print-Allownace ($Allowance_Meal,#Allowance_Meal)
+
+            end-if
+            Break
+
+            when='SPEC ALLOW'
+            Let $Allowance_Spec='SPECIAL'
+            Let #Allowance_Spec=#Allowance_val
+
+            if  #Allowance_Spec<>0
+           do Print-Allownace ($Allowance_Spec,#Allowance_Spec)
+            end-if
+            Break
+
+            when='TRAVEL ALLOW'
+            Let $Allowance_Travel='TRAVEL'
+            Let #Allowance_Travel=#Allowance_val
+            if  #Allowance_Travel<>0
+           do Print-Allownace ($Allowance_Travel,#Allowance_Travel)
+            end-if
+            Break
+
+             when='ALLOW_RTO_PY'
+            Let $Allowance_Rto='RETRO PREV YEAR'
+            Let #Allowance_Rto=#Allowance_val
+
+            if  #Allowance_Rto<>0
+           do Print-Allownace ($Allowance_Rto,#Allowance_Rto)
+            end-if
+            Break
+
+            when='CAR'
+            Let $Allowance_Car='CAR'
+            Let #Allowance_Car=#Allowance_val
+
+             if  #Allowance_Car<>0
+           do Print-Allownace ($Allowance_Car,#Allowance_Car)
+             end-if
+            Break
+
+             when='LAUNDRY'
+            Let $Allowance_Lau='LAUNDRY'
+            Let #Allowance_Lau=#Allowance_val
+
+             if  #Allowance_Lau<>0
+            do Print-Allownace ($Allowance_Lau,#Allowance_Lau)
+            end-if
+            Break
+
+           when='SHFT ALL AMT'
+            Let $Allowance_Shift='SHIFT'
+            Let #Allowance_Shift=#Allowance_val
+
+             if  #Allowance_Shift<>0
+           do Print-Allownace ($Allowance_Shift,#Allowance_Shift)
+            end-if
+            Break
+
+            when='SHFT ALL HRL'
+            Let $Allowance_ShiftHr='SHIFT HOURLY'
+            Let #Allowance_ShiftHr=#Allowance_val
+
+             if  #Allowance_ShiftHr<>0
+            do Print-Allownace ($Allowance_ShiftHr,#Allowance_ShiftHr)
+            end-if
+            Break
+
+            when='UNIFORM'
+            Let $Allowance_Uni='UNIFORM'
+            Let #Allowance_Uni=#Allowance_val
+
+             if  #Allowance_Uni<>0
+            do Print-Allownace ($Allowance_Uni,#Allowance_Uni)
+            end-if
+             Break
+
+       END-evaluate
+
+FROM PS_GP_PYE_OVRD ER,PS_GP_PIN P
+WHERE ER.EMPLID=$Emplid
+AND ER.PIN_NUM IN (SELECT PIN_NUM FROM PS_GP_PIN WHERE PIN_CODE IN ('MEAL ALLOW MYS','TRAVEL ALLOW MYS','SPEC ALLOW MYS','ALLOW_RTO_PY MYS','CAR MYS','LAUNDRY MYS','SHFT ALL AMT MYS','SHFT ALL HRL MYS','UNIFORM MYS'))
+AND ER.PIN_NUM=P.PIN_NUM
+AND ER.EMPL_RCD=(SELECT MAX(EMPL_RCD)
+                 FROM PS_GP_PYE_OVRD
+                 WHERE EMPLID=ER.EMPLID)
+
+AND ER.BGN_DT=(SELECT MAX(BGN_DT)
+                      FROM PS_GP_PYE_OVRD
+                      WHERE EMPLID=$Emplid
+                      AND  EMPL_RCD=ER.EMPL_RCD
+                      AND PIN_NUM=ER.PIN_NUM
+                      AND BGN_DT >=&FromDate
+                      AND BGN_DT <=&To_Dt )
+
+
+END-Select
+
+
+end-procedure
+
+
+!***********************************************************************
+!  Procedure: Print-Form                                               *
+!             Prints the form according to the specifications provided.*
+!***********************************************************************
+begin-procedure Print-Form
+
+
+         Let #CurLine = 3
+
+      Let $FirstPage = 'Y'
+
+      let #spchar1=0
+      let #lspchar2=0
+       let $Co_Phone_Nbr11 =''
+       graphic () font #StdFont #ShdrPntSize
+
+      print $ReportTitle (1,115)
+
+
+
+      let #row = 2
+   graphic () font #StdFont #ShdrPntSize
+   print $ReportTitle1                   (#row,113)
+
+   add 1 to #row
+   graphic () font #StdFont #PntSize12
+print $GP_CP22_IRB_LBL_1           (#row,32) bold
+
+
+
+
+
+   add 1 to #row
+   graphic () font #StdFont 10
+
+
+   print $GP_CP22_TITLE_LBL_1           (#row,42) bold
+   add 1 to #row
+   graphic () font 32 8
+   print $GP_CP22_TITLE_LBL             (#row,45) bold
+
+   add 1 to #row
+   graphic () font #StdFont #StdPntSize
+   print $GP_CP22_ITACT_LBL_1  (#row,39) bold
+   
+   add 1 to #row
+   graphic () font 32 7
+   print $GP_CP22_ITACT_LBL  (#row,43) bold
+
+   add 2 to #row
+   graphic () font #StdFont #ShdrPntSize
+   !graphic                              (#row,32,88) box 1
+   Let $Form_LBL = $GP_CP22_FORM_LBL_1 || ' ' || $GP_CP22_FORM2_LBL_1
+   !print $Form_LBL (+1,34)
+   
+   Let #row = #row - 1
+   graphic                              (#row,19,93) box 3
+   graphic () font #StdFont 8
+   print $Form_LBL (#row,20)
+   add 1 to #row
+   print $GP_CP22_FORM3_LBL_1 (#row,55)
+   add 1 to #row
+   graphic () font 32 7
+   print $GP_CP22_FORM_LBL   (#row,21)
+   
+
+   add 2 to #row
+   let #row1 = #row - 1
+   graphic () font #StdFont #StdPntSize
+   print $GP_CP22_TO_LBL_1                         (#row,1)
+   print '/'                                       ( )
+   graphic () font 32 7
+   print $GP_CP22_TO_LBL                           ( )
+   graphic () font #StdFont #StdPntSize
+
+   print $GP_CP22_E_FILE_NBR_LBL_1         (#row1,61)
+   let #row2 = #row1 + 1
+   graphic () font 32 7
+   print $GP_CP22_E_FILE_NBR_LBL           (#row2,61) 
+
+   graphic () font #StdFont #StdPntSize
+
+   let $E_File_Nbr = 'E'
+   let $E_File_Nbr1 = substr($EE_File_Nbr,1,1)
+   let $E_File_Nbr2 = substr($EE_File_Nbr,2,1)
+   let $E_File_Nbr3 = substr($EE_File_Nbr,3,1)
+   let $E_File_Nbr4 = substr($EE_File_Nbr,4,1)
+   let $E_File_Nbr5 = substr($EE_File_Nbr,5,1)
+   let $E_File_Nbr6 = substr($EE_File_Nbr,6,1)
+   let $E_File_Nbr7 = substr($EE_File_Nbr,7,1)
+   let $E_File_Nbr8 = substr($EE_File_Nbr,8,1)
+   let $E_File_Nbr9 = substr($EE_File_Nbr,9,1)
+   let $E_File_Nbr10 = substr($EE_File_Nbr,10,1)
+
+   if ltrim(rtrim($E_File_Nbr10, ' '), ' ') = ''
+        let $E_File_Nbr10 = $E_File_Nbr9
+        let $E_File_Nbr9  = $E_File_Nbr8
+        let $E_File_Nbr8  = ''
+   end-if
+
+
+   graphic                              (#row,89,3) box 1
+   print $E_File_Nbr                    (0,90)
+   graphic                              (#row,95,3) box 1
+   print $E_File_Nbr1                   (0,96)
+   graphic                              (#row,98,3) box 1
+   print $E_File_Nbr2                   (0,99)
+   graphic                              (#row,101,3) box 1
+   print $E_File_Nbr3                   (0,102)
+   graphic                              (#row,104,3) box 1
+   print $E_File_Nbr4                   (0,105)
+   graphic                              (#row,107,3) box 1
+   print $E_File_Nbr5                   (0,108)
+   graphic                              (#row,110,3) box 1
+   print $E_File_Nbr6                   (0,111)
+   graphic                              (#row,113,3) box 1
+   print $E_File_Nbr7                   (0,114)
+   graphic                              (#row,116,3) box 1
+   !print $E_File_Nbr8                   (0,117)
+   print '-'                            (0,117) bold
+   graphic                              (#row,119,3) box 1
+   print $E_File_Nbr9                   (0,120)
+   graphic                              (#row,122,3) box 1
+   print $E_File_Nbr10                  (0,123)
+
+   add 2 to #row
+   graphic () font #StdFont #StdPntSize
+   print $GP_CP22_IRB_LBL_1        (#row,1)
+   
+   graphic () font #StdFont #StdPntSize
+   !let #row1 = #row -1 
+   print $GP_CP22_E_TEL_NBR_LBL_1    (#row,61)
+   let #row1 = #row + 1
+   graphic () font 32 7
+   print $GP_CP22_E_TEL_NBR_LBL      (#row1,61)
+   graphic () font #StdFont #StdPntSize
+
+   find '/' in $REGISTERED_PHONE 0 #spchar1
+   find '-' in $REGISTERED_PHONE 0 #spchar2
+
+
+   let $Co_Phone_Nbr1  = substr($REGISTERED_PHONE,1,1)
+   let $Co_Phone_Nbr2  = substr($REGISTERED_PHONE,2,1)
+   let $Co_Phone_Nbr3  = substr($REGISTERED_PHONE,3,1)
+   if   #spchar2 <> -1
+   let $Co_Phone_Nbr4  = substr($REGISTERED_PHONE,5,1)
+   let $Co_Phone_Nbr5  = substr($REGISTERED_PHONE,6,1)
+   let $Co_Phone_Nbr6  = substr($REGISTERED_PHONE,7,1)
+
+   else
+   let $Co_Phone_Nbr4  = substr($REGISTERED_PHONE,4,1)
+    let $Co_Phone_Nbr5  = substr($REGISTERED_PHONE,5,1)
+   let $Co_Phone_Nbr6  = substr($REGISTERED_PHONE,6,1)
+   end-if
+
+   if #spchar1 < #spchar2
+   let $Co_Phone_Nbr7  = substr($REGISTERED_PHONE,9,1)
+   let $Co_Phone_Nbr8  = substr($REGISTERED_PHONE,10,1)
+   let $Co_Phone_Nbr9  = substr($REGISTERED_PHONE,11,1)
+   let $Co_Phone_Nbr10 = substr($REGISTERED_PHONE,12,1)
+    else
+       let $Co_Phone_Nbr7  = substr($REGISTERED_PHONE,7,1)
+      let $Co_Phone_Nbr8  = substr($REGISTERED_PHONE,8,1)
+     let $Co_Phone_Nbr9  = substr($REGISTERED_PHONE,9,1)
+     let $Co_Phone_Nbr10 = substr($REGISTERED_PHONE,10,1)
+     let $Co_Phone_Nbr11 = substr($REGISTERED_PHONE,11,1)
+       end-if
+
+
+
+
+   graphic                              (#row,89,3) box 1
+   print $Co_Phone_Nbr1                 (0,90)
+   graphic                              (#row,92,3) box 1
+   print $Co_Phone_Nbr2                 (0,93)
+   graphic                              (#row,95,3) box 1
+   print $Co_Phone_Nbr3                 (0,96)
+   print '-'                            (0,99) bold
+   graphic                              (#row,101,3) box 1
+   graphic                              (#row,104,3) box 1
+   print $Co_Phone_Nbr4                 (0,102)
+   graphic                              (#row,107,3) box 1
+   print $Co_Phone_Nbr5                 (0,105)
+   graphic                              (#row,110,3) box 1
+   print $Co_Phone_Nbr6                 (0,108)
+   graphic                              (#row,113,3) box 1
+   print $Co_Phone_Nbr7                 (0,111)
+   graphic                              (#row,116,3) box 1
+   print $Co_Phone_Nbr8                 (0,114)
+   graphic                              (#row,119,3) box 1
+   print $Co_Phone_Nbr9                 (0,117)
+   graphic                              (#row,122,3) box 1
+   print $Co_Phone_Nbr10                 (0,120)
+
+   print $Co_Phone_Nbr11               (0,123)
+
+   add 3 to #row
+   print $GP_CP22_EMPL_DOT2_LBL                         (#row,1,85)  fill
+
+   print $GP_CP22_FROM_LBL_1                      (0,61)
+   print '/'                                    ( )
+   graphic () font 32 7
+   print $GP_CP22_FROM_LBL                                ( )
+   graphic () font #StdFont #StdPntSize
+
+   print $Co_Name                       (0,76) wrap 35 2
+   graphic                              (0,76,50) horz-line
+
+   add 1 to #row
+
+   print $GP_CP22_EMPL_DOT3_LBL                       (#row,1,85)  fill
+   if length($Co_Name ) > 35
+
+        add 1 to #row
+        print $Co_Addr1                      (#row,76)
+
+        add -1 to #row
+   else
+        print $Co_Addr1                      (#row,76)
+   end-if
+   graphic                              (#row,76,50) horz-line
+
+
+   add 1 to #row
+   print $GP_CP22_EMPL_DOT3_LBL                         (#row,1,85)  fill
+  ! print $Co_Addr2                      (0,76)
+   graphic                              (#row,76,50) horz-line
+
+   add 1 to #row
+   print $GP_CP22_EMPL_DOT3_LBL                          (#row,1,85)  fill
+ !  print $Co_Addr3                      (0,76)
+   graphic                              (#row,76,50) horz-line
+
+   !add 1 to #row
+   !print $GP_CP22_EMPL_DOT3_LBL                          (#row,1,85)  fill
+ !  print $Co_Addr3                      (0,76)
+   !graphic                              (0,76,50) horz-line
+
+if length($Co_Name ) > 35
+         
+       if ( $Co_Addr2<>' ')
+         !print $Co_Addr2                      (15,76)
+         !print $Co_Addr3                      (16,76)
+
+          print $Co_Addr2                      (20,76)
+          print $Co_Addr3                      (21,76)
+          graphic                              (21,76,50) horz-line
+          
+
+        else
+            IF $Co_Addr2=' ' and $curr_language_cd = 'MAY'
+
+
+      
+             print $Co_Addr3                      (20,76)
+
+            else
+             print $Co_Addr3                      (20,76)  !16
+            
+            end-if
+        end-if
+        
+        
+
+  else
+        if $Co_Addr2<>' '
+           !print $Co_Addr2                      (14,76)
+           !print $Co_Addr3                      (15,76)
+            print $Co_Addr2                      (19,76)
+
+            print $Co_Addr3                      (20,76)  !16
+
+
+        else
+                IF $Co_Addr2=' ' and $curr_language_cd = 'MAY'
+                   print $Co_Addr3                      (19,76)  !16
+                else
+                   print $Co_Addr3                      (19,76)  !15
+                end-if
+        end-if
+
+  end-if
+   
+   
+!******************************************************************************************
+!                Particulars of New Employee
+!******************************************************************************************
+
+   add 1 to #row
+  
+  !graphic                              (#row,1,125) horz-line
+
+  add 1 to #row
+  graphic () font #StdFont 10
+  print $GP_CP22_PARTICULAR_LBL_1  (#row,30) bold
+  print '/'                        (#row,65) bold
+  graphic () font 32 9
+  print $GP_CP22_PARTICULAR_LBL    (#row,66) bold
+  graphic () font #StdFont #PntSize11
+  graphic                              (#row,64,31) vert-line 10
+
+  graphic () font #StdFont #StdPntSize
+  add 1 to #row
+  graphic                              (#row,1,125) box 31 10
+
+  add 1 to #row
+  print $GP_CP22_FULL_NAME_LBL_1                 (#row,3)
+  let #row1 = #row + 1
+  graphic () font 32 7
+  print $GP_CP22_FULL_NAME_LBL                   (#row1,3)
+  graphic () font #StdFont #StdPntSize
+
+  print $GP_CP22_IT_NBR_LBL_1          (#row,66)
+  print '/'                            (#row,85)
+  graphic () font 32 7
+  print $GP_CP22_IT_NBR_LBL            (#row,86)
+  graphic () font #StdFont #StdPntSize
+
+  graphic                              (#row,16,45) box 2
+  print $Name                          (#row,18)    wrap 30 2
+
+  LET $TAX_FILE_NBR_MYS = replace($TAX_FILE_NBR_MYS, '-', '')
+  LET $TAX_FILE_NBR_MYS = RTRIM(LTRIM($TAX_FILE_NBR_MYS, ' '), ' ')
+  LET #SLEN = LENGTH($TAX_FILE_NBR_MYS)
+
+  let $Tax_File_Nbr1  = ''
+  let $Tax_File_Nbr2  = ''
+  let $Tax_File_Nbr3  = ''
+  let $Tax_File_Nbr4  = ''
+  let $Tax_File_Nbr5  = ''
+  let $Tax_File_Nbr6  = ''
+  let $Tax_File_Nbr7  = ''
+  let $Tax_File_Nbr8  = ''
+  let $Tax_File_Nbr9  = ''
+  let $Tax_File_Nbr10 = ''
+  let $Tax_File_Nbr11 = ''
+  let $Tax_File_Nbr12 = ''
+  let $Tax_File_Nbr13 = ''
+  let $Tax_File_Nbr14 = ''
+
+
+  let $Tax_File_Nbr1  = substr($TAX_FILE_NBR_MYS,1,1)
+  IF #SLEN > 4
+  let $Tax_File_Nbr2  = substr($TAX_FILE_NBR_MYS,2,1)
+  END-IF
+  IF #SLEN > 5
+  let $Tax_File_Nbr3  = substr($TAX_FILE_NBR_MYS,3,1)
+  END-IF
+  IF #SLEN > 6
+  let $Tax_File_Nbr4  = substr($TAX_FILE_NBR_MYS,4,1)
+  END-IF
+  IF #SLEN > 7
+  let $Tax_File_Nbr5  = substr($TAX_FILE_NBR_MYS,5,1)
+  END-IF
+  IF #SLEN > 8
+  let $Tax_File_Nbr6  = substr($TAX_FILE_NBR_MYS,6,1)
+  END-IF
+  IF #SLEN > 9
+  let $Tax_File_Nbr7  = substr($TAX_FILE_NBR_MYS,7,1)
+  END-IF
+  IF #SLEN > 10
+  let $Tax_File_Nbr8  = substr($TAX_FILE_NBR_MYS,8,1)
+  END-IF
+  IF #SLEN > 11
+  let $Tax_File_Nbr9  = substr($TAX_FILE_NBR_MYS,9,1)
+  END-IF
+  IF #SLEN > 12
+  let $Tax_File_Nbr10 = substr($TAX_FILE_NBR_MYS,10,1)
+  END-IF
+  IF #SLEN > 13
+  let $Tax_File_Nbr11 = substr($TAX_FILE_NBR_MYS,11,1)
+  END-IF
+  let $Tax_File_Nbr12 = substr($TAX_FILE_NBR_MYS,#SLEN - 2,1)
+  let $Tax_File_Nbr13 = substr($TAX_FILE_NBR_MYS,#SLEN - 1,1)
+  let $Tax_File_Nbr14 = '(' || substr($TAX_FILE_NBR_MYS,#SLEN,1) || ')'
+
+  add 1 to #row
+  graphic                              (#row,66,3) box 1
+  print $Tax_File_Nbr1                 (0,67)      bold
+  graphic                              (#row,69,3) box 1
+  print $Tax_File_Nbr2                 (0,70)      bold
+ 
+  graphic                              (#row,75,3) box 1
+  print $Tax_File_Nbr3                 (0,76)
+  graphic                              (#row,78,3) box 1
+  print $Tax_File_Nbr4                 (0,79)
+  graphic                              (#row,81,3) box 1
+  print $Tax_File_Nbr5                 (0,82)
+  graphic                              (#row,84,3) box 1
+  print $Tax_File_Nbr6                 (0,85)
+  graphic                              (#row,87,3) box 1
+  print $Tax_File_Nbr7                 (0,88)
+  graphic                              (#row,90,3) box 1
+  print $Tax_File_Nbr8                 (0,91)
+  graphic                              (#row,93,3) box 1
+  print $Tax_File_Nbr9                 (0,94)
+  graphic                              (#row,96,3) box 1
+  print $Tax_File_Nbr10                (0,97)
+  graphic                              (#row,99,3) box 1
+  !print $Tax_File_Nbr11                (0,100)
+  !print '-'                            (0,100) bold
+  print $Tax_File_Nbr12                (0,100)
+  graphic                              (#row,102,3) box 1
+  print $Tax_File_Nbr13                (0,103)
+  graphic                              (#row,105,4) box 1
+  print $Tax_File_Nbr14                (0,106)
+    
+  add 2 to #row
+  print $GP_CP22_PP_NBR_LBL_1 (#row,66)
+  Let #row1 = #row + 1
+  graphic () font 32 7
+  print $GP_CP22_PP_NBR_LBL   (#row1,66)
+  graphic () font #StdFont #StdPntSize
+
+  add 1 to #row
+  let #row1 = #row - 1
+  print $GP_CP22_EMPL_TYPE_LBL_1         (#row1,3)
+  graphic () font 32 7
+  print $GP_CP22_EMPL_TYPE_LBL           (#row,3)
+  graphic () font #StdFont #StdPntSize
+
+  if $Nature_Employment = 'PERMANENT'
+       let $Malay_Nature_Employment = $GP_JOBNATURE_PRM_LBL
+    else
+       let $Malay_Nature_Employment = $GP_JOBNATURE_TMP_LBL
+  end-if
+
+  Let #row1 = #row - 1
+  graphic                              (#row1,25,36) box 2
+  print $Malay_Nature_Employment             (#row1,27)
+
+  let $IC_Nbr1   = substr($IC_Nbr,1,1)
+  let $IC_Nbr2   = substr($IC_Nbr,2,1)
+  let $IC_Nbr3   = substr($IC_Nbr,3,1)
+  let $IC_Nbr4   = substr($IC_Nbr,4,1)
+  let $IC_Nbr5   = substr($IC_Nbr,5,1)
+  let $IC_Nbr6   = substr($IC_Nbr,6,1)
+!  let $IC_Nbr7   = '-'
+  let $IC_Nbr8   = substr($IC_Nbr,7,1)
+  let $IC_Nbr9   = substr($IC_Nbr,8,1)
+!  let $IC_Nbr10  = '-'
+  let $IC_Nbr11  = substr($IC_Nbr,9,1)
+  let $IC_Nbr12  = substr($IC_Nbr,10,1)
+  let $IC_Nbr13  = substr($IC_Nbr,11,1)
+  let $IC_Nbr14  = substr($IC_Nbr,12,1)
+
+  add 1 to #row
+  graphic                         (#row,66,3) box 1
+  print $IC_Nbr1                       (0,67)
+  graphic                         (#row,69,3) box 1
+  print $IC_Nbr2                  (0,70)
+  graphic                         (#row,72,3) box 1
+  print $IC_Nbr3                  (0,73)
+  graphic                         (#row,75,3) box 1
+  print $IC_Nbr4                  (0,76)
+  graphic                         (#row,78,3) box 1
+  print $IC_Nbr5                  (0,79)
+  graphic                         (#row,81,3) box 1
+  print $IC_Nbr6                  (0,82)
+  graphic                         (#row,84,3) box 1
+  print $IC_Nbr8                  (0,85)
+  graphic                         (#row,87,3) box 1
+  print $IC_Nbr9                  (0,88)
+  graphic                         (#row,90,3) box 1
+  print $IC_Nbr11                 (0,91)
+  graphic                         (#row,93,3) box 1
+  print $IC_Nbr12                 (0,94)
+  graphic                         (#row,96,3) box 1
+  print $IC_Nbr13                 (0,97)
+  graphic                         (#row,99,3) box 1
+  print $IC_Nbr14                 (0,100)
+!  graphic                         (#row,84,3) box 1
+!  print $IC_Nbr7                  (0,85)
+!  graphic                         (#row,90,3) box 1
+!  print $IC_Nbr10                 (0,91)
+!  graphic                         (#row,102,3) box 1
+!  print $IC_Nbr14                 (0,103)
+!  graphic                         (#row,105,3) box 1
+!  print $IC_Nbr14                 (0,106)
+
+  add 2 to #row
+  let #row1 = #row - 1
+  print $GP_CP22_DT_COMENCE_LBL_1 (#row1,3)
+  graphic () font 32 7
+  print $GP_CP22_DT_COMENCE_LBL   (#row,3)
+  graphic () font #StdFont #StdPntSize
+
+  Let $START_DT = edit($START_DT, 'dd/mm/yy')
+  Let $START_DT = REPLACE($START_DT, '/', '')
+  Let $START_DT = RTRIM(LTRIM($START_DT, ' '), ' ')
+
+  Let $START_DT_1 = substr($START_DT,1,1)
+  Let $START_DT_2 = substr($START_DT,2,1)
+  Let $START_DT_3 = substr($START_DT,3,1)
+  Let $START_DT_4 = substr($START_DT,4,1)
+  Let $START_DT_5 = substr($START_DT,5,1)
+  Let $START_DT_6 = substr($START_DT,6,1)
+
+  Let #row1 = #row - 1
+  graphic                              (#row,43,3) box 1
+  print $START_DT_1                    (#row,44)    
+  graphic                              (#row,46,3) box 1
+  print $START_DT_2                    (#row,47)   
+  graphic                              (#row1,49,1) vert-line 14 
+
+  graphic                              (#row,49,3) box 1
+  print $START_DT_3                    (#row,50)    
+  graphic                              (#row,52,3) box 1
+  print $START_DT_4                    (#row,53)
+  graphic                              (#row1,55,1) vert-line 14
+
+  graphic                              (#row,55,3) box 1
+  print $START_DT_5                    (#row,56)
+  graphic                              (#row,58,3) box 1
+  print $START_DT_6                    (#row,59)
+
+
+
+  print $GP_CP22_IMG_NBR_LBL_1            (#row,66)
+  print '/'                               (#row,77)
+  graphic () font 32 7
+  print $GP_CP22_IMG_NBR_LBL              (#row,78)
+  graphic () font #StdFont #StdPntSize
+
+  add 1 to #row
+  graphic                              (#row,66 ,3) box 1
+  graphic                              (#row,69 ,3) box 1
+  graphic                              (#row,72 ,3) box 1
+  graphic                              (#row,75 ,3) box 1
+  graphic                              (#row,78 ,3) box 1
+  graphic                              (#row,81 ,3) box 1
+  graphic                              (#row,84 ,3) box 1
+  graphic                              (#row,87 ,3) box 1
+  graphic                              (#row,90 ,3) box 1
+  graphic                              (#row,93 ,3) box 1
+  graphic                              (#row,96 ,3) box 1
+  graphic                              (#row,99 ,3) box 1
+  
+
+  add 1 to #row
+  let #row1 = #row - 1
+  print $GP_CP22_DURATION_LBL_1 (#row,3)
+  add 1 to #row
+  graphic () font 32 7
+  print $GP_CP22_DURATION_LBL (#row,3)
+  graphic () font #StdFont #StdPntSize
+
+  Let #row1 = #row - 1
+  graphic                              (#row1,42,19) box 2
+  print $expct_duration                (#row1,43)
+
+  print $GP_CP22_DOB_LBL_1              (#row,66)
+  print '/'                             (#row,76)
+  graphic () font 32 7
+  print $GP_CP22_DOB_LBL                (#row,77)
+  graphic () font #StdFont #StdPntSize
+
+  print $GP_CP22_MARITAL_LBL_1               (#row,89)
+  print '/'                                (#row,104)
+  graphic () font 32 7
+  print $GP_CP22_MARITAL_LBL               (#row,105)
+  graphic () font #StdFont #StdPntSize
+
+  add 2 to #row
+  print $GP_CP22_PR_ADDR_LBL_1  (#row,3)
+  print '/'                     (#row,25)
+  graphic () font 32 7
+  print $GP_CP22_PR_ADDR_LBL    (#row,26)
+  graphic () font #StdFont #StdPntSize
+
+  Let $Birthdate = &P4.BIRTHDATE
+  Let $Birthdate = edit($Birthdate, 'dd/mm/yy')
+  !show $Birthdate
+  Let $Birthdate = REPLACE($Birthdate, '/', '')
+  !show $Birthdate
+  LET $Birthdate = RTRIM(LTRIM($Birthdate, ' '), ' ')
+  !show $Birthdate
+
+  Let $Birthdate_1 = substr($Birthdate,1,1)
+  Let $Birthdate_2 = substr($Birthdate,2,1)
+  Let $Birthdate_3 = substr($Birthdate,3,1)
+  Let $Birthdate_4 = substr($Birthdate,4,1)
+  Let $Birthdate_5 = substr($Birthdate,5,1)
+  Let $Birthdate_6 = substr($Birthdate,6,1)
+
+  let #row = #row - 1
+  let #row1 = #row - 1
+  graphic                              (#row,66,3)   box 1
+  print $Birthdate_1                  (#row,67)    
+  graphic                              (#row,69,3)   box 1
+  print $Birthdate_2                  (#row,70)     
+  graphic                              (#row1,72,1) vert-line 14
+
+  graphic                              (#row,72,3)   box 1
+  print $Birthdate_3                  (#row,73)     
+
+  graphic                              (#row,75,3)   box 1 
+  print $Birthdate_4                  (#row,76) 
+  graphic                              (#row1,78,1) vert-line 14
+
+  graphic                              (#row,78,3)   box 1
+  print $Birthdate_5                  (#row,79)
+
+  graphic                              (#row,81,3)   box 1
+  print $Birthdate_6                  (#row,82)
+
+  EVALUATE  $Mar_Status
+       WHEN = 'M'
+       let $Malay_Mar_Status = $GP_MAR_STS_MARRIED_LBL
+       WHEN='S'
+       let $Malay_Mar_Status = $GP_MAR_STS_SINGLE_LBL
+       WHEN='C'
+       let $Malay_Mar_Status = $GP_MAR_STS_CMN_LAW_LBL
+       WHEN='D'
+       let $Malay_Mar_Status = $GP_MAR_STS_DIV_LBL
+       WHEN='E'
+       let $Malay_Mar_Status = $GP_MAR_STS_SEP_LBL
+       WHEN='H'
+       let $Malay_Mar_Status = $GP_MAR_STS_HD_HOUS_LBL
+       WHEN='P'
+       let $Malay_Mar_Status = $GP_MAR_STS_CIVIL_LBL
+       WHEN='T'
+       let $Malay_Mar_Status = $GP_MAR_STS_S_CIVIL_LBL
+       WHEN='U'
+       let $Malay_Mar_Status = $GP_MAR_STS_UNKNOWN_LBL
+       WHEN='V'
+       let $Malay_Mar_Status = $GP_MAR_STS_D_CIVIL_LBL
+       WHEN='W'
+       let $Malay_Mar_Status = $GP_MAR_STS_WIDOWED_LBL
+
+ END-EVALUATE
+
+ if $curr_language_cd = 'MAY'
+ if $sex = 'M' and $Mar_Status = 'W'
+ let $Malay_Mar_Status = 'DUDA'
+ end-if
+
+ if $sex = 'F' and $Mar_Status = 'W'
+ let $Malay_Mar_Status = 'JANDA'
+ end-if
+ end-if
+
+  graphic                              (#row,89,27)  box 1
+  print $Malay_Mar_Status                    (#row,93)
+  add 2 to #row
+  graphic                              (#row,3,58)   box 4
+  print $Addr1_Home                         (#row,4)
+  graphic                              (#row,3,58)   horz-line
+  
+  add 1 to #row
+  print $Addr2_Home                         (#row,4)
+  graphic                              (#row,3,58)   horz-line
+
+  let #row = #row - 1
+  print $GP_CP22_CHILD_18_LBL_1          (#row,66)
+  let #row1 = #row + 1
+  graphic () font 32 7
+  print $GP_CP22_CHILD_18_LBL            (#row1,66)
+  graphic () font #StdFont #StdPntSize  
+
+  graphic                              (#row,116,6) box 1
+  print #ChildCnt                      (#row,117)   edit 999
+
+  add 2 to #row
+  print $Addr3_Home                         (#row,4)
+  graphic                              (#row,3,58)   horz-line
+
+  Let #row = #row - 1
+  graphic                              (#row,64,62)  horz-line 10
+
+  add 2 to #row
+  print $Addr4_Home                (#row,4)
+
+  Let #row = #row - 1
+  print $GP_CP22_MARRIAGE_LBL_1  (#row,66)
+  Let #row1 = #row + 1
+  graphic () font 32 7
+  print $GP_CP22_MARRIAGE_LBL    (#row1,66)
+  graphic () font #StdFont #StdPntSize
+
+  add 2 to #row
+  print $GP_CP22_HUS_NAME_LBL_1     (#row,66)
+  graphic () font 32 7
+  print $GP_CP22_HUS_NAME_LBL       (#row,89)
+  graphic () font #StdFont #StdPntSize
+
+  add 1 to #row
+  print $GP_CP22_CR_ADDR_LBL_1 (#row,3)
+  print '/'                    (#row,29)
+  graphic () font 32 7
+  print $GP_CP22_CR_ADDR_LBL   (#row,30)
+  graphic () font #StdFont #StdPntSize
+    
+  graphic                              (#row,69,53)    box 1
+  print $HUSB_Name                     (#row,70)
+
+  add 1 to #row
+  graphic                              (#row,3,58)  box 4
+  print $Addr1_Oth                     (#row,4)
+  graphic                              (#row,3,58)   horz-line
+
+  add 1 to #row
+  print $Addr2_Oth                     (#row,4)
+  graphic                              (#row,3,58)  horz-line
+  print $GP_CP22_HUS_ID_NBR_LBL_1      (#row,66)
+  Let #row1 = #row + 1
+  graphic () font 32 7
+  print $GP_CP22_HUS_ID_NBR_LBL        (#row1,69)
+  graphic () font #StdFont #StdPntSize
+
+  let $Husb_ic_Nbr= $Husb_IC_Nbr
+  let $Husb_IC_Nbr1    = substr($Husb_ic_Nbr,1,1)
+  let $Husb_IC_Nbr2    = substr($Husb_ic_Nbr,2,1)
+  let $Husb_IC_Nbr3    = substr($Husb_ic_Nbr,3,1)
+  let $Husb_IC_Nbr4    = substr($Husb_ic_Nbr,4,1)
+  let $Husb_IC_Nbr5    = substr($Husb_ic_Nbr,5,1)
+  let $Husb_IC_Nbr6    = substr($Husb_ic_Nbr,6,1)
+  let $Husb_IC_Nbr7    = '-'
+  let $Husb_IC_Nbr8    = substr($Husb_ic_Nbr,7,1)
+  let $Husb_IC_Nbr9    = substr($Husb_ic_Nbr,8,1)
+  let $Husb_IC_Nbr10   = '-'
+  let $Husb_IC_Nbr11   = substr($Husb_ic_Nbr,9,1)
+  let $Husb_IC_Nbr12   = substr($Husb_ic_Nbr,10,1)
+  let $Husb_IC_Nbr13   = substr($Husb_ic_Nbr,11,1)
+  let $Husb_IC_Nbr14   = substr($Husb_ic_Nbr,12,1)
+
+  add 1 to #row
+  print $Addr3_Oth                     (#row,4)
+  graphic                              (#row,3,58)   horz-line
+
+  add 1 to #row
+  graphic                              (#row,69 ,3)  box 1
+  graphic                              (#row,72 ,3)  box 1
+  graphic                              (#row,75 ,3)  box 1
+  graphic                              (#row,78 ,3)  box 1
+  graphic                              (#row,81 ,3)  box 1
+  graphic                              (#row,84 ,3)  box 1
+  graphic                              (#row,87 ,3)  box 1
+  graphic                              (#row,90 ,3)  box 1
+  graphic                              (#row,93 ,3) box 1
+  graphic                              (#row,96 ,3) box 1
+  graphic                              (#row,99 ,3) box 1
+  graphic                              (#row,102,3) box 1
+  print $Husb_IC_Nbr1                  (0,70)
+  print $Husb_IC_Nbr2                  (0,73 )
+  print $Husb_IC_Nbr3                  (0,76 )
+  print $Husb_IC_Nbr4                  (0,79 )
+  print $Husb_IC_Nbr5                  (0,82 )
+  print $Husb_IC_Nbr6                  (0,85 )
+  print $Husb_IC_Nbr8                  (0,88 )
+  print $Husb_IC_Nbr9                  (0,91 )
+  print $Husb_IC_Nbr11                 (0,94 )
+  print $Husb_IC_Nbr12                 (0,97 )
+  print $Husb_IC_Nbr13                 (0,100)
+  print $Husb_IC_Nbr14                 (0,103)
+  !print $Husb_IC_Nbr7                  (0,94)
+  !print $Husb_IC_Nbr10                 (0,106)
+ ! graphic                              (#row,117,4) box 1
+ ! graphic                              (#row,121,4) box 1
+
+  !add 1 to #row
+  print $Addr4_Oth                     (#row,4)
+
+  add 2 to #row
+  print $GP_CP22_IN_TAX_NR_LBL_1 (#row,66) !'(c) Husband''s Income Tax File No.'
+  add 1 to #row
+  graphic () font 32 7
+  print $GP_CP22_IN_TAX_NR_LBL   (#row,66)
+  graphic () font #StdFont #StdPntSize
+
+  let $Husb_TFN = REPLACE($Husb_TFN, '-', '')
+  LET $Husb_TFN = RTRIM(LTRIM($Husb_TFN, ' '), ' ')
+  LET #SLEN = LENGTH($Husb_TFN)
+  let $Husb_TFN_Nbr1    = ''
+  let $Husb_TFN_Nbr2    = ''
+  let $Husb_TFN_Nbr3    = ''
+  let $Husb_TFN_Nbr4    = ''
+  let $Husb_TFN_Nbr5    = ''
+  let $Husb_TFN_Nbr6    = ''
+  let $Husb_TFN_Nbr7    = ''
+  let $Husb_TFN_Nbr8    = ''
+  let $Husb_TFN_Nbr9    = ''
+  let $Husb_TFN_Nbr10   = ''
+  let $Husb_TFN_Nbr11   = ''
+  let $Husb_TFN_Nbr12   = ''
+  let $Husb_TFN_Nbr13   = ''
+  let $Husb_TFN_Nbr14   = ''
+
+  IF(#SLEN > 0)
+  let $Husb_TFN_Nbr1    = substr($Husb_TFN,1,1)
+     !  let $Husb_TFN_Nbr2    = substr($Husb_TFN,2,1)
+     !  let $Husb_TFN_Nbr3    = substr($Husb_TFN,3,1)
+     !  let $Husb_TFN_Nbr4    = substr($Husb_TFN,4,1)
+     !  let $Husb_TFN_Nbr5    = substr($Husb_TFN,5,1)
+     !  let $Husb_TFN_Nbr6    = substr($Husb_TFN,6,1)
+     !  let $Husb_TFN_Nbr7    = substr($Husb_TFN,7,1)
+     !  let $Husb_TFN_Nbr8    = substr($Husb_TFN,8,1)
+     !  let $Husb_TFN_Nbr9    = substr($Husb_TFN,9,1)
+     !  let $Husb_TFN_Nbr10   = substr($Husb_TFN,10,1)
+     !  let $Husb_TFN_Nbr11   = substr($Husb_TFN,11,1)
+     !  let $Husb_TFN_Nbr12   = substr($Husb_TFN,12,1)
+     !  let $Husb_TFN_Nbr13   = substr($Husb_TFN,13,1)
+     !  let $Husb_TFN_Nbr14   = substr($Husb_TFN,14,1)
+
+     IF #SLEN > 4
+  let $Husb_TFN_Nbr2    = substr($Husb_TFN,2,1)
+     END-IF
+     IF #SLEN > 5
+  let $Husb_TFN_Nbr3    = substr($Husb_TFN,3,1)
+     END-IF
+     IF #SLEN > 6
+  let $Husb_TFN_Nbr4    = substr($Husb_TFN,4,1)
+     END-IF
+     IF #SLEN > 7
+  let $Husb_TFN_Nbr5    = substr($Husb_TFN,5,1)
+     END-IF
+     IF #SLEN > 8
+  let $Husb_TFN_Nbr6    = substr($Husb_TFN,6,1)
+     END-IF
+     IF #SLEN > 9
+  let $Husb_TFN_Nbr7    = substr($Husb_TFN,7,1)
+     END-IF
+     IF #SLEN > 10
+  let $Husb_TFN_Nbr8    = substr($Husb_TFN,8,1)
+     END-IF
+     IF #SLEN > 11
+  let $Husb_TFN_Nbr9    = substr($Husb_TFN,9,1)
+     END-IF
+     IF #SLEN > 12
+  let $Husb_TFN_Nbr10   = substr($Husb_TFN,10,1)
+     END-IF
+     IF #SLEN > 13
+  let $Husb_TFN_Nbr11   = substr($Husb_TFN,11,1)
+     END-IF
+     let $Husb_TFN_Nbr12 = substr($Husb_TFN,#SLEN - 2,1)
+     let $Husb_TFN_Nbr13 = substr($Husb_TFN,#SLEN - 1,1)
+     let $Husb_TFN_Nbr14 = '(' || substr($Husb_TFN,#SLEN,1) || ')'
+  END-IF
+
+
+  add 1 to #row
+  graphic                              (#row,69,3)  box 1
+  graphic                              (#row,72,3)  box 1
+  graphic                              (#row,78,3)  box 1
+  graphic                              (#row,81,3)  box 1
+  graphic                              (#row,84,3)  box 1
+  graphic                              (#row,87,3)  box 1
+  graphic                              (#row,90,3)  box 1
+  graphic                              (#row,93,3)  box 1
+  graphic                              (#row,96,3)  box 1
+  graphic                              (#row,99,3)  box 1
+  graphic                              (#row,102,3) box 1
+
+  print $Husb_TFN_Nbr1                 (0,70)       bold
+  print $Husb_TFN_Nbr2                 (0,73)       bold
+  print $Husb_TFN_Nbr3                 (0,79)
+  print $Husb_TFN_Nbr4                 (0,82)
+  print $Husb_TFN_Nbr5                 (0,85)
+  print $Husb_TFN_Nbr6                 (0,88)
+  print $Husb_TFN_Nbr7                 (0,91)
+  print $Husb_TFN_Nbr8                 (0,94)
+  print $Husb_TFN_Nbr9                 (0,97)
+  print $Husb_TFN_Nbr10                (0,100)
+  !print $Husb_TFN_Nbr11                (0,100)
+  !print '-'                            (0,103)      bold
+  print $Husb_TFN_Nbr12                (0,103)
+
+  graphic                              (#row,105,3) box 1
+  graphic                              (#row,108,4) box 1
+  !graphic                              (#row,111,4) box 1
+  
+  print $Husb_TFN_Nbr13                (0,106)
+  print $Husb_TFN_Nbr14                (0,109)
+  !graphic                              (#row,113,4) box 1
+  !$Husb_TFN_Nbr12                (0,114)
+
+
+add 1 to #row
+graphic                              (#row,3,4)   box 2
+print $GP_cp22_TANDAKAN_LBL_1                 (#row,8)
+Let #row1 = #row + 1
+graphic () font 32 7
+print $GP_cp22_TANDAKAN_LBL          (#row1,8)
+graphic () font #StdFont #StdPntSize
+
+  print $GP_CP22_NOTA_LBL_1 (#row,66)
+
+ add 1 to #row
+
+  print $GP_CP22_NOT_LBL_1 (#row,66)
+  print '/'                (#row,85)
+  graphic () font 32 7
+  print $GP_CP22_NOTA_LBL  (#row,86)
+ add 1 to #row
+  print $GP_CP22_NOT_LBL   (#row,66)
+  graphic () font #StdFont #StdPntSize
+
+!******************************************************************************************
+!                Terms of Employment
+!******************************************************************************************
+
+  add 2 to #row
+  graphic () font #StdFont 10
+  print $GP_CP22_TRM_EMPL_LBL_1 (#row,34) bold  !'TERMS OF EMPLOYMENT'
+  print '/'                     (#row,69) bold
+  graphic () font 32 9
+  print $GP_CP22_TRM_EMPL_LBL   (#row,70) bold
+
+  
+  graphic () font #StdFont #StdPntSize
+  add 1 to #row
+  graphic                              (#row,1,125) box 14 10
+
+  add 1 to #row
+  print $GP_CP22_MNTHLY_LBL_1 (#row,3) !'(a) Monthly Rate of Fixed Remuneration'
+  print '/'                   (#row,27)
+  graphic () font 32 7
+  print $GP_CP22_MNTHLY_LBL   (#row,28)
+  graphic () font #StdFont #StdPntSize
+
+print $GP_CP22_RM_LBL (#row,101)
+  
+
+graphic                              (#row,91,33) box 1
+  !print 'RM'                           (#row,73)
+  print #EE_Monthly_Rt                 (#row,95)    edit 9,999,999,999,999.99
+
+  add 2 to #row
+  !let $Monthly_Allowance = $GP_CP22_MNTH_CASH_LBL || ' ' || $GP_CP22_MNTH_CASH1_LBL
+ ! print $Monthly_Allowance             (#row,3) !'(b) Monthly rate of cash allowances, e.g. cost of living or other fixed allowances and rate of allowances-in-kind, e.g. quarters, food, clothing, etc.'
+
+
+
+let $Monthly_Allowance = $GP_CP22_MNTH_CASH_LBL_1
+
+
+  print $Monthly_Allowance             (#row,3)
+add 1 to #row
+print $GP_CP22_MNTH_CASH1_LBL_1 (#row,6)
+
+  add 1 to #row
+  graphic () font 32 7
+  print $GP_CP22_MNTH_CASH_LBL  (#row,6)
+
+  add 1 to #row
+  print $GP_CP22_MNTH_CASH1_LBL (#row,6)
+  graphic () font #StdFont #StdPntSize  
+
+  add 1 to #row
+  graphic                              (#row,6,118) box 1
+
+  add 1 to #row
+  graphic                              (#row,6,118) box 1
+
+  add 1 to #row
+  graphic                              (#row,6,118) box 1
+
+  add 1 to #row
+  let #row1 = #row - 1
+  let $Fluctuate_Allowance_1 = $GP_CP22_FLUCTUATE_LBL_1 ||' ' || $GP_CP22_FLUCTUATE1_LBL_1
+  let $Fluctuate_Allowance = $GP_CP22_FLUCTUATE_LBL
+  print $Fluctuate_Allowance_1           (#row,3) !'(c) Fluctuating emoluments to which he may become entitled (description) and the date when the amount will be known.'
+  add 1 to #row
+  graphic () font 32 7
+  print $Fluctuate_Allowance             (#row,3)  
+  graphic () font #StdFont #StdPntSize
+
+  add 1 to #row
+  graphic                              (#row,6,118) box 1
+
+
+!******************************************************************************************
+!                Name & Address of Previous Employer in Malaysia
+!******************************************************************************************
+
+  add 2 to #row
+  graphic                              (#row,1,125) box 5 10
+
+  add 1 to #row
+  print $GP_CP22_PREV_ADDR_LBL_1 (#row,3)
+  
+  let #row1 = #row + 1
+  graphic () font 32 7
+  print $GP_CP22_PREV_ADDR_LBL   (#row1,3)
+  graphic () font #StdFont #StdPntSize
+
+  print $PrevEmployer                   (#row,50)
+  graphic                              (#row,46,78) box 1
+
+  add 1 to #row
+  print $PrevEmplyer_Addr              (#row,50)
+  graphic                              (#row,46,78) box 1
+
+  add 1 to #row
+  graphic                              (#row,46,78) box 1
+
+
+!******************************************************************************************
+!                Print date, signature, name, designation
+!******************************************************************************************
+
+  !new-page
+  !Let #row = 1
+  add 3 to #row
+  print $GP_CP22_EMPL_SIGN_LBL_1                                       (#row,3)!'Employer''s Signature:'
+  print '/'                                                            (#row,20)
+  graphic () font 32 7
+  print $GP_CP22_EMPL_SIGN_LBL                                         (#row,21)
+  graphic () font #StdFont #StdPntSize
+
+  print $GP_CP22_EMPL_DOT_LBL                                        (#row,39,68)  fill
+
+  add 1 to #row
+  print $GP_CP22_EMPL_NAME_LBL_1                        (#row,3)
+  print '/'                                           (#row,8)
+  graphic () font 32 7
+  print $GP_CP22_EMPL_NAME_LBL                        (#row,9)
+  graphic () font #StdFont #StdPntSize
+
+  print $GP_CP22_EMPL_DOT_LBL                                        (#row,39,68)  fill
+  print $Responsible_person                       (#row,39)
+
+  add 1 to #row
+ ! print $GP_CP22_EMPL_DATE_LBL                     (#row,1)
+
+  print $GP_CP22_EMPL_DOT_LBL                              (#row,39,68)   fill
+  print $GP_CP22_EMPL_DESG_LBL_1                (#row,3)
+  print '/'                                     ( )
+  graphic () font 32 7
+  print $GP_CP22_EMPL_DESG_LBL                  ( )
+  graphic () font #StdFont #StdPntSize
+
+  print $jobtitle                                       (#row,39) 
+
+add 1 to #row
+  print $GP_CP22_EMPL_DATE_LBL_1                     (#row,3)
+  print '/'                                          ( )
+  graphic () font 32 7
+  print $GP_CP22_EMPL_DATE_LBL                       ( )
+  graphic () font #StdFont #StdPntSize
+
+  print $GP_CP22_EMPL_DOT_LBL                                        (#row,39,68)  fill
+
+  let $Process_Date=DateNow()
+  print $Process_Date                         (#row,39) edit 'dd/mm/yyyy'
+
+  !print $GP_CP22_EMPL_DOT_LBL                              (#row,18,45)   fill
+  !print $GP_CP22_EMPL_DESG_LBL                (#row,66)
+  !print $jobtitle                                       (#row,84)
+
+
+end-procedure
+
+
+!******************************************************************************************
+!Procedure to print Allowances
+!******************************************************************************************
+Begin-Procedure Print-Allownace ($Allow_name,#Allow_val)
+
+  if (#_cnt<=3 )
+  print $Allow_name   (#_loc, 8)
+  print ':'                     (#_loc,21)
+  print #Allow_val         (#_loc,23)
+
+  else
+
+  if (#_cnt<= 6)
+   print $Allow_name (#_loc,48)
+   print ':'                     (#_loc,61)
+   print #Allow_val         (#_loc,63)
+  else
+
+  if  (#_cnt<= 9)
+  print $Allow_name (#_loc,80)
+   print ':'                     (#_loc,91)
+   print #Allow_val         (#_loc,93)
+
+   end-if
+    end-if
+     end-if
+
+  add 1 to  #_loc
+  add 1 to  #_cnt
+
+
+
+  if #_loc >= 66
+   let #_loc = 63
+  End-if
+
+
+
+
+End-procedure
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Begin-Procedure LanguageCode
+
+
+   !if $curr_language_cd <> 'MAY'
+
+       ! do Get_Field_Information ('GPMYTX02', 'CP22', $ReportTitle, #DW)! from settrans.sqc returning the actual text based upon the language selected
+
+              
+do Get_Field_Information ('GPMYTX02', 'CP22', $ReportTitle, #DW)! from settrans.sqc returning the actual text based upon the language selected
+
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_TITLE', $GP_CP22_TITLE_LBL,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_FORM', $GP_CP22_FORM_LBL,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_FORM2', $GP_CP22_FORM2_LBL,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_FORM3', $GP_CP22_FORM3_LBL,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_IRB', $GP_CP22_IRB_LBL,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_ITACT', $GP_CP22_ITACT_LBL,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_TO', $GP_CP22_TO_LBL,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_E_FILE_NBR ', $GP_CP22_E_FILE_NBR_LBL ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_E ',$GP_CP22_E_LBL,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_E_TEL_NBR  ',  $GP_CP22_E_TEL_NBR_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_EMPL_DOT2', $GP_CP22_EMPL_DOT2_LBL ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_EMPL_DOT3  ', $GP_CP22_EMPL_DOT3_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_PARTICULAR ', $GP_CP22_PARTICULAR_LBL ,#DW)
+        !do Get_Field_Information ('GPMYTX02', 'GP_CP22_FULL_NAME',  $GP_CP22_FULL_NAME_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_PP_NBR', $GP_CP22_PP_NBR_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_IT_NBR',  $GP_CP22_IT_NBR_LBL  ,#DW)
+        !do Get_Field_Information ('GPMYTX02', 'GP_CP22_EMPL_TYPE',$GP_CP22_EMPL_TYPE_LBL ,#DW)
+        !do Get_Field_Information ('GPMYTX02', 'GP_CP22_DT_COMENCE', $GP_CP22_DT_COMENCE_LBL ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_IMG_NBR ', $GP_CP22_IMG_NBR_LBL,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_MARRIAGE ', $GP_CP22_MARRIAGE_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_HUS_ID_NBR ', $GP_CP22_HUS_ID_NBR_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_MARITAL ', $GP_CP22_MARITAL_LBL ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_DOB', $GP_CP22_DOB_LBL ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_PR_ADDR  ',$GP_CP22_PR_ADDR_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_IN_TAX_NR ',$GP_CP22_IN_TAX_NR_LBL  ,#DW)
+
+
+do Get_Field_Information ('GPMYTX02', 'GP_CP22_NOTA ',$GP_CP22_NOTA_LBL  ,#DW)
+do Get_Field_Information ('GPMYTX02', 'GP_CP22_NOT ',$GP_CP22_NOT_LBL  ,#DW)
+
+do Get_Field_Information ('GPMYTX02', 'GP_CP22_TANDAKAN ',$GP_CP22_TANDAKAN_LBL  ,#DW)
+
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_CR_ADDR ',$GP_CP22_CR_ADDR_LBL ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_HUS_NAME ',$GP_CP22_HUS_NAME_LBL ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_EMPL_SIGN ',$GP_CP22_EMPL_SIGN_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_PREV_ADDR',$GP_CP22_PREV_ADDR_LBL ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_EMPL_NAME ',$GP_CP22_EMPL_NAME_LBL ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_EMPL_DATE ',$GP_CP22_EMPL_DATE_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_EMPL_DESG  ',$GP_CP22_EMPL_DESG_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_EMPL_DOT  ',$GP_CP22_EMPL_DOT_LBL   ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_TRM_EMPL ',$GP_CP22_TRM_EMPL_LBL   ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_MNTHLY  ',$GP_CP22_MNTHLY_LBL    ,#DW)
+
+
+ do Get_Field_Information ('GPMYTX02', 'GP_CP22_RM  ',$GP_CP22_RM_LBL    ,#DW)
+
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_MNTH_CASH ',$GP_CP22_MNTH_CASH_LBL   ,#DW)
+
+        
+do Get_Field_Information ('GPMYTX02', 'GP_CP22_MNTH_CASH2 ',$GP_CP22_MNTH_CASH2_LBL   ,#DW)
+
+
+        !do Get_Field_Information ('GPMYTX02', 'GP_CP22_FLUCTUATE ',$GP_CP22_FLUCTUATE_LBL   ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_CHILD_18',$GP_CP22_CHILD_18_LBL   ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_MNTH_CASH1 ',$GP_CP22_MNTH_CASH1_LBL   ,#DW)
+        !do Get_Field_Information ('GPMYTX02', 'GP_CP22_FLUCTUATE1 ',$GP_CP22_FLUCTUATE1_LBL   ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_DURATION ',$GP_CP22_DURATION_LBL   ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_JOBNATURE_PRM',$GP_JOBNATURE_PRM_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_JOBNATURE_TMP',$GP_JOBNATURE_TMP_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_MAR_STS_MARRIED',$GP_MAR_STS_MARRIED_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_MAR_STS_SINGLE',$GP_MAR_STS_SINGLE_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_MAR_STS_CMN_LAW',$GP_MAR_STS_CMN_LAW_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_MAR_STS_DIV',$GP_MAR_STS_DIV_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_MAR_STS_SEP',$GP_MAR_STS_SEP_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_MAR_STS_HD_HOUS',$GP_MAR_STS_HD_HOUS_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_MAR_STS_CIVIL',$GP_MAR_STS_CIVIL_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_MAR_STS_S_CIVIL',$GP_MAR_STS_S_CIVIL_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_MAR_STS_UNKNOWN',$GP_MAR_STS_UNKNOWN_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_MAR_STS_D_CIVIL',$GP_MAR_STS_D_CIVIL_LBL  ,#DW)
+        do Get_Field_Information ('GPMYTX02', 'GP_MAR_STS_WIDOWED',$GP_MAR_STS_WIDOWED_LBL  ,#DW)
+
+
+        do Get_Field_Information ('GPMYTX02', 'GP_CP22_FROM',$GP_CP22_FROM_LBL  ,#DW)
+        !LET $GP_CP22_ITACT_LBL='(SECTION 83(2) INCOME TAX ACT 1967)'
+ LET $GP_CP22_ITACT_LBL='[SUBSECTION 83(2) OF THE INCOME TAX ACT 1967]'
+
+
+
+   !else
+
+        !let $ReportTitle              = '(C.P.22-Pin. 1/2003)'
+        let $ReportTitle_1              = 'CP22 [Pin. 1/2011]'
+
+        let $GP_CP22_CHILD_18_LBL_1       = 'Bilangan anak-anak di bawah umur 18 tahun'
+        let $GP_CP22_CHILD_18_LBL         = 'No. of children below18 years of age'
+
+        let $GP_CP22_CR_ADDR_LBL_1      = 'Alamat Surat-Menyurat Sekarang'
+        !let $GP_CP22_CR_ADDR_LBL        =  $GP_CP22_CR_ADDR_LBL_1 || ' / ' || $GP_CP22_CR_ADDR_LBL
+
+        let $GP_CP22_DOB_LBL_1            = 'Tarikh Lahir'
+        !let $GP_CP22_DOB_LBL              = $GP_CP22_DOB_LBL_1 || ' / ' || $GP_CP22_DOB_LBL
+
+        let $GP_CP22_DT_COMENCE_LBL_1     = 'Tarikh Permulaan Pekerjaan Sekarang'
+        let $GP_CP22_DT_COMENCE_LBL       = 'Commencement Date of Current Employment'           
+
+        let $GP_CP22_DURATION_LBL_1       = 'Tempoh Pekerjaan Yang Dijangkakan'
+        let $GP_CP22_DURATION_LBL         = 'Expected Duration of Employment'        
+
+        let $GP_CP22_E_LBL              = 'E'
+
+        let $GP_CP22_EMPL_DATE_LBL_1    = 'Tarikh'
+        !let $GP_CP22_EMPL_DATE_LBL      =  $GP_CP22_EMPL_DATE_LBL_1 || ' / ' || $GP_CP22_EMPL_DATE_LBL
+
+        let $GP_CP22_EMPL_DESG_LBL_1    = 'Jawatan'
+        !let $GP_CP22_EMPL_DESG_LBL      =  $GP_CP22_EMPL_DESG_LBL_1 || ' / ' || $GP_CP22_EMPL_DESG_LBL
+
+        let $GP_CP22_EMPL_DOT_LBL       = '..'
+        let $GP_CP22_EMPL_DOT2_LBL      = '..'
+        let $GP_CP22_EMPL_DOT3_LBL      = '..'
+    
+        let $GP_CP22_EMPL_NAME_LBL_1      = 'Nama'
+        !let $GP_CP22_EMPL_NAME_LBL        =  $GP_CP22_EMPL_NAME_LBL_1 || ' / ' || $GP_CP22_EMPL_NAME_LBL
+ 
+        let $GP_CP22_EMPL_SIGN_LBL_1    = 'Tandatangan Majikan'
+        !let $GP_CP22_EMPL_SIGN_LBL      = $GP_CP22_EMPL_SIGN_LBL_1 || ' / ' || $GP_CP22_EMPL_SIGN_LBL
+
+        let $GP_CP22_EMPL_TYPE_LBL_1    = 'Jenis Pekerjaan'
+        let $GP_CP22_EMPL_TYPE_LBL      = 'Nature of Employment'
+
+        !let $GP_CP22_E_FILE_NBR_LBL     = 'No. Rujukan Fail Majikan'
+
+let $GP_CP22_E_FILE_NBR_LBL_1   = 'No.Majikan'
+
+              let $GP_CP22_RM_LBL                    = 'RM'
+
+let $GP_CP22_NOTA_LBL_1   = 'Nota: * Bagi warganegara Malaysia yang mempunyai Mykad, hanya No.'
+
+let $GP_CP22_NOT_LBL_1   = 'Mykad sahaja perlu diisi.'
+let $GP_CP22_NOTA_LBL    = 'Note: * For a Malaysian citizen who has Mykad,'
+!let $GP_CP22_NOT_LBL_1   = $GP_CP22_NOT_LBL_1 || ' / ' || $GP_CP22_NOTA_LBL
+let $GP_CP22_NOT_LBL     = 'only the Mykad No. needs to be filled.'
+
+
+
+
+let $GP_CP22_TANDAKAN_LBL_1   = 'Tandakan “X” jika alamat surat-menyurat di atas adalah alamat ejen cukai'
+
+        let $GP_CP22_E_TEL_NBR_LBL_1    = 'No. Telefon Majikan'
+         
+        let $GP_CP22_FLUCTUATE_LBL_1    = '(c) Emolumen tidak tetap yang beliau berhak (nyatakan perihalnya) dan tarikh jumlah bayaran'
+        let $GP_CP22_FLUCTUATE1_LBL_1   = 'akan diketahui.'
+        let $GP_CP22_FLUCTUATE_LBL      = '      Fluctuating emoluments to which he may be entitled (state the details) and the date when the amount will be known.'
+
+        !let $GP_CP22_FORM_LBL         = 'Borang Ini Hendaklah Dikembalikan Kepada Mana-Mana Cawangan Lembaga Hasil Dalam Negeri Malaysia'
+
+        let $GP_CP22_FORM_LBL_1         = 'Borang Ini Hendaklah Dikembalikan Ke Mana-Mana Cawangan Lembaga Hasil Dalam Negeri Malaysia'
+
+        let $GP_CP22_FORM2_LBL_1        = 'Di Mana Pekerja'
+        let $GP_CP22_FORM3_LBL_1        = 'Menjalankan Pekerjaan'
+
+        let $GP_CP22_FORM_LBL           = 'This Form Is To Be Sent To Any Branch of Lembaga Hasil Dalam Negeri Malaysia Where The Employee Is Exercising The Employment'
+
+        let $GP_CP22_FROM_LBL_1         = 'Daripada'
+        let $GP_CP22_FROM_LBL           = 'From'
+
+        let $GP_CP22_FULL_NAME_LBL_1    = 'Nama Penuh:'
+        let $GP_CP22_FULL_NAME_LBL      = 'Full Name'
+
+        !let $GP_CP22_HUS_ID_NBR_LBL   = '(b) No. Kad Pengenalan Suami'
+       ! let $GP_CP22_HUS_NAME_LBL     = '(a) Nama Penuh Suami'
+
+let $GP_CP22_HUS_ID_NBR_LBL_1   = '(b) No. Kad Pengenalan / Polis / Tentera / Pasport Suami / Isteri *'
+let $GP_CP22_HUS_ID_NBR_LBL     = 'Husband’s / Wife’s Identity Card / Police / Army / Passport No.*'
+
+        let $GP_CP22_HUS_NAME_LBL_1     = '(a) Nama Penuh Suami/ Isteri'
+        let $GP_CP22_HUS_NAME_LBL       = 'Full Name of Husband/Wife'
+        !let $GP_CP22_HUS_NAME_LBL       = $GP_CP22_HUS_NAME_LBL_1 || '  ' || $GP_CP22_HUS_NAME_LBL
+
+        let $GP_CP22_IMG_NBR_LBL_1      = 'No. Imigresen'
+        !let $GP_CP22_IMG_NBR_LBL        = $GP_CP22_IMG_NBR_LBL_1 || ' / ' || $GP_CP22_IMG_NBR_LBL
+
+       ! let $GP_CP22_IN_TAX_NR_LBL    = '(c) No. Fail Cukai Pendapatan Suami.'
+
+let $GP_CP22_IN_TAX_NR_LBL_1    = '(c) No. Cukai Pendapatan Suami / Isteri *'
+let $GP_CP22_IN_TAX_NR_LBL      = '      Husband’s / Wife’s Income Tax No.*'
+
+        let $GP_CP22_IRB_LBL_1          = 'LEMBAGA HASIL DALAM NEGERI MALAYSIA'
+
+
+        !let $GP_CP22_IT_NBR_LBL       = 'No. Fail Cukai Pendapatan'
+       ! let $GP_CP22_ITACT_LBL        = '(SEKSYEN 83(2), AKTA CUKAI PENDAPATAN 1967)'
+
+let $GP_CP22_IT_NBR_LBL_1       = 'No. Cukai Pendapatan *'
+!let $GP_CP22_IT_NBR_LBL         = $GP_CP22_IT_NBR_LBL_1 || ' / ' || $GP_CP22_IT_NBR_LBL
+
+        let $GP_CP22_ITACT_LBL_1        = '[SUBSEKSYEN 83(2) AKTA CUKAI PENDAPATAN 1967]'
+        
+
+        let $GP_CP22_MARITAL_LBL_1     = 'Taraf Perkahwinan'
+        !let $GP_CP22_MARITAL_LBL       = $GP_CP22_MARITAL_LBL_1 || ' / ' || $GP_CP22_MARITAL_LBL  
+
+        !let $GP_CP22_MARRIAGE_LBL     = 'Bagi perempuan yang berkahwin, nyatakan-'
+        !let $GP_CP22_MNTH_CASH_LBL    = '(b) Kadar elaun tunai seperti elaun sara hidup atau elaun tetap yang lain dan kadar elaun berupa'
+        !let $GP_CP22_MNTH_CASH1_LBL   = 'barangan seperti rumah kediaman,pakaian, dsb.'
+
+
+let $GP_CP22_MARRIAGE_LBL_1     = 'Jika berkahwin, nyatakan:'
+
+
+        let $GP_CP22_MNTH_CASH_LBL_1    = '(b) Kadar elaun tunai seperti cukai ditanggung oleh majikan, elaun sara hidup atau elaun tetap yang lain dan kadar elaun berupa'
+
+        let $GP_CP22_MNTH_CASH_LBL      = 'Monthly rate of cash allowances,e.g. tax borne by the employer, cost of living allowance or'
+        
+
+let $GP_CP22_MNTH_CASH1_LBL_1   = 'barangan seperti rumah kediaman, pakaian, dsb.'
+
+        let $GP_CP22_MNTHLY_LBL_1       = '(a) Kadar Saraan Tetap Sebulan'
+        let $GP_CP22_MNTHLY_LBL         = 'Monthly Rate of Fixed Remuneration'
+        !let $GP_CP22_MNTHLY_LBL         = $GP_CP22_MNTHLY_LBL_1 || ' / ' || $GP_CP22_MNTHLY_LBL       
+ 
+        let $GP_CP22_PARTICULAR_LBL_1   = 'BUTIR-BUTIR PEKERJA BARU'
+        !let $GP_CP22_PARTICULAR_LBL     = $GP_CP22_PARTICULAR_LBL_1 || ' / ' || $GP_CP22_PARTICULAR_LBL
+
+       ! let $GP_CP22_PP_NBR_LBL       = 'No. Kad Pengenalan/No. Pasport'
+
+let $GP_CP22_PP_NBR_LBL_1       = 'No. Kad Pengenalan / Polis / Tentera / Pasport *'
+
+        let $GP_CP22_PR_ADDR_LBL_1      = 'Alamat Kediaman Sekarang'
+        !let $GP_CP22_PR_ADDR_LBL        = $GP_CP22_PR_ADDR_LBL_1 || ' / ' || $GP_CP22_PR_ADDR_LBL
+
+        let $GP_CP22_PREV_ADDR_LBL_1    = 'Nama dan Alamat majikan yang dahulu di Malaysia'
+        
+        let $GP_CP22_TITLE_LBL_1        = 'PEMBERITAHUAN PEKERJA BARU'
+
+        let $GP_CP22_TO_LBL_1           = 'Kepada'
+        let $GP_CP22_TO_LBL             = 'To'
+        
+        let $GP_CP22_TRM_EMPL_LBL_1   = 'TERMA-TERMA PENGGAJIAN'
+        !let $GP_CP22_TRM_EMPL_LBL     = $GP_CP22_TRM_EMPL_LBL_1 || ' / ' || $GP_CP22_TRM_EMPL_LBL  
+
+        let $GP_JOBNATURE_PRM_LBL     = 'TETAP'
+        let $GP_JOBNATURE_TMP_LBL     = 'SEMENTARA'
+        let $GP_MAR_STS_MARRIED_LBL   = 'BERKAHWIN'
+        let $GP_MAR_STS_SINGLE_LBL    = 'BUJANG'
+
+        let $GP_MAR_STS_CMN_LAW_LBL   = ''
+
+        let $GP_MAR_STS_DIV_LBL       ='BERCERAI'
+
+        let $GP_MAR_STS_SEP_LBL       ='TERASING'
+
+        let $GP_MAR_STS_HD_HOUS_LBL   =''
+
+        let $GP_MAR_STS_CIVIL_LBL     ='AWAM PERKONGSIAN'
+
+        let $GP_MAR_STS_S_CIVIL_LBL   =''
+
+        let $GP_MAR_STS_UNKNOWN_LBL   ='TIDAK KENAL'
+
+        let  $GP_MAR_STS_D_CIVIL_LBL  =''
+
+        let $GP_MAR_STS_WIDOWED_LBL   =''
+
+    !end-if
+
+End-Procedure
+
+#include 'prcslng.sqc'
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Routines to Update Run Status
+#Include 'ldnumlit.sqc'  !Load-NumberLits-Array procedure
+#include 'readxlat.sqc'  !enables xlat table read
+#Include 'rotname1.sqc'  !Rotate-Name Procedure
+#include 'sqrtrans.sqc'     ! Translate SQR strings to given language
+#Include 'datemath.sqc'  !Routines for date manipulat
+#include 'adformat.sqc' !formating address
+#include 'rellang.sqc' !
+

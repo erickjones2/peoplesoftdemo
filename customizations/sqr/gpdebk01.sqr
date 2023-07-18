@@ -1,0 +1,1320 @@
+!***********************************************************************
+!  GPDEBK01:  Create Report Files for Diskette                         *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:03:35:26                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  102                                                 !
+!                                                                      *
+!***********************************************************************
+! he 01/16/04 - transfering amt <0 for summary types (tax,si,bvv)
+!               assuming the total amount per provider > 0
+!               individula payments <0 still excluded
+!-----------------------------------------------------------------------
+! #define gpdeversionstamp '===FUNCTIONAL UPDATE STAMP: 20060613-1000 wdu06-890b6==='
+#define gpdeversionstamp '===FUNCTIONAL UPDATE STAMP: 20120417-1000 shi12-91UPD12B==='
+!
+! wdu06-890b6 Umlaut replacement Disk-Upper changed because 7-Bit chars were rejected.
+! shi12-91upd12B DATAUS C-RECORD WRONG ENTRY IN FIELD 7
+!
+
+#include 'setenv.sqc' !set environment
+#define col1 5
+begin-Program
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Report
+  do Update-Generated-Payments-Data
+  do Process-Main
+  do Stdapi-Term
+end-Program
+
+#include 'setup31.sqc' !Printer and page-size initialization
+
+!*****************************************
+begin-procedure Init-Report
+
+  move 'GPDEBK01' to $ReportID
+  do Init_Report_Translation ($ReportID, $language_cd)
+  do Report-Translation
+  move $TITLE_STR to $ReportTitle
+  uppercase $ReportTitle
+  display ''
+  display 'Erstellung einer Diskette für DTA'
+  display ''
+  display 'Dieses Program erstellt bei erfolgreichem Durchlauf'
+  display 'eine oder mehrere Dateien wie folgt :'
+  display 'DTAUSnnn.mmm : '
+  display '                enthält alle Datensätze in dem geforderten Format,'
+  display '                wobei nnn die Transfer-Nummer (pro Empfänger) und '
+  display '                und mmm die Vol-Nummer der Diskette ist.'
+  display ''
+  display 'Kopieren Sie diese Dateien auf neu formatierte Disketten;'
+  display 'Als Diskettennummer ist dabei die Vol-Nummer 6stellig linksbündig'
+  display 'anzugeben. Der Dateiname der Zieldatei auf der Diskette muß'
+  display 'jedesmal DTAUS0 lauten.'
+  display ''
+
+  do Stdapi-Init
+
+  do Get-ReqParam
+
+  if $prcs_process_instance = ''
+
+    display '(1)  3,5 Zoll'
+    display '(2)  5,25 Zoll'
+
+    input $Ctl_Diskette_Type    'Diskettentyp '
+    input $Ctl_Curr_Pay_End_Dt  'Current Pay End Date' type = date
+    input $Ctl_PayEntity        'Unternehmen '
+    input $Ctl_Paygroup         'Abrechnungskreis '
+  else
+   do Get-Report-Parameters
+  end-if
+
+ move ' ' to $Sp
+
+ let #RecordLength = 128
+ move 0 to #Vol_Number
+
+ evaluate $Ctl_Diskette_Type
+   when = '1'                   !3,5" HD Diskette
+        let #MaxRecordsPerDiskette = round (.95 * (1400000) / #RecordLength, 0)
+        break
+   when = '2'                   !5,25" HD Diskette
+        let #MaxRecordsPerDiskette = round (.95 * (720000) / #RecordLength, 0)
+        break
+   when-other
+        let #MaxRecordsPerDiskette = 5000
+        break
+ end-evaluate
+
+
+ display ' '
+ display 'Schreiben von Dateien für Diskettentyp '      noline
+ display $Ctl_Diskette_Type                             noline
+ display ' mit '
+ let $MaxDataRecords = edit ((#MaxRecordsPerDiskette/2), '09999')
+ display $MaxDataRecords                                noline
+ display ' Zahlungsdatensätzen pro Diskette.'
+
+ let #File_Nbr = 1
+ let $make_new_file = 'Y'
+ let #info-output = 0
+ let #number = 0
+ let #LastRow = 0
+ let #NewFirstRow = 0
+ let #FirstRow = 0
+ let #Row_Count = 1
+end-procedure
+
+begin-procedure Report-Translation
+  do Get_Field_Information ('GPDEBK01', 'TITLE_STR',        $TITLE_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'BLOCK_TRANSFER_STR', $BLOCK_TRANSFER_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'CHECK_SUM1_STR',     $CHECK_SUM1_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'CHECK_SUM2_STR',        $CHECK_SUM2_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'COMPANY1_STR',        $COMPANY1_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'COUNT_DATASET_STR',   $COUNT_DATASET_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'CREATION_DATE_STR',        $CREATION_DATE_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'DATA_EXCHANGE_STR',        $DATA_EXCHANGE_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'DISK_NUMBER_STR',        $DISK_NUMBER_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'HOME_BANK_STR',        $HOME_BANK_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'LOCATION1_STR',        $LOCATION1_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'PLACE_DATE_STR',        $PLACE_DATE_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'SENDER_BK_CODE_STR',        $SENDER_BK_CODE_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'SIGNATURE_STR',        $SIGNATURE_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'STREET1_STR',        $STREET1_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'SUM_DATASET_STR',        $SUM_DATASET_STR,     #CW)
+  do Get_Field_Information ('GPDEBK01', 'SENDER_BK_ACC_STR',        $SENDER_BK_ACC_STR,     #CW)
+end-procedure
+!************************************************
+begin-procedure Get-Values
+  let $language_cd      = $PRCS_LANGUAGE_CD
+  let $Pay_Gr_Crit      = ''
+  let $Ctl_PayEntity    = RTRIM(&GPDE_RUN_CNTL.PAY_ENTITY,' ')
+  let $DEP_SCHED_ID     = RTRIM(&GPDE_RUN_CNTL.DEP_SCHED_ID,' ')
+  let #BK_XFER_NBR      = &GPDE_RUN_CNTL.GPDE_BK_XFER_NBR
+  let $Ctl_Print        = RTRIM(&GPDE_RUN_CNTL.GPDE_RC_REPORTNAME,' ')
+  let $Pay_Group        = rtrim(ltrim(&GPDE_RUN_CNTL.GP_PAYGROUP,' '),' ')
+
+  if $Pay_Group <> ''
+    let $Pay_Gr_Crit     = ' AND DTL1.GP_PAYGROUP  = ''' || $Pay_Group || ''' '
+  end-if
+
+  if $Ctl_PayEntity <> ''
+    let $PayEntity_Crit     = ' AND PBD.PAY_ENTITY  = ''' || $Ctl_PayEntity || ''' '
+  end-if
+  do Get-Pay-Disk-Parameters
+  do Get-PayEntity-Address
+end-procedure
+
+begin-procedure Get-Pay-Disk-Parameters
+  let $Ctl_Paygroup = RTRIM(&GPDE_RUN_CNTL.GP_PAYGROUP, ' ')
+  let $Ctl_PayEntity = RTRIM(&GPDE_RUN_CNTL.PAY_ENTITY, ' ')
+  let $Ctl_Diskette_Type = RTRIM(&GPDE_RUN_CNTL.DISKETTE_TYPE, ' ')
+
+  #ifdef UNIX
+     let $delimit = '/'
+  #else
+     let $delimit = '\'
+  #endif
+
+  do GetOutputDir($RUNLOCATION,$OUTDESTTYPE,$OUTDEST,$outputdi)
+  let $FileExtension = '.PDF'
+  let $FileDir = '{FILEPREFIX}'
+
+  let $FileDir = $outputdi || $delimit
+
+  display 'File Directory:' noline
+  display $FileDir
+end-procedure
+
+!************************************************
+begin-heading  9
+  #include 'stdhdgtr.sqc'
+
+  do Get_Home_Bank_Adress
+  let $ZipCity = $PyentZip || ' ' || $PyentCity
+  print $COMPANY1_STR              (6,{col1})
+  print $PyentDescr            (,+1)
+  print $STREET1_STR               (7,{col1})
+  print $PyentAddr          (,+1)
+  print $LOCATION1_STR             (8,{col1})
+  print $ZipCity         (,+1)
+
+  print $HOME_BANK_STR             (12,{col1})
+  print $HomebankName           (,+1)
+
+  print $STREET1_STR               (13,{col1})
+  print $HomebankStreet         (,+1)
+
+  print $LOCATION1_STR             (14,{col1})
+  print $HomebankZipCity        (,+1)
+
+end-heading
+
+!************************************************
+begin-procedure Need-New-File
+
+   let $make_new_file = 'Y'
+   let $curr_payment_type = $Actual_PAYMT_TYPE
+
+end-procedure
+
+!************************************************
+begin-procedure Get_Home_Bank_Adress
+
+begin-select
+HT1.BANK_NM
+HT1.ADDRESS1
+HT1.POSTAL
+HT1.CITY
+  let $HomebankName = rtrim(&HT1.BANK_NM,' ')
+  let $HomebankStreet = rtrim(&HT1.ADDRESS1,' ')
+  let $HomebankZipCity = rtrim(&HT1.POSTAL,' ') || ' ' || rtrim(&HT1.CITY,' ')
+
+from PS_BANK_EC_TBL HT1
+where  HT1.BANK_CD = $Actual_TRANSIT_ISSUER AND
+       HT1.COUNTRY_CD = $Home_Country_CD
+end-select
+end-procedure
+!************************************************
+
+begin-procedure Process-Main
+show {gpdeversionstamp}
+let $Sticht = '2002'  || '01' ||  '01'
+do Format-DateTime($Sticht, $Sticht1, {DEFCMP},'','native')
+do Format-DateTime($Sticht1, $Stichtag, {DEFCMP},'','')
+
+do Format-DateTime($ReportEndDate,$ReportEndD1,{DEFCMP},'','')
+if $ReportEndD1 >= $Stichtag
+    let $Sp1 =  '1'
+else
+    let $Sp1 =  ' '
+end-if
+
+let $File_Already_Open = 'N'
+let $BK_XFER_NBR = to_char(#BK_XFER_NBR)
+if #BK_XFER_NBR <> 0
+ let $XferStr2 = ' and PBD.GPDE_BK_XFER_NBR = ' || $BK_XFER_NBR
+else
+ let $XferStr2 = ' '
+end-if
+
+!wd 20040511: do not count payments with invalid receiver
+let $ReceiverIdCrit = ' AND PBD.GPDE_BK_TRNST_RCVR<>'' '' AND PBD.GPDE_BK_ACCT_RCVR <> '' '' '
+
+begin-SELECT
+PBD.PAY_ENTITY              () on-break level=1 print = never before = Need-New-File
+PBD.GPDE_BK_XFER_NBR        () on-break level=1 print = never before = Need-New-File
+PBD.GPDE_BK_TRNST_RCVR
+PBD.GPDE_BK_ACCT_RCVR
+PBD.GPDE_BK_ACCT_NM_RC
+PBD.GPDE_BK_TRNST_ISSR      () on-break level=1 print = never before = Need-New-File
+PBD.GPDE_BK_ACCT_ISSR       () on-break level=1 print = never before = Need-New-File
+PBD.GPDE_BK_ACCT_NM_IS
+PBD.GPDE_AL_PAYMT_TYPE      () on-break level=1 print = never before = Need-New-File
+SUM(PBD.GP_PMT_AMT)     &PBD.GP_PMT_AMT
+PBD.GPDE_BK_PUR_TRNFER
+PBD.GPDE_BK_MULTI_FLD1
+PBD.GPDE_BK_MULTI_FLD2
+PBD.GPDE_BK_CNTRY_ISSR
+PBD.GPDE_BK_CNTRY_RCVR
+
+  let $Actual_COMPANY = &PBD.PAY_ENTITY
+  let #Actual_TRANSFER_NBR = &PBD.GPDE_BK_XFER_NBR
+
+  let $Actual_TRANSIT_ACCEPTING = substr(&PBD.GPDE_BK_TRNST_ISSR,1,8)
+  let $Actual_TRANSIT_RECEIVER = substr(&PBD.GPDE_BK_TRNST_RCVR,1,8)
+  let $Actual_ACCOUNT_RECEIVER = substr(&PBD.GPDE_BK_ACCT_RCVR,1,10)
+  let $Actual_ACCT_NAME_RECEIVER = &PBD.GPDE_BK_ACCT_NM_RC
+  let $Actual_TRANSIT_ISSUER = substr(&PBD.GPDE_BK_TRNST_ISSR,1,8)
+
+  let $Actual_ACCOUNT_ISSUER = substr(&PBD.GPDE_BK_ACCT_ISSR,1,10)
+  let $Home_Country_CD     = &PBD.GPDE_BK_CNTRY_ISSR
+  let $Receiv_Country_CD    = &PBD.GPDE_BK_CNTRY_RCVR
+
+  let $Actual_ACCT_NAME_ISSUER = &PBD.GPDE_BK_ACCT_NM_IS
+  let $Actual_PAYMT_TYPE = &PBD.GPDE_AL_PAYMT_TYPE
+  let #Actual_AMOUNT = &PBD.GP_PMT_AMT
+  let $Actual_PURPOSE_TRANSFER = &PBD.GPDE_BK_PUR_TRNFER
+  let $Actual_MULTI_FIELD1 = &PBD.GPDE_BK_MULTI_FLD1
+  let $Actual_MULTI_FIELD2 = &PBD.GPDE_BK_MULTI_FLD2
+
+  let #Row_Count = #Row_Count + 1
+
+  if $make_new_file = 'Y'
+
+     let #Row_Count = 0
+     let #FirstRow = 1
+     do Open-File-New-Transfer
+  end-if
+
+  do Write-File
+
+  if rtrim($Ctl_PayEntity,' ') = ''
+     let $Ctl_PayEntity = $Actual_COMPANY
+     let #number = 1
+  end-if
+
+  let $make_new_file = 'N'
+  let #info-output = 0
+
+FROM PS_GPDE_BK_XFER_EE PBD
+[$Advances_Criteria]  $ReportEndDate AND
+PBD.GPDE_BK_XFER_FLG = 'X' AND
+PBD.PAYMENT_MTHD = 'T'
+!AND PBD.GP_PMT_AMT > 0
+[$Select_Condition]
+[$Cal_Run_Id_Crit]
+[$ReceiverIdCrit]
+ ![$XferStr2]
+
+GROUP BY PBD.PAY_ENTITY,
+         PBD.GPDE_BK_XFER_NBR,
+         PBD.GPDE_BK_TRNST_RCVR,
+         PBD.GPDE_BK_ACCT_RCVR,
+         PBD.GPDE_BK_ACCT_NM_RC,
+         PBD.GPDE_BK_TRNST_ISSR,
+   PBD.GPDE_BK_CNTRY_ISSR,
+   PBD.GPDE_BK_CNTRY_RCVR,
+         PBD.GPDE_BK_ACCT_ISSR,
+         PBD.GPDE_BK_ACCT_NM_IS,
+         PBD.GPDE_AL_PAYMT_TYPE,
+         PBD.GPDE_BK_PUR_TRNFER,
+         PBD.GPDE_BK_MULTI_FLD1,
+         PBD.GPDE_BK_MULTI_FLD2
+HAVING SUM(PBD.GP_PMT_AMT) > 0
+
+ORDER BY PBD.PAY_ENTITY,
+         PBD.GPDE_BK_XFER_NBR,
+         PBD.GPDE_BK_ACCT_ISSR,
+         PBD.GPDE_BK_TRNST_ISSR,
+         PBD.GPDE_AL_PAYMT_TYPE
+end-SELECT
+
+if $File_Already_Open = 'Y'
+  !he 112603
+  let $curr_payment_type = $Actual_PAYMT_TYPE
+
+  do DTA-End-Record
+  close 10
+  do Update-Transfer-Date
+  show ' '
+  let $line = 'Erstellung der Datei ' || $FileNm1 || ' fuer die Firma ' ||
+              $Actual_COMPANY || ' und die Hausbank ' || $HomebankName
+  show $line
+  let $line =' '
+  let $line = $line || 'mit der Bankleitzahl ' || $Actual_TRANSIT_ISSUER  ||
+              ' und der Kontonummer '  || $Actual_ACCOUNT_ISSUER
+  show $line
+  show ' '
+  let $line = 'Erstellung der Datei ' || $File-Begleit || ' fuer die Firma ' ||
+              $Actual_COMPANY || ' und die Hausbank ' || $HomebankName
+  show $line
+  let $line =' '
+  let $line = $line || 'mit der Bankleitzahl ' || $Actual_TRANSIT_ISSUER  ||
+              ' und der Kontonummer '  || $Actual_ACCOUNT_ISSUER
+  show $line
+  let #FirstRow = 0
+
+  do Update-Transfer-Flag
+end-if
+
+end-procedure
+
+!**************************************************************
+begin-procedure Write-File
+
+if #RecordCount = 0
+  if #LastRow = 0
+     add 1 to #RecordCount
+  else
+     add 1 to #RecordCount
+     let #LastRow = 0
+  end-if
+end-if
+
+if (#NewFirstRow = 0 and #File_Nbr > 2)
+   add 1 to #NewFirstRow
+else
+   if (#NewFirstRow = 0 and #File_Nbr = 2 and #LastRow = 1)
+      add 1 to #NewFirstRow
+   else
+      if (#NewFirstRow = 0 and #File_Nbr = 2 and #LastRow = 0 and #RecordCount = 1)
+          add 1 to #NewFirstRow
+      end-if
+   end-if
+end-if
+
+if #RecordCount = 0
+  if #LastRow = 1
+     let #LastRow = 0
+  end-if
+end-if
+
+if (#RecordCount >= 1 and #RecordCount < #MaxRecordsPerDiskette)
+  do DTA-Data-Record
+  add 2 to #RecordCount
+end-if
+
+if #RecordCount >= #MaxRecordsPerDiskette
+  do Open-File
+end-if
+
+end-procedure
+
+!**************************************************************
+begin-procedure DTA-Start-Record
+  let $BLZ = ''
+  let $Konto = ''
+
+  let $BLZ = $Actual_TRANSIT_ISSUER
+  let $Konto = $Actual_ACCOUNT_ISSUER
+
+  let $X1  = '0128'                     !4  !Satzlänge
+  let $X2  = 'A'                        !1  !Typ A -> Datenträgervorsatz
+  let $X3  = 'GK'                       !2  !G = Gutschrift;K = Kunde
+  let $X4  = $BLZ                       !8  !BLZ des Diskettenempfängers
+  let $X5  = '00000000'                 !8  !8 Nullen
+  do Disk-Upper($PyentDescr,$CompanyName2)
+  let $X6  = $CompanyName2               !27 !Kundenname (Diskettenabsender)
+
+  do ConvertToComponents($AsOfToday,$YY,$MM,$DD)
+  let $YY = substr($YY,3,2)
+  let $X7  = $DD || $MM || $YY          !6  !Diskettenerstelldatum (TTMMJJ)
+  let $X8  = '    '                     !4  !Leerzeichen
+!  let $X9  = edit ($Konto,'0999999999') !10 !Kontonummer Absender (rechtb.,vorl. Nullen)
+  let $X9  = lpad (rtrim($Konto, ' '),10, '0') !10 !Kontonummer Absender (rechtb.,vorl. Nullen)
+  let $X10 = '0000000000'               !10 !Referenznr. des Einreichers
+  let $X11 = $Sp1                        !47 !Reserve (Blanks)
+
+  write 10 from $X1:4 $X2:1 $X3:2 $X4:8 $X5:8 $X6:27 $X7:6 $X8:4 $X9:10 $X10:10 $X11:47 $X11:1
+
+end-procedure
+
+!**************************************************************
+begin-procedure DTA-Data-Record
+  let $X1   = '0245'                   !4  !Satzlänge konstanter Teil mit 2 variablen Teilen
+  let $X2   = 'C'                      !1  !Typ C -> Zahlungsaustauschsatz
+  let $X3   = edit($Actual_TRANSIT_ACCEPTING, '09999999')   !8  !BLZ erstbeteiligtes Institut
+  let $X4   = edit($Actual_TRANSIT_RECEIVER, '09999999')    !8  !BLZ endbegünstigtes Institut
+!  let $X5   = edit($Actual_ACCOUNT_RECEIVER, '0999999999')  !10 !Kontonummer Überweisungsempfänger/
+  let $X5   = lpad(rtrim($Actual_ACCOUNT_RECEIVER,' '), 10, '0')  !10 !Kontonummer Überweisungsempfänger/
+                                                            !Zahlungspflichtiger
+  let $X6   = '0000000000000'          !13 !bankinternes Feld, Nullen
+
+  evaluate $Actual_PAYMT_TYPE
+
+  when = '1'                           !Löhne und Gehälter
+  when = '2'                           !Pensionen
+  when = 'V'                           !Vorschuesse
+    let $X7A  = '53'                   !2  Zahlungsart : Textschlüssel
+    let $X7B  = '000'                  !3                Textschlüsselergänzung
+    break
+  when = '6'                           !Vermögenswirksame Leistungen
+    let $X7A  = '54'
+    let $X7B = '00' || substr($Actual_MULTI_FIELD2,7,1)
+    break
+  when-other
+    let $X7A  = '51'
+    let $X7B  = '000'
+    break
+
+  end-evaluate
+
+  let $X8   = ' '                                           !1  bankinternes Feld; Leerzeichen
+
+  if instr(to_char(#Actual_AMOUNT),'.',1) = 0
+     let $Amount = to_char(#Actual_AMOUNT) || '00'
+  else
+     let $Amount = edit(#Actual_AMOUNT, '999999999.99')
+     let $Amount = translate($Amount,'.','')
+  end-if
+
+  if $Sp1 = ' '
+    let $X9   = edit($Amount, '09999999999')                !11 Betrag (rechtsb.,vorl. Nullen)
+    let $X12  = '00000000000'                               !11 Interne Referenznummer; freigestellt
+  else
+    let $X9   = '00000000000'                               !11 Interne Referenznummer; freigestellt
+    let $X12  = edit($Amount, '09999999999')                !11 Betrag (rechtsb.,vorl. Nullen)
+  end-if
+
+  let $X10  = edit($Actual_TRANSIT_ISSUER, '09999999')    !8  BLZ erstbeauftragtes Institut
+!  let $X11  = edit($Actual_ACCOUNT_ISSUER, '0999999999')  !10 Kontonummer Auftraggeber/Zahlungsempfänger
+  let $X11  = lpad(rtrim($Actual_ACCOUNT_ISSUER,' '), 10,'0')  !10 Kontonummer Auftraggeber/Zahlungsempfänger
+
+  let $X13  = '   '                                       !3  Reserve; Leerzeichen
+  do Disk-Upper($Actual_ACCT_NAME_RECEIVER,$X14A)         !27 Name Überweisungsempfänger/
+                                                       !Zahlungspflichtiger; linksb.
+  let $X14B = '        '                                  !8  Leerzeichen
+                                                          !-----------------------------
+                                                          !128 Ende des 1. Satzabschnittes
+
+  do Disk-Upper ($Actual_ACCT_NAME_ISSUER,$X15)   !27 Name Auftraggeber/Zahlungsempfänger, linksb.
+
+  do Disk-Upper ($Actual_PURPOSE_TRANSFER,$X16)   !27 Verwendungszweck
+  let $X17a  = $Sp1                             !1  Reserve; Leerzeichen
+  let $X17b  = '  '                             !2  Reserve; Leerzeichen
+  let $X18  = '02'                              !2  Anzahl Erweiterungsteile; hier 2
+  let $X19  = '02'                              !$Actual_EXT_FLAG1  2  Kennzeichen Erweiterungsteil 1
+  do Disk-Upper ($Actual_MULTI_FIELD1,$X20)       !27 Daten des Erweiterungsteil 1
+  let $X21  = '02'                              !$Actual_EXT_FLAG2  2  Kennzeichen Erweiterungsteil 2
+  do Disk-Upper ($Actual_MULTI_FIELD2,$X22)       !27 Daten des Erweiterungsteil 2
+  let $X23  = '           '                     !11 Leerzeichen
+                                                !----------------------------
+                                                !256Ende des 2. Satzabschnittes
+
+  add 1 to #CashRecords
+  add #Actual_AMOUNT to #SumAmounts
+  let #Account = $Actual_ACCOUNT_RECEIVER
+  add #Account to #SumAccounts
+  let #Transit = $Actual_TRANSIT_RECEIVER
+  add #Transit to #SumTransits
+
+
+  write 10 from $X1:4 $X2:1 $X3:8 $X4:8 $X5:10 $X6:13 $X7A:2 $X7B:3 $X8:1 $X9:11
+                $X10:8 $X11:10 $X12:11 $X13:3 $X14A:27 $X14B:8
+  write 10 from $X15:27 $X16:27 $X17a:1 $X17b:2 $X18:2 $X19:2 $X20:27 $X21:2 $X22:27 $X23:11
+end-procedure
+
+!**************************************************************
+begin-procedure DTA-End-Record
+
+  let $X1  = '0128'                                     !4  Satzlänge
+  let $X2  = 'E'                                        !1  Typ E -> Datenträgernachsatz
+  let $X3  = '     '                                    !5  Reserve; Leerzeichen
+  let $X4  = edit(#CashRecords,'0999999')               !7  Anzahl Datensätze aus C
+  let $X5  = '0000000000000'                            !13 Nullen
+  let $X6  = edit(#SumAccounts,'09999999999999999')     !17 Summe Kontonummern $X5 aus C
+                                                        !(Überw.empf./Zahl.pfl.)
+  let $X7  = edit(#SumTransits,'09999999999999999')     !17 Summe BLZ $X4 aus C
+                       !(Überw.empf./Zahl.pfl.)
+
+  let $SumAmounts = edit(#SumAmounts,'99999999999.99')
+  let $SumAmounts = translate($SumAmounts,'.','')
+  let $X8  = edit($SumAmounts,'0999999999999')          !13 Summe Beträge aus C
+
+  let $X9  = ' '                                        !51 Leerzeichen
+
+  write 10 from $X1:4 $X2:1 $X3:5 $X4:7 $X5:13 $X6:17 $X7:17 $X8:13 $X9:51
+
+  do Write-Diskette-Statement
+
+end-procedure
+
+!**************************************************************
+begin-procedure Open-File-New-Transfer
+
+let $Reset_Vol_Number = 'Y'
+do Open-File
+
+end-procedure
+
+
+begin-procedure Open-File
+
+  let $File_Already_Open = 'Y'
+
+  move 0 to #RecordCount
+  move 0 to #LastRow
+  if #Vol_Number <> 0
+    let #LastRow = 1
+
+    do DTA-End-Record
+    let #LastRow = 0
+    close 10
+
+        show ' '
+  let $line = 'Erstellung der Datei ' || $FileNm1 || ' fuer die Firma ' ||
+      $Actual_COMPANY || ' und die Hausbank ' || $HomebankName
+  show $line
+  let $line =' '
+  let $line = $line || 'mit der Bankleitzahl ' || $Actual_TRANSIT_ISSUER  ||
+      ' und der Kontonummer '  || $Actual_ACCOUNT_ISSUER
+  show $line
+  show ' '
+  let $line = 'Erstellung der Datei ' || $File-Begleit || ' fuer die Firma ' ||
+      $Actual_COMPANY || ' und die Hausbank ' || $HomebankName
+  show $line
+  let $line =' '
+  let $line = $line || 'mit der Bankleitzahl ' || $Actual_TRANSIT_ISSUER  ||
+      ' und der Kontonummer '  || $Actual_ACCOUNT_ISSUER
+  show $line
+    let #NewFirstRow = 0
+    do Update-Transfer-Date
+
+  end-if
+
+  if $Reset_Vol_Number = 'Y'
+     move 0 to #Vol_Number
+    let $Reset_Vol_Number = 'N'
+  end-if
+
+  add 1 to #Vol_Number
+  move #Vol_Number to $Vol_Number 099
+
+  let $File_Nbr = #File_Nbr
+  let $FileNbr = edit($File_Nbr,'099')
+
+  let $File-Begleit = $FileDir || 'DTAUS' || $FileNbr || $FileExtension || '{FILESUFFIX}'
+
+  let $FileNm1 = $FileDir || 'DTAUS' || $FileNbr || '.' || $Vol_Number || '{FILESUFFIX}'
+  open $FileNm1 as 10 for-writing record=128:FIXED_NOLF
+
+  !*************************************
+  let $FileNm1 = $FileDir || 'DTAUS' || $FileNbr || '.htm' || '{FILESUFFIX}'
+  open $FileNm1 as 11 for-writing record=200:FIXED_NOLF
+
+  let $Dateiname1 = $FileNm1
+  let $Dateiname2 = 'DTAUS' || $FileNbr || '.' || $Vol_Number
+
+  let $XY = '<HTML><HEAD><TITLE>' || 'DTAUS' || $FileNbr || '.' || $Vol_Number ||
+            '</TITLE></HEAD><BODY>' || ' <A HREF=' || $Dateiname2 ||
+                                '>' || $Dateiname2 || '</A>' || ' </BODY></HTML>'
+  write 11 from $XY
+  CLOSE 11
+  !*************************************
+
+  do dTA-Start-Record
+
+  add 1 to #File_Nbr
+end-procedure
+
+
+!**************************************************************
+begin-procedure Write-Diskette-Statement
+ #debug show '$File-Begleit:' $File-Begleit
+  New-Report $File-Begleit
+! he 112603
+  let $FieldName = 'GPDE_AL_PAYMT_TYPE'
+  let $FieldValue = $curr_payment_type
+  do Read-Translate-Table
+  print $XlatLongName     (10,{col1})    !Ueberweisungstyp
+!-----
+  print $DATA_EXCHANGE_STR    (20,{col1})     !'Belegloser Datenträgeraustausch'
+  print $BLOCK_TRANSFER_STR   (21,{col1})    !'Sammelüberweisungsauftrag '
+  print $DISK_NUMBER_STR      (22,{col1})    !'Diskette Nr. '
+  print #Vol_Number           (22,50) edit 999
+  print $CREATION_DATE_STR    (23,{col1})       !'Erstellungsdatum : '
+  do Format-DateTime($AsOfToday, $out, {DEFDATE}, '', '')
+  print $out                  (23,50)
+  print $COUNT_DATASET_STR    (24,{col1})       !'Anzahl der Datensätze : '
+  print #CashRecords          (24,50) edit 99999
+  print $SUM_DATASET_STR      (25,{col1})     !'Summe der Datensätze : '
+
+ !Changedfor2004Bundle2:Print in Euro not in Cents
+  let #SumAmountsEuro = #SumAmounts / 1
+
+  do Format-Number(#SumAmountsEuro,$SumAmountsEuro,'99,999,999,999.99')
+
+
+  print $SumAmountsEuro       (25,50) !edit 99999999999999.99
+  print 'EURO'                (25,68)
+  print $CHECK_SUM1_STR       (26,{col1})     !'Kontrollsumme der Kontonummern :'
+  print #SumAccounts          (26,50) edit 09999999999999999
+  print $CHECK_SUM2_STR       (27,{col1})     !'Kontrollsumme der Bankleitzahlen : '
+  print #SumTransits          (27,50) edit 09999999999999999
+  print $SENDER_BK_CODE_STR   (28,{col1})        !'Bankleitzahl des Absenders : '
+  print $BLZ                  (28,50)
+  print $SENDER_BK_ACC_STR    (29,{col1})    !'Kontonummer des Absenders : '
+  print $Konto                (29,50)
+
+  print '__________________________________________________________' (34,{col1})
+  print $PLACE_DATE_STR           (35,{col1})       !'Ort, Datum                Unterschrift'
+  print $SIGNATURE_STR            (,+17)
+
+  new-page
+
+  move 0 to #CashRecords
+  move 0 to #SumAmounts
+  move 0 to #SumAccounts
+  move 0 to #SumTransits
+
+end-procedure
+
+
+
+!**************************************************************
+!UPDATE PROCEDURES
+!**************************************************************
+
+begin-procedure Update-Transfer-Flag
+if rtrim($Cal_Run_Id_M_String,' ') <> ''
+  let $Cal_Run_Id_Crit_Update = ' AND CAL_RUN_ID IN ( ' || $Cal_Run_Id_M_String || ')'
+else
+  let $Cal_Run_Id_Crit_Update = ' '
+end-if
+
+begin-SQL On-Error=SQL-Error
+
+UPDATE
+PS_GPDE_BK_XFER_EE
+SET
+GPDE_BK_XFER_FLG = 'D'
+
+WHERE
+GPDE_BK_XFER_FLG = 'X' and
+PAYMENT_MTHD = 'T' and
+! he011604
+(GP_PMT_AMT > 0 OR GPDE_AL_PAYMT_TYPE IN ('3','4','B'))
+[$Cal_Run_Id_Crit_Update]
+[$ADV_Criteria]
+[$Select_Condit1]
+end-SQL
+
+end-procedure
+
+
+!**************************************************************
+begin-procedure Update-Transfer-Date
+let $BK_XFER_NBR = to_char(#BK_XFER_NBR)
+if #BK_XFER_NBR <> 0
+ let $XferStr = ' and GPDE_BK_XFER_NBR = ' || $BK_XFER_NBR
+else
+ let $XferStr = ' '
+end-if
+
+begin-SQL On-Error=SQL-Error
+
+UPDATE
+PS_GPDE_BK_XFERDTA
+SET GPDE_BK_XFER_DT = $AsOfToday
+
+WHERE GPDE_AL_CPAY_ENDDT = $Ctl_Curr_Pay_End_Dt
+[$XferStr]
+end-SQL
+end-procedure
+
+
+!**************************************************************
+begin-procedure Update-Generated-Payments-Data
+let $BK_XFER_NBR = to_char(#BK_XFER_NBR)
+
+let $Advances_Criteria = ' WHERE PBD.SEG_END_DT = '
+let $merkes = 'N'
+
+if #BK_XFER_NBR <> 0
+ let $XferStr = ' and PS.GPDE_BK_XFER_NBR = ' || $BK_XFER_NBR
+else
+ let $XferStr = ' '
+end-if
+#debug show '$XferStr:' $XferStr
+
+BEGIN-SELECT
+PS.GPDE_BK_XFER_NBR
+PS.GPDE_BK_XFER_BASIS
+PS.SRC_BANK_ID
+PS.DEPOSIT_DATE
+PS.GPDE_BK_T_WAGES
+PS.GPDE_BK_T_CAP_ACC
+PS.GPDE_BK_T_DIR_LIFE
+PS.GPDE_BK_T_GARN
+PS.GPDE_BK_T_EXT_XFER
+PS.GPDE_BK_T_TAXES
+PS.GPDE_BK_T_SI
+PS.GPDE_BK_T_ADVANCES
+PS.GPDE_BK_T_UMLAGE
+PS.GPDE_BK_T_BVV
+PS.DEP_SCHED_ID
+
+  let $Ctl_Dep_Sched_ID = &PS.DEP_SCHED_ID
+  let #Transfer_Nbr = &PS.GPDE_BK_XFER_NBR
+  let $Transfer_Basis = &PS.GPDE_BK_XFER_BASIS
+
+  let $Homebank_Criteria = ''
+  let $Homebank_Nbr = &PS.SRC_BANK_ID
+  if rtrim(ltrim($Homebank_Nbr,' '),' ')  <> ''
+     let $Homebank_Criteria = ' WHERE HHH.SRC_BANK_ID =  ''' || $Homebank_Nbr || ''' '
+  end-if
+
+  let $T_Wages = &PS.GPDE_BK_T_WAGES
+  let $T_Capacc = &PS.GPDE_BK_T_CAP_ACC
+  let $T_Dirlife = &PS.GPDE_BK_T_DIR_LIFE
+  let $T_Garnish = &PS.GPDE_BK_T_GARN
+  let $T_Extxfer = &PS.GPDE_BK_T_EXT_XFER
+  let $T_Taxes = &PS.GPDE_BK_T_TAXES
+  let $T_SocIns = &PS.GPDE_BK_T_SI
+  let $T_Advances = &PS.GPDE_BK_T_ADVANCES
+  let $T_Umlage = &PS.GPDE_BK_T_UMLAGE
+  let $T_BVV  = &PS.GPDE_BK_T_BVV
+
+  let $Advances_Criteria = ''
+  let $ADV_Criteria = ''
+  if $T_Advances = 'Y'
+     let $Advances_Criteria = ' WHERE PBD.SEG_END_DT <= '
+     let $ADV_Criteria = ' and SEG_END_DT <= ''' || $ReportEndDate || ''' '
+  else
+     let $Advances_Criteria = ' WHERE PBD.SEG_END_DT = '
+     let $ADV_Criteria = ' and SEG_END_DT= ''' || $ReportEndDate || ''' '
+  end-if
+
+  let $Select_Condition = ''
+  let $Select_Condit1 = ' '
+  if rtrim($Ctl_Paygroup,' ') <> ''
+     let $Select_Criteria1 = ' AND   PBD.GP_PAYGROUP = ' || '''' || '' ||
+                          rtrim($Ctl_Paygroup,' ') || '' || ''''
+         concat $Select_Criteria1 with $Select_Condition
+
+   let $Select_Cond    = ' AND   GP_PAYGROUP = ' || '''' || '' ||
+                          rtrim($Ctl_Paygroup,' ') || '' || ''''
+   concat $Select_Cond with $Select_Condit1
+  end-if
+
+  if rtrim($Ctl_PayEntity,' ') <> ''
+     let $Select_Criteria2 = ' AND   PBD.PAY_ENTITY = ' || '''' || '' ||
+                          rtrim($Ctl_PayEntity,' ') || '' || ''''
+     concat $Select_Criteria2 with $Select_Condition
+  let $Select_Cond    = ' AND   PAY_ENTITY = ' || '''' || '' ||
+                          rtrim($Ctl_PayEntity,' ') || '' || ''''
+   concat $Select_Cond with $Select_Condit1
+  end-if
+
+  let $Upd_Criteria = ''
+  if $T_Advances = 'Y'
+     let $Upd_Criteria = ' SEG_END_DT <= '
+  else
+     let $Upd_Criteria = ' SEG_END_DT = '
+  end-if
+
+  if (&PS.GPDE_BK_XFER_BASIS = 'H') and (rtrim($Homebank_Nbr,' ') <> '')
+    do Get-Homebank-Data
+  end-if
+
+  do Update-Values
+
+FROM PS_GPDE_BK_XFERDTA PS
+
+WHERE PS.GPDE_AL_CPAY_ENDDT = $Ctl_Curr_Pay_End_Dt
+[$XferStr]
+
+end-SELECT
+
+end-procedure
+
+!**************************************************************
+begin-procedure Get-Homebank-Data
+begin-SELECT
+
+HHH.BANK_CD
+HHH.ACCOUNT_EC_ID
+
+   let $Homebank_Transit_Nbr = RTRIM(&HHH.BANK_CD, ' ')
+   let $Homebank_Account_Nbr = RTRIM(&HHH.ACCOUNT_EC_ID, ' ')
+   let $merkes = 'Y'
+
+FROM PS_SRC_BANK HHH
+[$Homebank_Criteria]
+
+end-SELECT
+end-procedure
+
+
+!**************************************************************
+begin-procedure Update-Values
+let $ReadyToTransferFlag = 'X'
+
+!**************************************************************
+!Set Where condition
+
+let $string = ''
+
+if $T_Wages = 'Y'
+  let $string = '''1'''
+end-if
+
+if $T_Taxes = 'Y'
+  let $stringnext = '''3'''
+  if $string <> ''
+    let $string = $string || ',' || $stringnext
+  else
+    let $string = $stringnext
+  end-if
+end-if
+
+if $T_SocIns = 'Y'
+  let $stringnext = '''4'',''L'',''M'''
+  if $string <> ''
+    let $string = $string || ',' || $stringnext
+  else
+    let $string = $stringnext
+  end-if
+end-if
+
+
+if $T_Capacc = 'Y'
+  let $stringnext = '''6'''
+  if $string <> ''
+    let $string = $string || ',' || $stringnext
+  else
+    let $string = $stringnext
+  end-if
+end-if
+
+if $T_Dirlife = 'Y'
+  let $stringnext = '''7'''
+  if $string <> ''
+    let $string = $string || ',' || $stringnext
+  else
+    let $string = $stringnext
+  end-if
+end-if
+
+if $T_Garnish = 'Y'
+  let $stringnext = '''8'''
+  if $string <> ''
+    let $string = $string || ',' || $stringnext
+  else
+    let $string = $stringnext
+  end-if
+end-if
+
+if $T_Extxfer = 'Y'
+  let $stringnext = '''9'''
+  if $string <> ''
+    let $string = $string || ',' || $stringnext
+  else
+    let $string = $stringnext
+  end-if
+end-if
+
+if $T_Advances = 'Y'
+  let $stringnext = '''V'''
+  if $string <> ''
+    let $string = $string || ',' || $stringnext
+  else
+    let $string = $stringnext
+  end-if
+end-if
+
+if $T_BVV = 'Y'
+  let $stringnext = '''B'''
+  if $string <> ''
+    let $string = $string || ',' || $stringnext
+  else
+    let $string = $stringnext
+  end-if
+end-if
+
+if $string <> ''
+  let $SQLSTMT = ' AND GPDE_AL_PAYMT_TYPE IN ( ' || $string || ' ) '
+else
+  let $SQLSTMT = ''
+end-if
+
+!**************************************************************
+evaluate $Transfer_Basis
+
+when = 'H'
+   if $Homebank_Nbr <> ''
+     if $merkes = 'Y'
+        let $SQLSTMT2  = ' AND GPDE_BK_TRNST_ISSR = ''' || $Homebank_Transit_Nbr || ''' AND '
+        let $SQLSTMT2  = $SQLSTMT2 || 'GPDE_BK_ACCT_ISSR = ''' || $Homebank_Account_Nbr || ''''
+      end-if
+   end-if
+   let $SQLSTMT = $SQLSTMT || $SQLSTMT2
+   let $SQLSTMT2 = ''
+   break
+end-evaluate
+
+let $BK_XFER_NBR = to_char(#BK_XFER_NBR)
+if #BK_XFER_NBR <> 0
+ let $XferStr1 = ' and GPDE_BK_XFER_NBR = ' || $BK_XFER_NBR
+else
+ let $XferStr1 = ' '
+end-if
+
+!begin-select
+!max(SCHED1.DEBIT_DT) &Deposit_Dt
+!  let $Deposit_Date = &Deposit_Dt
+!from
+!PS_DEP_SCHED_DTL SCHED1
+!where (SCHED1.DEP_SCHED_ID = $Ctl_Dep_Sched_ID)
+!and (SCHED1.DEBIT_DT between $ReportBeginDate and  $ReportEndDate)
+!and (SCHED1.EFFDT = (select max(SCHED2.EFFDT) from
+!                  PS_DEP_SCHED_DTL SCHED2 where
+!                                  SCHED2.DEP_SCHED_ID  = SCHED1.DEP_SCHED_ID and
+!                                  SCHED2.DEBIT_DT = SCHED1.DEBIT_DT))
+!end-select
+
+begin-select
+min(SCHED1.DEBIT_DT) &Deposit_Dt
+  let $Deposit_Date = &Deposit_Dt
+from
+PS_DEP_SCHED_DTL SCHED1
+where (SCHED1.DEP_SCHED_ID = $Ctl_Dep_Sched_ID)
+!he 122003 changed from >=$AsOfDate
+and (SCHED1.DEBIT_DT >=  $ReportBeginDate)
+and (SCHED1.DEBIT_DT >=  $AsOfDate)
+and (SCHED1.EFFDT = (select max(SCHED2.EFFDT) from
+                  PS_DEP_SCHED_DTL SCHED2 where
+                                  SCHED2.DEP_SCHED_ID  = SCHED1.DEP_SCHED_ID and
+                                  SCHED2.EFFDT <= $AsOfDate))
+end-select
+
+show '$Deposit_Date:'
+show $Deposit_Date
+
+If $Deposit_Date <> ''
+  let $SQLSTMT2 =' AND ( (DEBIT_DT  IS NULL) OR ((DEBIT_DT  IS NOT NULL) AND (DEBIT_DT '
+  let $SQLSTMT2 = $SQLSTMT2 || ' BETWEEN ''' || $ReportBeginDate || '''  AND  ''' || $Deposit_Date || ''') ) ) '
+
+else
+  let $SQLSTMT2 =' AND ( (DEBIT_DT  IS NULL)  OR ((DEBIT_DT   IS NOT NULL) AND  (DEBIT_DT '
+  let $SQLSTMT2 = $SQLSTMT2 || ' BETWEEN ''' || $ReportBeginDate || '''  AND  ''' || $ReportEndDate || ''') ) ) '
+end-if
+
+let $SQLSTMT = $SQLSTMT || $SQLSTMT2
+! SHOW '$SQLSTMT:'
+! display $SQLSTMT
+
+if rtrim($Cal_Run_Id_M_String,' ') <> ''
+  let $Cal_Run_Id_Crit_UpdValues = ' AND CAL_RUN_ID IN ( ' || $Cal_Run_Id_M_String || ') '
+else
+  let $Cal_Run_Id_Crit_UpdValues = ' '
+end-if
+
+! display '-- begin debug information ---'
+! display '$Upd_Criteria:'
+! display $Upd_Criteria
+! display '-- end debug information ---'
+
+
+  display '-- begin debug information update SQL ---'  !jdi start
+  display '$Upd_Criteria:'
+  display $Upd_Criteria
+  display '$Cal_Run_Id_Crit_UpdValues:'
+  display $Cal_Run_Id_Crit_UpdValues
+  display '$SQLSTMT:'
+  display $SQLSTMT
+  display '$Select_Condit1:'
+  display $Select_Condit1
+  display '$ReportEndDate'
+  display $ReportEndDate
+  display '-- begin debug information update SQL ---'  !jdi end
+
+
+begin-SQL On-Error=SQL-Error
+
+UPDATE PS_GPDE_BK_XFER_EE
+SET GPDE_BK_XFER_BASIS = $Transfer_Basis,
+    GPDE_BK_XFER_FLG = $ReadyToTransferFlag
+WHERE
+ [$Upd_Criteria]   $ReportEndDate AND
+ PAYMENT_MTHD = 'T' AND
+ GPDE_BK_XFER_FLG = 'G'
+ [$Cal_Run_Id_Crit_UpdValues]
+ [$SQLSTMT]
+! he 011604
+ AND (GP_PMT_AMT > 0 OR GPDE_AL_PAYMT_TYPE IN ('3','4','B'))
+ [$Select_Condit1]
+end-SQL
+
+end-procedure
+
+
+
+
+begin-procedure Disk-Upper ($in, :$out)
+! wdu06-890b6 Umlaut replacement changed because 7-Bit chars were rejected.
+move '' to $out
+uppercase $in
+move 1 to #pos
+
+while #pos <= length($in)
+ let $x = substr($in,#pos,1)
+ evaluate $x
+  when = 'Ä'
+    let $x = 'AE'
+    break
+  when = 'ä'
+    let $x = 'AE'
+    break
+  when = 'Ö'
+    let $x = 'OE'
+    break
+  when = 'ö'
+    let $x = 'OE'
+    break
+  when = 'Ü'
+    let $x = 'UE'
+    break
+  when = 'ü'
+    let $x = 'UE'
+    break
+  when = 'ß'
+    let $x = 'SS'
+    break
+  when = 'è'
+    let $x = 'E'
+    break
+  when = 'é'
+    let $x = 'E'
+    break
+  when = 'ê'
+    let $x = 'E'
+    break
+  when = 'ë'
+    let $x = 'E'
+    break
+  when = 'É'
+    let $x = 'E'
+    break
+  when = 'à'
+    let $x = 'A'
+    break
+  when = 'â'
+    let $x = 'A'
+    break
+  when = 'å'
+    let $x = 'A'
+    break
+  when = 'Å'
+    let $x = 'A'
+    break
+  when = 'ï'
+    let $x = 'I'
+    break
+  when = 'î'
+    let $x = 'I'
+    break
+  when = 'ì'
+    let $x = 'I'
+    break
+  when = 'í'
+    let $x = 'I'
+    break
+  when = 'ô'
+    let $x = 'O'
+    break
+  when = 'ò'
+    let $x = 'O'
+    break
+  when = 'ó'
+    let $x = 'O'
+    break
+  when = 'û'
+    let $x = 'U'
+    break
+  when = 'ú'
+    let $x = 'U'
+    break
+  when = 'ù'
+    let $x = 'U'
+    break
+  when = 'ñ'
+    let $x = 'N'
+    break
+  when = 'Ñ'
+    let $x = 'N'
+    break
+  when = 'Ç'
+    let $x = 'C'
+    break
+  when-other
+    let $x = substr($in,#pos,1)
+    break
+ end-evaluate
+ let $out = $out || $x
+ add 1 to #pos
+end-while
+
+end-procedure
+
+! Procedure added: jjj09-890b20
+!************************************************************************
+begin-procedure Get-ReqParam
+
+show 'Prcs-Inst ' $prcs_process_instance
+
+Begin-Select
+RQ.PRCSINSTANCE
+RQ.PRCSTYPE
+RQ.PRCSNAME
+RQ.RUNLOCATION
+RQ.OPSYS
+RQ.DBTYPE
+RQ.DBNAME
+RQ.OPRID
+RQ.BEGINDTTM
+RQ.ENDDTTM
+RQ.RUNSTATUS
+RQ.RUNCNTLID
+RQ.OUTDESTTYPE
+RQ.OUTDESTFORMAT
+RQ.TIMEZONE
+RQ.SERVERNAMERUN
+! wdu jw2005 added 890 file handling
+OD.PRCSOUTPUTDIR
+OD.OUTDEST
+FROM PSPRCSPARMS OD , PSPRCSRQST  RQ
+WHERE OD.PRCSINSTANCE  = RQ.PRCSINSTANCE
+AND   RQ.PRCSINSTANCE = #prcs_process_instance
+End-Select
+  let $RQ.OUTDESTTYPE = rtrim(&RQ.OUTDESTTYPE,' ')
+  let $RQ.OUTDESTFORMAT = rtrim(&RQ.OUTDESTFORMAT,' ')
+  let $Process_Inst  = to_char(&RQ.PRCSINSTANCE)
+  let $BeginDate     = datetostr(&RQ.BEGINDTTM,{PTRPTDATE})
+  let $BeginTime     = datetostr(&RQ.BEGINDTTM,{PTRPTTIME})
+  let $BeginDateTime = $BeginDate || '     ' || $BeginTime
+  let $EndDate       = datetostr(&RQ.ENDDTTM,{PTRPTDATE})
+  let $EndTime       = datetostr(&RQ.ENDDTTM,{PTRPTTIME})
+  let $EndDateTime   = $EndDate || '     ' || $EndTime
+! wdu jw2005 added 890 file handling
+  let $OUTDEST       = rtrim(&OD.OUTDEST,' ')
+  let $OUTDESTTYPE   = rtrim(&RQ.OUTDESTTYPE,' ')
+
+  move 'RUNLOCATION'  to $FieldName
+  move &RQ.RUNLOCATION to $FieldValue
+  do Read-Translate-Table
+  let $RUNLOCATION = rtrim(ltrim($XlatlongName,' '),' ')
+  move 'OPSYS'  to $FieldName
+  move &RQ.OPSYS to $FieldValue
+  do Read-Translate-Table
+  let $OPSYS = rtrim(ltrim($XlatlongName,' '),' ')
+  move 'DBTYPE'  to $FieldName
+  move &RQ.DBTYPE to $FieldValue
+  do Read-Translate-Table
+  let $DBTYPE = rtrim(ltrim($XlatlongName,' '),' ')
+  move 'RUNSTATUS'  to $FieldName
+  move &RQ.RUNSTATUS to $FieldValue
+  do Read-Translate-Table
+  let $RUNSTATUS = rtrim(ltrim($XlatlongName,' '),' ')
+  move 'OUTDESTTYPE'  to $FieldName
+  move &RQ.OUTDESTTYPE to $FieldValue
+  do Read-Translate-Table
+  let $OUTDESTTYPE = rtrim(ltrim($XlatlongName,' '),' ')
+  move 'OUTDESTFORMAT'  to $FieldName
+  move &RQ.OUTDESTFORMAT to $FieldValue
+  do Read-Translate-Table
+  let $OUTDESTFORMAT = rtrim(ltrim($XlatlongName,' '),' ')
+  evaluate $RQ.OUTDESTFORMAT
+  when = '1'
+    let $OUTDESTFORM = 'PDF'
+    break
+  when = '2'
+    let $OUTDESTFORM = 'PDF'
+    break
+  when = '3'
+    let $OUTDESTFORM = 'CSV'
+    break
+  when = '4'
+    let $OUTDESTFORM = 'HP'
+    break
+  when = '5'
+    let $OUTDESTFORM = 'HTM'
+    break
+  when = '6'
+    let $OUTDESTFORM = 'LP'
+    break
+  when = '7'
+    let $OUTDESTFORM = 'WKS'
+    break
+  when = '8'
+    let $OUTDESTFORM = 'XLS'
+    break
+  when = '9'
+    let $OUTDESTFORM = 'DOC'
+    break
+  when = '10'
+    let $OUTDESTFORM = 'PS'
+    break
+  when = '11'
+    let $OUTDESTFORM = 'RPT'
+    break
+  when = '12'
+    let $OUTDESTFORM = 'RTF'
+    break
+  when = '13'
+    let $OUTDESTFORM = 'SPF'
+    break
+  when = '14'
+    let $OUTDESTFORM = 'TXT'
+    break
+  when = '15'
+    let $OUTDESTFORM = 'PDF'
+    break
+  when = '16'
+    let $OUTDESTFORM = 'PDF'
+    break
+  when-other
+    let $OUTDESTFORM = 'PDF'
+    break
+  end-evaluate
+end-procedure
+
+!**************************************************************
+#include 'gpdeut06.sqc'
+#include 'gpdeut04.sqc'
+#include 'curdttim.sqc'  !get-current-datetime procedure
+#include 'datetime.sqc'  !routines for date and time formatting
+#include 'validdt.sqc'   !validate date routine
+#include 'readxlat.sqc'  !read-translate-table procedure
+#include 'number.sqc'    !routines to format numbers
+#include 'stdapi.sqc'    !update process api
+#include 'tranctrl.sqc'  !commits the update transactions
+#include 'sqrtrans.sqc'  !sqr strings table procedures
+#include 'datemath.sqc'
+#include 'gpdeut07.sqc'

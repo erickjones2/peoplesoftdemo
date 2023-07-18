@@ -1,0 +1,1505 @@
+!********************************************************
+!  PER027B.SQR - VETS-100 Federal Contractors Report    !
+!********************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2015, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!          $Date:  2015/05/08:04:54:07                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  105                                                 !
+!                                                                      *
+!***********************************************************************
+! 05/30/00 - Rewritten for release 8 - this is the second of three     *
+!      JDL   processes that need to be run to produce a compliant      *
+!            digital file for submission to the VA                     *
+!***********************************************************************
+! Uncomment the following line to have debug values put into the sqr.log
+! #DEFINE DEBUGPER027
+
+#include 'setenv.sqc'   !Set environment
+#include 'hrhl01.sqc'   !Landscape Confidential Header
+
+!----------------------------------------------------------------------
+!---------Program------------------------------------------------------
+!----------------------------------------------------------------------
+! This process will print reports based on the information found
+! either in the Vets 100 temp table or in the Vets 100 history table.
+!
+! The field V100_HIRING_LOC is designed as a reference field - we use
+! this to store the ESTABID of the establishment that the line
+! holds stored calculations for.
+!----------------------------------------------------------------------
+Begin-Program
+
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Begin Program'
+#ENDIF
+
+  DO Use-Standard-Layout
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Report
+
+  ! Set the confidential flag for the header
+  !------------------------------------------------------------
+  LET $Confidential = 'YES'
+
+  ! Set the No Submission flag for the header
+  !------------------------------------------------------------
+  LET $No_Submission = 'YES'
+
+  ! If we're only running for one HQ Unit, populate the dynamic
+  ! where clause with a conditional to limit to the appropriate
+  ! establishments
+  !------------------------------------------------------------
+  
+  !**********Begin Resolution 631970 *********
+  !IF $ReportChoice = '3'
+  !   LET $Where-Clause = 'WHERE CTL_ESTABID = ' || $Quote || $CtlEstabID || $Quote
+  !ELSE
+  !   LET $Where-Clause = ''
+  !END-IF
+
+  IF $ReportChoice = '1'
+        LET $Where-Clause = 'WHERE V100_HIRING_LOC IN (SELECT B.ESTABID FROM PS_COMPANY_TBL A, PS_ESTAB_TBL B WHERE A.COMPANY=B.COMPANY AND A.COMPANY=' || $Quote || $COMPANY || $Quote || ')'
+  ELSE
+    IF $ReportChoice = '2'
+      LET $Where-Clause = 'WHERE V100_HIRING_LOC = ' || $Quote || $Estab || $Quote
+    ELSE
+      IF $ReportChoice = '3'
+        LET $Where-Clause = 'WHERE CTL_ESTABID = ' || $Quote || $CtlEstabID || $Quote
+      ELSE
+        LET $Where-Clause = ''
+      END-IF
+    END-IF
+  END-IF
+  !**********End Resolution 631970 *********
+
+  IF IsBlank($Where-Clause)
+        IF $Run_From_Current = 'N'
+           LET $Where-Clause = 'WHERE V100_REPORTING_YR = ' || $Quote || $History_Year || $Quote || ' AND V100_REPORT_TYPE = ' || $Quote || $V100HistRptType || $Quote
+        ELSE
+           LET $Where-Clause = 'WHERE V100_REPORT_TYPE = ' || $Quote || $V100ReportType || $Quote
+        END-IF
+    ELSE
+        IF $Run_From_Current = 'N'
+           LET $Where-Clause = $Where-Clause || ' AND V100_REPORTING_YR = ' || $Quote || $History_Year || $Quote || ' AND V100_REPORT_TYPE = ' || $Quote || $V100HistRptType || $Quote
+        ELSE
+           LET $Where-Clause = $Where-Clause || ' AND V100_REPORT_TYPE = ' || $Quote || $V100ReportType || $Quote
+        END-IF
+    END-IF
+  
+  ! Use dynamic SQL to pick table data comes from
+  !------------------------------------------------------------
+  IF $Run_From_Current = 'N'
+      LET $From-Clause = ' PS_V100_HISTORY'
+
+  ELSE
+      LET $From-Clause = ' PS_V100_TEMP_TBL'
+  END-IF
+
+  ! Begin the process - main SQL Select Loop
+  !------------------------------------------------------------
+  DO Process-Main
+
+
+  ! Update the Process Scheduler
+  !------------------------------------------------------------
+  DO Stdapi-Term
+
+End-Program
+
+!----------------------------------------------------------------------
+!---------Init-Report--------------------------------------------------
+!----------------------------------------------------------------------
+! We need to get the calendar year from the process instance
+!----------------------------------------------------------------------
+
+begin-procedure Init-Report
+
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Init-Report'
+#ENDIF
+
+  move 'PER027B' to $ReportID
+
+#IFDEF DEBUGPER027
+  display 'Report ID: ' NOLINE
+  display $ReportID
+#ENDIF
+
+  do Stdapi-Init
+
+  if $prcs_process_instance = ''
+     display ''
+     display 'REPORT CAN NOT BE EXECUTED OUTSIDE OF PEOPLESOFT,PLEASE USE PROCESS SCHEDULER.'
+     display ''
+     STOP QUIET
+  else
+     do Select-Parameters
+  end-if
+  
+  EVALUATE $V100ReportType 
+  WHEN = 'A'
+     move 'VETS-100A Federal Contractors Report' to $ReportTitle
+  WHEN = 'B'
+     move 'VETS-100 Federal Contractors Report' to $ReportTitle
+  WHEN = 'C'
+     move 'VETS-4212 Federal Contractors Report' to $ReportTitle
+  END-EVALUATE
+  
+  display $ReportTitle
+
+end-procedure
+
+!----------------------------------------------------------------------
+!---------Get-Values---------------------------------------------------
+!----------------------------------------------------------------------
+! Fetch run control parameters
+!----------------------------------------------------------------------
+begin-procedure Get-Values
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Get-Values'
+#ENDIF
+
+   do Get-Run-Scope
+   do Get-CTL_ESTABID
+   do Get-Run-From-Current
+   do Get-History-Year
+!**********Begin Resolution 631970 *********
+   do Get-Establishment
+   do Get-Company
+!**********End Resolution 631970 *********
+
+   IF $Run_From_Current = 'Y'
+     do Get-V100-Report-Type
+   ELSE
+     do Get-V100-History-Report-Type
+     LET $V100ReportType = $V100HistRptType
+   END-IF
+
+   LET $Quote = ''''
+
+#IFDEF DEBUGPER027
+!**********Begin Resolution 631970 *********
+  DISPLAY '   $Estab: ' NOLINE
+  DISPLAY $Estab
+  DISPLAY '   $COMPANY: ' NOLINE
+  DISPLAY $COMPANY  
+!**********End Resolution 631970 *********
+  DISPLAY '   $CtlEstabID: ' NOLINE
+  DISPLAY $CtlEstabID
+  DISPLAY '   $ReportChoice: ' NOLINE
+  DISPLAY $ReportChoice
+  DISPLAY '   $Run_From_Current: ' NOLINE
+  DISPLAY $Run_From_Current
+  DISPLAY '   $History_Year: ' NOLINE
+  DISPLAY $History_Year
+#ENDIF
+
+end-procedure Get-Values
+
+!----------------------------------------------------------------------
+!---------Process-Main-------------------------------------------------
+!----------------------------------------------------------------------
+! This routine will be run once - this SQL loop controls the flow of
+! the program.
+!----------------------------------------------------------------------
+begin-procedure Process-Main
+
+! Debugging stuff
+!----------------------------------------------------
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Process-Main'
+#ENDIF
+
+BEGIN-SELECT
+CTL_ESTABID
+V100_REPORT_TYPE
+V100_ROW
+V100_COMPANY_NO
+V100_ENDING_PD
+V100_ORG_TYPE
+V100_FORM_TYPE
+V100_MSCNUMBER
+V100_PARENT_CO
+V100_STREET
+V100_STREET2
+V100_CITY
+V100_COUNTY
+V100_STATE
+V100_ZIPCODE
+V100_HIRING_LOC    () ON-BREAK PRINT=NEVER PROCEDURE=Page-Break
+V100_HL_NAME
+V100_HL_STREET
+V100_HL_STREET2
+V100_HL_CITY
+V100_HL_COUNTY
+V100_HL_STATE
+V100_HL_ZIP
+V100_NAICS
+V100_DUNS_NUM
+V100_EIN
+V100_A1
+V100_B1
+V100_C1
+V100_D1
+V100_L1
+V100_M1
+V100_N1
+V100_O1
+V100_P1
+V100_Q1
+V100_R1
+V100_S1
+V100_T1
+V100_U1
+V100_A2
+V100_B2
+V100_C2
+V100_D2
+V100_L2
+V100_M2
+V100_N2
+V100_O2
+V100_P2
+V100_Q2
+V100_R2
+V100_S2
+V100_T2
+V100_U2
+V100_A3
+V100_B3
+V100_C3
+V100_D3
+V100_L3
+V100_M3
+V100_N3
+V100_O3
+V100_P3
+V100_Q3
+V100_R3
+V100_S3
+V100_T3
+V100_U3
+V100_A4
+V100_B4
+V100_C4
+V100_D4
+V100_L4
+V100_M4
+V100_N4
+V100_O4
+V100_P4
+V100_Q4
+V100_R4
+V100_S4
+V100_T4
+V100_U4
+V100_A5
+V100_B5
+V100_C5
+V100_D5
+V100_L5
+V100_M5
+V100_N5
+V100_O5
+V100_P5
+V100_Q5
+V100_R5
+V100_S5
+V100_T5
+V100_U5
+V100_A6
+V100_B6
+V100_C6
+V100_D6
+V100_L6
+V100_M6
+V100_N6
+V100_O6
+V100_P6
+V100_Q6
+V100_R6
+V100_S6
+V100_T6
+V100_U6
+V100_A7
+V100_B7
+V100_C7
+V100_D7
+V100_L7
+V100_M7
+V100_N7
+V100_O7
+V100_P7
+V100_Q7
+V100_R7
+V100_S7
+V100_T7
+V100_U7
+V100_A8
+V100_B8
+V100_C8
+V100_D8
+V100_L8
+V100_M8
+V100_N8
+V100_O8
+V100_P8
+V100_Q8
+V100_R8
+V100_S8
+V100_T8
+V100_U8
+V100_A9
+V100_B9
+V100_C9
+V100_D9
+V100_L9
+V100_M9
+V100_N9
+V100_O9
+V100_P9
+V100_Q9
+V100_R9
+V100_S9
+V100_T9
+V100_U9
+V100_A10
+V100_B10
+V100_C10
+V100_D10
+V100_L10
+V100_M10
+V100_N10
+V100_O10
+V100_P10
+V100_Q10
+V100_R10
+V100_S10
+V100_T10
+V100_U10
+V100_A11
+V100_B11
+V100_C11
+V100_D11
+V100_L11
+V100_M11
+V100_N11
+V100_O11
+V100_P11
+V100_Q11
+V100_R11
+V100_S11
+V100_T11
+V100_U11
+V100_MAX_NUMBER
+V100_MIN_NUMBER
+
+   DO Get-Establishment-Info
+
+   EVALUATE $V100ReportType 
+      
+      WHEN = 'A'
+   
+        ALTER-PRINTER
+         font=4
+         point-size=10
+   
+        ! Horizontal Line above estab information
+        !-------------------------------------------
+         GRAPHIC (+1,2,103) HORZ-LINE
+   
+        ! Some of the submitted information about
+        ! this estab
+        !-------------------------------------------
+   
+        LET $Output = 'VETS-100 Establishment Number: ' || &V100_COMPANY_NO
+        PRINT $Output                                             (+1, 7) BOLD
+   
+        PRINT 'MSC Number: '                                      (,82) BOLD
+        PRINT &V100_MSCNUMBER                                     (,93,10) BOLD
+   
+        LET $Output = 'Report for Period Ending: '
+        !LET $Output = $Output || {ps-substr} (&V100_ENDING_PD,1,2) || '/' ! Month
+        !LET $Output = $Output || {ps-substr} (&V100_ENDING_PD,3,2) || '/' ! Day
+        !LET $Output = $Output || {ps-substr} (&V100_ENDING_PD,5,4)        ! Year
+        LET $Output = $Output || &V100_ENDING_PD
+        PRINT $Output                                             (+1, 7)  BOLD
+   
+        PRINT 'EIN: '                                             (,82)    BOLD
+        PRINT &V100_EIN                                           (,93,10) BOLD EDIT xx-xxxxxxx
+   
+        IF NOT ISBLANK(&V100_HL_NAME)
+           LET $Output = 'Parent Company: ' || &V100_PARENT_CO
+           PRINT $Output                                          (+1,7)   BOLD
+        ELSE
+           LET $Compare = rtrim(&V100_FORM_TYPE,' ')
+           IF $Compare != 'S'
+               PRINT 'Headquarters Unit'                          (+1,7)   BOLD
+           ELSE
+               PRINT 'Single Establishment'                       (+1,7)   BOLD
+           END-IF
+        END-IF
+        
+        PRINT 'NAICS: '                                           (,82)    BOLD
+        PRINT &V100_NAICS                                         (,93,10) BOLD
+        
+        LET $Output = 'Company Contact: ' || $CertName
+        PRINT $Output                                             (+1, 7)  BOLD
+   
+        PRINT 'DUNS: '                                            (,82)    BOLD
+        PRINT &V100_DUNS_NUM                                      (,93,11) BOLD EDIT xx-xxx-xxxx
+        
+        LET $Output = 'Telephone: ' || $CertPhone
+        PRINT $Output                                             (+1, 7)  BOLD
+        
+        LET $Output = 'Email: ' || $CertEmail
+        PRINT $Output                                             (,82)    BOLD     
+   
+        ! Horizontal Line below estab information
+        !-------------------------------------------
+        GRAPHIC (,2,103) HORZ-LINE
+   
+        ! Column Headers
+        !-------------------------------------------
+        ALTER-PRINTER
+           point-size = 12
+   
+   
+        PRINT 'Number of Employees'                               (+3,25) BOLD
+        PRINT 'New Hires (Previous 12 Months)'                    (,67)   BOLD
+   
+        GRAPHIC (,17,36) HORZ-LINE
+        GRAPHIC (,61,36) HORZ-LINE
+        
+        ALTER-PRINTER
+           point-size = 12
+        
+        PRINT 'Job'                                               (+1,5)  BOLD
+   
+        ALTER-PRINTER
+           point-size = 7
+   
+        PRINT 'Other'                                             (,24)   BOLD
+        PRINT 'Armed Forces'                                      (,29)   BOLD
+        PRINT 'Recently'                                          (,37)   BOLD
+        PRINT 'Total Employees,'                                  (,44)   BOLD
+   
+        PRINT 'Other'                                             (,68)   BOLD
+        PRINT 'Armed Forces'                                      (,73)   BOLD
+        PRINT 'Recently'                                          (,81)   BOLD
+        PRINT 'Total New Hires,'                                  (,88)   BOLD
+        
+        ALTER-PRINTER
+           point-size = 12
+   
+        PRINT 'Categories'                                        (+1,2)  BOLD
+   
+        ALTER-PRINTER
+           point-size = 7
+   
+        PRINT 'Disabled'                                          (,17)   BOLD
+        PRINT 'Protected'                                         (,23)   BOLD
+        PRINT 'Service Medal'                                     (,29)   BOLD
+        PRINT 'Separated'                                         (,37)   BOLD
+        PRINT 'Both Veterans And'                                 (,44)   BOLD
+   
+        PRINT 'Disabled'                                          (,61)   BOLD
+        PRINT 'Protected'                                         (,67)   BOLD
+        PRINT 'Service Medal'                                     (,73)   BOLD
+        PRINT 'Separated'                                         (,81)   BOLD
+        PRINT 'Both Veterans And'                                 (,88)   BOLD
+   
+        ALTER-PRINTER
+           point-size = 7
+   
+        PRINT 'Veterans'                                          (+1,17) BOLD
+        PRINT 'Veterans'                                          (,23)   BOLD
+        PRINT 'Veterans'                                          (,30)   BOLD
+        PRINT 'Veterans'                                          (,37)   BOLD
+        PRINT 'Non-Veterans'                                      (,44)   BOLD
+   
+        PRINT 'Veterans'                                          (,61)   BOLD
+        PRINT 'Veterans'                                          (,67)   BOLD
+        PRINT 'Veterans'                                          (,74)   BOLD
+        PRINT 'Veterans'                                          (,81)   BOLD
+        PRINT 'Non-Veterans'                                      (,88)   BOLD
+   
+        ! Horizontal Line below headers
+        !-------------------------------------------
+        GRAPHIC (,2,95) HORZ-LINE
+   
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Exec/Snr Level Managers'                           (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L1                                            (,16) EDIT 999999
+        PRINT &V100_M1                                            (,23) EDIT 999999
+        PRINT &V100_N1                                            (,30) EDIT 999999
+        PRINT &V100_O1                                            (,37) EDIT 999999
+        PRINT &V100_P1                                            (,45) EDIT 999999
+        PRINT &V100_Q1                                            (,60) EDIT 999999
+        PRINT &V100_R1                                            (,67) EDIT 999999
+        PRINT &V100_S1                                            (,74) EDIT 999999
+        PRINT &V100_T1                                            (,81) EDIT 999999
+        PRINT &V100_U1                                            (,89) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'First/Mid Level Managers'                          (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L2                                            (,16) EDIT 999999
+        PRINT &V100_M2                                            (,23) EDIT 999999
+        PRINT &V100_N2                                            (,30) EDIT 999999
+        PRINT &V100_O2                                            (,37) EDIT 999999
+        PRINT &V100_P2                                            (,45) EDIT 999999
+        PRINT &V100_Q2                                            (,60) EDIT 999999
+        PRINT &V100_R2                                            (,67) EDIT 999999
+        PRINT &V100_S2                                            (,74) EDIT 999999
+        PRINT &V100_T2                                            (,81) EDIT 999999
+        PRINT &V100_U2                                            (,89) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+   
+        PRINT 'Professionals'                                     (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L3                                            (,16) EDIT 999999
+        PRINT &V100_M3                                            (,23) EDIT 999999
+        PRINT &V100_N3                                            (,30) EDIT 999999
+        PRINT &V100_O3                                            (,37) EDIT 999999
+        PRINT &V100_P3                                            (,45) EDIT 999999
+        PRINT &V100_Q3                                            (,60) EDIT 999999
+        PRINT &V100_R3                                            (,67) EDIT 999999
+        PRINT &V100_S3                                            (,74) EDIT 999999
+        PRINT &V100_T3                                            (,81) EDIT 999999
+        PRINT &V100_U3                                            (,89) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Technicians'                                       (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L4                                            (,16) EDIT 999999
+        PRINT &V100_M4                                            (,23) EDIT 999999
+        PRINT &V100_N4                                            (,30) EDIT 999999
+        PRINT &V100_O4                                            (,37) EDIT 999999
+        PRINT &V100_P4                                            (,45) EDIT 999999
+        PRINT &V100_Q4                                            (,60) EDIT 999999
+        PRINT &V100_R4                                            (,67) EDIT 999999
+        PRINT &V100_S4                                            (,74) EDIT 999999
+        PRINT &V100_T4                                            (,81) EDIT 999999
+        PRINT &V100_U4                                            (,89) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Sales Workers'                                     (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L5                                            (,16) EDIT 999999
+        PRINT &V100_M5                                            (,23) EDIT 999999
+        PRINT &V100_N5                                            (,30) EDIT 999999
+        PRINT &V100_O5                                            (,37) EDIT 999999
+        PRINT &V100_P5                                            (,45) EDIT 999999
+        PRINT &V100_Q5                                            (,60) EDIT 999999
+        PRINT &V100_R5                                            (,67) EDIT 999999
+        PRINT &V100_S5                                            (,74) EDIT 999999
+        PRINT &V100_T5                                            (,81) EDIT 999999
+        PRINT &V100_U5                                            (,89) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Admin Support Workers'                             (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L6                                            (,16) EDIT 999999
+        PRINT &V100_M6                                            (,23) EDIT 999999
+        PRINT &V100_N6                                            (,30) EDIT 999999
+        PRINT &V100_O6                                            (,37) EDIT 999999
+        PRINT &V100_P6                                            (,45) EDIT 999999
+        PRINT &V100_Q6                                            (,60) EDIT 999999
+        PRINT &V100_R6                                            (,67) EDIT 999999
+        PRINT &V100_S6                                            (,74) EDIT 999999
+        PRINT &V100_T6                                            (,81) EDIT 999999
+        PRINT &V100_U6                                            (,89) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Craft Workers'                                     (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L7                                            (,16) EDIT 999999
+        PRINT &V100_M7                                            (,23) EDIT 999999
+        PRINT &V100_N7                                            (,30) EDIT 999999
+        PRINT &V100_O7                                            (,37) EDIT 999999
+        PRINT &V100_P7                                            (,45) EDIT 999999
+        PRINT &V100_Q7                                            (,60) EDIT 999999
+        PRINT &V100_R7                                            (,67) EDIT 999999
+        PRINT &V100_S7                                            (,74) EDIT 999999
+        PRINT &V100_T7                                            (,81) EDIT 999999
+        PRINT &V100_U7                                            (,89) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Operatives'                                        (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L8                                            (,16) EDIT 999999
+        PRINT &V100_M8                                            (,23) EDIT 999999
+        PRINT &V100_N8                                            (,30) EDIT 999999
+        PRINT &V100_O8                                            (,37) EDIT 999999
+        PRINT &V100_P8                                            (,45) EDIT 999999
+        PRINT &V100_Q8                                            (,60) EDIT 999999
+        PRINT &V100_R8                                            (,67) EDIT 999999
+        PRINT &V100_S8                                            (,74) EDIT 999999
+        PRINT &V100_T8                                            (,81) EDIT 999999
+        PRINT &V100_U8                                            (,89) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Laborers/Helpers'                                  (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L9                                            (,16) EDIT 999999
+        PRINT &V100_M9                                            (,23) EDIT 999999
+        PRINT &V100_N9                                            (,30) EDIT 999999
+        PRINT &V100_O9                                            (,37) EDIT 999999
+        PRINT &V100_P9                                            (,45) EDIT 999999
+        PRINT &V100_Q9                                            (,60) EDIT 999999
+        PRINT &V100_R9                                            (,67) EDIT 999999
+        PRINT &V100_S9                                            (,74) EDIT 999999
+        PRINT &V100_T9                                            (,81) EDIT 999999
+        PRINT &V100_U9                                            (,89) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Service Workers'                                   (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L10                                           (,16) EDIT 999999
+        PRINT &V100_M10                                           (,23) EDIT 999999
+        PRINT &V100_N10                                           (,30) EDIT 999999
+        PRINT &V100_O10                                           (,37) EDIT 999999
+        PRINT &V100_P10                                           (,45) EDIT 999999
+        PRINT &V100_Q10                                           (,60) EDIT 999999
+        PRINT &V100_R10                                           (,67) EDIT 999999
+        PRINT &V100_S10                                           (,74) EDIT 999999
+        PRINT &V100_T10                                           (,81) EDIT 999999
+        PRINT &V100_U10                                           (,89) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+           
+        ! Horizontal Line below calculations
+        !-------------------------------------------
+        GRAPHIC (,2,95) HORZ-LINE        
+           
+        PRINT 'TOTAL'                                             (+2,2) BOLD
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L11                                           (,16) EDIT 999999
+        PRINT &V100_M11                                           (,23) EDIT 999999
+        PRINT &V100_N11                                           (,30) EDIT 999999
+        PRINT &V100_O11                                           (,37) EDIT 999999
+        PRINT &V100_P11                                           (,45) EDIT 999999
+        PRINT &V100_Q11                                           (,60) EDIT 999999
+        PRINT &V100_R11                                           (,67) EDIT 999999
+        PRINT &V100_S11                                           (,74) EDIT 999999
+        PRINT &V100_T11                                           (,81) EDIT 999999
+        PRINT &V100_U11                                           (,89) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8        
+   
+        LET #MaxOut = &V100_MAX_NUMBER
+        LET $Output = 'Maximum Employees:  ' || TO_CHAR(#MaxOut)
+        PRINT $Output                                             (+2,34) BOLD SHADE
+   
+        LET #MinOut = &V100_MIN_NUMBER
+        LET $Output = 'Minimum Employees:  ' || TO_CHAR(#MinOut)
+        PRINT $Output                                             (,58) BOLD SHADE
+   
+      WHEN = 'B'
+   
+             ALTER-PRINTER
+         font=4
+         point-size=10
+   
+        ! Horizontal Line above estab information
+        !-------------------------------------------
+        GRAPHIC (+1,2,103) HORZ-LINE
+   
+        ! Some of the submitted information about
+        ! this estab
+        !-------------------------------------------
+   
+        LET $Output = 'VETS-100 Establishment Number: ' || &V100_COMPANY_NO
+        PRINT $Output                                             (+1, 7) BOLD
+   
+        PRINT 'MSC Number: '                                      (,82) BOLD
+        PRINT &V100_MSCNUMBER                                     (,93,10) BOLD
+   
+        LET $Output = 'Report for Period Ending: '
+        !LET $Output = $Output || {ps-substr} (&V100_ENDING_PD,1,2) || '/' ! Month
+        !LET $Output = $Output || {ps-substr} (&V100_ENDING_PD,3,2) || '/' ! Day
+        !LET $Output = $Output || {ps-substr} (&V100_ENDING_PD,5,4)        ! Year
+        LET $Output = $Output || &V100_ENDING_PD
+        PRINT $Output                                             (+1, 7)  BOLD
+   
+        PRINT 'EIN: '                                             (,82)    BOLD
+        PRINT &V100_EIN                                           (,93,10) BOLD EDIT xx-xxxxxxx
+   
+        IF NOT ISBLANK(&V100_HL_NAME)
+           LET $Output = 'Parent Company: ' || &V100_PARENT_CO
+           PRINT $Output                                          (+1,7)   BOLD
+        ELSE
+           LET $Compare = rtrim(&V100_FORM_TYPE,' ')
+           IF $Compare != 'S'
+               PRINT 'Headquarters Unit'                          (+1,7)   BOLD
+           ELSE
+               PRINT 'Single Establishment'                       (+1,7)   BOLD
+           END-IF
+        END-IF
+        
+        PRINT 'NAICS: '                                           (,82)    BOLD
+        PRINT &V100_NAICS                                         (,93,10) BOLD
+        
+        LET $Output = 'Company Contact: ' || $CertName
+        PRINT $Output                                             (+1, 7)  BOLD
+   
+        PRINT 'DUNS: '                                            (,82)    BOLD
+        PRINT &V100_DUNS_NUM                                      (,93,11) BOLD EDIT xx-xxx-xxxx
+        
+        LET $Output = 'Telephone: ' || $CertPhone
+        PRINT $Output                                             (+1, 7)  BOLD
+        
+        LET $Output = 'Email: ' || $CertEmail
+        PRINT $Output                                             (,82)    BOLD
+     
+        ! Horizontal Line below estab information
+        !-------------------------------------------
+        GRAPHIC (,2,103) HORZ-LINE
+   
+        ! Column Headers
+        !-------------------------------------------
+        ALTER-PRINTER
+           point-size = 12
+   
+   
+        PRINT 'Number of Employees'                               (+3,22) BOLD
+        PRINT 'New Hires (Previous 12 Months)'                    (,62)   BOLD
+   
+        GRAPHIC (,15,32) HORZ-LINE
+        GRAPHIC (,52,45) HORZ-LINE
+        
+        ALTER-PRINTER
+           point-size = 12
+        
+        PRINT 'Job'                                               (+1,5)  BOLD
+   
+        ALTER-PRINTER
+           point-size = 7
+   
+        PRINT 'Special'                                           (,17)   BOLD
+        PRINT 'Other'                                             (,31)   BOLD
+        PRINT 'Recently'                                          (,38)   BOLD
+        
+        PRINT 'Special'                                           (,56)   BOLD
+        PRINT 'Other'                                             (,72)   BOLD
+        PRINT 'Recently'                                          (,80)   BOLD
+        
+        PRINT 'Total New Hires'                                   (,88)   BOLD     
+   
+        ALTER-PRINTER
+           point-size = 12
+   
+        PRINT 'Categories'                                        (+1,2)  BOLD
+   
+        ALTER-PRINTER
+           point-size = 7
+   
+        PRINT 'Disabled'                                          (,17)   BOLD
+        PRINT 'Vietnam Era'                                       (,24)   BOLD
+        PRINT 'Protected'                                         (,31)   BOLD
+        PRINT 'Separated'                                         (,38)   BOLD
+   
+        PRINT 'Disabled'                                          (,56)   BOLD
+        PRINT 'Vietnam Era'                                       (,64)   BOLD
+        PRINT 'Protected'                                         (,72)   BOLD
+        PRINT 'Separated'                                         (,80)   BOLD
+   
+        PRINT 'Both Veterans'                                     (,88)   BOLD
+   
+        ALTER-PRINTER
+           point-size = 7
+   
+        PRINT 'Veterans'                                          (+1,17) BOLD
+        PRINT 'Veterans'                                          (,24)   BOLD
+        PRINT 'Veterans'                                          (,31)   BOLD
+        PRINT 'Veterans'                                          (,38)   BOLD
+   
+        PRINT 'Veterans'                                          (,56)   BOLD
+        PRINT 'Veterans'                                          (,64)   BOLD
+        PRINT 'Veterans'                                          (,72)   BOLD
+        PRINT 'Veterans'                                          (,80)   BOLD
+   
+        PRINT 'And Non-Veterans'                                  (,88)   BOLD
+   
+        ! Horizontal Line below headers
+        !-------------------------------------------
+        GRAPHIC (,2,95) HORZ-LINE
+   
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Officials & Managers'                              (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L1                                            (,16) EDIT 999999
+        PRINT &V100_M1                                            (,23) EDIT 999999
+        PRINT &V100_N1                                            (,30) EDIT 999999
+        PRINT &V100_O1                                            (,37) EDIT 999999
+        PRINT &V100_P1                                            (,55) EDIT 999999
+        PRINT &V100_Q1                                            (,63) EDIT 999999
+        PRINT &V100_R1                                            (,71) EDIT 999999
+        PRINT &V100_S1                                            (,79) EDIT 999999
+        PRINT &V100_T1                                            (,90) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Professionals'                                     (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L2                                            (,16) EDIT 999999
+        PRINT &V100_M2                                            (,23) EDIT 999999
+        PRINT &V100_N2                                            (,30) EDIT 999999
+        PRINT &V100_O2                                            (,37) EDIT 999999
+        PRINT &V100_P2                                            (,55) EDIT 999999
+        PRINT &V100_Q2                                            (,63) EDIT 999999
+        PRINT &V100_R2                                            (,71) EDIT 999999
+        PRINT &V100_S2                                            (,79) EDIT 999999
+        PRINT &V100_T2                                            (,90) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+   
+        PRINT 'Technicians'                                       (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L3                                            (,16) EDIT 999999
+        PRINT &V100_M3                                            (,23) EDIT 999999
+        PRINT &V100_N3                                            (,30) EDIT 999999
+        PRINT &V100_O3                                            (,37) EDIT 999999
+        PRINT &V100_P3                                            (,55) EDIT 999999
+        PRINT &V100_Q3                                            (,63) EDIT 999999
+        PRINT &V100_R3                                            (,71) EDIT 999999
+        PRINT &V100_S3                                            (,79) EDIT 999999
+        PRINT &V100_T3                                            (,90) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Sales Workers'                                     (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L4                                            (,16) EDIT 999999
+        PRINT &V100_M4                                            (,23) EDIT 999999
+        PRINT &V100_N4                                            (,30) EDIT 999999
+        PRINT &V100_O4                                            (,37) EDIT 999999
+        PRINT &V100_P4                                            (,55) EDIT 999999
+        PRINT &V100_Q4                                            (,63) EDIT 999999
+        PRINT &V100_R4                                            (,71) EDIT 999999
+        PRINT &V100_S4                                            (,79) EDIT 999999
+        PRINT &V100_T4                                            (,90) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Admin Support Workers'                             (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L5                                            (,16) EDIT 999999
+        PRINT &V100_M5                                            (,23) EDIT 999999
+        PRINT &V100_N5                                            (,30) EDIT 999999
+        PRINT &V100_O5                                            (,37) EDIT 999999
+        PRINT &V100_P5                                            (,55) EDIT 999999
+        PRINT &V100_Q5                                            (,63) EDIT 999999
+        PRINT &V100_R5                                            (,71) EDIT 999999
+        PRINT &V100_S5                                            (,79) EDIT 999999
+        PRINT &V100_T5                                            (,90) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Craft Workers'                                     (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L6                                            (,16) EDIT 999999
+        PRINT &V100_M6                                            (,23) EDIT 999999
+        PRINT &V100_N6                                            (,30) EDIT 999999
+        PRINT &V100_O6                                            (,37) EDIT 999999
+        PRINT &V100_P6                                            (,55) EDIT 999999
+        PRINT &V100_Q6                                            (,63) EDIT 999999
+        PRINT &V100_R6                                            (,71) EDIT 999999
+        PRINT &V100_S6                                            (,79) EDIT 999999
+        PRINT &V100_T6                                            (,90) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Operatives'                                       (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L7                                            (,16) EDIT 999999
+        PRINT &V100_M7                                            (,23) EDIT 999999
+        PRINT &V100_N7                                            (,30) EDIT 999999
+        PRINT &V100_O7                                            (,37) EDIT 999999
+        PRINT &V100_P7                                            (,55) EDIT 999999
+        PRINT &V100_Q7                                            (,63) EDIT 999999
+        PRINT &V100_R7                                            (,71) EDIT 999999
+        PRINT &V100_S7                                            (,79) EDIT 999999
+        PRINT &V100_T7                                            (,90) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Laborers/Helpers'                                  (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L8                                            (,16) EDIT 999999
+        PRINT &V100_M8                                            (,23) EDIT 999999
+        PRINT &V100_N8                                            (,30) EDIT 999999
+        PRINT &V100_O8                                            (,37) EDIT 999999
+        PRINT &V100_P8                                            (,55) EDIT 999999
+        PRINT &V100_Q8                                            (,63) EDIT 999999
+        PRINT &V100_R8                                            (,71) EDIT 999999
+        PRINT &V100_S8                                            (,79) EDIT 999999
+        PRINT &V100_T8                                            (,90) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Service Workers'                                   (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L9                                            (,16) EDIT 999999
+        PRINT &V100_M9                                            (,23) EDIT 999999
+        PRINT &V100_N9                                            (,30) EDIT 999999
+        PRINT &V100_O9                                            (,37) EDIT 999999
+        PRINT &V100_P9                                            (,55) EDIT 999999
+        PRINT &V100_Q9                                            (,63) EDIT 999999
+        PRINT &V100_R9                                            (,71) EDIT 999999
+        PRINT &V100_S9                                            (,79) EDIT 999999
+        PRINT &V100_T9                                            (,90) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        ! Horizontal Line below calculations
+        !-------------------------------------------
+        GRAPHIC (,2,95) HORZ-LINE
+   
+        PRINT 'TOTAL'                                             (+2,2) BOLD
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_L10                                           (,16) EDIT 999999
+        PRINT &V100_M10                                           (,23) EDIT 999999
+        PRINT &V100_N10                                           (,30) EDIT 999999
+        PRINT &V100_O10                                           (,37) EDIT 999999
+        PRINT &V100_P10                                           (,55) EDIT 999999
+        PRINT &V100_Q10                                           (,63) EDIT 999999
+        PRINT &V100_R10                                           (,71) EDIT 999999
+        PRINT &V100_S10                                           (,79) EDIT 999999
+        PRINT &V100_T10                                           (,90) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        LET #MaxOut = &V100_MAX_NUMBER
+        LET $Output = 'Maximum Employees:  ' || TO_CHAR(#MaxOut)
+        PRINT $Output                                             (+2,34) BOLD SHADE
+   
+        LET #MinOut = &V100_MIN_NUMBER
+        LET $Output = 'Minimum Employees:  ' || TO_CHAR(#MinOut)
+        PRINT $Output                                             (,58) BOLD SHADE
+   
+      WHEN = 'C'
+   
+        ALTER-PRINTER
+         font=4
+         point-size=10
+   
+        ! Horizontal Line above estab information
+        !-------------------------------------------
+        GRAPHIC (+1,2,103) HORZ-LINE
+   
+        ! Some of the submitted information about
+        ! this estab
+        !-------------------------------------------
+   
+        LET $Output = 'VETS Establishment Number: ' || &V100_COMPANY_NO
+        PRINT $Output                                             (+1, 7) BOLD
+   
+        PRINT 'MSC Number: '                                      (,82) BOLD
+        PRINT &V100_MSCNUMBER                                     (,93,10) BOLD
+   
+        LET $Output = 'Report for Period Ending: '
+        !LET $Output = $Output || {ps-substr} (&V100_ENDING_PD,1,2) || '/' ! Month
+        !LET $Output = $Output || {ps-substr} (&V100_ENDING_PD,3,2) || '/' ! Day
+        !LET $Output = $Output || {ps-substr} (&V100_ENDING_PD,5,4)        ! Year
+        LET $Output = $Output || &V100_ENDING_PD
+        PRINT $Output                                             (+1, 7)  BOLD
+   
+        PRINT 'EIN: '                                             (,82)    BOLD
+        PRINT &V100_EIN                                           (,93,10) BOLD EDIT xx-xxxxxxx
+   
+        IF NOT ISBLANK(&V100_HL_NAME)
+           LET $Output = 'Parent Company: ' || &V100_PARENT_CO
+           PRINT $Output                                          (+1,7)   BOLD
+        ELSE
+           LET $Compare = rtrim(&V100_FORM_TYPE,' ')
+           IF $Compare != 'S'
+               PRINT 'Headquarters Unit'                          (+1,7)   BOLD
+           ELSE
+               PRINT 'Single Establishment'                       (+1,7)   BOLD
+           END-IF
+        END-IF
+        
+        PRINT 'NAICS: '                                           (,82)    BOLD
+        PRINT &V100_NAICS                                         (,93,10) BOLD
+        
+        LET $Output = 'Company Contact: ' || $CertName
+        PRINT $Output                                             (+1, 7)  BOLD
+   
+        PRINT 'DUNS: '                                            (,82)    BOLD
+        PRINT &V100_DUNS_NUM                                      (,93,11) BOLD EDIT xx-xxx-xxxx
+        
+        LET $Output = 'Telephone: ' || $CertPhone
+        PRINT $Output                                             (+1, 7)  BOLD
+        
+        LET $Output = 'Email: ' || $CertEmail
+        PRINT $Output                                             (,82)    BOLD     
+   
+        ! Horizontal Line below estab information
+        !-------------------------------------------
+        GRAPHIC (,2,103) HORZ-LINE
+   
+        ! Column Headers
+        !-------------------------------------------
+        ALTER-PRINTER
+           point-size = 12
+   
+        PRINT 'Information on Employees'                          (+2,1) BOLD CENTER
+        GRAPHIC (+1,2,103) HORZ-LINE
+   
+        PRINT 'Job'                                               (+2,5)  BOLD
+        PRINT 'Number of Employees'                               (,28)   BOLD
+        PRINT 'New Hires (Previous 12 Months)'                    (,67)   BOLD
+   
+        GRAPHIC (,17,36) HORZ-LINE
+        GRAPHIC (,61,36) HORZ-LINE
+        
+        ALTER-PRINTER
+           point-size = 12
+   
+        PRINT 'Categories'                                        (+1,2)  BOLD
+   
+        ALTER-PRINTER
+           point-size = 7
+   
+        PRINT 'Protected Veterans'                                (,26)   BOLD
+        PRINT 'Total Employees'                                   (,39)   BOLD
+   
+        PRINT 'Protected Veterans'                                (,70)   BOLD
+        PRINT 'Total New Hires'                                   (,83)   BOLD
+   
+        ALTER-PRINTER
+           point-size = 7
+   
+        PRINT '(A)'                                          (+1,30) BOLD
+        PRINT '(B)'                                          (,42)   BOLD
+   
+        PRINT '(C)'                                          (,74)   BOLD
+        PRINT '(D)'                                          (,86)   BOLD
+   
+        ! Horizontal Line below headers
+        !-------------------------------------------
+        GRAPHIC (,2,95) HORZ-LINE
+   
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Exec/Snr Level Managers'                           (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_A1                                            (,28) EDIT 999999
+        PRINT &V100_B1                                            (,40) EDIT 999999
+        PRINT &V100_C1                                            (,72) EDIT 999999
+        PRINT &V100_D1                                            (,84) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'First/Mid Level Managers'                          (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_A2                                            (,28) EDIT 999999
+        PRINT &V100_B2                                            (,40) EDIT 999999
+        PRINT &V100_C2                                            (,72) EDIT 999999
+        PRINT &V100_D2                                            (,84) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+   
+        PRINT 'Professionals'                                     (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_A3                                            (,28) EDIT 999999
+        PRINT &V100_B3                                            (,40) EDIT 999999
+        PRINT &V100_C3                                            (,72) EDIT 999999
+        PRINT &V100_D3                                            (,84) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Technicians'                                       (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_A4                                            (,28) EDIT 999999
+        PRINT &V100_B4                                            (,40) EDIT 999999
+        PRINT &V100_C4                                            (,72) EDIT 999999
+        PRINT &V100_D4                                            (,84) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Sales Workers'                                     (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_A5                                            (,28) EDIT 999999
+        PRINT &V100_B5                                            (,40) EDIT 999999
+        PRINT &V100_C5                                            (,72) EDIT 999999
+        PRINT &V100_D5                                            (,84) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Admin Support Workers'                             (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_A6                                            (,28) EDIT 999999
+        PRINT &V100_B6                                            (,40) EDIT 999999
+        PRINT &V100_C6                                            (,72) EDIT 999999
+        PRINT &V100_D6                                            (,84) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Craft Workers'                                     (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_A7                                            (,28) EDIT 999999
+        PRINT &V100_B7                                            (,40) EDIT 999999
+        PRINT &V100_C7                                            (,72) EDIT 999999
+        PRINT &V100_D7                                            (,84) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Operatives'                                        (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_A8                                            (,28) EDIT 999999
+        PRINT &V100_B8                                            (,40) EDIT 999999
+        PRINT &V100_C8                                            (,72) EDIT 999999
+        PRINT &V100_D8                                            (,84) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        PRINT 'Laborers/Helpers'                                  (+1,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_A9                                            (,28) EDIT 999999
+        PRINT &V100_B9                                            (,40) EDIT 999999
+        PRINT &V100_C9                                            (,72) EDIT 999999
+        PRINT &V100_D9                                            (,84) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+   
+        GRAPHIC (+1,2,95) box 1 0 15
+        PRINT 'Service Workers'                                   (,2)
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_A10                                            (,28) EDIT 999999
+        PRINT &V100_B10                                            (,40) EDIT 999999
+        PRINT &V100_C10                                            (,72) EDIT 999999
+        PRINT &V100_D10                                            (,84) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8
+           
+        ! Horizontal Line below calculations
+        !-------------------------------------------
+        GRAPHIC (,2,95) HORZ-LINE        
+           
+        PRINT 'TOTAL'                                             (+2,2) BOLD
+        !------------------------------------------------------------------------
+        ALTER-PRINTER
+           point-size = 7
+        PRINT &V100_A11                                            (,28) EDIT 999999
+        PRINT &V100_B11                                            (,40) EDIT 999999
+        PRINT &V100_C11                                            (,72) EDIT 999999
+        PRINT &V100_D11                                            (,84) EDIT 999999
+        ALTER-PRINTER
+           point-size = 8        
+   
+        LET #MaxOut = &V100_MAX_NUMBER
+        LET $Output = 'Maximum Employees:  ' || TO_CHAR(#MaxOut)
+        PRINT $Output                                             (+2,34) BOLD SHADE
+   
+        LET #MinOut = &V100_MIN_NUMBER
+        LET $Output = 'Minimum Employees:  ' || TO_CHAR(#MinOut)
+        PRINT $Output                                             (,58) BOLD SHADE
+   
+   END-EVALUATE
+
+FROM [$From-Clause]
+[$Where-Clause]
+ORDER BY CTL_ESTABID, V100_ROW
+
+END-SELECT
+end-procedure
+
+!----------------------------------------------------------------------
+!---------Get-Establishment-Info---------------------------------------
+!----------------------------------------------------------------------
+! Retrieves name and address information for the specific location
+!----------------------------------------------------------------------
+
+Begin-Procedure Get-Establishment-Info
+
+Do Get-From-Thru-Date
+
+#IFDEF DEBUGPER025
+  DISPLAY 'FLOW: Get-Establishment-Info'
+#ENDIF
+
+! For DB2/All we need to trim this before feeding
+! the value back in the conditional
+!-------------------------------------------------
+LET $Hiring_Location = RTRIM(&V100_HIRING_LOC,' ')
+
+BEGIN-SELECT
+Q.DESCR
+Q.ADDRESS1
+Q.ADDRESS2
+Q.ADDRESS3
+Q.ADDRESS4
+Q.NUM1
+Q.NUM2
+Q.CITY
+Q.STATE
+Q.POSTAL
+Q.COUNTRY
+Q.IN_CITY_LIMIT
+Q.GEO_CODE
+Q.HOUSE_TYPE
+
+    LET $NAME = &Q.DESCR
+    LET $ADDRESS1 = &Q.ADDRESS1
+    LET $ADDRESS2 = &Q.ADDRESS2
+    LET $ADDRESS3 = &Q.ADDRESS3
+    LET $ADDRESS4 = &Q.ADDRESS4
+    LET $NUM1 = &Q.NUM1
+    LET $NUM2 = &Q.NUM2
+    LET $HOUSE_TYE = &Q.HOUSE_TYPE
+
+    LET $CITY = &Q.CITY
+    LET $COUNTRY = &Q.COUNTRY
+
+    LET $STATE = &Q.STATE
+
+    LET $POSTAL = &Q.POSTAL
+
+    LET $GEO_CODE = &Q.GEO_CODE
+    LET $IN_CITY_LIMIT = &Q.IN_CITY_LIMIT
+
+FROM PS_ESTAB_TBL Q
+WHERE Q.ESTABID = $Hiring_Location
+AND Q.EFFDT = (SELECT MAX(EFFDT) FROM PS_ESTAB_TBL
+                WHERE ESTABID = Q.ESTABID
+                AND  EFFDT <= $ThruDate
+                AND  EFF_STATUS = 'A')
+
+
+END-SELECT
+
+BEGIN-SELECT
+EST2.CERTIF_OFFICIAL
+
+   MOVE &EST2.CERTIF_OFFICIAL TO $CertOffic      !Emplid of Certifying Official
+
+   IF NOT IsBlank($CertOffic)
+        
+      do Get-Official-Name
+      do Get-Phone-Number
+      do Get-Email-Address 
+   
+   ELSE
+   
+      LET $CertName = ''
+      LET $CertPhone = ''
+      LET $CertEmail = ''
+      
+   END-IF
+
+FROM PS_ESTAB_TBL_USA EST2
+where EST2.ESTABID = $Hiring_Location
+AND   EST2.EFFDT =
+              (SELECT MAX(E2.EFFDT)
+               FROM   PS_ESTAB_TBL_USA E2
+               WHERE  E2.ESTABID = EST2.ESTABID
+                 AND  E2.EFFDT  <= $ThruDate)
+END-SELECT
+End-Procedure Get-Establishment-Info
+
+!----------------------------------------------------------------------
+!---------Get-Official-Name--------------------------------------------
+!----------------------------------------------------------------------
+Begin-Procedure Get-Official-Name
+#IFDEF DEBUGPER016
+  DISPLAY 'FLOW: Get-Official-Name'
+#ENDIF
+
+BEGIN-SELECT
+
+PN.NAME
+
+  MOVE &PN.NAME to $CertName                    !Name of Certifying Official
+
+FROM PS_PERSON_NAME PN
+WHERE PN.EMPLID = $CertOffic
+
+END-SELECT
+
+End-Procedure Get-Official-Name
+
+!----------------------------------------------------------------------
+!---------Get-Phone-Number-----------------------------------------------
+!----------------------------------------------------------------------
+Begin-Procedure Get-Phone-Number
+#IFDEF DEBUGPER016
+  DISPLAY 'FLOW: Get-Phone-Number'
+#ENDIF
+
+BEGIN-SELECT
+
+PP.PHONE
+
+  MOVE &PP.PHONE to $CertPhone                  !Phone of Certifying Official
+
+FROM PS_PERSONAL_PHONE PP
+WHERE PP.EMPLID = $CertOffic
+AND PP.PHONE_TYPE = 'BUSN'
+
+END-SELECT
+
+End-Procedure Get-Phone-Number
+
+!----------------------------------------------------------------------
+!---------Get-Email-Address--------------------------------------------
+!----------------------------------------------------------------------
+Begin-Procedure Get-Email-Address
+#IFDEF DEBUGPER016
+  DISPLAY 'FLOW: Get-Email-Address'
+#ENDIF
+
+BEGIN-SELECT
+
+PM.EMAIL_ADDR
+
+  MOVE &PM.EMAIL_ADDR to $CertEmail             !Email of Certifying Official
+
+FROM PS_EMAIL_ADDRESSES PM
+WHERE PM.EMPLID = $CertOffic
+AND PM.E_ADDR_TYPE = 'BUSN'
+
+END-SELECT
+
+End-Procedure Get-Email-Address
+
+!----------------------------------------------------------------------
+!---------Page-Break---------------------------------------------------
+!----------------------------------------------------------------------
+! Causes a page break between establishments
+!----------------------------------------------------------------------
+begin-procedure Page-Break
+NEW-PAGE
+end-procedure Page-Break
+!----------------------------------------------------------------------
+!---------SQCs---------------------------------------------------------
+!----------------------------------------------------------------------
+#include 'stdapi.sqc'      !Routine to update run status
+#include 'rgrnctl1.sqc'    !Get run control parameter values
+#include 'rggetval.sqc'    !Get values mask routines
+#include 'askcalyr.sqc'    !Ask Calendar Year input
+#Include 'curdttim.sqc'    !Get-Current-DateTime procedure
+#Include 'datetime.sqc'    !Routines for date and time formatting
+#Include 'datemath.sqc'    !Routines for date and time calculations
+#Include 'number.sqc'      !Routines to format numbers

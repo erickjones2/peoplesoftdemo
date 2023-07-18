@@ -1,0 +1,2954 @@
+!*********************************************
+!  GPGENRPT:  Generic Report                 *
+!*********************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2017, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  26582710                                            !
+!                                                                      *
+!***********************************************************************
+!
+!***********************************************************************
+!                                                                      *
+! Global Payroll       Release 8                                       *
+!***********************************************************************
+
+#include 'setenv.sqc'    !Set environment
+#include 'rellang.sqc'
+
+Begin-Setup
+  #Include 'ptset02a.sqc'   ! Printer and page-size initialization
+End-Setup
+
+#define MaxColumns   13     ! Maximum number of Columns
+#define MaxRows      200    ! Maximum number of Rows that can be read from Report Setup
+#define ColumnWidth  12.55  ! Width of each column
+#define Column0      1      ! Column Starting Position
+#define Column1      2      !
+#define Column2      31     ! Beginning column after Emplid/EmplRcd/Name
+#define Line1        3      !
+#define MaxLines     39     ! Maximum number of Lines per page
+
+!***********************************************************************
+
+begin-program
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Stdapi-Term
+  do Init-Report
+  do Process-Main
+  do Reset
+  do Stdapi-Term
+end-program
+
+!***********************************************************************
+!  Heading
+!***********************************************************************
+
+begin-heading 4
+  alter-printer font=3 point-size=6
+  #Include 'stdhdgtr.sqc'
+  do Print_Period
+end-heading
+
+!***********************************************************************
+!  Init Report
+!***********************************************************************
+
+begin-procedure Init-Report
+
+  move 'GPGENRPT' to $ReportID
+
+  do Stdapi-Init
+  let #cnt=1
+  let #cnt1=1
+begin-SELECT on-error=SQL-Error
+LANGUAGE_CD
+
+  let $language_cd = &LANGUAGE_CD
+
+FROM PS_GP_GENRPT_RC
+WHERE OPRID = $prcs_oprid
+AND RUN_CNTL_ID = $prcs_run_cntl_id
+
+end-SELECT
+
+  do Init_Report_Translation($ReportID, $language_cd)
+  do Append_Report_Translation($ReportID)
+
+  if $prcs_process_instance = ''
+    ! no prompt
+  else
+    let #prcs_process_instance=To_number($prcs_process_instance)
+    do Get-Values
+  end-if
+
+  do Init_Printer
+
+end-procedure
+
+!***********************************************************************
+! Function:    Get-Values                                              *
+!                                                                      *
+! Description: Load parameters from report setup and run control       *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get-Values
+ #ifdef debugw
+     show 'procedure Get-Values'
+  #end-if
+
+!
+! retrieves data from the run control
+!
+
+begin-SELECT on-error=SQL-Error
+
+A.GP_GENRPT_ID
+{DATETIMEOUT-PREFIX}A.BGN_DT{DATETIMEOUT-SUFFIX} &BgnDate
+{DATETIMEOUT-PREFIX}A.END_DT{DATETIMEOUT-SUFFIX} &EndDate
+A.CURRENCY_CD
+A.OPRID
+A.RUN_CNTL_ID
+B.DESCR
+A.GP_GENRPT_PAYEES
+A.GP_GENRPT_SORT_OPT
+A.CAL_RUN_ID
+B.DECIMAL_POSITIONS
+A.LANGUAGE_CD
+
+   let $genrpt_id = &A.GP_GENRPT_ID
+   let $STARTDT = &BgnDate
+   let $ENDDT = &EndDate
+   let $Currency = &A.CURRENCY_CD
+   let $CurrencyDescr = rtrim(&B.DESCR, ' ')
+   let $AllPayees = &A.GP_GENRPT_PAYEES
+   let $SortOption = &A.GP_GENRPT_SORT_OPT
+   let $CalRunId = &A.CAL_RUN_ID
+   let #decpos = &B.DECIMAL_POSITIONS
+   let $_oprid = &A.OPRID
+   let $_runcntlid = &A.RUN_CNTL_ID
+   let $curr_language_cd = &A.LANGUAGE_CD
+
+
+     if $curr_language_cd <> $Psoptions_Language_Cd
+      do Get-Currency-Rel-Lang
+     end-if
+
+
+FROM PS_GP_GENRPT_RC A,
+     PS_CURRENCY_CD_TBL B
+WHERE OPRID = $prcs_oprid
+  AND RUN_CNTL_ID = $prcs_run_cntl_id
+  AND A.CURRENCY_CD = B.CURRENCY_CD
+
+end-SELECT
+
+#ifdef debugy
+  show 'BgnDate ' $STARTDT
+  show 'EndDate ' $ENDDT
+  show 'Currency ' $Currency
+  show 'AllPayees ' $AllPayees
+  show 'SortOption ' $SortOption
+#end-if
+
+!
+! retrieves the last job instance from the guide file
+!
+
+begin-SELECT on-Error=SQL-Error
+
+MAX(JOBINSTANCE)     &MAX_JOB
+
+   let $jobinstance = &MAX_JOB
+   let #jobinstance=To_number($jobinstance)
+
+FROM PS_GP_GENRPT_G_TMP
+WHERE JOBINSTANCE <= #prcs_process_instance
+
+end-SELECT
+
+!
+! retrieves data from the report setup  based on the
+! report being executed
+!
+begin-SELECT on-Error=SQL-Error
+
+A.DESCR
+A.GP_GENRPT_TYPE
+A.GP_GENRPT_BRK_LVL1
+A.GP_GENRPT_PG_BRK1
+A.GP_GENRPT_BRK_LVL2
+A.GP_GENRPT_PG_BRK2
+A.GP_GENRPT_BRK_LVL3
+A.GP_GENRPT_PG_BRK3
+A.GP_GENRPT_PG_BRK4
+A.GP_GENRPT_NULL
+
+   let $ReportTitle = rtrim($genrpt_id, ' ') || ' - ' || rtrim(&A.DESCR, ' ')
+   let $RptType = &A.GP_GENRPT_TYPE
+   let $BreakLevel1 = &A.GP_GENRPT_BRK_LVL1
+   let $PageBreakLevel1 = &A.GP_GENRPT_PG_BRK1
+   let $BreakLevel2 = &A.GP_GENRPT_BRK_LVL2
+   let $PageBreakLevel2 = &A.GP_GENRPT_PG_BRK2
+   let $BreakLevel3 = &A.GP_GENRPT_BRK_LVL3
+   let $PageBreakLevel3 = &A.GP_GENRPT_PG_BRK3
+   let $PageBreakLevel4 = &A.GP_GENRPT_PG_BRK4
+   let $LineZero = &A.GP_GENRPT_NULL
+
+FROM PS_GP_GENRPT_TBL A
+WHERE GP_GENRPT_ID = $genrpt_id
+
+end-SELECT
+
+#ifdef debugy
+  show 'Break Level 1 ' $BreakLevel1
+  show 'Page Break 1 ' $PageBreakLevel1
+  show 'Break Level 2' $BreakLevel2
+  show 'Page Break 2 ' $PageBreakLevel2
+  show 'Break Level 3 ' $BreakLevel3
+  show 'Page Break 3 ' $PageBreakLevel3
+  show 'Page Break 4 ' $PageBreakLevel4
+  show 'Line Zero ' $LineZero
+#end-if
+
+!
+! language consideration
+!
+
+begin-SELECT on-Error=SQL-Error
+
+DESCR
+
+   let $ReportTitle = rtrim(&DESCR, ' ')
+
+FROM PS_GP_GENRPT_LNG
+WHERE GP_GENRPT_ID = $genrpt_id
+  AND LANGUAGE_CD = $language_cd
+
+end-SELECT
+
+end-procedure  ! Get-Value
+
+!***********************************************************************
+!                                                                      *
+! Function:    Get-Currency-Rel-Lang                                   *
+!                                                                      *
+!                                                                      *
+! Description:  Retrieve currency related language entry.              *
+!                                                                      *
+!***********************************************************************
+
+
+begin-procedure Get-Currency-Rel-Lang
+
+ #ifdef debugw
+     show 'procedure Get-Currency-Rel-Lang'
+  #end-if
+
+BEGIN-SELECT
+
+CURRENCYLANG.DESCR     &CURRENCYLANG.DESCR
+
+    let $CurrencyDescr =  rtrim(&CURRENCYLANG.DESCR, ' ')
+
+    FROM PS_CURRCD_TBL_LANG CURRENCYLANG
+    WHERE CURRENCYLANG.CURRENCY_CD = $Currency
+      AND CURRENCYLANG.LANGUAGE_CD = $curr_language_cd
+
+END-SELECT
+
+
+end-procedure ! Get-Currency-Rel-Lang
+
+
+!***********************************************************************
+! Function:    Process-Main                                            *
+!                                                                      *
+! Description: Start point of the report                               *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Process-Main
+
+ #ifdef debugw
+     show 'procedure Process-Main'
+  #end-if
+
+    create-array name=Elements size=999
+       field=PIN:number
+       field=Sub:char
+       field=RowColumn:number
+
+
+    create-array name=ColumnDef size={MaxColumns}
+       field=Title1:char
+       field=Title2:char
+       field=FromDate:char
+       field=ToDate:char
+       field=UserKey:char
+       field=Label:char
+       field=Total:char
+       field=RowNbr:number
+       field=SupRow:char
+       field=CalInd:char
+
+
+    create-array name=RowDef size={MaxRows}
+       field=Title1:char
+       field=Title2:char
+       field=Total:char
+       field=RowNbr:number
+
+
+    create-array name=Break1Total size={MaxColumns}
+       field=Value:number
+
+    create-array name=Break2Total size={MaxColumns}
+       field=Value:number
+
+    create-array name=Break3Total size={MaxColumns}
+       field=Value:number
+
+    create-array name=GrandTotal size={MaxColumns}
+       field=Value:number
+
+    create-array name=Amounts size={MaxColumns}
+       field=Value:number
+       field=ValueConverted:number
+       field=ValueNotConverted:number
+       field=Title:char
+
+
+    create-array name=BrkData size=3
+       field=PIN:number
+       field=BrkName:char
+       field=RcdName:char
+       field=FldName:char
+       field=RelLang:char
+       field=EffdtInd:char
+       field=SetIdInd:char
+       field=PinSetId:number
+
+    do Get_Tranlat_Info
+
+    if  rtrim($BreakLevel1,' ') <> ''
+        do Get-Break-Data($BreakLevel1, 0, $Break1)
+    end-if
+
+    if rtrim($BreakLevel2,' ') <> ''
+       do Get-Break-Data($BreakLevel2, 1, $Break2)
+    end-if
+
+    if rtrim($BreakLevel3,' ') <> ''
+       do Get-Break-Data($BreakLevel3, 2, $Break3)
+    end-if
+
+    let #i = 0
+
+
+begin-SELECT on-Error=SQL-Error
+
+GP_GENRPT_ROW_NUM &rowcolumn
+PIN_NUM      &pin
+GP_GENRPT_SUB_PIN &sub
+
+   let #i = #i + 1
+
+   let Elements.PIN(#i) = &pin
+   let Elements.Sub(#i) = &sub
+   let Elements.RowColumn(#i) = &rowcolumn
+
+
+
+FROM PS_GP_GENRPT_PIN
+WHERE GP_GENRPT_ID = $genrpt_id
+ORDER BY GP_GENRPT_ROW_NUM
+
+end-SELECT
+
+   if $RptType = '10' or $RptType = '30'
+
+      let #Columns = 0
+      if $AllPayees = 'Y'
+         let ColumnDef.Title1(0) = $LABELEMPLID_LBL
+      end-if
+
+      let $GROUP_BY_USER_KEY = ''
+      let #UserKey1_Ind = 0
+      let #UserKey2_Ind = 0
+      let #UserKey3_Ind = 0
+      let #UserKey4_Ind = 0
+      let #UserKeyColumn = 0
+      let $UserKey1_Column = ''
+      let $UserKey2_Column = ''
+      let $UserKey3_Column = ''
+      let $UserKey4_Column = ''
+
+      let #i = 0
+
+
+begin-SELECT on-Error=SQL-Error
+
+GP_GENRPT_ROW_NUM &row_11
+LABEL1 &descr_111
+LABEL2 &descr_112
+GP_GENRPT_USER_KEY &UserKey
+GP_GENRPT_LBL_IND &LabelInd
+GP_PRINT_TOTAL &PrintTotal
+GP_SUPPRESS_ROW &SupRow
+GP_GENRPT_CAL_IND &CalInd
+
+   let #i = #i + 1
+
+
+   if #i <= {MaxColumns} - 1
+      let #Columns = #Columns + 1
+      let ColumnDef.Title1(#i) = substr(rtrim(&descr_111, ' '), 1,12)
+      let ColumnDef.Title2(#i) = substr(rtrim(&descr_112, ' '), 1,12)
+      let ColumnDef.UserKey(#i) = rtrim(&UserKey, ' ')
+      let ColumnDef.Label(#i) = rtrim(&LabelInd, ' ')
+      let ColumnDef.Total(#i) = rtrim(&PrintTotal, ' ')
+      let ColumnDef.RowNbr(#i) = &row_11
+      let ColumnDef.SupRow(#i) = rtrim(&SupRow, ' ')
+      let ColumnDef.CalInd(#i) = rtrim(&CalInd, ' ')
+
+
+      let $UserKey = rtrim(&UserKey, ' ')
+
+
+      if $UserKey <> ''
+         if ($UserKey = '1' and #UserKey1_Ind = 0) or
+            ($UserKey = '2' and #UserKey2_Ind = 0) or
+            ($UserKey = '3' and #UserKey3_Ind = 0) or
+            ($UserKey = '4' and #UserKey4_Ind = 0)
+            if $GROUP_BY_USER_KEY = ''
+               let $GROUP_BY_USER_KEY = 'A.USER_KEY' || $UserKey
+            else
+               let $GROUP_BY_USER_KEY = $GROUP_BY_USER_KEY || ',A.USER_KEY' || $UserKey
+            end-if
+         end-if
+
+         if $UserKey = '1'
+            let #UserKey1_Ind = 1
+         end-if
+
+         if $UserKey = '2'
+            let #UserKey2_Ind = 1
+         end-if
+
+         if $UserKey = '3'
+            let #UserKey3_Ind = 1
+         end-if
+
+         if $UserKey = '4'
+            let #UserKey4_Ind = 1
+         end-if
+
+         if #UserKeyColumn = 0
+            let $UserKey1_Column = 'A.USER_KEY' || $UserKey
+            let $UserKey2_Column = 'A.USER_KEY' || $UserKey
+            let $UserKey3_Column = 'A.USER_KEY' || $UserKey
+            let $UserKey4_Column = 'A.USER_KEY' || $UserKey
+         end-if
+
+         if #UserKeyColumn = 1
+            let $UserKey2_Column = 'A.USER_KEY' || $UserKey
+            let $UserKey3_Column = 'A.USER_KEY' || $UserKey
+            let $UserKey4_Column = 'A.USER_KEY' || $UserKey
+         end-if
+
+         if #UserKeyColumn = 2
+            let $UserKey3_Column = 'A.USER_KEY' || $UserKey
+            let $UserKey4_Column = 'A.USER_KEY' || $UserKey
+         end-if
+
+         if #UserKeyColumn = 3
+            let $UserKey4_Column = 'A.USER_KEY' || $UserKey
+         end-if
+
+         let #UserKeyColumn = #UserKeyColumn + 1
+
+       end-if
+    end-if
+
+
+FROM PS_GP_GENRPT_ROW
+WHERE GP_GENRPT_ID = $genrpt_id
+ORDER BY GP_GENRPT_ROW_NUM
+
+end-SELECT
+
+   if #UserKey1_Ind = 0
+      and #UserKey2_Ind = 0
+      and #UserKey3_Ind = 0
+      and #UserKey4_Ind = 0
+      let $UserKey1_Column = 'A.CAL_RUN_ID'
+      let $UserKey2_Column =  'A.CAL_RUN_ID'
+      let $UserKey3_Column =  'A.CAL_RUN_ID'
+      let $UserKey4_Column =  'A.CAL_RUN_ID'
+      let $GROUP_BY_USER_KEY =  'A.CAL_RUN_ID'
+   end-if
+
+!
+! language consideration
+!
+
+    let #i = 0
+
+begin-SELECT on-Error=SQL-Error
+
+GP_GENRPT_ROW_NUM &row_12
+LABEL1 &descr_121
+LABEL2 &descr_122
+
+   let #i = #i + 1
+
+   if #i <= {MaxColumns} - 1
+      let ColumnDef.Title1(#i) = rtrim(&descr_121, ' ')
+      let ColumnDef.Title2(#i) = rtrim(&descr_122, ' ')
+   end-if
+
+FROM PS_GP_RPTROW_LNG
+WHERE GP_GENRPT_ID = $genrpt_id
+  AND LANGUAGE_CD = $language_cd
+ORDER BY GP_GENRPT_ROW_NUM
+
+end-SELECT
+
+end-if
+
+!-------------------------------------------------------------------------!
+   if $RptType = '20'
+
+      let #Rows = 0
+      let #Columns = 0
+      let #i = 0
+
+      if $AllPayees = 'Y'
+         let ColumnDef.Title1(0) = $LABELEMPLID_LBL
+      end-if
+
+      let $title2 = '   ' || $ELEMENTS_LBL
+      let ColumnDef.Title2(0) = $title2
+
+
+begin-SELECT on-Error=SQL-Error
+
+GP_GENRPT_ROW_NUM &column
+{DATETIMEOUT-PREFIX}BGN_DT{DATETIMEOUT-SUFFIX} &BgnDt
+{DATETIMEOUT-PREFIX}END_DT{DATETIMEOUT-SUFFIX} &EndDt
+
+      let #i = #i + 1
+
+      if #i <= {MaxColumns} - 1
+         let #Columns = #Columns + 1
+
+         if not IsNull(&BgnDt)
+            do Format-DateTime(&BgnDt, $StartDate, {DEFDATE},'','')
+         end-if
+
+         if not IsNull(&EndDt)
+            do Format-DateTime(&EndDt, $EndDate, {DEFDATE},'','')
+         end-if
+
+         let $title = '   ' || $StartDate
+         let ColumnDef.Title1(#i) = $title
+         let $title = '   ' || $EndDate
+         let ColumnDef.Title2(#i) = $title
+         let ColumnDef.FromDate(#i) = &BgnDt
+         let ColumnDef.ToDate(#i) = &EndDt
+
+
+      end-if
+
+FROM PS_GP_GENRPT_RC2
+WHERE OPRID = $prcs_oprid
+  AND RUN_CNTL_ID = $prcs_run_cntl_id
+ORDER BY GP_GENRPT_ROW_NUM
+
+end-SELECT
+
+    let #i = 0
+
+begin-SELECT on-Error=SQL-Error
+
+GP_GENRPT_ROW_NUM &row_21
+LABEL1 &descr_211
+LABEL2 &descr_212
+GP_PRINT_TOTAL &PrintTotal_21
+
+   let #i = #i + 1
+   if #i < {MaxRows} - 1
+      let #Rows = #Rows + 1
+      let RowDef.Title1(#i) = rtrim(&descr_211, ' ')
+      let RowDef.Title2(#i) = rtrim(&descr_212, ' ')
+      let RowDef.Total(#i) = rtrim(&PrintTotal_21, ' ')
+      let RowDef.RowNbr(#i) = &row_21
+
+
+   end-if
+
+FROM PS_GP_GENRPT_ROW
+WHERE GP_GENRPT_ID = $genrpt_id
+ORDER BY GP_GENRPT_ROW_NUM
+
+end-SELECT
+
+!
+! language consideration
+!
+
+  let #i = 0
+
+begin-SELECT on-Error=SQL-Error
+
+GP_GENRPT_ROW_NUM &row_22
+LABEL1 &descr_221
+LABEL2 &descr_222
+
+      let #i = #i + 1
+      if #i < {MaxRows} - 1
+         let RowDef.Title1(#i) = rtrim(&descr_221, ' ')
+         let RowDef.Title2(#i) = rtrim(&descr_222, ' ')
+      end-if
+
+FROM PS_GP_RPTROW_LNG
+WHERE GP_GENRPT_ID = $genrpt_id
+  AND LANGUAGE_CD = $language_cd
+ORDER BY GP_GENRPT_ROW_NUM
+
+end-SELECT
+
+   end-if
+
+   let #LINE = 1
+   let #banner = 0
+
+   if $PageBreakLevel1 = 'N' and
+      $PageBreakLevel2 = 'N' and
+      $PageBreakLevel3 = 'N' and
+      $PageBreakLevel4 = 'N'
+      do Print_Banner
+   end-if
+
+   clear-array name=GrandTotal
+
+   do Process_Level1($break1, $break2, $break3)
+
+   do Print_Grand_Total
+
+   do Report-Cleanup
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Get-Break-Data                                          *
+!                                                                      *
+! Description: Retrieve Break Related Data                             *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get-Break-Data($BreakLevel, #num, :$Name)
+
+ #ifdef debugw
+     show 'procedure Get-Break-Data'
+  #end-if
+!
+!  Get Break Description
+!
+
+begin-SELECT on-Error=SQL-Error
+
+DESCR
+PIN_NUM
+ENTRY_TYPE_ID
+RECNAME
+FIELDNAME
+
+   let $Name = rtrim(&DESCR,' ')
+   let #BrkPin = &PIN_NUM
+   let BRKDATA.PIN(#num) = #BrkPin
+    let $entry_type = &ENTRY_TYPE_ID
+    let $recname = &RECNAME
+    let $fieldname = &FIELDNAME
+
+FROM PS_GP_GENRPT_BKLVL
+WHERE GP_GENRPT_BRK_LVL = $BreakLevel
+
+end-SELECT
+
+!
+! Get Related Language Description for Break
+!
+
+begin-SELECT ON-ERROR=SQL-Error
+
+DESCR &DESCR_LNG
+
+   let $Name = rtrim(&DESCR_LNG,' ')
+
+FROM PS_GP_GENRPT_BKLNG
+WHERE GP_GENRPT_BRK_LVL = $BreakLevel
+  AND LANGUAGE_CD = $_language_cd
+
+end-SELECT
+
+    let BrkData.BrkName(#num)=$Name
+
+!
+!  Get Break Level Table Information
+!
+
+
+if $entry_type = 'SY1'
+
+
+!
+!  Get System PIN information
+!
+
+begin-SELECT ON-ERROR=SQL-Error
+
+PROMPTVIEW         &BRK_REC
+FIELDNAME          &BRK_FIELD
+SYSPIN_SETID_IND   &SETID_IND
+PIN_SETID_NUM      &PIN_SETID
+
+    let $promptview = &BRK_REC
+    if $promptview <> ' '
+       do Get-RecDefn(&BRK_FIELD, &BRK_REC, $EffdtYN, $RelLang)
+       let BrkData.RcdName(#num)=&BRK_REC
+       let BrkData.FldName(#num)=&BRK_FIELD
+       let BrkData.SetIDInd(#num)=&SETID_IND
+       let BrkData.PINSetID(#num)=&PIN_SETID
+       let BrkData.RelLang(#num) = $RelLang
+       let BrkData.EffdtInd(#num)=$EffdtYN
+    end-if
+
+FROM PS_GP_SYSPIN_VW2
+WHERE PIN_NUM = #BrkPin
+end-SELECT
+
+end-if
+
+if $entry_type = 'VR1'
+
+!
+!  Get Variable PIN information
+!
+   if $recname <> ' '
+   and $fieldname <> ' '
+      do Get-RecDefn($fieldname, $recname, $EffdtYN, $RelLang)
+      let BrkData.RcdName(#num)=$recname
+      let BrkData.FldName(#num)=$fieldname
+      let BrkData.SetIDInd(#num)='N'
+      let BrkData.PINSetID(#num)=0
+      let BrkData.RelLang(#num) = $RelLang
+      let BrkData.EffdtInd(#num)=$EffdtYN
+   end-if
+end-if
+
+
+end-procedure
+
+
+
+begin-procedure Get-RecDefn($BrkField, $BrkRec, :$effdtyn, :$RelLang)
+
+ #ifdef debugw
+     show 'procedure get-RecDefn'
+  #end-if
+
+    let $effdtyn = 'N'
+
+!
+!  Get Related Language Record for PromptView Record
+!
+
+begin-SELECT
+RELLANGRECNAME &REL_LANG
+
+    let $RelLang = &REL_LANG
+
+FROM PSRECDEFN
+WHERE RECNAME = $BrkRec
+
+end-SELECT
+
+!
+! Determine whether the record is Effective Dated
+!
+
+begin-SELECT
+FIELDNAME
+
+   let $effdtyn = 'Y'
+
+FROM PSRECFIELD
+WHERE RECNAME = $BrkRec
+  AND FIELDNAME = 'EFFDT'
+
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Get_Break_Label                                         *
+!                                                                      *
+! Description: Retrieves label of a break level                        *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_Break_Label($SetId, $BreakLevel, #num, $key, :$Name)
+
+ #ifdef debugw
+     show 'procedure Get_Break_Label'
+  #end-if
+
+   let $Name = rtrim($key, ' ') || ' - ???'
+   let $key = rtrim($key, ' ')
+   let #BreakPin = BRKDATA.PIN(#num)
+   let $Fld1 = BRKDATA.FldName(#num)
+   let $Fld2 = BRKDATA.RcdName(#num)
+   let $Fld3 = BRKDATA.EffdtInd(#num)
+   let $Fld4 = BRKDATA.SetIDInd(#num)
+   let $Fld5 = BRKDATA.RelLang(#num)
+
+   do Get-Break-Description($SetID, $Fld1, $Fld2, $key, $Fld3, $Fld4, $Fld5, $Name)
+
+end-procedure
+
+
+
+!***********************************************************************
+! Function:     Get-Break-Description                                  *
+!                                                                      *
+! Description:  Retrieves description                                  *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get-Break-Description ($SetID, $BrkField, $BrkRec, $key, $EffdtYN, $SetIDYN, $RelLang, :$BreakDescr)
+
+ #ifdef debugw
+     show 'procedure Get-Break-Description'
+  #end-if
+
+  let $FieldName = rtrim($BrkField,' ')
+  let $RecName = 'PS_' || rtrim($BrkRec,' ')
+  let $LngRec = 'PS_' || rtrim($RelLang,' ')
+
+  let $Process_Brk = 'Y'
+
+!
+! determine if record name is present
+!
+
+  if $RecName = 'PS_'
+     let $Process_Brk = 'N'
+  end-if
+
+  let $SQLQuote      = ''''
+
+  if $SetIDYN = 'Y'
+     let $SetIDSQL1 = 'AND SETID = ' || $SQLQuote || $SetID || $SQLQuote
+     let $SetIDSQL2 = 'AND A.SETID = ' || $SQLQuote || $SetID || $SQLQuote
+  else
+     let $SetIDSQL1 = ''
+     let $SetIDSQL2 = ''
+  end-if
+
+!
+! get the break info if record name is present
+!
+
+ if $Process_Brk = 'Y'
+
+!
+!  Check for Effective Dated Table
+!
+  if $EffdtYN = 'N'
+
+!
+!  Get Description for Non-Effective Dated Table
+!
+
+begin-SELECT ON-ERROR=SQL-Error
+
+DESCR &BRKDESCR
+
+  let $BreakDescr = &BRKDESCR
+
+FROM [$RecName]
+WHERE [$FieldName] = $key
+[$SetIDSQL1]
+
+end-SELECT
+
+!
+!  Get Related Language Description for Non-Effective Dated Table
+!
+
+begin-SELECT ON-ERROR=SQL-Error
+
+DESCR &LNGDESCR
+
+  let $BreakDescr = rtrim($key, ' ') || ' - ' || rtrim(&LNGDESCR,' ')
+
+FROM [$LngRec]
+WHERE [$FieldName] = $key
+  AND LANGUAGE_CD = $_language_cd
+  [$SetIDSQL1]
+end-SELECT
+
+
+else
+
+!
+!  Effective Dated Table SQL
+!
+
+  let $RecName2 = $RecName || ' A'
+  let $FieldName2 = 'A.' || $FieldName
+  let $LngRec2 = $LngRec || ' A'
+
+begin-SELECT
+DESCR &BRKDESCR2
+
+   let $BreakDescr = &BRKDESCR2
+
+FROM [$RecName]
+WHERE [$FieldName] = $key
+  [$SetIDSQl1]
+  AND EFFDT = (SELECT MAX(A.EFFDT)
+               FROM [$RecName2]
+               WHERE [$FieldName2] = $key
+               [$SetIDSQL2])
+end-SELECT
+
+!
+!  Get Related Language Description for Effective Dated Table
+!
+
+begin-SELECT ON-ERROR=SQL-Error
+
+DESCR &LNGDESCR2
+
+      let $BreakDescr = rtrim($key, ' ') || ' - ' || rtrim(&LNGDESCR2,' ')
+
+FROM [$LngRec]
+WHERE [$FieldName] = $key
+  AND LANGUAGE_CD = $_language_cd
+  [$SetIDSQL1]
+  AND EFFDT = (SELECT MAX(A.EFFDT)
+               FROM [$LngRec2]
+               WHERE [$FieldName2] = $key
+               [$SetIDSQL2])
+
+end-SELECT
+
+end-if
+
+!
+! if record name is not present simply return the character value
+!
+
+else
+   let $BreakDescr = $key
+
+end-if
+
+
+end-procedure
+
+
+
+!***********************************************************************
+! Function:    Process_Level1                                          *
+!                                                                      *
+! Description: Retrieves Data (break1)                                 *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Process_Level1($break1, $break2, $break3)
+
+ #ifdef debugw
+     show 'procedure Process_Level1'
+ #end-if
+
+   if $break1 <> ''
+
+begin-SELECT ON-ERROR=SQL-Error
+
+SETID
+GP_GENRPT_BREAK1
+
+   clear-array name=Break1Total
+   clear-array name=Break2Total
+   clear-array name=Break3Total
+
+   do Get_Break_Label(&SETID, $_BreakLevel1, 0, &GP_GENRPT_BREAK1, $name)
+   let $_break1Title = $break1 || ' : ' || $name
+
+   if $_PageBreakLevel1 = 'Y' or $_PageBreakLevel4 = 'Y'
+      if $_PageBreakLevel2 <> 'Y'
+         if #_banner = 1
+            new-page
+         end-if
+         do Print_Banner
+      end-if
+   else
+      do Print_New_Line
+      print $_break1Title      (+1,{Column1}) background = ('white')
+   end-if
+
+   do Process_Level2($break1, $break2, $break3, &SETID, &GP_GENRPT_BREAK1)
+
+   if $_PageBreakLevel1 = 'Y' or $_PageBreakLevel4 = 'Y'
+      new-page
+      do Print_Banner
+   end-if
+
+   do Print_Total_Break1($break1, $break2, $break3, &SETID, &GP_GENRPT_BREAK1)
+
+   let $_break1Title = ''
+
+FROM PS_GP_GENRPT_G_TMP
+WHERE JOBINSTANCE = #_jobinstance
+AND GP_GENRPT_BREAK1 <> ' '
+GROUP BY SETID, GP_GENRPT_BREAK1
+ORDER BY SETID, GP_GENRPT_BREAK1
+end-SELECT
+
+   else
+      let $_break1Title = ''
+      do Process_Level2($break1, $break2, $break3, '', '')
+   end-if
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Process_Level2                                          *
+!                                                                      *
+! Description: Retrieves Data (break2)                                 *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Process_Level2($break1, $break2, $break3, $SetId,  $key1)
+
+ #ifdef debugw
+     show 'procedure Process_Level2'
+  #end-if
+
+   if $break2 <> ''
+
+begin-SELECT ON-ERROR=SQL-Error
+GP_GENRPT_BREAK2
+
+     clear-array name=Break2Total
+     clear-array name=Break3Total
+
+     do Get_Break_Label($SetId, $_BreakLevel2, 1, &GP_GENRPT_BREAK2, $name)
+     let $_break2Title = $break2 || ' : ' || $name
+
+     if $_PageBreakLevel2 = 'Y' or $_PageBreakLevel4 = 'Y'
+        if $_PageBreakLevel3 <> 'Y'
+           if #_banner = 1
+              new-page
+           end-if
+           do Print_Banner
+        end-if
+     else
+        do Print_New_Line
+        print $_break2Title      (+1,{Column1}) background = ('white')
+     end-if
+
+     do Process_Level3($break1, $break2, $break3,
+                     $SetId, $key1, &GP_GENRPT_BREAK2)
+
+     if $_PageBreakLevel2 = 'Y' or $_PageBreakLevel4 = 'Y'
+        new-page
+        do Print_Banner
+     end-if
+
+     do Print_Total_Break2($break1, $break2, $break3,
+                         $SetId, $key1, &GP_GENRPT_BREAK2)
+
+     let $_break2Title = ''
+
+FROM PS_GP_GENRPT_G_TMP
+WHERE JOBINSTANCE = #_jobinstance
+  AND SETID=$SetId
+  AND GP_GENRPT_BREAK1=$key1
+GROUP BY GP_GENRPT_BREAK2
+ORDER BY GP_GENRPT_BREAK2
+
+end-SELECT
+
+  else
+     let $_break2Title = ''
+     do Process_Level3($break1, $break2, $break3, $SetId, $key1, '')
+  end-if
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Process_Level3                                          *
+!                                                                      *
+! Description: Retrieves Data (break3)                                 *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Process_Level3($break1, $break2, $break3, $SetId, $key1, $key2)
+
+ #ifdef debugw
+     show 'procedure Process_Level3'
+ #end-if
+
+   if $break3 <> ''
+
+begin-SELECT ON-ERROR=SQL-Error
+GP_GENRPT_BREAK3
+
+     clear-array name=Break3Total
+
+     do Get_Break_Label($SetId, $_BreakLevel3, 2, &GP_GENRPT_BREAK3, $name)
+     let $_break3Title = $break3 || ' : ' || $name
+
+     if $_PageBreakLevel3 = 'Y' or $_PageBreakLevel4 = 'Y'
+        if #_banner = 1
+           new-page
+        end-if
+        do Print_Banner
+     else
+        do Print_New_Line
+        print $_break3Title      (+1,{Column1}) background = ('white')
+     end-if
+
+     if #_banner <> 1
+        do Print_Banner
+     end-if
+
+   do Process_Payee($break1, $break2, $break3,
+                    $SetId, $key1, $key2, &GP_GENRPT_BREAK3)
+
+   if $_PageBreakLevel3 = 'Y' or $_PageBreakLevel4 = 'Y'
+      new-page
+      do Print_Banner
+   end-if
+
+   do Print_Total_Break3($break1, $break2, $break3,
+                         $SetId, $key1, $key2, &GP_GENRPT_BREAK3)
+
+   let $_break3Title = ''
+
+FROM PS_GP_GENRPT_G_TMP
+WHERE JOBINSTANCE = #_jobinstance
+  AND SETID=$SetId
+  AND GP_GENRPT_BREAK1=$key1
+  AND GP_GENRPT_BREAK2=$key2
+GROUP BY GP_GENRPT_BREAK3
+ORDER BY GP_GENRPT_BREAK3
+
+end-SELECT
+
+  else
+     let $_break3Title = ''
+     if #_banner <> 1
+        do Print_Banner
+     end-if
+     do Process_Payee($break1, $break2, $break3, $SetId, $key1, $key2, '')
+  end-if
+
+end-procedure
+
+!***********************************************************************
+! Function:    Process_Payee                                           *
+!                                                                      *
+! Description: Retrieves Employee                                      *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Process_Payee($break1, $break2, $break3,
+                              $SetId, $key1, $key2, $key3)
+
+ #ifdef debugw
+     show 'procedure Process_Payee'
+  #end-if
+
+   let #SetIdInd = 0
+   let #key1Ind = 0
+   let #key2Ind = 0
+   let #key3Ind = 0
+
+   if $SetId <> ''
+      let #SetIdInd = 1
+   end-if
+
+   if $key1 <> ''
+      let #key1Ind = 1
+   end-if
+
+   if $key2 <> ''
+      let #key2Ind = 1
+   end-if
+
+   if $key3 <> ''
+      let #key3Ind = 1
+   end-if
+
+   if $_SortOption = '10'
+      let $SortParm = 'ORDER BY C.EMPLID, C.EMPL_RCD'
+   else
+       let $SortParm = 'ORDER BY D.NAME_PSFORMAT, C.EMPLID, C.EMPL_RCD'
+   end-if
+
+begin-SELECT DISTINCT ON-ERROR=SQL-Error
+C.EMPLID
+C.EMPL_RCD
+D.NAME_PSFORMAT
+
+#ifdef debugw
+  show 'Emplid ' &C.EMPLID
+  show 'EmplRcd ' &C.EMPL_RCD
+#end-if
+
+    if $_AllPayees = 'Y'
+       if $_PageBreakLevel4 = 'Y' and #_LINE <> 1
+          new-page
+          do Print_Banner
+       end-if
+
+       let $title = substr(rtrim(&C.EMPLID, ' ') || ' ' ||
+                               rtrim(to_char(&C.EMPL_RCD), ' ') ||
+                    ' ' || &D.NAME_PSFORMAT, 1, 29)
+       if $_RptType = '20'
+          do Print_New_Line
+          print $title      (+1,{Column1})
+       end-if
+
+    end-if
+
+    if $_RptType = '10'
+       do Process_Payee_Data1($SetId, $key1, $key2, $key3, &C.EMPLID, &C.EMPL_RCD, $title)
+    end-if
+
+    if $_RptType = '20' and $_AllPayees = 'Y'
+       do Process_Payee_Data2($SetId, $key1, $key2, $key3, &C.EMPLID, &C.EMPL_RCD)
+    end-if
+
+    if $_RptType = '30'
+       do Process_Payee_Data3($SetId, $key1, $key2, $key3, &C.EMPLID, &C.EMPL_RCD, $title)
+    end-if
+
+FROM PS_GP_GENRPT_G_TMP C, PS_PERSON_NAME D
+WHERE C.JOBINSTANCE = #_jobinstance
+  AND C.EMPLID = D.EMPLID
+!  AND D.EFFDT = (SELECT MAX(D2.EFFDT) FROM PS_PERSON_NAME D2
+!                 WHERE D2.EMPLID = D.EMPLID
+!                   AND D2.EFFDT <=$_AsofToday)
+  AND (C.SETID = $SetId OR #SetIdInd = 0)
+  AND (C.GP_GENRPT_BREAK1 = $key1 OR #key1Ind = 0)
+  AND (C.GP_GENRPT_BREAK2 = $key2 OR #key2Ind = 0)
+  AND (C.GP_GENRPT_BREAK3 = $key3 OR #key3Ind = 0)
+[$SortParm]
+
+end-SELECT
+
+end-procedure
+
+
+
+!***********************************************************************
+! Function:    Process_Payee_Data1                                     *
+!                                                                      *
+! Description: Retrieves Employee Data (report type 1)                 *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Process_Payee_Data1($SetId, $key1, $key2, $key3, $EmplId, #EmplRcd, $title)
+
+ #ifdef debugw
+     show 'procedure Process_Payee_Data1'
+ #end-if
+
+   do Get_Amounts($SetId, $key1, $key2, $key3, $EmplId, #EmplRcd, 0)
+
+   let #flag = 0
+   let #j = 1
+
+   while #j <= #_Columns
+      if Amounts.Value(#j) <> 0
+         let #flag = 1
+      end-if
+      let #j = #j + 1
+   end-while
+
+   if (#flag = 1 or $_LineZero = 'N') and $_AllPayees = 'Y'
+      do Print_New_Line
+      print $title      (+1,{Column1})
+      let #j = 1
+      let #c = {Column2}
+
+      while #j <= #_Columns
+        let #Amount = Amounts.Value(#j)
+        do print_amount (#Amount, #c)
+        let #c = #c + {ColumnWidth}
+        let #j = #j + 1
+      end-while
+
+   end-if
+
+   let #i = 1
+   while #i <= #_Columns
+      let Break1Total.Value(#i) = Break1Total.Value(#i) + Amounts.Value(#i)
+      let Break2Total.Value(#i) = Break2Total.Value(#i) + Amounts.Value(#i)
+      let Break3Total.Value(#i) = Break3Total.Value(#i) + Amounts.Value(#i)
+      let GrandTotal.Value(#i)  = GrandTotal.Value(#i) + Amounts.Value(#i)
+      let #i = #i + 1
+   end-while
+
+end-procedure
+
+!***********************************************************************
+! Function:    Process_Payee_Data2                                     *
+!                                                                      *
+! Description: Retrieves Employee Data (report type 2)                 *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Process_Payee_Data2($SetId, $key1, $key2, $key3, $EmplId, #EmplRcd)
+
+ #ifdef debugw
+     show 'procedure Process_Payee_Data2'
+ #end-if
+
+   let #i = 1
+   while #i <= #_Rows
+      do Get_Amounts($SetId, $key1, $key2, $key3, $EmplId, #EmplRcd, #i)
+
+
+      let #flag = 0
+      let #j = 1
+      while #j <= #_Columns
+
+
+        if Amounts.Value(#j) <> 0
+            let #flag = 1
+                end-if
+        let #j = #j + 1
+      end-while
+
+      if #flag = 1 or $_LineZero = 'N'
+         let $title = '   ' || RowDef.Title1(#i) || ' ' || RowDef.Title2(#i)
+         do Print_New_Line
+         print $title   (+1,{Column1})
+         let #j = 1
+         let #c = {Column2}
+         while #j <= #_Columns
+           if $_AllPayees = 'Y'
+              let #Amount = Amounts.Value(#j)
+              do print_amount (#Amount, #c)
+           end-if
+           let #c = #c + {ColumnWidth}
+           let #j = #j + 1
+         end-while
+      end-if
+
+      let #i = #i + 1
+   end-while
+
+   do Print_New_Line
+   print ' ' (+1)
+
+end-procedure
+
+!***********************************************************************
+! Function:    Process_Payee_Data3                                     *
+!                                                                      *
+! Description: Retrieves Employee Data (report type 3)                 *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Process_Payee_Data3($SetId, $key1, $key2, $key3, $EmplId, #EmplRcd, $title)
+
+#ifdef debugw
+show 'Process_Payee_data3'
+show '$Setid' $Setid
+show '$key1' $key1
+show '$key2' $key2
+show '$key3' $key3
+#end-if
+
+   do Get_Amounts3($SetId, $key1, $key2, $key3, $EmplId, #EmplRcd, $title)
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Get_Amounts                                             *
+!                                                                      *
+! Description: Retrieves Amount for an Employee                        *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_Amounts($SetId, $key1, $key2, $key3,
+                            $EmplId, #EmplRcd, #row_num)
+
+ #ifdef debugw
+     show 'procedure Get_Amounts'
+  #end-if
+
+   let #i = 1
+   while #i <= #_Columns
+      let Amounts.Value(#i) = 0
+      let Amounts.Title(#i) = ''
+      let #i = #i + 1
+   end-while
+
+   let #SetIdInd = 0
+   let #key1Ind = 0
+   let #key2Ind = 0
+   let #key3Ind = 0
+   let #EmplIdInd = 0
+
+   if $SetId <> ''
+      let #SetIdInd = 1
+   end-if
+
+   if $key1 <> ''
+      let #key1Ind = 1
+   end-if
+
+   if $key2 <> ''
+      let #key2Ind = 1
+   end-if
+
+   if $key3 <> ''
+      let #key3Ind = 1
+   end-if
+
+   if $EmplId <> ''
+      let #EmplIdInd = 1
+   end-if
+
+!
+! retrieve run control begin and end dates
+!
+
+begin-SELECT on-error=SQL-Error
+
+{DATETIMEOUT-PREFIX}A.BGN_DT{DATETIMEOUT-SUFFIX} &BgnDate
+{DATETIMEOUT-PREFIX}A.END_DT{DATETIMEOUT-SUFFIX} &EndDate
+
+   let $_STARTDT = &BgnDate
+   let $_ENDDT = &EndDate
+
+FROM PS_GP_GENRPT_RC A
+
+WHERE OPRID = $prcs_oprid
+  AND RUN_CNTL_ID = $prcs_run_cntl_id
+
+end-SELECT
+
+!
+! begin processing amounts
+!
+
+begin-SELECT ON-ERROR=SQL-Error
+
+CURRENCY_CD                                          &CURRENCY_CD
+CUR_RT_TYPE                                          &CUR_RT_TYPE
+{DATETIMEOUT-PREFIX}PRD_BGN_DT{DATETIMEOUT-SUFFIX}   &BGN_DT
+{DATETIMEOUT-PREFIX}PRD_END_DT{DATETIMEOUT-SUFFIX}   &END_DT
+{DATETIMEOUT-PREFIX}PYMT_DT{DATETIMEOUT-SUFFIX}      &PYMT_DT
+{DATEOUT-PREFIX}PRD_BGN_DT{DATEOUT-SUFFIX}           &BGN_DTE
+{DATEOUT-PREFIX}PRD_END_DT{DATEOUT-SUFFIX}           &END_DTE
+{DATEOUT-PREFIX}PYMT_DT{DATEOUT-SUFFIX}              &PYMT_DTE
+GP_ASOF_DT_EXG_RT                                    &ASOF_DT
+EMPLID                                               &EMPLID
+EMPL_RCD                                             &EMPL_RCD
+CAL_RUN_ID                                           &CAL_RUN_ID
+GP_PAYGROUP                                          &GP_PAYGROUP
+CAL_ID                                               &CAL_ID
+RSLT_SEG_NUM                                         &RSLT_SEG_NUM
+
+   let #i = 1
+   while #i <= #_Columns
+      let Amounts.ValueConverted(#i) = 0
+      let Amounts.ValueNotConverted(#i) = 0
+      let #i = #i + 1
+   end-while
+
+   if $_RptType = '10'
+      do Get_AmountsDetail1(&EMPLID, &EMPL_RCD, &CAL_RUN_ID, &GP_PAYGROUP, &CAL_ID, &RSLT_SEG_NUM)
+   end-if
+
+
+   if $_RptType = '20'
+
+        let #row_num1 = RowDef.RowNbr(#row_num)
+        do Get_AmountsDetail2(#row_num1, &EMPLID, &EMPL_RCD, &CAL_RUN_ID, &GP_PAYGROUP, &CAL_ID, &RSLT_SEG_NUM,
+                                    &BGN_DT, &END_DT)
+
+   end-if
+
+   let $dt = &END_DTE
+
+   evaluate &ASOF_DT
+      when = 'B'
+         let $dt = &BGN_DTE
+         break
+      when = 'E'
+         let $dt = &END_DTE
+         break
+      when = 'P'
+         let $dt = &PYMT_DTE
+         break
+   end-evaluate
+
+   let #i = 1
+   while #i <= #_Columns
+      let #ValueConverted = Amounts.ValueConverted(#i)
+      do ConvertCurrency(#ValueConverted, &CURRENCY_CD, $_Currency,
+                             &CUR_RT_TYPE, $dt, #Converted, 'W')
+      let Amounts.Value(#i) = Amounts.Value(#i) + #Converted +
+                                  Amounts.ValueNotConverted(#i)
+      let #i = #i + 1
+   end-while
+
+FROM PS_GP_GENRPT_G_TMP
+ WHERE JOBINSTANCE = #_jobinstance
+  AND (SETID = $SetId OR #SetIdInd = 0)
+  AND (GP_GENRPT_BREAK1 = $key1 OR #key1Ind = 0)
+  AND (GP_GENRPT_BREAK2 = $key2 OR #key2Ind = 0)
+  AND (GP_GENRPT_BREAK3 = $key3 OR #key3Ind = 0)
+  AND (#EmplIdInd = 0 OR (EMPLID = $EmplId AND EMPL_RCD = #EmplRcd))
+  AND PRD_BGN_DT >= {DATETIMEIN-PREFIX}$_STARTDT{DATETIMEIN-SUFFIX}
+  AND PRD_END_DT <= {DATETIMEIN-PREFIX}$_ENDDT{DATETIMEIN-SUFFIX}
+GROUP BY CURRENCY_CD, CUR_RT_TYPE
+        ,PRD_BGN_DT, PRD_END_DT, PYMT_DT,GP_ASOF_DT_EXG_RT
+                ,EMPLID,EMPL_RCD, CAL_RUN_ID, GP_PAYGROUP, CAL_ID, RSLT_SEG_NUM
+
+end-SELECT
+
+end-procedure
+
+
+
+!***********************************************************************
+! Function:    Get_Amounts3                                            *
+!                                                                      *
+! Description: Retrieves Amount for an Employee (reports type 3)       *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_Amounts3($SetId, $key1, $key2, $key3,
+                             $EmplId, #EmplRcd, $title)
+
+
+ #ifdef debugw
+     show 'procedure Get_Amounts3'
+  #end-if
+
+   let #SetIdInd = 0
+   let #key1Ind = 0
+   let #key2Ind = 0
+   let #key3Ind = 0
+
+   if $SetId <> ''
+      let #SetIdInd = 1
+   end-if
+
+   if $key1 <> ''
+      let #key1Ind = 1
+   end-if
+
+   if $key2 <> ''
+      let #key2Ind = 1
+   end-if
+
+   if $key3 <> ''
+      let #key3Ind = 1
+   end-if
+
+begin-SELECT ON-ERROR=SQL-Error
+E.CURRENCY_CD                                          &CURRENCY_CD
+E.CUR_RT_TYPE                                          &CUR_RT_TYPE
+{DATEOUT-PREFIX}E.PRD_BGN_DT{DATEOUT-SUFFIX}           &BGN_DT
+{DATEOUT-PREFIX}E.PRD_END_DT{DATEOUT-SUFFIX}           &END_DT
+{DATEOUT-PREFIX}E.PYMT_DT{DATEOUT-SUFFIX}              &PYMT_DT
+E.GP_ASOF_DT_EXG_RT                                    &ASOF_DT
+E.CAL_RUN_ID                                           &CAL_RUN_ID
+E.GP_PAYGROUP                                          &GP_PAYGROUP
+E.CAL_ID                                               &CAL_ID
+E.RSLT_SEG_NUM                                         &RSLT_SEG_NUM
+E.LAST_SEG_IND                                         &LAST_SEG_IND
+
+
+
+   do Get_AmountsDetail3($EmplId, #EmplRcd, &CAL_RUN_ID, &GP_PAYGROUP, &CAL_ID, &RSLT_SEG_NUM, &LAST_SEG_IND,
+                         $title, &ASOF_DT, &BGN_DT, &END_DT, &PYMT_DT, &CURRENCY_CD, &CUR_RT_TYPE)
+
+
+FROM PS_GP_GENRPT_G_TMP E
+WHERE E.JOBINSTANCE = #_jobinstance
+  AND (E.SETID = $SetId OR #SetIdInd = 0)
+  AND (E.GP_GENRPT_BREAK1 = $key1 OR #key1Ind = 0)
+  AND (E.GP_GENRPT_BREAK2 = $key2 OR #key2Ind = 0)
+  AND (E.GP_GENRPT_BREAK3 = $key3 OR #key3Ind = 0)
+  AND E.EMPLID = $EmplId
+  AND E.EMPL_RCD = #EmplRcd
+GROUP BY E.CURRENCY_CD, E.CUR_RT_TYPE, E.PRD_BGN_DT, E.PRD_END_DT, E.PYMT_DT, E.GP_ASOF_DT_EXG_RT,
+         E.CAL_RUN_ID, E.GP_PAYGROUP, E.CAL_ID, E.RSLT_SEG_NUM, E.LAST_SEG_IND
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    GetLabelColumn                                          *
+!                                                                      *
+! Description: Retrieves the label of a column from its                *
+!              associated PIN                                          *
+!                                                                      *
+!***********************************************************************
+
+!begin-procedure GetLabelColumn(#Column, #Pin, :$Title)
+
+begin-procedure GetLabelColumn(#Column, :$Title)
+
+ #ifdef debugw
+     show 'procedure GetLabelColumn'
+  #end-if
+
+! creation of #row_number for db2/unix
+
+   let #row_number = #Column
+
+begin-SELECT ON-ERROR=SQL-Error
+
+GP_GENRPT_LABEL    &LABEL
+
+   let $Title = &LABEL
+
+FROM PS_GP_GENRPT_PIN
+WHERE GP_GENRPT_ID = $_GENRPT_ID
+  AND GP_GENRPT_ROW_NUM = #row_number
+  AND PIN_NUM = #_Acum_grp_list
+
+!  AND PIN_NUM = #Pin
+
+end-SELECT
+
+!
+! Related language table
+!
+
+! creation of #row_number for db2/unix
+
+   let #row_number = #Column
+
+begin-SELECT ON-ERROR=SQL-Error
+
+GP_GENRPT_LABEL  &LABEL2
+
+   let $Title = &LABEL2
+
+FROM PS_GP_RPTPIN_LNG
+WHERE GP_GENRPT_ID = $_GENRPT_ID
+  AND LANGUAGE_CD = $_language_cd
+  AND GP_GENRPT_ROW_NUM = #row_number
+  AND PIN_NUM = #_Acum_grp_list
+!  AND PIN_NUM = #Pin
+
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    DispatchResult                                          *
+!                                                                      *
+! Description: Dispatchs the results following the report type         *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure DispatchResult(#Pin, $SubColumn, #Converted, #NotConverted, $BeginDt, $EndDt)
+
+
+ #ifdef debugw
+     show 'procedure DispatchResult'
+  #end-if
+   if $_RptType = '10' or $_RptType = '30'
+      let #i = 1
+      let #j = 1
+
+      while #i < 999
+      let #j = 1
+         if Elements.PIN(#i) = #Pin
+            while #j <= #_Columns
+               if Elements.RowColumn(#i) = ColumnDef.RowNbr(#j)
+                  let $Sub = Elements.Sub(#i)
+
+                  if ColumnDef.UserKey(#j) = ''
+
+                     if $Sub = '10'
+                        let Amounts.ValueConverted(#j) = Amounts.ValueConverted(#j) + #Converted
+                        let Amounts.ValueNotConverted(#j) = Amounts.ValueNotConverted(#j) + #NotConverted
+                     else
+                        if $Sub = '20'
+                           let Amounts.ValueConverted(#j) = Amounts.ValueConverted(#j) - #Converted
+                           let Amounts.ValueNotConverted(#j) = Amounts.ValueNotConverted(#j) - #NotConverted
+                        else
+                           let Amounts.Value(#j) = 0
+                           let Amounts.ValueConverted(#j) = #Converted
+                           let Amounts.ValueNotConverted(#j) = #NotConverted
+                        end-if
+                     end-if
+                   end-if
+                 end-if
+                 let #j = #j + 1
+             end-while
+
+         else
+            if Elements.PIN(#i) = 0
+               let #i = 999
+            end-if
+         end-if
+         let #i = #i + 1
+      end-while
+
+   else
+      let #i = 1
+
+      let $Sub = $SubColumn
+      while #i <= #_Columns
+
+         if $BeginDt >= ColumnDef.FromDate(#i) and
+            $EndDt <= ColumnDef.ToDate(#i)
+            let #Column = #i
+
+            if $Sub = '10'
+               let Amounts.ValueConverted(#Column) = Amounts.ValueConverted(#Column) + #Converted
+               let Amounts.ValueNotConverted(#Column) = Amounts.ValueNotConverted(#Column) + #NotConverted
+            else
+               if $Sub = '20'
+                  let Amounts.ValueConverted(#Column) = Amounts.ValueConverted(#Column) - #Converted
+                  let Amounts.ValueNotConverted(#Column) =  Amounts.ValueNotConverted(#Column) - #NotConverted
+               else
+                  let Amounts.Value(#Column) = 0
+                  let Amounts.ValueConverted(#Column) = #Converted
+                  let Amounts.ValueNotConverted(#Column) = #NotConverted
+               end-if
+            end-if
+          end-if
+          let #i = #i + 1
+      end-while
+   end-if
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    DispatchTitle                                           *
+!                                                                      *
+! Description: Retrieve a label in a column (report type 3)            *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure DispatchTitle(#Pin)
+
+ #ifdef debugw
+     show 'procedure DispatchTitle'
+  #end-if
+
+   let #i = 1
+   let #j = 1
+   let #_Acum_grp_list=#Pin
+   while #j <= #_columns
+         if ColumnDef.UserKey(#j) = '' and ColumnDef.Label(#j) = 'Y'
+            let #rownum = ColumnDef.RowNbr(#j)
+            do GetLabelColumn(#rownum, $Title)
+            let Amounts.Title(#j) = $Title
+         end-if
+
+         let #j = #j + 1
+
+     end-while
+
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Get_AmountsDetail1                                      *
+!                                                                      *
+! Description: Retrieves Amount for an Employee (Report type 1)        *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_AmountsDetail1($EMPLID, #EMPL_RCD, $CAL_RUN_ID,
+                                   $GP_PAYGROUP, $CAL_ID, #RSLT_SEG_NUM)
+
+ #ifdef debugw
+     show 'procedure Get_AmountsDetail1'
+  #end-if
+!
+! Earnings and deductions
+!
+
+begin-SELECT ON-ERROR=SQL-Error
+
+A.PIN_NUM               &PIN_ED1
+SUM(A.CALC_RSLT_VAL)    &RESULT_ED1
+D.FLD_FMT               &FLD_FMT
+
+!  monetary format
+   if &FLD_FMT = '3'
+      do DispatchResult(&PIN_ED1, '', &RESULT_ED1, 0, '', '')
+   end-if
+
+!  decimal format
+   if &FLD_FMT = '4'
+      do DispatchResult(&PIN_ED1, '', 0, &RESULT_ED1, '', '')
+   end-if
+
+FROM PS_GP_GENRPT_D_TMP A, PS_GP_PIN D
+WHERE A.JOBINSTANCE = #_jobinstance
+  AND A.EMPLID = $EMPLID
+  AND A.EMPL_RCD = #EMPL_RCD
+  AND A.CAL_RUN_ID = $CAL_RUN_ID
+  AND A.GP_PAYGROUP = $GP_PAYGROUP
+  AND A.CAL_ID = $CAL_ID
+  AND A.RSLT_SEG_NUM = #RSLT_SEG_NUM
+  AND A.RSLT_VER_NUM = (SELECT MAX(A2.RSLT_VER_NUM)
+                        FROM PS_GP_GENRPT_D_TMP A2
+                        WHERE A2.JOBINSTANCE = #_jobinstance
+                          AND A2.EMPLID = A.EMPLID
+                          AND A2.EMPL_RCD = A.EMPL_RCD
+                          AND A2.GP_PAYGROUP = A.GP_PAYGROUP
+                          AND A2.CAL_ID = A.CAL_ID
+                          AND A2.RSLT_SEG_NUM = A.RSLT_SEG_NUM)
+  AND A.RSLT_REV_NUM = (SELECT MAX(A3.RSLT_REV_NUM)
+                        FROM PS_GP_GENRPT_D_TMP A3
+                        WHERE A3.JOBINSTANCE = #_jobinstance
+                          AND A3.EMPLID = A.EMPLID
+                          AND A3.EMPL_RCD = A.EMPL_RCD
+                          AND A3.GP_PAYGROUP = A.GP_PAYGROUP
+                          AND A3.CAL_ID = A.CAL_ID
+                          AND A3.RSLT_SEG_NUM = A.RSLT_SEG_NUM)
+  AND A.PIN_NUM = D.PIN_NUM
+ GROUP BY A.PIN_NUM,D.FLD_FMT
+ end-SELECT
+
+!
+! Components
+!
+
+begin-SELECT ON-ERROR=SQL-Error
+
+C.PIN_NUM             &PIN_COMP
+C.AUTO_ASSIGNED_TYPE  &TYPE
+SUM(B.RSLT_ADD_ARR)        &RESULT_AR
+SUM(B.BASE_RSLT_VAL)      &RESULT_BS
+SUM(B.RSLT_NOT_TKN)        &RESULT_NT
+SUM(B.RSLT_PAYBK)          &RESULT_PB
+SUM(B.PCT_RSLT_VAL)        &RESULT_PC
+SUM(B.RATE_RSLT_VAL)       &RESULT_RT
+SUM(B.UNIT_RSLT_VAL)       &RESULT_UN
+
+   evaluate &TYPE
+      when = 'AR'
+           do DispatchResult(&PIN_COMP, '', &RESULT_AR, 0, '', '')
+           break
+      when = 'BS'
+           do DispatchResult(&PIN_COMP, '', &RESULT_BS, 0, '', '')
+           break
+      when = 'NT'
+           do DispatchResult(&PIN_COMP, '', &RESULT_NT, 0, '', '')
+           break
+      when = 'PB'
+           do DispatchResult(&PIN_COMP, '', &RESULT_PB, 0, '', '')
+           break
+      when = 'PC'
+           do DispatchResult(&PIN_COMP, '', 0, &RESULT_PC, '', '')
+           break
+      when = 'RT'
+           do DispatchResult(&PIN_COMP, '', &RESULT_RT, 0, '', '')
+           break
+      when = 'UN'
+           do DispatchResult(&PIN_COMP, '', 0, &RESULT_UN, '', '')
+           break
+   end-evaluate
+
+FROM PS_GP_GENRPT_D_TMP B, PS_GP_PIN C
+WHERE B.JOBINSTANCE = #_jobinstance
+  AND B.EMPLID = $EMPLID
+  AND B.EMPL_RCD = #EMPL_RCD
+  AND B.CAL_RUN_ID = $CAL_RUN_ID
+  AND B.GP_PAYGROUP = $GP_PAYGROUP
+  AND B.CAL_ID = $CAL_ID
+  AND B.RSLT_SEG_NUM = #RSLT_SEG_NUM
+  AND B.PIN_NUM = C.PIN_PARENT_NUM
+  AND B.RSLT_VER_NUM = (SELECT MAX(B2.RSLT_VER_NUM)
+                        FROM PS_GP_GENRPT_D_TMP B2
+                        WHERE B2.JOBINSTANCE = #_jobinstance
+                          AND B2.EMPLID = B.EMPLID
+                          AND B2.EMPL_RCD = B.EMPL_RCD
+                          AND B2.GP_PAYGROUP = B.GP_PAYGROUP
+                          AND B2.CAL_ID = B.CAL_ID
+                          AND B2.RSLT_SEG_NUM = B.RSLT_SEG_NUM)
+  AND B.RSLT_REV_NUM = (SELECT MAX(B3.RSLT_REV_NUM)
+                        FROM PS_GP_GENRPT_D_TMP B3
+                        WHERE B3.JOBINSTANCE = #_jobinstance
+                          AND B3.EMPLID = B.EMPLID
+                          AND B3.EMPL_RCD = B.EMPL_RCD
+                          AND B3.GP_PAYGROUP = B.GP_PAYGROUP
+                          AND B3.CAL_ID = B.CAL_ID
+                          AND B3.RSLT_SEG_NUM = B.RSLT_SEG_NUM)
+GROUP BY C.PIN_NUM,C.AUTO_ASSIGNED_TYPE
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Get_AmountsDetail2                                      *
+!                                                                      *
+! Description: Retrieves Amount for an Employee (Report type 2)        *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_AmountsDetail2(#row_num, $EMPLID, #EMPL_RCD, $CAL_RUN_ID,
+                                   $GP_PAYGROUP, $CAL_ID, #RSLT_SEG_NUM,
+                                   $BeginDt, $EndDt)
+
+ #ifdef debugw
+     show 'procedure Get_AmountsDetail2'
+  #end-if
+
+   let #row_number = #row_num
+
+!
+! Earnings and deductions
+!
+
+begin-SELECT ON-ERROR=SQL-Error
+
+A.PIN_NUM             &PIN_ED
+B.GP_GENRPT_SUB_PIN   &SUB_ED
+SUM(A.CALC_RSLT_VAL)       &RESULT_ED
+D.FLD_FMT             &FLD_FMT
+
+!  monetary format
+   if &FLD_FMT = '3'
+      do DispatchResult(&PIN_ED, &SUB_ED, &RESULT_ED, 0, $BeginDt, $EndDt)
+   end-if
+
+!  decimal format
+   if &FLD_FMT = '4'
+      do DispatchResult(&PIN_ED, &SUB_ED, 0, &RESULT_ED, $BeginDt, $EndDt)
+   end-if
+
+
+FROM PS_GP_GENRPT_D_TMP A, PS_GP_GENRPT_PIN B, PS_GP_PIN D
+WHERE A.JOBINSTANCE = #_jobinstance
+  AND A.PIN_NUM = B.PIN_NUM
+  AND A.EMPLID = $EMPLID
+  AND A.EMPL_RCD = #EMPL_RCD
+  AND A.CAL_RUN_ID = $CAL_RUN_ID
+  AND A.GP_PAYGROUP = $GP_PAYGROUP
+  AND A.CAL_ID = $CAL_ID
+  AND A.RSLT_SEG_NUM = #RSLT_SEG_NUM
+  AND B.GP_GENRPT_ID = $_GENRPT_ID
+  AND B.GP_GENRPT_ROW_NUM = #row_number
+  AND A.RSLT_VER_NUM = (SELECT MAX(A2.RSLT_VER_NUM)
+                        FROM PS_GP_GENRPT_D_TMP A2
+                        WHERE A2.JOBINSTANCE = #_jobinstance
+                          AND A2.EMPLID = A.EMPLID
+                          AND A2.EMPL_RCD = A.EMPL_RCD
+                          AND A2.GP_PAYGROUP = A.GP_PAYGROUP
+                          AND A2.CAL_ID = A.CAL_ID
+                          AND A2.RSLT_SEG_NUM = A.RSLT_SEG_NUM)
+  AND A.RSLT_REV_NUM = (SELECT MAX(A3.RSLT_REV_NUM)
+                         FROM PS_GP_GENRPT_D_TMP A3
+                         WHERE A3.JOBINSTANCE = #_jobinstance
+                           AND A3.EMPLID = A.EMPLID
+                           AND A3.EMPL_RCD = A.EMPL_RCD
+                           AND A3.GP_PAYGROUP = A.GP_PAYGROUP
+                           AND A3.CAL_ID = A.CAL_ID
+                           AND A3.RSLT_SEG_NUM = A.RSLT_SEG_NUM)
+  AND A.PIN_NUM = D.PIN_NUM
+GROUP BY A.PIN_NUM,B.GP_GENRPT_SUB_PIN,D.FLD_FMT
+end-SELECT
+
+
+begin-SELECT ON-ERROR=SQL-Error
+
+C.PIN_NUM             &PIN_COMP
+D.GP_GENRPT_SUB_PIN   &SUB_COMP
+C.AUTO_ASSIGNED_TYPE  &TYPE
+SUM(B.RSLT_ADD_ARR)        &RESULT_AR
+SUM(B.BASE_RSLT_VAL)       &RESULT_BS
+SUM(B.RSLT_NOT_TKN)        &RESULT_NT
+SUM(B.RSLT_PAYBK)          &RESULT_PB
+SUM(B.RATE_RSLT_VAL)       &RESULT_RT
+SUM(B.UNIT_RSLT_VAL)       &RESULT_UN
+SUM(B.PCT_RSLT_VAL)        &RESULT_PC
+
+
+     evaluate &TYPE
+        when = 'AR'
+           do DispatchResult(&PIN_COMP, &SUB_COMP, &RESULT_AR, 0,
+                                     $BeginDt, $EndDt)
+           break
+        when = 'BS'
+           do DispatchResult(&PIN_COMP, &SUB_COMP, &RESULT_BS, 0,
+                                     $BeginDt, $EndDt)
+           break
+        when = 'NT'
+           do DispatchResult(&PIN_COMP, &SUB_COMP, &RESULT_NT, 0,
+                                     $BeginDt, $EndDt)
+           break
+        when = 'PB'
+           do DispatchResult(&PIN_COMP, &SUB_COMP, &RESULT_PB, 0,
+                                     $BeginDt, $EndDt)
+           break
+        when = 'PC'
+           do DispatchResult(&PIN_COMP, &SUB_COMP, 0, &RESULT_PC,
+                                     $BeginDt, $EndDt)
+           break
+        when = 'RT'
+           do DispatchResult(&PIN_COMP, &SUB_COMP, &RESULT_RT, 0,
+                                     $BeginDt, $EndDt)
+           break
+        when = 'UN'
+           do DispatchResult(&PIN_COMP, &SUB_COMP, 0, &RESULT_UN,
+                                     $BeginDt, $EndDt)
+           break
+     end-evaluate
+
+FROM PS_GP_GENRPT_D_TMP B, PS_GP_PIN C, PS_GP_GENRPT_PIN D
+WHERE B.JOBINSTANCE = #_jobinstance
+  AND C.PIN_NUM = D.PIN_NUM
+  AND B.EMPLID = $EMPLID
+  AND B.EMPL_RCD = #EMPL_RCD
+  AND B.CAL_RUN_ID = $CAL_RUN_ID
+  AND B.GP_PAYGROUP = $GP_PAYGROUP
+  AND B.CAL_ID = $CAL_ID
+  AND B.RSLT_SEG_NUM = #RSLT_SEG_NUM
+  AND B.PIN_NUM = C.PIN_PARENT_NUM
+  AND D.GP_GENRPT_ID = $_GENRPT_ID
+  AND D.GP_GENRPT_ROW_NUM = #row_number
+  AND B.RSLT_VER_NUM = (SELECT MAX(B2.RSLT_VER_NUM)
+                        FROM PS_GP_GENRPT_D_TMP B2
+                        WHERE B2.JOBINSTANCE = #_jobinstance
+                          AND B2.EMPLID = B.EMPLID
+                          AND B2.EMPL_RCD = B.EMPL_RCD
+                          AND B2.CAL_RUN_ID = B.CAL_RUN_ID
+                          AND B2.GP_PAYGROUP = B.GP_PAYGROUP
+                          AND B2.CAL_ID = B.CAL_ID
+                          AND B2.RSLT_SEG_NUM = B.RSLT_SEG_NUM)
+  AND B.RSLT_REV_NUM =  (SELECT MAX(B3.RSLT_REV_NUM)
+                         FROM PS_GP_GENRPT_D_TMP B3
+                         WHERE B3.JOBINSTANCE = #_jobinstance
+                           AND B3.EMPLID = B.EMPLID
+                           AND B3.EMPL_RCD = B.EMPL_RCD
+                           AND B3.CAL_RUN_ID = B.CAL_RUN_ID
+                           AND B3.GP_PAYGROUP = B.GP_PAYGROUP
+                           AND B3.CAL_ID = B.CAL_ID
+                           AND B3.RSLT_SEG_NUM = B.RSLT_SEG_NUM)
+GROUP BY C.PIN_NUM,D.GP_GENRPT_SUB_PIN,C.AUTO_ASSIGNED_TYPE
+end-SELECT
+
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Get_AmountsDetail3                                      *
+!                                                                      *
+! Description: Retrieves Amount for an Employee (report type 3)        *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_AmountsDetail3($EMPLID, #EMPL_RCD, $CAL_RUN_ID,
+                                   $GP_PAYGROUP, $CAL_ID, #RSLT_SEG_NUM,
+                                   $LastSegInd,
+                                   $title,
+                                   $ASOF_DT, $BGN_DT, $END_DT, $PYMT_DT,
+                                   $CURRENCY_CD, $CUR_RT_TYPE)
+#ifdef debugw
+    show 'procedure Get_AmountsDetail3'
+   show 'Get AmountsDetail3'
+   show $EMPLID
+   show $CAL_RUN_ID
+   show $GP_PAYGROUP
+   show $CAL_ID
+   show #RSLT_SEG_NUM
+   show $LastSegInd
+#end-if
+
+   let $where = ''
+   let $acm_prd_optn = '1'
+
+   if $LastSegInd <> 'Y'
+      let $where = ' AND A.ACM_PRD_OPTN = 1'
+   end-if
+
+
+begin-SELECT ON-ERROR=SQL-Error
+[$_UserKey1_Column] &A.USER_KEY1=char
+[$_UserKey2_Column] &A.USER_KEY2=char
+[$_UserKey3_Column] &A.USER_KEY3=char
+[$_UserKey4_Column] &A.USER_KEY4=char
+
+
+   let $UserKey1 = ''
+   let $UserKey2 = ''
+   let $UserKey3 = ''
+   let $UserKey4 = ''
+
+   if #_UserKey1_Ind = 1
+      let $UserKey1 = &A.USER_KEY1
+   end-if
+   if #_UserKey2_Ind = 1
+      let $UserKey2 = &A.USER_KEY2
+   end-if
+   if #_UserKey3_Ind = 1
+      let $UserKey3 = &A.USER_KEY3
+   end-if
+   if #_UserKey4_Ind = 1
+      let $UserKey4 = &A.USER_KEY4
+   end-if
+
+   do Get_AmountsDetail3_2($EMPLID, #EMPL_RCD, $CAL_RUN_ID,
+                           $GP_PAYGROUP, $CAL_ID, #RSLT_SEG_NUM,
+                           $LastSegInd,
+                           $UserKey1, $UserKey2, $UserKey3, $UserKey4)
+
+   let $dt = $END_DT
+
+   evaluate $ASOF_DT
+      when = 'B'
+         let $dt = $BGN_DT
+         break
+      when = 'E'
+         let $dt = $END_DT
+         break
+      when = 'P'
+         let $dt = $PYMT_DT
+         break
+   end-evaluate
+
+   let #i = 1
+   while #i <= #_Columns
+      let #ValueConverted = Amounts.ValueConverted(#i)
+      do ConvertCurrency(#ValueConverted, $CURRENCY_CD, $_Currency,
+                             $CUR_RT_TYPE, $dt, #Converted, 'W')
+      let Amounts.Value(#i) = Amounts.Value(#i) + #Converted +
+                                 Amounts.ValueNotConverted(#i)
+       let #i = #i + 1
+   end-while
+
+   let #i = 1
+   while #i <= #_Columns
+      let GrandTotal.Value(#i)  = GrandTotal.Value(#i) + Amounts.Value(#i)
+      let Break1Total.Value(#i) = Break1Total.Value(#i) + Amounts.Value(#i)
+      let Break2Total.Value(#i) = Break2Total.Value(#i) + Amounts.Value(#i)
+      let Break3Total.Value(#i) = Break3Total.Value(#i) + Amounts.Value(#i)
+      let #i = #i + 1
+   end-while
+
+!
+! determine if row is to be supressed if column value = 0
+!
+
+   let #print_line = 0
+   let #j = 1
+   while #j <= #_Columns
+        let $SupRow = ColumnDef.SupRow(#j)
+        if Amounts.Value(#j) = 0
+        and $SupRow = 'Y'
+            let #print_line = 1
+        end-if
+        let #j = #j + 1
+   end-while
+
+   if #print_line = 0
+      do Print_New_Line
+      print $title      (+1,{Column1})
+      let #i = 1
+      let #c = {Column2}
+      while #i <= #_Columns
+         if $_AllPayees = 'Y'
+            let #Amount = Amounts.Value(#i)
+            let $Key = Amounts.Title(#i)
+            let $Label = ColumnDef.Label(#i)
+            let $CalInd = ColumnDef.CalInd(#i)
+            let $UserKey = ColumnDef.UserKey(#i)
+            if ($Label = 'Y' or $UserKey <> '' or $CalInd = 'Y')
+               if $Key <> ''
+                   print $Key        (,#c)
+               end-if
+            else
+                do print_amount(#Amount, #c)
+            end-if
+        end-if
+
+        let #c = #c + {ColumnWidth}
+        let #i = #i + 1
+      end-while
+   end-if
+
+FROM PS_GP_RSLT_ACUM A, PS_GP_GENRPT_PIN B
+WHERE A.PIN_NUM = B.PIN_NUM
+  AND A.EMPLID = $EMPLID
+  AND A.EMPL_RCD = #EMPL_RCD
+  AND A.CAL_RUN_ID = $CAL_RUN_ID
+  AND A.GP_PAYGROUP = $GP_PAYGROUP
+  AND A.CAL_ID = $CAL_ID
+  AND A.RSLT_SEG_NUM = #RSLT_SEG_NUM
+  [$where]
+  AND B.GP_GENRPT_ID = $_GENRPT_ID
+GROUP BY [$_GROUP_BY_USER_KEY]
+ORDER BY [$_GROUP_BY_USER_KEY]
+
+end-SELECT
+
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Get_AmountsDetail3_2                                    *
+!                                                                      *
+! Description: Retrieves Amount for an Employee and for user keys      *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_AmountsDetail3_2($EMPLID, #EMPL_RCD, $CAL_RUN_ID,
+                                     $GP_PAYGROUP, $CAL_ID, #RSLT_SEG_NUM,
+                                     $LastSegInd,
+                                     $UserKey1, $UserKey2, $UserKey3, $UserKey4)
+ #ifdef debugw
+     show 'procedure Get_AmountsDetail3_2'
+  #end-if
+
+   let #i = 1
+   while #i <= #_Columns
+      let Amounts.Value(#i) = 0
+      let Amounts.ValueConverted(#i) = 0
+      let Amounts.ValueNotConverted(#i) = 0
+      let Amounts.Title(#i) = ''
+
+      if ColumnDef.UserKey(#i) = '1'
+         let Amounts.Title(#i) = $UserKey1
+      end-if
+      if ColumnDef.UserKey(#i) = '2'
+         let Amounts.Title(#i) = $UserKey2
+      end-if
+      if ColumnDef.UserKey(#i) = '3'
+         let Amounts.Title(#i) = $UserKey3
+      end-if
+      if ColumnDef.UserKey(#i) = '4'
+         let Amounts.Title(#i) = $UserKey4
+      end-if
+
+      if ColumnDef.CalInd(#i) = 'Y'
+         let Amounts.Title(#i) = $CAL_ID
+      end-if
+
+      let #i = #i + 1
+
+   end-while
+
+   let $where = ''
+   let $acm_prd_optn = '1'
+
+   if $LastSegInd <> 'Y'
+      let $where = ' AND A.ACM_PRD_OPTN = 1'
+   end-if
+
+begin-SELECT ON-ERROR=SQL-Error
+
+D.FLD_FMT             &FLD_FMT
+A.PIN_NUM             &PIN_PIN
+A.CALC_RSLT_VAL       &RESULT_PIN
+
+
+!  monetary accumulator
+   if &FLD_FMT = '3'
+      do DispatchResult(&PIN_PIN, '', &RESULT_PIN, 0, '', '')
+   end-if
+
+!  decimal accumulator
+   if &FLD_FMT = '4'
+      do DispatchResult(&PIN_PIN, '', 0, &RESULT_PIN, '', '')
+   end-if
+
+FROM PS_GP_RSLT_ACUM A, PS_GP_GENRPT_PIN B, PS_GP_GENRPT_ROW C, PS_GP_PIN D
+WHERE A.PIN_NUM = B.PIN_NUM
+  AND A.PIN_NUM = D.PIN_NUM
+  AND A.EMPLID = $EMPLID
+  AND A.EMPL_RCD = #EMPL_RCD
+  AND A.CAL_RUN_ID = $CAL_RUN_ID
+  AND A.GP_PAYGROUP = $GP_PAYGROUP
+  AND A.CAL_ID = $CAL_ID
+  AND A.RSLT_SEG_NUM = #RSLT_SEG_NUM
+  AND (#_UserKey1_Ind = 0 OR A.USER_KEY1 = $UserKey1)
+  AND (#_UserKey2_Ind = 0 OR A.USER_KEY2 = $UserKey2)
+  AND (#_UserKey3_Ind = 0 OR A.USER_KEY3 = $UserKey3)
+  AND (#_UserKey4_Ind = 0 OR A.USER_KEY4 = $UserKey4)
+  AND B.GP_GENRPT_ID = $_GENRPT_ID
+  AND C.GP_GENRPT_ID = $_GENRPT_ID
+  AND C.GP_GENRPT_ROW_NUM = B.GP_GENRPT_ROW_NUM
+  AND C.GP_GENRPT_LBL_IND = 'N'
+  AND C.GP_GENRPT_USER_KEY = ' '
+  [$where]
+  AND (A.SLICE_END_DT BETWEEN A.ACM_FROM_DT AND A.ACM_THRU_DT
+     OR A.SLICE_END_DT >= A.ACM_FROM_DT AND A.ACM_THRU_DT IS NULL)
+end-SELECT
+
+
+! addition of quote on ACM_PRD_OPTN on db2/unix
+
+!
+! Accumulator results for column titles
+!
+
+begin-SELECT ON-ERROR=SQL-Error
+
+A.PIN_NUM             &PIN_PIN_2
+
+   do DispatchTitle(&PIN_PIN_2)
+
+FROM PS_GP_RSLT_ACUM A, PS_GP_GENRPT_PIN B, PS_GP_GENRPT_ROW C
+WHERE A.PIN_NUM = B.PIN_NUM
+  AND A.EMPLID = $EMPLID
+  AND A.EMPL_RCD = #EMPL_RCD
+  AND A.CAL_RUN_ID = $CAL_RUN_ID
+  AND A.GP_PAYGROUP = $GP_PAYGROUP
+  AND A.CAL_ID = $CAL_ID
+  AND A.RSLT_SEG_NUM = #RSLT_SEG_NUM
+  AND (#_UserKey1_Ind = 0 OR A.USER_KEY1 = $UserKey1)
+  AND (#_UserKey2_Ind = 0 OR A.USER_KEY2 = $UserKey2)
+  AND (#_UserKey3_Ind = 0 OR A.USER_KEY3 = $UserKey3)
+  AND (#_UserKey4_Ind = 0 OR A.USER_KEY4 = $UserKey4)
+  AND B.GP_GENRPT_ID = $_GENRPT_ID
+  AND C.GP_GENRPT_ID = $_GENRPT_ID
+  AND C.GP_GENRPT_ROW_NUM = B.GP_GENRPT_ROW_NUM
+  AND C.GP_GENRPT_LBL_IND = 'Y'
+  AND C.GP_GENRPT_USER_KEY = ' '
+  AND A.CALC_RSLT_VAL <> 0
+  [$where]
+  AND (A.SLICE_END_DT BETWEEN A.ACM_FROM_DT AND A.ACM_THRU_DT
+     OR A.SLICE_END_DT >= A.ACM_FROM_DT AND A.ACM_THRU_DT IS NULL)
+
+end-SELECT
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Break-Total-Type2                                       *
+!                                                                      *
+! Description: Print break level total (report type 2)                 *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print_Total_Type2($SetId, $key1, $key2, $key3)
+
+  #ifdef debugw
+     show 'procedure Print_Total_Type2'
+  #end-if
+
+   alter-printer font=3 point-size=6
+
+   do Print_New_Line
+   let #i = 1
+   while #i <= #_Rows
+      do Get_Amounts($SetId, $key1, $key2, $key3, '', 0, #i)
+
+      let #flag = 0
+      let #j = 1
+      while #j <= #_Columns
+        if Amounts.Value(#j) <> 0
+           let #flag = 1
+        end-if
+        let #j = #j + 1
+      end-while
+
+      if #flag = 1 or $_LineZero = 'N'
+         do Print_New_Line
+         let $title = '   ' || RowDef.Title1(#i) || ' ' || RowDef.Title2(#i)
+         print $title   (+1,{Column1})
+         let #j = 1
+         let #c = {Column2}
+         while #j <= #_Columns
+            let #Amount = Amounts.Value(#j)
+            let $Total = RowDef.Total(#i)
+
+            if $Total = 'Y'
+               do print_amount (#Amount, #c)
+            end-if
+
+            let #c = #c + {ColumnWidth}
+            let #j = #j + 1
+         end-while
+      end-if
+
+      let #i = #i + 1
+
+   end-while
+
+   do Print_New_Line
+   print ' ' (+1)
+
+end-procedure
+
+
+
+!***********************************************************************
+! Function:    Print_Total_Break1                                      *
+!                                                                      *
+! Description: Prints the total for break 1                            *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print_Total_Break1($break1, $break2, $break3,
+                                   $SetId, $key1)
+ #ifdef debugw
+     show 'procedure Print_Total_Break1'
+  #end-if
+
+   do Print_New_Line
+   let $title = $_TOTAL_LBL || ' ' || $break1 || ' ' || $key1
+   print $title       (+1,{Column1})
+
+   if $_RptType = '10' or $_RptType = '30'
+      let #i = 1
+      let #c = {Column2}
+      while #i <= #_Columns
+             let $Key = ColumnDef.UserKey(#i)
+                 let $Total = ColumnDef.Total(#i)
+                 if $Key = '' and $Total = 'Y'
+            let #Amount = Break1Total.Value(#i)
+            do print_amount(#Amount, #c)
+            print $amount (,#c)
+         end-if
+         let #i = #i + 1
+         let #c = #c + {ColumnWidth}
+      end-while
+   else
+      do Print_Total_Type2($SetId, $key1, '', '')
+   end-if
+
+end-procedure
+
+!***********************************************************************
+! Function:    Print_Total_Break2                                      *
+!                                                                      *
+! Description: Prints the total for break 2                            *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print_Total_Break2($break1, $break2, $break3,
+                                   $SetId, $key1, $key2)
+ #ifdef debugw
+     show 'procedure Print_Total_Break2'
+  #end-if
+
+   do Print_New_Line
+   let $title = $_TOTAL_LBL || ' ' || $break2 || ' ' || $key2
+   print $title       (+1,{Column1})
+
+   if $_RptType = '10' or $_RptType = '30'
+      let #i = 1
+      let #c = {Column2}
+      while #i <= #_Columns
+          let $Key = ColumnDef.UserKey(#i)
+          let $Total = ColumnDef.Total(#i)
+          if $Key = '' and $Total = 'Y'
+             let #Amount = Break2Total.Value(#i)
+             do print_amount(#Amount, #c)
+          end-if
+          let #i = #i + 1
+          let #c = #c + {ColumnWidth}
+      end-while
+   else
+      do Print_Total_Type2($SetId, $key1, $key2, '')
+   end-if
+
+end-procedure
+
+!***********************************************************************
+! Function:    Print_Total_Break3                                      *
+!                                                                      *
+! Description: Prints the total for break 3                            *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print_Total_Break3($break1, $break2, $break3,
+                                   $SetId, $key1, $key2, $key3)
+
+ #ifdef debugw
+     show 'procedure Print_Total_Break3'
+  #end-if
+
+   do Print_New_Line
+   let $title = $_TOTAL_LBL || ' ' || $break3 || ' ' || $key3
+   print $title       (+1,{Column1})
+
+   if $_RptType = '10' OR $_RptType = '30'
+      let #i = 1
+      let #c = {Column2}
+      while #i <= #_Columns
+          let $Key = ColumnDef.UserKey(#i)
+          let $Total = ColumnDef.Total(#i)
+          if $Key = '' and $Total = 'Y'
+             let #Amount = Break3Total.Value(#i)
+             do print_amount(#Amount, #c)
+          end-if
+          let #i = #i + 1
+          let #c = #c + {ColumnWidth}
+      end-while
+   else
+      do Print_Total_Type2($SetId, $key1, $key2, $key3)
+   end-if
+
+end-procedure
+
+!***********************************************************************
+! Function:    Print_Grand_Total                                       *
+!                                                                      *
+! Description: Prints the Grand Total for the Report                   *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print_Grand_Total
+
+ #ifdef debugw
+     show 'procedure Print_Grand_Total'
+  #end-if
+
+   new-page
+   do Print_Banner
+
+   do Print_New_Line
+   let $title = $TOTAL_LBL
+   print $title       (+1,{Column1})
+
+   if $RptType = '10' OR $RptType = '30'
+      let #i = 1
+      let #c = {Column2}
+      while #i <= #Columns
+          let $Key = ColumnDef.UserKey(#i)
+          let $Total = ColumnDef.Total(#i)
+          if $Key = '' and $Total = 'Y'
+             let #Amount = GrandTotal.Value(#i)
+             do print_amount(#Amount, #c)
+          end-if
+          let #i = #i + 1
+          let #c = #c + {ColumnWidth}
+      end-while
+   else
+      do Print_Grand_Total_Type2
+   end-if
+
+end-procedure
+
+!***********************************************************************
+! Function:    Print-Grand-Total-Type2                                 *
+!                                                                      *
+! Description: Print break level total (report type 2)                 *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print_Grand_Total_Type2
+
+ #ifdef debugw
+     show 'procedure Print_Grand_Total_Type2'
+  #end-if
+
+   alter-printer font=3 point-size=6
+
+   do Print_New_Line
+   let #l = 1
+   while #l <= #Rows
+      do Get_Amounts('', '', '', '', '', 0, #l)
+
+      let #flag = 0
+      let #j = 1
+
+      while #j <= #Columns
+        if Amounts.Value(#j) <> 0
+           let #flag = 1
+        end-if
+        let #j = #j + 1
+      end-while
+
+      if #flag = 1 or $LineZero = 'N'
+         do Print_New_Line
+         let $title = '   ' || RowDef.Title1(#l) || ' ' || RowDef.Title2(#l)
+         print $title   (+1,{Column1})
+         let #j = 1
+         let #c = {Column2}
+
+         while #j <= #Columns
+            let #Amount = Amounts.Value(#j)
+            let $Total = RowDef.Total(#l)
+
+            if $Total = 'Y'
+               do print_amount (#Amount, #c)
+            end-if
+
+            let #c = #c + {ColumnWidth}
+            let #j = #j + 1
+         end-while
+      end-if
+
+      let #l = #l + 1
+
+   end-while
+
+   do Print_New_Line
+   print ' ' (+1)
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Print_Amount                                            *
+!                                                                      *
+! Description: Prints the Amount with the correct number of decimals   *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print_Amount (#inamt, #col)
+
+ #ifdef debugw
+     show 'procedure Print_Amount'
+  #end-if
+
+if #_decpos = 0
+   let $temp = '888888888888'
+else
+   let $temp = '888888888888.'
+end-if
+
+let #count = 1
+
+while #count <= #_decpos
+      let $temp = $temp || '8'
+      let #count = #count + 1
+end-while
+
+print #inamt (,#col) edit :$temp
+
+end-procedure
+
+
+
+!***********************************************************************
+! Function:    Print_Period                                            *
+!                                                                      *
+! Description: Prints the Search Period of the report                  *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print_Period
+
+ #ifdef debugw
+     show 'procedure Print_Period'
+  #end-if
+
+   if not IsNull($STARTDT)
+      do Format-DateTime($STARTDT, $StartDate, {DEFDATE},'','')
+   end-if
+
+   if not IsNull($ENDDT)
+      do Format-DateTime($ENDDT, $EndDate, {DEFDATE},'','')
+   end-if
+
+   if $RptType = '10' or $RptType = '20'
+      let $title = $STARTDT_LBL || ' ' || $StartDate || ' ' ||
+                   $ENDDT_LBL   || ' ' || $EndDate
+   end-if
+
+   if $RptType = '30'
+      let $title = $CALENDAR_LBL || ' : ' || $CalRunId
+   end-if
+
+   print $title                 (,1)
+   let $CurrencyTitle = '(' || $Currency || ' : ' || $CurrencyDescr || ')'
+   print $CurrencyTitle         (,+5)
+
+end-procedure
+
+!***********************************************************************
+! Function:    Print_New_Line                                          *
+!                                                                      *
+! Description: Manage the page break                                   *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print_New_Line
+
+ #ifdef debugw
+     show 'procedure Print_New_Line'
+  #end-if
+
+   let #LINE = #LINE + 1
+   if #LINE > {MaxLines}
+      new-page
+      do Print_Banner
+      let #LINE = 2
+   end-if
+
+end-procedure
+
+!***********************************************************************
+! Function:    Print_Banner                                            *
+!                                                                      *
+! Description: Prints Report Table Banner                              *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print_Banner
+
+ #ifdef debugw
+     show 'procedure Print_Banner'
+  #end-if
+
+   alter-printer font=3 point-size=6
+
+   if $PageBreakLevel1 = 'Y' or $PageBreakLevel4 = 'Y'
+      print $break1Title ({Line1},{Column0})
+   end-if
+   if $PageBreakLevel2 = 'Y' or $PageBreakLevel4 = 'Y'
+      print $break2Title (+2,{Column0})
+   end-if
+   if $PageBreakLevel3 = 'Y' or $PageBreakLevel4 = 'Y'
+      print $break3Title (+2,{Column0})
+   end-if
+
+   let #boxWidth = 181
+
+   graphic (9,1,#boxWidth) box 4 5 10         !  This prints the heading box for the table
+   graphic (13,1,#boxWidth) box 38 5          !  This prints the detail box for the table
+   let #count = 0
+   while #count < {MaxColumns} - 1
+      let #col = {Column2} + (#count * {ColumnWidth})
+      graphic (8,#col,42) vert-line 5
+      add 1 to #count
+   end-while
+begin-SELECT on-error=SQL-Error
+OUTDESTFORMAT &OutDestFormat
+FROM  PSPRCSRQST
+WHERE PRCSINSTANCE = #prcs_process_instance 
+end-SELECT
+  move &OutDestFormat to $_OutDestFormat
+
+   alter-printer font=3 point-size=6
+
+   !
+   ! first row of banner
+   !
+
+If $_OutDestFormat = '3' and #cnt=1
+   let $title = ColumnDef.Title1(0)
+   print $title                (+2,{Column1})
+let #cnt=#cnt+1
+   let #i = 1
+   let #c = {Column2}
+   while #i <= #Columns
+      let $title = ColumnDef.Title1(#i)
+      print $title    (,#c)
+      let #i = #i + 1
+      let #c = #c + {ColumnWidth}
+   end-while
+   else
+    If $_OutDestFormat <> '3'
+   
+      let $title = ColumnDef.Title1(0)
+         print $title                (+2,{Column1})
+            let #i = 1
+         let #c = {Column2}
+         while #i <= #Columns
+            let $title = ColumnDef.Title1(#i)
+            print $title    (,#c)
+            let #i = #i + 1
+            let #c = #c + {ColumnWidth}
+      end-while
+end-if
+end-if
+   !
+   ! second row of banner
+   !
+
+If $_OutDestFormat = '3' and #cnt1=1
+   let $title = ColumnDef.Title2(0)
+   print $title                (+1,{Column1})
+let #cnt1=#cnt1+1
+   let #i = 1
+   let #c = {Column2}
+   while #i <= #Columns
+      let $title = ColumnDef.Title2(#i)
+      print $title    (,#c)
+      let #i = #i + 1
+      let #c = #c + {ColumnWidth}
+   end-while
+    else
+         If $_OutDestFormat <> '3'
+        
+         let $title = ColumnDef.Title2(0)
+            print $title                (+1,{Column1})
+            let #i = 1
+            let #c = {Column2}
+            while #i <= #Columns
+               let $title = ColumnDef.Title2(#i)
+               print $title    (,#c)
+               let #i = #i + 1
+               let #c = #c + {ColumnWidth}
+      end-while
+      
+end-if
+end-if
+   print '' (+1)
+
+   let #LINE = 1
+   let #banner = 1
+
+end-procedure
+
+
+!***********************************************************************
+! Function:    Get_Tranlat_Info                                        *
+!                                                                      *
+! Description: Gets the strings printed in this report (Globalization) *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_Tranlat_Info
+
+ #ifdef debugw
+     show 'procedure Get_Tranlat_Info'
+  #end-if
+
+   do Init_Report_Translation($ReportID, $language_cd)
+   do Get_Field_Information($ReportID, 'FROM',         $STARTDT_LBL, #CW)
+   do Get_Field_Information($ReportID, 'THRU',         $ENDDT_LBL, #CW)
+   do Get_Field_Information($ReportID, 'CALENDAR',     $CALENDAR_LBL, #CW)
+   do Get_Field_Information($ReportID, 'ORDER',        $LABELEMPLID_LBL, #CW)
+   do Get_Field_Information($ReportID, 'ELEMENTS',     $ELEMENTS_LBL, #CW)
+   do Get_Field_Information($ReportID, 'TOTAL',        $TOTAL_LBL, #CW)
+
+end-procedure
+
+!***********************************************************************
+! Function:    Report-Cleanup                                          *
+!                                                                      *
+! Description: Deletes the temporary files after execution             *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Report-Cleanup
+
+ #ifdef debugw
+     show 'procedure Report-Cleanup'
+ #end-if
+
+#ifndef debugz
+begin-SQL on-Error=SQL-Error
+DELETE FROM PS_GP_GENRPT_G_TMP
+WHERE JOBINSTANCE = #jobinstance
+end-SQL
+
+begin-SQL on-Error=SQL-Error
+DELETE FROM PS_GP_GENRPT_D_TMP
+WHERE JOBINSTANCE = #jobinstance
+end-SQL
+#end-if
+
+#ifdef debugz
+  show 'GP_GENRPT_G_TMP and GP_GENRPT_D_TMP not deleted'
+#end-if
+end-procedure
+
+
+!***********************************************************************
+! Function:    Print-Common-Info                                       *
+!                                                                      *
+! Description: Prints common information                               *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print-Common-Info
+
+end-procedure
+
+!***********************************************************************
+! Function:    Print-Entry-Info                                        *
+!                                                                      *
+! Description: Prints entry information                                *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print-Entry-Info
+
+end-procedure
+
+!***********************************************************************
+! Function:    Print-Leave-Info                                        *
+!                                                                      *
+! Description: Prints leave information                                *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Print-Leave-Info
+
+end-procedure
+
+
+!***********************************************************************
+#include 'gprnctl1.sqc'  !Get run control parameter values
+#include 'stdapi.sqc'    !Routines to update run status
+
+#Include 'reset1.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'useprntr.sqc'
+#Include 'sqrtrans.sqc'
+#Include 'datemath.sqc'
+#Include 'getprimj.sqc'  !Routines for selecting EE's primary job
+!***********************************************************************

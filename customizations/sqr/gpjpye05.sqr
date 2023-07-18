@@ -1,0 +1,2359 @@
+!***********************************************************************
+! GPJPYE05.SQR:   Report Spouse and Insurance for YEA purposes         *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under           *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+! Copyright (C) 1988, 2016, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  25220641                                            !
+!                                                                      *
+!***********************************************************************
+#include 'setenv.sqc'   !Set environment
+#DEFINE JapaneseDates
+#DEFINE PRINT_JAPANESE
+#DEFINE GPJPYE05_MAX_BUFFER_SIZE    50
+
+
+begin-setup
+#include 'gpjpyel2.sqc'  !page layout and printer definition
+end-setup
+
+
+
+begin-report
+
+        do Init-Processing
+        do Process-Main
+        do Reset
+        do Update-Prcs-Run-Status
+
+end-report
+
+
+!***********************************************************************
+! Init-Processing                                                      *
+! Called By:    begin-report                                           *
+! Calls:        Init-Datetime           - datetime.sqc                 *
+!               Get-Current-Datetime    - prcsapi.sqc (curdttim.sqc)   *
+!               Define-Prcs-Vars        - prcsapi.sqc                  *
+!               Get-Run-Control-Parms   - prcsapi.sqc                  *
+!               Get-Language-Codes      - prcslng.sqc                  *
+!               Get-GPJPYE04-runctl                                    *
+!               Init-Report                                            *
+! Description:  Standard PeopleSoft initialization processing.         *
+!***********************************************************************
+begin-procedure Init-Processing
+        do Init-Datetime
+        do Get-Current-Datetime
+        do Define-Prcs-Vars
+        do Get-Run-Control-Parms
+        do Get-Language-Codes
+        do gpjp_print_init
+        do Get_SelfService_flg
+        do Get-GPJPYE05-runctl
+        do Build-Select
+        do Init-Report
+        do GPJPYE05-Create-Buffer
+        do Get-Sort-Order
+end-procedure ! Init-Processing
+
+
+!***********************************************************************
+! Get-GPJPYE05-runctl                                                  *
+! Called By:    Init-Processing                                        *
+! Description:  Gets data from GPJP_RC_YEA_RPT runcotrol record.       *
+!***********************************************************************
+begin-procedure Get-GPJPYE05-runctl
+
+begin-SELECT
+
+RC.DATE_YEAR_VAL
+RC.GPJP_TAX_ESTAB
+RC.PAY_ENTITY
+RC.BUSINESS_UNIT
+RC.DEPTID
+RC.LOCATION
+RC.GPJP_PAYEE_IND
+RC.GPJP_YEA_STATUS_SB
+RC.GPJP_YEA_STATUS_AP
+RC.GPJP_YEA_STATUS_SN
+
+
+  let #RC_ObjectYear     = &RC.DATE_YEAR_VAL
+  let $RC_Estab          = RTRIM(&RC.GPJP_TAX_ESTAB, ' ')
+  let $RC_Pay_entity     = RTRIM(&RC.PAY_ENTITY, ' ')
+  let $RC_BusinessUnit   = RTRIM(&RC.BUSINESS_UNIT, ' ')
+  let $RC_DeptId         = RTRIM(&RC.DEPTID, ' ')
+  let $RC_Location       = RTRIM(&RC.LOCATION, ' ')
+  let $RC_Pye_ind        = RTRIM(&RC.GPJP_PAYEE_IND, ' ')
+!WW  Add Three Status Check Boxs Options
+  let $RC_Status_SB      = &RC.GPJP_YEA_STATUS_SB
+  let $RC_Status_AP      = &RC.GPJP_YEA_STATUS_AP
+  let $RC_Status_SN      = &RC.GPJP_YEA_STATUS_SN
+FROM PS_GPJP_RC_YEA_RPT RC
+WHERE RC.OPRID = $Prcs_OprID
+AND RC.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+end-SELECT
+
+   LET $Estab = $RC_Estab
+
+end-procedure ! Get-GPJPYE05-runctl
+
+!***********************************************************************
+! Init-Report                                                          *
+! Called By:    Init-Processing                                        *
+! Calls:        Init_Report_Translation    - sqrtrans.sqc              *
+!               Append_Report_Translation  - sqrtrans.sqc              *
+!               Get_Field_Information                                  *
+! Description:  Initializes variables, defines values for variables    *
+!               used in report header & throughout report.  Performs   *
+!               Strings Table translation.  #Defines variables for     *
+!               use throughout report in printing columns.             *
+!***********************************************************************
+begin-procedure Init-Report
+    let #gpjpye05-default-point-size = 7.2
+
+    let #max-lines-life   = 4
+    let #max-lines-pensn  = 3
+    let #max-lines-nonlif = 2
+    let #max-lines-socins = 2
+    let #max-lines-carins = 2
+
+    do gpjp_print_cm_adjust_coordinate(-0.37, 0.07)
+
+!***********************************************************************
+! Translations procedures & Strings Table retrievals.                  *
+!***********************************************************************
+    do Init_Report_Translation ($ReportID, $curr_language_cd)
+    do Append_Report_Translation ('GPJPYE05')
+
+    !do Get_Field_Information ('GPJPYE05','MATUR_REPAY_YES', $GPJPYE05_MATUR_REPAY_YES,  #dummy_width)
+    !do Get_Field_Information ('GPJPYE05','MATUR_REPAY_NO',  $GPJPYE05_MATUR_REPAY_NO,   #dummy_width)
+    do Get_Field_Information ('GPJPYE05','SPECIAL_SPOUSE',  $GPJPYE05_SPECIAL_SPOUSE,   #dummy_width)
+
+    do Append_Report_Translation ('GPJPYE04')
+    do Get_Field_Information ('GPJPYE04','PAGE',       $GPJPYE04_Page,        #dummy_width)
+    do Get_Field_Information ('GPJPYE04','CONTINUED',  $GPJPYE04_Continued,   #dummy_width)
+    do Get_Field_Information ('GPJPYE04','MARK_CIRCLE',$Mark_Circle,   #dummy_width)
+    !do Security-Param
+
+end-procedure ! Init-Report
+
+
+!***********************************************************************
+! GPJPYE05-Create-Buffer                                               *
+! Called By:    Init-Processing                                        *
+! Description:                                                         *
+!***********************************************************************
+begin-procedure GPJPYE05-Create-Buffer
+
+   create-array name = life  size = {GPJPYE05_MAX_BUFFER_SIZE}
+      field = type:text
+      field = prov:text
+      field = term:decimal
+      field = policy:text
+      field = benef_nm:text
+      field = benef_rel:text
+      field = prem:decimal
+      field = newins:text
+
+
+   create-array name = pensn  size = {GPJPYE05_MAX_BUFFER_SIZE}
+      field = type:text
+      field = prov:text
+      field = term:decimal
+      field = policy:text
+      field = benef_nm:text
+      field = benef_rel:text
+      field = prem:decimal
+      field = stdate:date
+      field = newins:text
+
+
+   create-array name = care  size = {GPJPYE05_MAX_BUFFER_SIZE}
+      field = type:text
+      field = prov:text
+      field = term:decimal
+      field = policy:text
+      field = benef_nm:text
+      field = benef_rel:text
+      field = prem:decimal
+      
+      
+   create-array name = nonlif  size = {GPJPYE05_MAX_BUFFER_SIZE}
+      field = type:text
+      field = prov:text
+      field = term:decimal
+      field = policy:text
+      field = benef_nm:text
+      field = benef_rel:text
+      field = prem:decimal
+      !field = matur:text
+      field = quake:text
+
+
+   create-array name = socins  size = {GPJPYE05_MAX_BUFFER_SIZE}
+      field = type:text
+      field = prov:text
+      field = benef_nm:text
+      field = benef_rel:text
+      field = prem:decimal
+
+
+end-procedure !GPJPYE05-Create-Buffer
+
+!***********************************************************************
+! Select-Employees                                                     *
+! Calls:        none                                                   *
+! Description:  Selects employees off run control.  Strings them into  *
+!                   a variable for use in the main select clause in    *
+!                   the calling report.                                *
+!***********************************************************************
+
+begin-procedure Select-Employees
+    let $Quote                  = ''''
+    let $Multiple = 'N'     ! Controls the stringing format for the Select_Clause.
+    let $Employee_List          = ' '
+
+begin-SELECT
+
+LVL1B.OPRID                 &LVL1B.OPRID
+LVL1B.RUN_CNTL_ID           &LVL1B.RUN_CNTL_ID
+LVL1B.EMPLID                &LVL1B.EMPLID
+LVL1B.EMPL_RCD          &LVL1B.EMPL_RCD
+    let $Runctl_Emplid = &LVL1B.EMPLID
+    let #Runctl_Emplrcd = &LVL1B.EMPL_RCD
+
+    if $YEA_Self_Serv = 'Y'
+       if $Multiple = 'N'
+          let $EE_Select_Clause  = ' AND (( B.EMPLID = ' ||$Quote||$Runctl_Emplid||$Quote|| ' AND B.EMPL_RCD = ' ||to_char(#Runctl_Emplrcd)|| ')'
+       else
+          let $EE_Select_Clause = $EE_Select_Clause||' OR (B.EMPLID = ' ||$Quote||$Runctl_Emplid||$Quote|| ' AND B.EMPL_RCD = ' ||to_char(#Runctl_Emplrcd)|| ')'
+       end-if
+    else
+       if $Multiple = 'N'
+          let $EE_Select_Clause  = ' AND (( BB.EMPLID = ' ||$Quote||$Runctl_Emplid||$Quote|| ' AND BB.EMPL_RCD = ' ||to_char(#Runctl_Emplrcd)|| ')'
+       else
+          let $EE_Select_Clause = $EE_Select_Clause||' OR (BB.EMPLID = ' ||$Quote||$Runctl_Emplid||$Quote|| ' AND BB.EMPL_RCD = ' ||to_char(#Runctl_Emplrcd)|| ')'
+       end-if
+    end-if
+    let $Multiple = 'Y'
+
+FROM PS_GPJP_RC_YEA_PYE     LVL1B
+
+WHERE LVL1B.OPRID        = $Prcs_OprID
+AND LVL1B.RUN_CNTL_ID  = $Prcs_Run_Cntl_ID
+end-SELECT
+
+    let $EE_Select_Clause  = $EE_Select_Clause || ')'
+
+end-procedure ! Select-Employees
+
+!***********************************************************************
+!                                                                      *
+! Get-Sort-Order                                                       *
+!                                                                      *
+!                                                                      *
+! Called By: Init-Processing                                           *
+!                                                                      *
+! Description:  Determines Sort order string                           *
+!               ICE 547284001                                          *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get-Sort-Order
+
+
+
+begin-SELECT
+
+RC.GPJP_BU_SORT
+RC.GPJP_LOC_SORT
+RC.GPJP_DEPT_SORT
+RC.GPJP_SUPV_SORT
+RC.GPJP_INCL_BU_LOC
+
+
+
+     let $Order_By     = ' '
+
+    if $YEA_Self_Serv = 'Y'
+
+       If &RC.GPJP_BU_SORT = 'Y'
+         Let $Order_By = 'Order by C.BUSINESS_UNIT'
+       end-if
+
+       If &RC.GPJP_LOC_SORT = 'Y'
+         If $Order_By = ' '
+            Let $Order_By = 'Order by C.LOCATION '
+         else
+           Let $Order_By = $Order_By || ', C.LOCATION '
+         end-if
+       end-if
+
+       If &RC.GPJP_DEPT_SORT = 'Y'
+         If $Order_By = ' '
+            Let $Order_By = 'Order by C.DEPTID'
+         else
+           Let $Order_By = $Order_By || ', C.DEPTID'
+
+
+         end-if
+       end-if
+
+       If &RC.GPJP_SUPV_SORT = 'Y'
+         If $Order_By = ' '
+            Let $Order_By = 'Order by C.SUPV_LVL_ID'
+         else
+           Let $Order_By = $Order_By || ', C.SUPV_LVL_ID'
+         end-if
+       end-if
+
+       If $Order_By = ' '
+           Let $Order_By = 'Order by B.EMPLID'
+         else
+           Let $Order_By = $Order_By || ', B.EMPLID'
+       end-if
+    Else
+           If &RC.GPJP_BU_SORT = 'Y'
+             Let $Order_By = 'Order by CC.BUSINESS_UNIT'
+           end-if
+
+           If &RC.GPJP_LOC_SORT = 'Y'
+             If $Order_By = ' '
+                Let $Order_By = 'Order by CC.LOCATION '
+             else
+               Let $Order_By = $Order_By || ', CC.LOCATION '
+             end-if
+           end-if
+
+           If &RC.GPJP_DEPT_SORT = 'Y'
+             If $Order_By = ' '
+                Let $Order_By = 'Order by CC.DEPTID'
+             else
+               Let $Order_By = $Order_By || ', CC.DEPTID'
+
+
+             end-if
+           end-if
+
+           If &RC.GPJP_SUPV_SORT = 'Y'
+             If $Order_By = ' '
+                Let $Order_By = 'Order by CC.SUPV_LVL_ID'
+             else
+               Let $Order_By = $Order_By || ', CC.SUPV_LVL_ID'
+             end-if
+           end-if
+
+           If $Order_By = ' '
+               Let $Order_By = 'Order by BB.EMPLID'
+             else
+               Let $Order_By = $Order_By || ', BB.EMPLID'
+           end-if
+
+      End-if
+FROM PS_GPJP_RC_YEA_RPT RC
+WHERE RC.OPRID = $Prcs_OprID
+AND RC.RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+
+
+end-SELECT
+
+
+end-procedure Get-Sort-Order
+
+
+!***********************************************************************
+! Build-select                                                         *
+! Called By:    Begin-Report                                           *
+! Description:  Builds dynamic select statement for main procedure.    *
+!***********************************************************************
+begin-procedure Build-select
+
+    if $YEA_Self_Serv = 'Y'
+
+       let $Select_Clause_1 = 'B.GPJP_TAX_ESTAB = ''' || $RC_Estab ||''''
+       if $RC_Pay_entity <> ''
+           let $Select_Clause_1 =  $Select_Clause_1 || 'AND PG.PAY_ENTITY = ''' || $RC_Pay_Entity ||''''
+       end-if
+       if $RC_BusinessUnit <> ''
+           let $Select_Clause_1 =  $Select_Clause_1 || 'AND C.BUSINESS_UNIT = ''' || $RC_BusinessUnit ||''''
+       end-if
+       if $RC_DeptId <> ''
+           let $Select_Clause_1 =  $Select_Clause_1 || 'AND C.DEPTID = ''' || $RC_DeptId ||''''
+       end-if
+       if $RC_Location <> ''
+           let $Select_Clause_1 =  $Select_Clause_1 || 'AND C.LOCATION = ''' || $RC_Location ||''''
+       end-if
+
+!WW  Build $Select_Checkbox based on which check box was turned on
+      let $Select_Checkbox = ' And S.GPJP_YEA_SP_STAT in ('
+      let $Comma_Needed = 'N'
+      let $Any_checkbox = 'N'    ! 619016000
+
+      if $RC_Status_SB = 'Y'
+        let $Select_Checkbox = $Select_Checkbox || '''40'''
+        let $Comma_Needed = 'Y'
+        let $Any_checkbox = 'Y'    ! 619016000
+      end-if
+
+      if $RC_Status_AP = 'Y'
+       if $Comma_Needed = 'Y'
+        let $Select_Checkbox = $Select_Checkbox || ','
+       end-if
+       let $Select_Checkbox = $Select_Checkbox || '''50'''
+       let $Comma_Needed = 'Y'
+       let $Any_checkbox = 'Y'     ! 619016000
+      end-if
+
+     if $RC_Status_SN = 'Y'
+      if $Comma_Needed = 'Y'
+       let $Select_Checkbox = $Select_Checkbox || ','
+      end-if
+      let $Select_Checkbox = $Select_Checkbox || '''60'''
+      let $Comma_Needed = 'Y'
+      let $Any_checkbox = 'Y'     ! 619016000
+     end-if
+
+     let $Select_Checkbox = $Select_Checkbox || ')'
+     if $Any_checkbox = 'N'     ! 619016000
+         let $Select_Checkbox = ' '
+     else
+
+         let $RC_ObjectYear_mask =  edit(#RC_ObjectYear , '9999')
+         let $Select_Checkbox = ' AND B.EMPLID = S.EMPLID AND S.DATE_YEAR_VAL =  ' || $RC_ObjectYear_mask   || $Select_Checkbox
+     end-if
+
+   Else
+          let $Select_Clause_1 = 'BB.GPJP_TAX_ESTAB = ''' || $RC_Estab ||''''
+          if $RC_Pay_entity <> ''
+              let $Select_Clause_1 =  $Select_Clause_1 || 'AND PG.PAY_ENTITY = ''' || $RC_Pay_Entity ||''''
+          end-if
+          if $RC_BusinessUnit <> ''
+              let $Select_Clause_1 =  $Select_Clause_1 || 'AND CC.BUSINESS_UNIT = ''' || $RC_BusinessUnit ||''''
+          end-if
+          if $RC_DeptId <> ''
+              let $Select_Clause_1 =  $Select_Clause_1 || 'AND CC.DEPTID = ''' || $RC_DeptId ||''''
+          end-if
+          if $RC_Location <> ''
+              let $Select_Clause_1 =  $Select_Clause_1 || 'AND CC.LOCATION = ''' || $RC_Location ||''''
+          end-if
+
+   End-if
+
+   if $RC_Pye_ind   = 'Y'
+       do Select-Employees
+   end-if
+
+end-procedure !Build-select
+
+!***********************************************************************
+!                                                                      *
+! Get_SelfService_flg                                                  *
+!                                                                      *
+! Called By: Init-Processing                                           *
+!                                                                      *
+! Description:  Determines if Epay is install - Self Service - or not  *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get_SelfService_flg
+
+begin-SELECT
+
+PSEPAY
+     let $YEA_Self_Serv      = rtrim(&PSEPAY, ' ')
+
+FROM PS_INSTALLATION
+
+end-SELECT
+
+end-procedure !Get_SelfService_flg
+
+!***********************************************************************
+!                                                                      *
+! Process-Main                                                         *
+!                                                                      *
+!                                                                      *
+! Called By:    begin-report                                           *
+!                                                                      *
+! Description:  Main procedure.                                        *
+!                                                                      *
+!***********************************************************************
+begin-procedure Process-Main
+
+     let $No_records = 'Y'
+     do Get_ASOFDATE
+     LET $Estab = $RC_Estab
+     let $EstabType      = 'IT'
+     Do Check-JPN-TE-Firm-Num-Install
+     do Get-Estab-Name
+     do Set_TaxEstab-Address
+
+     If $YEA_Self_Serv = 'Y'
+        let $_TableAlias = 'B'
+        do Security-Param
+        do Process-Main_YEA_SS
+     Else
+        let $_TableAlias = 'BB'
+        do Security-Param
+        do Process-Main_Non_SS
+     End-if
+
+end-procedure ! Process-Main
+!***********************************************************************
+!                                                                      *
+! Process-Main_YEA_SS                                                  *
+!                                                                      *
+!                                                                      *
+! Called By:    begin-report                                           *
+!                                                                      *
+! Description:  Main procedure for YEA SS                              *
+!                                                                      *
+!***********************************************************************
+begin-procedure Process-Main_YEA_SS
+
+Begin-SELECT DISTINCT
+
+B.EMPLID
+B.EMPL_RCD
+B.EFFDT
+!WW
+C.BUSINESS_UNIT
+C.LOCATION
+C.DEPTID
+C.SUPV_LVL_ID
+C.SETID_SUPV_LVL
+
+     let $My_Emplid      = rtrim(&B.EMPLID, ' ')
+     let $Empl_rcd        = to_char(&B.EMPL_RCD)
+     let $BU             = rtrim(&C.BUSINESS_UNIT,' ')
+     let $Location       = rtrim(&C.LOCATION,' ')
+     let $DeptID         = rtrim(&C.DEPTID,' ')
+     let $Supv_lvl_id    = rtrim(&C.SUPV_LVL_ID,' ')
+     let $Setid              = rtrim(&C.SETID_SUPV_LVL,' ')
+
+ If &RC.GPJP_INCL_BU_LOC = 'Y'
+
+     do Get-Business-Unit-Name
+     let $BUDesc = $BU_DESCRSHORT
+
+
+     let $Recname = 'LOCATION_TBL'
+     do Get-Location-Name
+     let $LocationDesc = $LocationAbbrv
+
+
+  end-if
+  
+     do Print-report
+     new-page
+
+FROM PS_GPJP_IT_PYE_TAX B,
+     PS_JOB C,
+     PS_GP_PYGRP PG,
+     PS_GPJP_YEA_STATUS S
+WHERE
+[$Select_Clause_1]
+[$EE_Select_Clause]
+
+
+
+AND B.EMPLID = C.EMPLID
+AND B.EMPL_RCD = C.EMPL_RCD
+AND B.GPJP_IT_TYPE = '10'
+AND C.GP_PAYGROUP = PG.GP_PAYGROUP
+
+AND B.EFFDT = (SELECT MAX(B1.EFFDT) FROM PS_GPJP_IT_PYE_TAX B1
+               WHERE B1.EMPLID = B.EMPLID
+               AND B1.EMPL_RCD = B.EMPL_RCD
+               AND B1.EFFDT <= $SU_asofdate)
+AND C.HR_STATUS = 'A'
+AND C.PAY_SYSTEM_FLG = 'GP'
+AND C.EFFDT = (SELECT MAX(C1.EFFDT) FROM PS_JOB C1
+               WHERE C1.EMPLID = C.EMPLID
+               AND C1.EMPL_RCD = C.EMPL_RCD
+               AND C1.EFFDT <= $SU_asofdate)
+AND C.EFFSEQ = (SELECT MAX(C2.EFFSEQ) FROM PS_JOB C2
+               WHERE C2.EMPLID = C.EMPLID
+               AND C2.EMPL_RCD = C.EMPL_RCD
+               AND C2.EFFDT = C.EFFDT)
+
+[$Select_Checkbox]
+[$SecurityClausewithERN]
+[$Order_By]
+
+
+end-SELECT
+ !   DISPLAY ' >>> END MAIN '
+    if $No_records <> 'Y'
+        let $End = 'Y'
+    end-if
+
+end-procedure ! Process-Main_YEA_SS
+
+!***********************************************************************
+!                                                                      *
+! Process-Main_Non_SS                                                  *
+!                                                                      *
+!                                                                      *
+! Called By:    begin-report                                           *
+!                                                                      *
+! Description:  Main procedure for Non SS                              *
+!                                                                      *
+!***********************************************************************
+begin-procedure Process-Main_Non_SS
+
+Begin-SELECT DISTINCT
+
+BB.EMPLID
+BB.EMPL_RCD
+BB.EFFDT
+!WW
+CC.BUSINESS_UNIT
+CC.LOCATION
+CC.DEPTID
+CC.SUPV_LVL_ID
+CC.SETID_SUPV_LVL
+
+     let $My_Emplid      = rtrim(&BB.EMPLID, ' ')
+     let $Empl_rcd        = to_char(&BB.EMPL_RCD)
+     let $BU             = rtrim(&CC.BUSINESS_UNIT,' ')
+     let $Location       = rtrim(&CC.LOCATION,' ')
+     let $DeptID         = rtrim(&CC.DEPTID,' ')
+     let $Supv_lvl_id    = rtrim(&CC.SUPV_LVL_ID,' ')
+     let $Setid              = rtrim(&CC.SETID_SUPV_LVL,' ')
+
+ If &RC.GPJP_INCL_BU_LOC = 'Y'
+
+     do Get-Business-Unit-Name
+     let $BUDesc = $BU_DESCRSHORT
+
+
+     let $Recname = 'LOCATION_TBL'
+     do Get-Location-Name
+     let $LocationDesc = $LocationAbbrv
+
+
+  end-if
+
+     do Print-report
+     new-page
+
+FROM PS_GPJP_IT_PYE_TAX BB,
+     PS_JOB CC,
+     PS_GP_PYGRP PG
+WHERE
+[$Select_Clause_1]
+[$EE_Select_Clause]
+
+AND BB.EMPLID = CC.EMPLID
+AND BB.EMPL_RCD = CC.EMPL_RCD
+AND BB.GPJP_IT_TYPE = '10'
+AND CC.GP_PAYGROUP = PG.GP_PAYGROUP
+
+AND BB.EFFDT = (SELECT MAX(B1.EFFDT) FROM PS_GPJP_IT_PYE_TAX B1
+               WHERE B1.EMPLID = BB.EMPLID
+               AND B1.EMPL_RCD = BB.EMPL_RCD
+               AND B1.EFFDT <= $SU_asofdate)
+AND CC.HR_STATUS = 'A'
+AND CC.PAY_SYSTEM_FLG = 'GP'
+AND CC.EFFDT = (SELECT MAX(C1.EFFDT) FROM PS_JOB C1
+               WHERE C1.EMPLID = CC.EMPLID
+               AND C1.EMPL_RCD = CC.EMPL_RCD
+               AND C1.EFFDT <= $SU_asofdate)
+AND CC.EFFSEQ = (SELECT MAX(C2.EFFSEQ) FROM PS_JOB C2
+               WHERE C2.EMPLID = CC.EMPLID
+               AND C2.EMPL_RCD = CC.EMPL_RCD
+               AND C2.EFFDT = CC.EFFDT)
+
+[$SecurityClausewithERN]
+[$Order_By]
+
+
+end-SELECT
+ !   DISPLAY ' >>> END MAIN '
+    if $No_records <> 'Y'
+        let $End = 'Y'
+    end-if
+
+end-procedure ! Process-Main_Non_SS
+
+
+
+!***********************************************************************
+! Get_ASOFDATE                                                         *
+! Called By:    Process-Main                                           *
+! Description:  Get_ASOFDATE from YEA setup                            *
+!***********************************************************************
+begin-procedure Get_ASOFDATE
+
+
+!   DISPLAY '>>> Get_ASOFDATE '
+    If $YEA_Self_Serv = 'Y'
+        do Get_YEA_ASOFDATE
+    Else
+!   No Self Service : Asof date is the last day in the Object Year:
+        let #thirty_first= 31
+        let #december    = 12
+        do dtu-format-date(#RC_ObjectYear, #december, #thirty_first, $Last_Object_yr_day)
+        do Convert-From-DTU-Date($Last_Object_yr_day,$SU_asofdate)
+    end-if
+
+end-procedure ! Get_ASOFDATE
+
+!***********************************************************************
+! Get_YEA_ASOFDATE                                                     *
+! Called By:    Get_ASOFDATE                                           *
+! Description:  Get the ASOFDATE from YEA setup                        *
+!***********************************************************************
+begin-procedure Get_YEA_ASOFDATE
+
+BEGIN-SELECT
+SU.ASOFDATE
+    let $SU_asofdate =  rtrim(&SU.ASOFDATE,' ')
+
+FROM PS_GPJP_YEA_SETUP SU
+WHERE DATE_YEAR_VAL = #RC_ObjectYear
+END-SELECT
+
+end-procedure !Get_YEA_ASOFDATE
+
+!***********************************************************************
+! Print-report                                                         *
+! Called By:    Process-Main                                           *
+! Description:  Prints report                                          *
+!***********************************************************************
+begin-procedure Print-report()
+ !   DISPLAY '>>> Print-report '
+
+   let #_LIFE-line-no = 1
+   let #_PENSN-line-no = 1
+   let #_NONLIF-line-no = 1
+   let #_SOCINS-line-no = 1
+   let #_CARE-line-no = 1
+   let #_page_no      = 1
+
+   do Get_EE_info
+   do Print_Heading
+   do Print_Spouse_Info($_My_Emplid ,$_SU_asofdate ,$DB_birthdate ,$nonresident, $unifyliving)
+
+   If $_YEA_Self_Serv = 'Y'
+
+      do Print_Spouse_Income($_My_Emplid, #_RC_ObjectYear, $DB_birthdate ,$nonresident, $unifyliving)
+      do Print_MUTAID_Section
+      do Get_Life_Ins_Info
+      do Get_Pension_Ins_Info
+      do Get_Care_Ins_Info
+      do Get_NonLife_Ins_Info
+      do Get_Soc_Ins_Info
+      do Print_Total
+      let #printed   = {FALSE}
+      let #page-full = {FALSE}
+
+      let #i = 0
+      let #j = 0
+      let #k = 0
+      let #l = 0
+      let #m = 0
+
+      while 1
+
+        let #printed   = {TRUE}
+        let #page-full = {TRUE}
+
+        if #i < #_LIFE_count
+           let #printed = {FALSE}
+           if #_LIFE-line-no = #_max-lines-life and #i < #_LIFE_count - 1
+              let #_life-continued = {TRUE}
+           else
+              let #page-full = {FALSE}
+              do Print_Life_Ins_Line(#i)
+              let #_LIFE-line-no = #_LIFE-line-no + 1
+              let #i = #i + 1
+           end-if
+         end-if
+
+        
+        if #k < #_NONLIF_count
+           let #printed = {FALSE}
+           if #_NONLIF-line-no = #_max-lines-nonlif and #k < #_NONLIF_count - 1
+              let #_nonlif-continued = {TRUE}
+           else
+              let #page-full = {FALSE}
+              do Print_NonLif_Ins_Line(#k)
+              let #_NONLIF-line-no = #_NONLIF-line-no + 1
+              let #k = #k + 1
+           end-if
+        end-if
+
+        if #l < #_SOCINS_count
+           let #printed = {FALSE}
+           if #_SOCINS-line-no = #_max-lines-socins and #l < #_SOCINS_count - 1
+              let #_socins-continued = {TRUE}
+           else
+              let #page-full = {FALSE}
+              do Print_Soc_Ins_line(#l)
+              let #_SOCINS-line-no = #_SOCINS-line-no + 1
+              let #l = #l + 1
+           end-if
+        end-if
+        
+        if #m < #_CARE_count
+           let #printed = {FALSE}
+           if #_CARE-line-no = #_max-lines-carins and #m < #_CARE_count - 1
+              let #_care-continued = {TRUE}
+           else
+              let #page-full = {FALSE}
+              do Print_Care_Ins_Line(#m)
+              let #_CARE-line-no = #_CARE-line-no + 1
+              let #m = #m + 1
+           end-if
+         end-if
+         
+         if #j < #_PENSN_count
+           let #printed = {FALSE}
+           if #_PENSN-line-no = #_max-lines-pensn and #j < #_PENSN_count - 1
+              let #_pensn-continued = {TRUE}
+           else
+              let #page-full = {FALSE}
+              do Print_Pensn_Ins_Line(#j)
+              let #_PENSN-line-no = #_PENSN-line-no + 1
+              let #j = #j + 1
+           end-if
+        end-if
+
+
+        if #printed = {TRUE}
+           break
+        end-if
+
+        if #page-full = {TRUE}
+           do Print_New_Page
+        end-if
+
+     end-while
+   End-if
+
+end-procedure  !Print-report
+
+
+!***********************************************************************
+! Print_New_Page                                                       *
+! Called By:                                                           *
+! Description:                                                         *
+!***********************************************************************
+begin-procedure Print_New_Page()
+   declare-variable
+      decimal #xpos #ypos
+      text $pstr
+   end-declare
+
+   !print current Page number
+   if #_page_no = 1
+      let $pstr = $_GPJPYE04_Page || ' ' || edit(#_page_no, '99')
+      do gpjp_print_cm_2($pstr, 2.20, 1.45)
+   end-if
+
+   !print 'to be continued to the next page'
+   if #_life-continued = {TRUE}
+      let #xpos = 3.60
+      let #ypos =  5.60 + 0.55 * (#_max-lines-life - 1)
+      do gpjp_print_cm_2($_GPJPYE04_Continued, #xpos, #ypos)
+   end-if
+
+   if #_nonlif-continued = {TRUE}
+      let #xpos = 2.90
+      let #ypos = 17.60 + 0.55 * (#_max-lines-nonlif - 1)
+      do gpjp_print_cm_2($_GPJPYE04_Continued, #xpos, #ypos)
+   end-if
+
+   if #_socins-continued = {TRUE}
+      let #xpos = 19.50
+      let #ypos = 16.35 + 0.55 * (#_max-lines-socins - 1)
+      do gpjp_print_cm_2($_GPJPYE04_Continued, #xpos, #ypos)
+   end-if
+   
+   if #_care-continued = {TRUE}
+      let #xpos = 3.60
+      let #ypos = 9.30 + 0.55 * (#_max-lines-carins - 1)
+      do gpjp_print_cm_2($_GPJPYE04_Continued, #xpos, #ypos)
+   end-if
+   
+   if #_pensn-continued = {TRUE}
+      let #xpos = 3.60
+      let #ypos =  10.95 + 0.55 * (#_max-lines-pensn - 1)
+      do gpjp_print_cm_2($_GPJPYE04_Continued, #xpos, #ypos)
+   end-if
+
+
+   new-page
+   let #_page_no = #_page_no + 1
+
+   let #_LIFE-line-no     = 1
+   let #_PENSN-line-no    = 1
+   let #_NONLIF-line-no   = 1
+   let #_SOCINS-line-no   = 1
+   let #_CARE-line-no     = 1
+   let #_life-continued   = {FALSE}
+   let #_pensn-continued  = {FALSE}
+   let #_nonlif-continued = {FALSE}
+   let #_socins-continued = {FALSE}
+   let #_care-continued   = {FALSE}
+
+   if #_page_no > 1
+      let $pstr = $_GPJPYE04_Page || ' ' || edit(#_page_no, '99')
+      do gpjp_print_cm_2($pstr, 2.20, 1.45)
+   end-if
+
+   do Print_Heading
+
+end-procedure ! Print_New_Page
+
+
+!***********************************************************************
+! Print_Heading                                                        *
+! Called By:    Process-Main                                           *
+! Description:  This procedure prints the 'Heading' which include      *
+!  the Tax Establishment Info and Employee info                        *
+!***********************************************************************
+begin-procedure Print_Heading
+
+   do gpjp_print_cm_2($EstabName , 7.5, 2.15)         !item (1)
+
+
+   let $FirmNumber       = edit(#FirmNumber,'xbbxbbbxbbbxbbbxbbbxbbxbbxbbbxbbbxbbbxbbbxbbbx')
+   do gpjp_print_cm_2($FirmNumber , 7.5, 3.05)
+
+   if #TE_add_len_p <= 46
+      do gpjp_print_cm_2($TE_address, 7.5, 3.60)     !item (2)
+   else
+      do gpjp_print_cm_wrap($TE_address, 7.5, 3.55, 46, 0.30, 2) !item (2)
+   end-if
+
+
+   do gpjp_print_cm_2($EE_name_ac, 17.75, 2.15)        !item (3)
+   do gpjp_print_cm_2($EE_name,    17.75, 2.17)        !item (3)
+
+   if #EE_add_len_p <= 54
+      do gpjp_print_cm_2($EE_address, 17.75, 3.30)     !item (8)
+   else
+      do gpjp_print_cm_wrap($EE_address, 17.75, 3.25, 46, 0.30, 2) !item (8)
+   end-if
+
+end-procedure ! Print_Heading
+
+!***********************************************************************
+! Print_Total                                                          *
+! Called By:                                                           *
+! Description: Print_Total                                             *
+!***********************************************************************
+begin-procedure Print_Total
+
+   !Calculate Life ins deduction
+   if  #tot-life-new <= 20000
+      let #ded-life-new =  #tot-life-new
+   else
+      if  #tot-life-new <= 40000
+         let #ded-life-new = #tot-life-new / 2 + 10000
+         let #ded-life-new = round(#ded-life-new + 0.499, 0)
+      else
+         if #tot-life-new <= 80000
+            let #ded-life-new =  #tot-life-new / 4 + 20000
+            let #ded-life-new = round(#ded-life-new + 0.499, 0)
+         else
+            let #ded-life-new =  40000
+         end-if
+      end-if
+   end-if
+   
+   if  #tot-life-old <= 25000
+      let #ded-life-old =  #tot-life-old
+   else
+      if  #tot-life-old <= 50000
+         let #ded-life-old = #tot-life-old / 2 + 12500
+         let #ded-life-old = round(#ded-life-old + 0.499, 0)
+      else
+         if #tot-life-old <= 100000
+            let #ded-life-old =  #tot-life-old / 4 + 25000
+            let #ded-life-old = round(#ded-life-old + 0.499, 0)
+         else
+            let #ded-life-old =  50000
+         end-if
+      end-if
+   end-if
+
+   !Calculate Pension ins deduction
+   if  #tot-pensn-new <= 20000
+      let #ded-pensn-new =  #tot-pensn-new
+   else
+      if  #tot-pensn-new <= 40000
+         let #ded-pensn-new = #tot-pensn-new / 2 + 10000
+         let #ded-pensn-new = round(#ded-pensn-new + 0.499, 0)
+      else
+         if #tot-pensn-new <= 80000
+            let #ded-pensn-new =  #tot-pensn-new / 4 + 20000
+            let #ded-pensn-new = round(#ded-pensn-new + 0.499, 0)
+         else
+            let #ded-pensn-new =  40000
+         end-if
+      end-if
+   end-if
+   
+   if  #tot-pensn-old <= 25000
+      let #ded-pensn-old =  #tot-pensn-old
+   else
+      if  #tot-pensn-old <= 50000
+         let #ded-pensn-old = #tot-pensn-old / 2 + 12500
+         let #ded-pensn-old = round(#ded-pensn-old + 0.499, 0)
+      else
+         if #tot-pensn-old <= 100000
+            let #ded-pensn-old =  #tot-pensn-old / 4 + 25000
+            let #ded-pensn-old = round(#ded-pensn-old + 0.499, 0)
+         else
+            let #ded-pensn-old =  50000
+         end-if
+      end-if
+   end-if
+   
+   !Calculate Care Medical ins deduction
+   if  #tot-care <= 20000
+      let #ded-care =  #tot-care
+   else
+      if  #tot-care <= 40000
+         let #ded-care = #tot-care / 2 + 10000
+         let #ded-care = round(#ded-care + 0.499, 0)
+      else
+         if #tot-care <= 80000
+            let #ded-care =  #tot-care / 4 + 20000
+            let #ded-care = round(#ded-care + 0.499, 0)
+         else
+            let #ded-care =  40000
+         end-if
+      end-if
+   end-if
+
+   !Calculate Non Life ins deduction
+
+   if  #tot-nonlif-lng <= 10000
+      let #ded-nonlif-lng =  #tot-nonlif-lng
+   else
+      if  #tot-nonlif-lng <= 20000
+         let #ded-nonlif-lng =  (#tot-nonlif-lng / 2) + 5000
+         let #ded-nonlif-lng = round(#ded-nonlif-lng + 0.499, 0)
+      else
+         let #ded-nonlif-lng =  15000
+      end-if
+   end-if
+
+   if  #tot-quake <= 50000
+      let #ded-quake =  #tot-quake
+   else
+      let #ded-quake =  50000
+   end-if
+
+!   if  #tot-nonlif-sht <= 2000
+!      let #ded-nonlif-sht =  #tot-nonlif-sht
+!   else
+!      if  #tot-nonlif-sht <= 4000
+!         let #ded-nonlif-sht =  (#tot-nonlif-sht / 2) + 1000
+!         let #ded-nonlif-sht = round(#ded-nonlif-sht + 0.499, 0)
+!     else
+!         let #ded-nonlif-sht =  3000
+!      end-if
+!   end-if
+
+!   If (#ded-nonlif-lng +  #ded-nonlif-sht) <= 15000
+!      let #ded-nonlif =  #ded-nonlif-lng +  #ded-nonlif-sht
+!   else
+!      let #ded-nonlif =  15000
+!   end-if
+ If (#ded-nonlif-lng +  #ded-quake) <= 50000
+      let #ded-nonlif =  #ded-nonlif-lng +  #ded-quake
+   else
+      let #ded-nonlif =  50000
+   end-if
+
+   !convert data type
+
+
+
+   let $tot-life-old       = edit(#tot-life-old,       'B999,999,999')
+   let $ded-life-old       = edit(#ded-life-old,       'B999,999,999')
+   let $tot-pensn-old      = edit(#tot-pensn-old,      'B999,999,999')
+   let $ded-pensn-old      = edit(#ded-pensn-old,      'B999,999,999')
+
+   do gpjp_print_cm_2($tot-life-old,       5.25,  8.95)        !item (103)
+   do gpjp_print_cm_2($ded-life-old,       11.60, 8.95)        !item (105)
+   do gpjp_print_cm_2($tot-pensn-old,      5.25,  13.95)       !item (119)
+   do gpjp_print_cm_2($ded-pensn-old,      11.60, 13.95)       !item (121)
+
+   let $tot-life-new       = edit(#tot-life-new,       'B999,999,999')
+   let $ded-life-new       = edit(#ded-life-new,       'B999,999,999')
+   let $tot-pensn-new      = edit(#tot-pensn-new,      'B999,999,999')
+   let $ded-pensn-new      = edit(#ded-pensn-new,      'B999,999,999')
+
+   do gpjp_print_cm_2($tot-life-new,       5.25,  8.55)       !item (102)
+   do gpjp_print_cm_2($ded-life-new,       11.60, 8.55)       !item (104)
+   do gpjp_print_cm_2($tot-pensn-new,      5.25,  13.55)      !item (118)
+   do gpjp_print_cm_2($ded-pensn-new,      11.60, 13.55)      !item (120)
+
+   let $tot-care      = edit(#tot-care,      'B999,999,999')
+   let $ded-care      = edit(#ded-care,      'B999,999,999')
+   
+   do gpjp_print_cm_2($tot-care,       5.25,  10.75)       !item (115)
+   do gpjp_print_cm_2($ded-care,       16.00, 10.75)       !item (116)
+   
+   if #ded-life-new + #ded-life-old < 40000
+    let #max-new-life-ded = #ded-life-new + #ded-life-old
+   else
+    let #max-new-life-ded = 40000
+   end-if
+   
+   let $max-new-life-ded = edit(#max-new-life-ded, 'B999,999,999')
+   
+   if #ded-life-old > #max-new-life-ded
+     let #max-life-ded = #ded-life-old
+   else
+     let #max-life-ded = #max-new-life-ded
+   end-if
+   
+   let $max-life-ded = edit(#max-life-ded, 'B999,999,999')
+   
+   do gpjp_print_cm_2($max-new-life-ded,   16.00, 8.75)       !item (106)
+   do gpjp_print_cm_2($max-life-ded,       16.00, 9.30)       !item (107)
+   
+   if #ded-pensn-new + #ded-pensn-old < 40000
+    let #max-new-pensn-ded = #ded-pensn-new + #ded-pensn-old
+   else
+    let #max-new-pensn-ded = 40000
+   end-if
+   
+   let $max-new-pensn-ded = edit(#max-new-pensn-ded, 'B999,999,999')
+   
+   if #ded-pensn-old > #max-new-pensn-ded
+     let #max-pensn-ded = #ded-pensn-old
+   else
+     let #max-pensn-ded = #max-new-pensn-ded
+   end-if
+   
+   let $max-pensn-ded = edit(#max-pensn-ded, 'B999,999,999')
+   
+   do gpjp_print_cm_2($max-new-pensn-ded,   16.00, 13.20)       !item (122)
+   do gpjp_print_cm_2($max-pensn-ded,       16.00, 13.75)       !item (123)
+
+   let #life_ded_final = #max-life-ded + #ded-care + #max-pensn-ded !item (124) = 107 + 116 + 123
+   if #life_ded_final > 120000
+    let #life_ded_final = 120000
+   end-if
+   let $life_ded_final = edit(#life_ded_final,'B999,999,999')
+   
+   do gpjp_print_cm_2($life_ded_final,     16.00, 15.50)       !item (124)   
+   
+   let #tot-ded-life-pensn =   #ded-life +  #ded-pensn
+   let $tot-ded-life-pensn = edit(#tot-ded-life-pensn, 'B999,999,999')
+   let $tot-nonlif-lng = edit(#tot-nonlif-lng, 'B999,999,999')
+   let $tot-quake = edit(#tot-quake, 'B999,999,999')
+   !let $tot-nonlif-sht = edit(#tot-nonlif-sht, 'B999,999,999')
+   let $ded-nonlif-lng = edit(#ded-nonlif-lng, 'B999,999,999')
+    let $ded-quake = edit(#ded-quake, 'B999,999,999')
+   !let $ded-nonlif-sht = edit(#ded-nonlif-sht, 'B999,999,999')
+   let $ded-nonlif     = edit(#ded-nonlif,     'B999,999,999')
+   let $tot-socins     = edit(#tot-socins,     'B999,999,999')
+
+   
+   do gpjp_print_cm_2($tot-ded-life-pensn, 16.09, 11.28) 
+   do gpjp_print_cm_2($tot-quake,      7.75, 18.60)         !item (62)
+   do gpjp_print_cm_2($tot-nonlif-lng, 16.00, 18.60)        !item (34)
+   !do gpjp_print_cm_2($tot-nonlif-sht, 16.47, 14.44)       !item (35)
+   do gpjp_print_cm_2($ded-quake,  6.06, 19.50)             !item (25)
+   do gpjp_print_cm_2($ded-nonlif-lng,  12.42, 19.50)       !item (36)
+   !do gpjp_print_cm_2($ded-nonlif-sht,  12.83, 15.86)      !item (37)
+   do gpjp_print_cm_2($ded-nonlif,      16.17, 19.50)       !item (38)
+   do gpjp_print_cm_2($tot-socins,      26.25, 17.37)       !item (44)
+
+
+end-procedure  !Print_Total
+
+!***********************************************************************
+! Print_Life_Ins_Line                                                  *
+! Called By:    Get_Print_Life_section                                 *
+! Description:  Print_Life_Ins_Line                                    *
+!***********************************************************************
+begin-procedure Print_Life_Ins_Line(#i)
+   declare-variable
+      decimal #ypos #tmp
+      text $pstr
+   end-declare
+
+   let $prov       = life.prov(#i)
+   let $type       = life.type(#i)
+   let #tmp        = life.term(#i)
+   let $term       = edit(#tmp, '99')
+   let $policy     = life.policy(#i)
+   let $benef_nm   = life.benef_nm(#i)
+   let $benef_rel  = life.benef_rel(#i)
+   let #tmp        = life.prem(#i)
+   let $prem       = edit(#tmp, 'B999,999,999')
+   let $new        = life.newins(#i)
+
+
+   let #ypos = 6.30 + 0.55 * (#_LIFE-line-no - 1)
+
+   do gpjp_print_cm_2($prov,      4.10, #ypos)      !item (6)
+   do gpjp_print_cm_2($type,      6.40, #ypos)      !item (7)
+   do gpjp_print_cm_2($term,      8.10, #ypos)      !item (8)
+   do gpjp_print_cm_2($policy,    9.00, #ypos)      !item (9)
+   do gpjp_print_cm_2($benef_nm, 11.05, #ypos)      !item (10)
+   do gpjp_print_cm_2($benef_rel,13.13, #ypos)      !item (11)
+   do gpjp_print_cm_2($prem,     14.75, #ypos)      !item (12)
+   let #cpos = #ypos - 0.05
+   if $new = 'Y'
+      do Mark_Circle(14.42, #cpos, 0.3)
+   else
+      do Mark_Circle(14.78, #cpos, 0.3)
+   end-if
+
+
+end-procedure ! Print_Life_Ins_Line
+
+
+!***********************************************************************
+! Print_Care_Ins_Line                                                  *
+! Called By:    Get_Print_Life_section                                 *
+! Description:  Print_Care_Ins_Line                                    *
+!***********************************************************************
+begin-procedure Print_Care_Ins_Line(#i)
+   declare-variable
+      decimal #ypos #tmp
+      text $pstr
+   end-declare
+
+   let $prov       = care.prov(#i)
+   let $type       = care.type(#i)
+   let #tmp        = care.term(#i)
+   let $term       = edit(#tmp, '99')
+   let $policy     = care.policy(#i)
+   let $benef_nm   = care.benef_nm(#i)
+   let $benef_rel  = care.benef_rel(#i)
+   let #tmp        = care.prem(#i)
+   let $prem       = edit(#tmp, 'B999,999,999')
+
+
+   let #ypos = 9.70 + 0.55 * (#_CARE-line-no - 1)
+
+   do gpjp_print_cm_2($prov,      3.98, #ypos)      !item (108)
+   do gpjp_print_cm_2($type,      6.48, #ypos)      !item (109)
+   do gpjp_print_cm_2($term,      8.15, #ypos)      !item (110)
+   do gpjp_print_cm_2($policy,    9.04, #ypos)      !item (111)
+   do gpjp_print_cm_2($benef_nm, 11.30, #ypos)      !item (112)
+   do gpjp_print_cm_2($benef_rel,13.43, #ypos)      !item (113)
+   do gpjp_print_cm_2($prem,     14.75, #ypos)      !item (114)
+   
+
+end-procedure ! Print_Care_Ins_Line
+
+
+!***********************************************************************
+! Print_Pensn_Ins_Line                                                 *
+! Called By:    Get_Print_PENSION_section                              *
+! Description:   Print_Pensn_Ins_Line                                  *
+!***********************************************************************
+begin-procedure  Print_Pensn_Ins_Line(#i)
+   declare-variable
+      decimal #ypos
+      text $pstr
+   end-declare
+
+   let $prov       = pensn.prov(#i)
+   let $type       = pensn.type(#i)
+   let #tmp        = pensn.term(#i)
+   let $term       = edit(#tmp, '99')
+   let $policy     = pensn.policy(#i)
+   let $benef_nm   = pensn.benef_nm(#i)
+   let $benef_rel  = pensn.benef_rel(#i)
+   let #tmp        = pensn.prem(#i)
+   let $prem       = edit(#tmp, 'B999,999,999')
+   let $stdate     = pensn.stdate(#i)
+   let $new        = pensn.newins(#i)
+
+   let #ypos = 11.63 + 0.55 * (#_PENSN-line-no - 1)
+
+   do gpjp_print_cm_2($prov,      4.08, #ypos)      !item (14)
+   do gpjp_print_cm_2($type,      6.48, #ypos)      !item (15)
+   do gpjp_print_cm_2($term,      7.75, #ypos)      !item (16)
+   do gpjp_print_cm_2($policy,    8.64, #ypos)      !item (17)
+   do gpjp_print_cm_2($benef_nm, 11.05, #ypos)      !item (18)
+   do gpjp_print_cm_2($benef_rel,13.33, #ypos)      !item (19)
+   do gpjp_print_cm_2($prem,     14.75, #ypos)      !item (20)
+
+
+   let #ypos = #ypos + 0.140 !* (#_PENSN-line-no - 1)
+
+   let $_Birthdate = $stdate
+   do  Get-Japanese-Dates
+   let $pstr = $_Print_era_str || $_Print_year_in_era
+   do gpjp_print_cm_2($pstr,              11.80, #ypos)  !item (21)
+   do gpjp_print_cm_2($_Print_month,      12.45, #ypos)  !item (21)
+   do gpjp_print_cm_2($_Print_day,        12.75, #ypos)  !item (21)
+   let #cpos = #ypos - 0.25
+   if $new = 'Y'
+      do Mark_Circle(14.43, #cpos, 0.3)
+   else
+      do Mark_Circle(14.81, #cpos, 0.3)
+   end-if
+
+
+end-procedure !  Print_Pensn_Ins_Line
+
+
+!***********************************************************************
+! Print_NonLif_Ins_Line                                                *
+! Called By:    Get_NonLife_Ins_Info                                   *
+! Description:  Print_NonLif_Ins_Line                                  *
+!***********************************************************************
+begin-procedure Print_NonLif_Ins_Line(#i)
+   declare-variable
+      decimal #ypos
+      text $pstr
+   end-declare
+
+   let $prov       = nonlif.prov(#i)
+   let $type       = nonlif.type(#i)
+   let #tmp        = nonlif.term(#i)
+   let $term       = edit(#tmp, '99')
+   let $policy     = nonlif.policy(#i)
+   let $benef_nm   = nonlif.benef_nm(#i)
+   let $benef_rel  = nonlif.benef_rel(#i)
+   let #tmp        = nonlif.prem(#i)
+   let $prem       = edit(#tmp, 'B999,999,999')
+   !let $matur      = nonlif.matur(#i)
+   !if $matur = 'Y'
+      !let $matur = $_GPJPYE05_MATUR_REPAY_YES
+   !else
+      !let $matur = $_GPJPYE05_MATUR_REPAY_NO
+   !end-if
+
+    let $quake      = nonlif.quake(#i)
+
+
+   let #ypos = 17.60 + 0.57 * (#_NONLIF-line-no - 1)
+
+   do gpjp_print_cm_2($prov,      3.50, #ypos)      !item (26)
+   do gpjp_print_cm_2($type,      5.45, #ypos)      !item (27)
+   do gpjp_print_cm_2($term,      7.80, #ypos)      !item (28)
+   do gpjp_print_cm_2($policy,    8.60, #ypos)      !item (29)
+   do gpjp_print_cm_2($benef_nm, 10.86, #ypos)      !item (30)
+   do gpjp_print_cm_2($benef_rel,12.12, #ypos)      !item (31)
+   !do gpjp_print_cm_2($matur,    14.04, #ypos)      !item (32)
+   let #cpos = #ypos - 0.15
+   if $quake = 'Y'
+      do Mark_Circle(13.62, #cpos, 0.3)
+   else
+      do Mark_Circle(14.32, #cpos, 0.3)
+   end-if
+   do gpjp_print_cm_2($prem,     14.88, #ypos)      !item (33)
+
+
+end-procedure ! Print_NonLif_Ins_Line
+
+
+!***********************************************************************
+! Print_Soc_Ins_Line                                                   *
+! Called By:    Get_Soc_Ins_Info                                       *
+! Description:  Print_Soc_Ins_Line                                     *
+!***********************************************************************
+begin-procedure Print_Soc_Ins_Line(#i)
+   declare-variable
+      decimal #ypos
+      text $pstr
+   end-declare
+
+   let $prov       = socins.prov(#i)
+   let $type       = socins.type(#i)
+   let $benef_nm   = socins.benef_nm(#i)
+   let $benef_rel  = socins.benef_rel(#i)
+   let #tmp        = socins.prem(#i)
+   let $prem       = edit(#tmp, 'B999,999,999')
+
+   let #ypos = 16.00 + 0.45 * (#_SOCINS-line-no - 1)
+
+
+   do gpjp_print_cm_2($type,      19.20, #ypos)      !item (39)
+   do gpjp_print_cm_2($prov,      20.90, #ypos)      !item (40)
+   do gpjp_print_cm_2($benef_nm,  22.90, #ypos)      !item (41)
+   do gpjp_print_cm_2($benef_rel, 25.25, #ypos)      !item (42)
+   do gpjp_print_cm_2($prem,      26.05, #ypos)      !item (43)
+
+
+end-procedure ! Print_Soc_Ins_Line
+
+
+!***********************************************************************
+! TaxEstab-Address                                                     *
+! Called By:                                                           *
+! Description:  Set up the Tax Establishment address                   *
+!***********************************************************************
+begin-procedure Set_TaxEstab-Address()
+   declare-variable
+      text $postal
+   end-declare
+
+   let $postal = ltrim($_EstabPostal,' ')
+   do gpjp_separate_postal($postal, $_TE_Postal1, $_TE_Postal2)
+
+   let $_TE_address = $Postal  || ' ' || $_EstabState  || ' ' || $_EstabCity || ' ' || $_EstabAddr1 ||
+                     ' ' ||  $_EstabAddr2 || ' ' || $_EstabAddr3 || ' '|| $_EstabAddr4
+   let #_TE_add_len_p = lengthp($_TE_address)
+
+
+end-procedure !Set_TaxEstab-Address
+
+
+!***********************************************************************
+! Get_EE_info                                                          *
+! Called By:    Process-Main                                           *
+! Description:  Get and print EE infor                                 *
+!***********************************************************************
+begin-procedure Get_EE_info
+ !   DISPLAY '>>> Get_EE_info '
+
+    let $EE_name       = ' '
+    let $EE_name_ac    = ' '
+
+BEGIN-SELECT
+
+
+PN.NAME_FORMAL
+PN.NAME_AC
+
+
+    let $EE_name       = rtrim(&PN.NAME_FORMAL,' ')
+    let $EE_name_ac    = rtrim(&PN.NAME_AC, ' ')
+
+
+!***   Trim description to fit the space available on the report page.
+    if length($EE_name) > 30
+        let $EE_name = substr($EE_name,1,30)
+    end-if
+
+FROM PS_PERSON_NAME PN
+WHERE EMPLID = $My_Emplid
+END-SELECT
+
+    let $EE_ADDR_TYPE = ' '
+    let $EE_Postal    = ' '
+    let $EE_stat      = ' '
+    let $EE_city      = ' '
+    let $EEADD1       = ' '
+    let $EEADD2       = ' '
+    let $EEADD3       = ' '
+    let $EEADD4       = ' '
+    let $EE_address1  = ' '
+    let $EE_address2  = ' '
+    let $EE_address3  = ' '
+    let $addr_type    = 'LEGL'
+    do Get_EE_address
+    if $EE_ADDR_TYPE = ' '
+       let $addr_type = 'HOME'
+       do Get_EE_address
+    end-if
+
+end-procedure  !Get_EE_info
+
+
+!***********************************************************************
+! Get-Japanese-Dates                                                   *
+! Called By:    Get_EE_info                                            *
+! Description:  This procedure converts the birthdate and year of      *
+!               application into the appropriate Japanese format       *
+!***********************************************************************
+begin-procedure Get-Japanese-Dates
+
+        let $Date_1912 = '19120729'
+        let $Date_1926 = '19261224'
+        let $Date_1989 = '19890107'
+
+        if $Birthdate <> ''
+           do Convert-To-DTU-Date ($Birthdate, $Birthdate_out)
+           let $Birthdate_cmp = substr($Birthdate_out,1,4) || substr($Birthdate_out,6,2) || substr($Birthdate_out,9,2)
+           do Get-DateComponents ($Birthdate_cmp,#Year,#Month,#Day)
+
+           if $Birthdate_cmp <= $Date_1912
+              let #Print_era = 1
+              let $Print_era_str = 'M.'
+              let #Print_year = #Year - 1868
+              move #Print_year to $Print_year_in_era 99
+           else
+              if $Birthdate_cmp <= $Date_1926
+                 let #Print_era = 3
+                 let $Print_era_str = 'T.'
+                 let #Print_year = #Year - 1911
+                 move #Print_year to $Print_year_in_era 99
+              else
+                 if $Birthdate_cmp <= $Date_1989
+                    let #Print_era = 5
+                    let $Print_era_str = 'S.'
+                    let #Print_year = #Year - 1925
+                    move #Print_year to $Print_year_in_era 99
+                 else
+                    let #Print_era = 7
+                    let $Print_era_str = 'H.'
+                    let #Print_year = #Year - 1988
+                    move #Print_year to $Print_year_in_era 99
+                 end-if
+              end-if
+           end-if
+           move #Month to $Print_month 09
+           move #Day to   $Print_day 09
+
+         else
+           let  #Print_era = ' '
+           let  $Print_year_in_era = ' '
+           let  $Print_month = ' '
+           let  $Print_day = ' '
+        end-if
+
+
+end-procedure  ! Get-Japanese-Dates
+
+!***********************************************************************
+! Get_EE_address                                                       *
+! Called By:    Process-Main                                           *
+! Description:  Get_EE_address                                         *
+!***********************************************************************
+begin-procedure Get_EE_address()
+   declare-variable
+      text $country $state $state-str $postal $ctiy $add1 $add2 $add3 $add4
+      integer #addr_lengthp
+   end-declare
+
+BEGIN-SELECT
+
+PA.ADDRESS_TYPE   &PA.ADDRESS_TYPE
+PA.COUNTRY        &PA.COUNTRY
+PA.POSTAL         &PA.POSTAL
+PA.STATE          &PA.STATE     ! prefecture
+PA.CITY           &PA.CITY
+PA.ADDRESS1       &PA.ADDRESS1
+PA.ADDRESS2       &PA.ADDRESS2
+PA.ADDRESS3       &PA.ADDRESS3
+PA.ADDRESS4       &PA.ADDRESS4
+    let $EE_ADDR_TYPE = rtrim(&PA.ADDRESS_TYPE, ' ')
+    let $country       = rtrim(&PA.COUNTRY, ' ')
+    let $postal        = ltrim(rtrim(&PA.POSTAL,' '), ' ')
+    let $state         = rtrim(&PA.STATE, ' ')
+    let $city          = rtrim(&PA.CITY, ' ')
+    let $add1          = rtrim(&PA.ADDRESS1, ' ')
+    let $add2          = rtrim(&PA.ADDRESS2, ' ')
+    let $add3          = rtrim(&PA.ADDRESS3, ' ')
+    let $add4          = rtrim(&PA.ADDRESS4, ' ')
+
+    FROM PS_ADDRESSES PA
+    WHERE PA.EMPLID = $_My_Emplid
+      AND PA.ADDRESS_TYPE = $_addr_type
+      AND PA.EFFDT <= $_SU_asofdate
+
+END-SELECT     ! empl address
+
+   do gpjp_separate_postal($postal, $_EE_Postal1, $_EE_Postal2)
+
+   do Get_State_Descr($country, $state, $state-str)
+   let $_EE_address = $postal || ' ' || $state-str || ' ' || $city || ' ' || $add1 || '' || $add2
+                     || ' ' || $add3 || ' ' || $add4
+   let #_EE_add_len_p = lengthp($_EE_address)
+
+
+end-procedure  ! Get_EE_address
+
+
+!***********************************************************************
+! Print_MUTAID_Section                                             *
+! Called By:    Print_Report                                           *
+! Description:  Print_MUTAID_Section                               *
+!***********************************************************************
+begin-procedure Print_MUTAID_Section()
+
+    let #GPJP_YEA_JSBCMUT = 0
+    let #GPJP_YEA_PDCPEN = 0
+    let #GPJP_YEA_HCPMUT = 0
+    let #Tot_MUT = 0
+
+
+BEGIN-SELECT
+
+MUTA.GPJP_YEA_JSBCMUT
+MUTA.GPJP_YEA_PDCPEN
+MUTA.GPJP_YEA_HCPMUT
+
+   let #GPJP_YEA_JSBCMUT     = &MUTA.GPJP_YEA_JSBCMUT
+   let #GPJP_YEA_PDCPEN      = &MUTA.GPJP_YEA_PDCPEN
+   let #GPJP_YEA_HCPMUT      = &MUTA.GPJP_YEA_HCPMUT
+   let #Tot_MUT    = #GPJP_YEA_JSBCMUT + #GPJP_YEA_PDCPEN + #GPJP_YEA_HCPMUT
+
+FROM PS_GPJP_YEA_MUTAID MUTA
+WHERE MUTA.EMPLID        = $_My_Emplid
+AND MUTA.DATE_YEAR_VAL = #_RC_ObjectYear
+
+END-SELECT
+
+
+
+    let $JSBCMUT = edit(#GPJP_YEA_JSBCMUT, 'B999,999,999')
+
+    let $PDCPEN  = edit(#GPJP_YEA_PDCPEN,  'B999,999,999')
+
+    let $HCPMUT  = edit(#GPJP_YEA_HCPMUT,  'B999,999,999')
+
+    let $TOT_MUT = edit(#Tot_MUT,          'B999,999,999')
+
+
+   let #ypos1 = 18.02
+   let #ypos2 = #ypos1 + 0.51 * 1
+   let #ypos3 = #ypos1 + 0.51 * 2
+   let #ypos4 = #ypos1 + 0.51 * 3
+
+   do gpjp_print_cm_2($JSBCMUT, 25.01, #ypos1)      !item (45)
+   do gpjp_print_cm_2($PDCPEN,  25.01, #ypos2)      !new item (ICE 537155000)
+   do gpjp_print_cm_2($HCPMUT,  25.01, #ypos3)      !item (46)
+   do gpjp_print_cm_2($TOT_MUT, 25.01, #ypos4)      !item (47)
+
+end-procedure  !Print_MUTAID_Section
+
+!***********************************************************************
+! Print_Spouse_Section                                                 *
+! Called By:    Print_Report                                           *
+! Description:  Print_Spouse_Income                                   *
+!***********************************************************************
+begin-procedure Print_Spouse_Income($_My_Emplid, #_RC_ObjectYear, $DB_birthdate ,$nonresident, $unifyliving)
+
+BEGIN-SELECT
+
+SPSD.GPJP_YEA_SALINC
+SPSD.GPJP_YEA_SALLEGIT
+SPSD.GPJP_YEA_BUSINC
+SPSD.GPJP_YEA_BUSLEGIT
+SPSD.GPJP_YEA_MISINC
+SPSD.GPJP_YEA_MISLEGIT
+SPSD.GPJP_YEA_DIVINC
+SPSD.GPJP_YEA_DIVLEGIT
+SPSD.GPJP_YEA_RSINC
+SPSD.GPJP_YEA_RSLEGIT
+SPSD.GPJP_YEA_RETINC
+SPSD.GPJP_YEA_RETLEGIT
+SPSD.GPJP_YEA_OCCINC
+SPSD.GPJP_YEA_OCCLEGIT
+SPSD.GPJP_YEA_LTAINC
+SPSD.GPJP_YEA_LTALEGIT
+SPSD.GPJP_YEA_OTHINC
+SPSD.GPJP_YEA_OTHLEGIT
+SPSD.GPJP_YEA_SPCDED
+SPSD.GPJP_YEA_EEINC
+
+      let #SPSD_GPJP_YEA_SALINC    =  &SPSD.GPJP_YEA_SALINC
+      let #SPSD_GPJP_YEA_SALLEGIT  =  &SPSD.GPJP_YEA_SALLEGIT
+      let #SPSD_GPJP_YEA_BUSINC    =  &SPSD.GPJP_YEA_BUSINC
+      let #SPSD_GPJP_YEA_BUSLEGIT  =  &SPSD.GPJP_YEA_BUSLEGIT
+      let #SPSD_GPJP_YEA_MISINC    =  &SPSD.GPJP_YEA_MISINC
+      let #SPSD_GPJP_YEA_MISLEGIT  =  &SPSD.GPJP_YEA_MISLEGIT
+      let #SPSD_GPJP_YEA_DIVINC    =  &SPSD.GPJP_YEA_DIVINC
+      let #SPSD_GPJP_YEA_DIVLEGIT  =  &SPSD.GPJP_YEA_DIVLEGIT
+      let #SPSD_GPJP_YEA_RSINC     =  &SPSD.GPJP_YEA_RSINC
+      let #SPSD_GPJP_YEA_RSLEGIT   =  &SPSD.GPJP_YEA_RSLEGIT
+      let #SPSD_GPJP_YEA_RETINC    =  &SPSD.GPJP_YEA_RETINC
+      let #SPSD_GPJP_YEA_RETLEGIT  =  &SPSD.GPJP_YEA_RETLEGIT
+      let #SPSD_GPJP_YEA_OCCINC    =  &SPSD.GPJP_YEA_OCCINC
+      let #SPSD_GPJP_YEA_OCCLEGIT  =  &SPSD.GPJP_YEA_OCCLEGIT
+      let #SPSD_GPJP_YEA_LTAINC    =  &SPSD.GPJP_YEA_LTAINC
+      let #SPSD_GPJP_YEA_LTALEGIT  =  &SPSD.GPJP_YEA_LTALEGIT
+      let #SPSD_GPJP_YEA_OTHINC    =  &SPSD.GPJP_YEA_OTHINC
+      let #SPSD_GPJP_YEA_OTHLEGIT  =  &SPSD.GPJP_YEA_OTHLEGIT
+      let #SPSD_GPJP_YEA_SPCDED    =  &SPSD.GPJP_YEA_SPCDED
+      let #SPSD_GPJP_YEA_EEINC     =  &SPSD.GPJP_YEA_EEINC
+      let #SPSD_GPJP_YEA_SALINC2   =  #SPSD_GPJP_YEA_SALINC - #SPSD_GPJP_YEA_SALLEGIT
+      let #SPSD_GPJP_YEA_BUSINC2   =  #SPSD_GPJP_YEA_BUSINC - #SPSD_GPJP_YEA_BUSLEGIT
+      let #SPSD_GPJP_YEA_MISINC2   =  #SPSD_GPJP_YEA_MISINC - #SPSD_GPJP_YEA_MISLEGIT
+      let #SPSD_GPJP_YEA_DIVINC2   =  #SPSD_GPJP_YEA_DIVINC - #SPSD_GPJP_YEA_DIVLEGIT
+      let #SPSD_GPJP_YEA_RSINC2    =  #SPSD_GPJP_YEA_RSINC  - #SPSD_GPJP_YEA_RSLEGIT
+      !let #SPSD_GPJP_YEA_RETINC2   =  #SPSD_GPJP_YEA_RETINC - (#SPSD_GPJP_YEA_RETINC - #SPSD_GPJP_YEA_RETLEGIT)/2
+      let #SPSD_GPJP_YEA_RETINC2   =  (#SPSD_GPJP_YEA_RETINC - #SPSD_GPJP_YEA_RETLEGIT)/2
+      let #SPSD_GPJP_YEA_ETCINC    =  #SPSD_GPJP_YEA_OCCINC + #SPSD_GPJP_YEA_LTAINC +#SPSD_GPJP_YEA_OTHINC
+      let #SPSD_GPJP_YEA_ETCLEGIT  =  #SPSD_GPJP_YEA_OCCLEGIT + #SPSD_GPJP_YEA_LTALEGIT + #SPSD_GPJP_YEA_OTHLEGIT
+      let #SPSD_GPJP_YEA_ETCINC2   =  (#SPSD_GPJP_YEA_OCCINC - #SPSD_GPJP_YEA_OCCLEGIT
+                                     + #SPSD_GPJP_YEA_LTAINC - #SPSD_GPJP_YEA_LTALEGIT)/2
+                                     + #SPSD_GPJP_YEA_OTHINC - #SPSD_GPJP_YEA_OTHLEGIT
+      let #Tot_SPSD_Inc            =  #SPSD_GPJP_YEA_SALINC2 + #SPSD_GPJP_YEA_BUSINC2 + #SPSD_GPJP_YEA_MISINC2
+                                     + #SPSD_GPJP_YEA_DIVINC2 + #SPSD_GPJP_YEA_RSINC2 + #SPSD_GPJP_YEA_RETINC2
+                                     + #SPSD_GPJP_YEA_ETCINC2
+
+
+      if #_RC_ObjectYear <= 2003
+          Evaluate #Tot_SPSD_Inc
+            When < 50000
+                let #SPSD_Ded = 380000
+                Break
+            When < 100000
+                let #SPSD_Ded = 330000
+                Break
+            When < 150000
+                let #SPSD_Ded = 280000
+                Break
+            When < 200000
+                let #SPSD_Ded = 230000
+                Break
+            When < 250000
+                let #SPSD_Ded = 180000
+                Break
+            When < 300000
+                let #SPSD_Ded = 130000
+                Break
+            When < 350000
+                let #SPSD_Ded = 80000
+                Break
+            When < 380000
+                let #SPSD_Ded = 30000
+                Break
+            When <= 380000
+                let #SPSD_Ded = 0
+                Break
+            When < 400000
+                let #SPSD_Ded = 380000
+                Break
+            When < 450000
+                let #SPSD_Ded = 360000
+                Break
+            When < 500000
+                let #SPSD_Ded = 310000
+                Break
+            When < 550000
+                let #SPSD_Ded = 260000
+                Break
+            When < 600000
+                let #SPSD_Ded = 210000
+                Break
+            When < 650000
+                let #SPSD_Ded = 160000
+                Break
+            When < 700000
+                let #SPSD_Ded = 110000
+                Break
+            When < 750000
+                let #SPSD_Ded = 60000
+                Break
+            When < 760000
+                let #SPSD_Ded = 30000
+                Break
+            When-Other
+                let #SPSD_Ded = 0
+                Break
+         End-Evaluate
+      else
+         Evaluate #Tot_SPSD_Inc
+            When <= 380000
+                let #SPSD_Ded = 0
+                Break
+            When < 400000
+                let #SPSD_Ded = 380000
+                Break
+            When < 450000
+                let #SPSD_Ded = 360000
+                Break
+            When < 500000
+                let #SPSD_Ded = 310000
+                Break
+            When < 550000
+                let #SPSD_Ded = 260000
+                Break
+            When < 600000
+                let #SPSD_Ded = 210000
+                Break
+            When < 650000
+                let #SPSD_Ded = 160000
+                Break
+            When < 700000
+                let #SPSD_Ded = 110000
+                Break
+            When < 750000
+                let #SPSD_Ded = 60000
+                Break
+            When < 760000
+                let #SPSD_Ded = 30000
+                Break
+            When-Other
+                let #SPSD_Ded = 0
+                Break
+         End-Evaluate
+      end-if
+      
+        let $EE-INC   = edit(#SPSD_GPJP_YEA_EEINC, 'B999,999,999')
+        let $SPSD-INC = edit(#Tot_SPSD_Inc,        'B999,999,999')
+
+        let $SAL-INC  = edit(#SPSD_GPJP_YEA_SALINC, 'B999,999,999')
+        let $SAL-INC2 = edit(#SPSD_GPJP_YEA_SALINC2, 'B999,999,999')
+        let $BUS-INC  = edit(#SPSD_GPJP_YEA_BUSINC, 'B999,999,999')
+        let $BUS-LEG  = edit(#SPSD_GPJP_YEA_BUSLEGIT, 'B999,999,999')
+        let $BUS-INC2 = edit(#SPSD_GPJP_YEA_BUSINC2, 'B999,999,999')
+        let $MIS-INC  = edit(#SPSD_GPJP_YEA_MISINC, 'B999,999,999')
+        let $MIS-LEG  = edit(#SPSD_GPJP_YEA_MISLEGIT, 'B999,999,999')
+        let $MIS-INC2 = edit(#SPSD_GPJP_YEA_MISINC2, 'B999,999,999')
+        let $DIV-INC  = edit(#SPSD_GPJP_YEA_DIVINC, 'B999,999,999')
+        let $DIV-LEG  = edit(#SPSD_GPJP_YEA_DIVLEGIT, 'B999,999,999')
+        let $DIV-INC2 = edit(#SPSD_GPJP_YEA_DIVINC2, 'B999,999,999')
+        let $RS-INC   = edit(#SPSD_GPJP_YEA_RSINC, 'B999,999,999')
+        let $RS-LEG   = edit(#SPSD_GPJP_YEA_RSLEGIT, 'B999,999,999')
+        let $RS-INC2  = edit(#SPSD_GPJP_YEA_RSINC2, 'B999,999,999')
+        let $RET-INC  = edit(#SPSD_GPJP_YEA_RETINC, 'B999,999,999')
+        let $RET-LEG  = edit(#SPSD_GPJP_YEA_RETLEGIT, 'B999,999,999')
+        let $RET-INC2 = edit(#SPSD_GPJP_YEA_RETINC2, 'B999,999,999')
+        let $ETC-INC  = edit(#SPSD_GPJP_YEA_ETCINC, 'B999,999,999')
+        let $ETC-LEG  = edit(#SPSD_GPJP_YEA_ETCLEGIT, 'B999,999,999')
+        let $ETC-INC2 = edit(#SPSD_GPJP_YEA_ETCINC2, 'B999,999,999')
+        let $SPC-DED  = edit(#SPSD_GPJP_YEA_SPCDED, 'B999,999,999')
+
+      !let #SPSD_Ded = #SPSD_Ded / 10000
+      let $SPSD-ded = edit(#SPSD_Ded, '999,9990')
+      !let $SPSD-ded1 = substr($SPSD-ded,1,1)
+      !let $SPSD-ded2 = substr($SPSD-ded,2,1)
+
+      do gpjp_print_cm_2($EE-INC,   24.80,  5.20)    !item (48)
+      do gpjp_print_cm_2($SPSD-INC, 25.90,  12.25)    !item (52)
+
+      if #SPSD_Ded > 0
+         do gpjp_print_cm_2($SAL-INC, 21.54, 9.10)
+         do gpjp_print_cm_2($SAL-INC2, 25.51, 9.10)
+         do gpjp_print_cm_2($BUS-INC, 21.54, 9.60)
+         do gpjp_print_cm_2($BUS-LEG, 23.19, 9.60)
+         do gpjp_print_cm_2($BUS-INC2, 25.51, 9.60)
+         do gpjp_print_cm_2($MIS-INC, 21.54, 10.00)
+         do gpjp_print_cm_2($MIS-LEG, 23.19, 10.00)
+         do gpjp_print_cm_2($MIS-INC2, 25.51, 10.00)
+         do gpjp_print_cm_2($DIV-INC, 21.54, 10.30)
+         do gpjp_print_cm_2($DIV-LEG, 23.19, 10.30)
+         do gpjp_print_cm_2($DIV-INC2, 25.51, 10.30)
+         do gpjp_print_cm_2($RS-INC, 21.54, 10.60)
+         do gpjp_print_cm_2($RS-LEG, 23.19, 10.60)
+         do gpjp_print_cm_2($RS-INC2, 25.51, 10.60)
+         do gpjp_print_cm_2($RET-INC, 21.54, 11.10)
+         do gpjp_print_cm_2($RET-LEG, 23.19, 11.10)
+         do gpjp_print_cm_2($RET-INC2, 25.51, 11.10)
+         do gpjp_print_cm_2($SPC-DED, 23.60, 11.50)
+         do gpjp_print_cm_2($ETC-INC, 21.54, 11.70)
+         do gpjp_print_cm_2($ETC-LEG, 23.19, 11.70)
+         do gpjp_print_cm_2($ETC-INC2, 25.51, 11.70)
+
+         alter-printer
+            font = 28825
+            point-size = 16
+         do gpjp_print_cm_2($SPSD-ded, 25.38, 14.70)                      !item (55)
+         !do gpjp_print_cm_2($SPSD-ded2, 25.88, 14.76)                      !item (55)
+         alter-printer
+            font = 28825
+            point-size = #_gpjpye05-default-point-size
+
+            do gpjp_print_cm_2($DB_birthdate, 26.61, 5.80)                      !item (50.2)
+        If $nonresident  = 'Y'
+                 do Mark_Circle(23.11, 6.65, 0.3)
+             do gpjp_print_cm_2($unifyliving , 25.10, 6.85)                      !item (50.4
+        End-If
+
+      end-if
+
+
+FROM PS_GPJP_YEA_SPSDED SPSD
+WHERE SPSD.EMPLID        = $_My_Emplid
+AND SPSD.DATE_YEAR_VAL = #_RC_ObjectYear
+
+END-SELECT
+
+end-procedure    ! Print_Spouse_Income()
+
+
+!***********************************************************************
+! Print_Spouse_Section                                                 *
+! Called By:    Print_Report                                           *
+! Description:  Print_Spouse_Name_Address                              *
+!***********************************************************************
+begin-procedure Print_Spouse_Info($_My_Emplid ,$_SU_asofdate, :$DB_birthdate, :$nonresident, :$unifyliving)
+
+!****  get Spouse info from DEPENDENT_BENEF :
+
+BEGIN-SELECT
+
+DB.DEPENDENT_BENEF         &DB.DEPENDENT_BENEF
+DB.RELATIONSHIP            &DB.RELATIONSHIP
+C.NAME                     &C.NAME
+C.NAME_AC                 &C.NAME_AC
+A.BIRTHDATE               &A.BIRTHDATE
+B.SAME_ADDRESS_EMPL       &B.SAME_ADDRESS_EMPL
+B.COUNTRY                 &B.COUNTRY
+B.POSTAL                  &B.POSTAL
+B.STATE                   &B.STATE     ! prefecture
+B.CITY                    &B.CITY
+B.ADDRESS1                &B.ADDRESS1
+B.ADDRESS2                &B.ADDRESS2
+B.ADDRESS3                &B.ADDRESS3
+B.ADDRESS4                &B.ADDRESS4
+E.GPJP_NO_RSDNT_RLTV      &E.NONRESIDENT
+E.GPJP_FCT_UNFY_LVNG      &E.UNFYLVNG
+
+    let $DB_dep_benef  = rtrim(&DB.DEPENDENT_BENEF, ' ')
+    let $DB_relation   = rtrim(&DB.RELATIONSHIP, ' ')
+    let $DB_name       = rtrim(&C.NAME, ' ')
+    let $DB_name_ac    = rtrim(&C.NAME_AC, ' ')
+    let $DB_birthdate  = rtrim(&A.BIRTHDATE,' ')
+    let $DB_same_addr  = &B.SAME_ADDRESS_EMPL
+    let $country    = rtrim(&B.COUNTRY, ' ')
+    let $postal     = rtrim(&B.POSTAL, ' ')
+    let $state      = rtrim(&B.STATE, ' ')
+    let $city       = rtrim(&B.CITY, ' ')
+    let $add1       = rtrim(&B.ADDRESS1, ' ')
+    let $add2       = rtrim(&B.ADDRESS2, ' ')
+    let $add3       = rtrim(&B.ADDRESS3, ' ')
+    let $add4       = rtrim(&B.ADDRESS4, ' ')
+    let $nonresident  = &E.NONRESIDENT
+    let #unifyliving  = &E.UNFYLVNG
+    let $unifyliving  = edit(#unifyliving, '999,999,999')
+
+
+!***   Trim description to fit the space available on the report page.
+    if length($DB_name) > 30
+        let $DB_name = substr($DB_name,1,30)
+    end-if
+    if length($DB_name_ac) > 30
+        let $DB_name_ac = substr($DB_name_ac,1,30)
+    end-if
+    do Get_State_Descr($country, $state, $state-str)
+    let $DB_address = $postal || ' ' || $state-str || ' ' || $city || ' ' || $add1
+     || ' ' || $add2 || ' '  || $add3 || ' ' || $add4
+
+    do gpjp_print_cm_2($DB_name_ac, 22.50, 5.70)                   !item (49)
+    do gpjp_print_cm_2($DB_name, 22.50, 5.70)                      !item (50)
+    if &B.SAME_ADDRESS_EMPL = 'N'
+    do gpjp_print_cm_wrap($DB_address, 24.60, 6.20, 28, 0.20, 3) !item (51)
+    end-if
+ 
+    
+  FROM PS_DEP_BEN A
+  , PS_DEP_BEN_ADDR B
+  , PS_DEP_BEN_NAME C
+  , PS_DEP_BEN_EFF DB
+  , PS_GPJP_IT_DEP_TAX E
+  WHERE
+     DB.EMPLID = $_My_Emplid
+     AND DB.RELATIONSHIP = 'SP'
+     And B.EMPLID = A.EMPLID
+     AND B.DEPENDENT_BENEF = A.DEPENDENT_BENEF
+     AND (B.EFFDT = (
+   SELECT MAX(B1.EFFDT)
+    FROM PS_DEP_BEN_ADDR B1
+   WHERE B1.EMPLID = B.EMPLID
+     AND B1.DEPENDENT_BENEF = B.DEPENDENT_BENEF
+     AND B1.EFFDT <= $_SU_asofdate))
+     AND C.EMPLID = A.EMPLID
+     AND C.DEPENDENT_BENEF = A.DEPENDENT_BENEF
+     AND (C.EFFDT = (
+   SELECT MAX(C1.EFFDT)
+    FROM PS_DEP_BEN_NAME C1
+   WHERE C1.EMPLID = C.EMPLID
+     AND C1.DEPENDENT_BENEF = C.DEPENDENT_BENEF
+     AND C1.EFFDT <= $_SU_asofdate))
+     AND DB.EMPLID = A.EMPLID
+     AND DB.DEPENDENT_BENEF = A.DEPENDENT_BENEF
+     AND (DB.EFFDT = (
+   SELECT MAX(D1.EFFDT)
+    FROM PS_DEP_BEN_EFF D1
+   WHERE D1.EMPLID = DB.EMPLID
+     AND D1.DEPENDENT_BENEF = DB.DEPENDENT_BENEF
+     AND D1.EFFDT <= $_SU_asofdate))
+     AND E.EMPLID = A.EMPLID 
+     AND E.DEPENDENT_BENEF = A.DEPENDENT_BENEF
+     AND (E.EFFDT =(
+   SELECT MAX(E1.EFFDT)
+    FROM PS_GPJP_IT_DEP_TAX E1
+   WHERE E1.EMPLID = E.EMPLID
+     AND E1.DEPENDENT_BENEF = E.DEPENDENT_BENEF
+     AND E1.EFFDT <= $_SU_asofdate ))
+
+
+END-SELECT
+
+
+
+end-procedure  !Print_Spouse_Info
+
+
+
+!***********************************************************************
+! Get_Life_Ins_Info                                                    *
+! Called By:    Get_Print_Other_sections                               *
+! Description:  Get_Life_Ins_Info                                      *
+!***********************************************************************
+begin-procedure Get_Life_Ins_Info
+!   DISPLAY '>>> Get_Life_info '
+   let #i = 0
+   let #tot-life-old = 0
+   let #tot-life-new = 0
+
+
+BEGIN-SELECT
+LIFE.EMPLID
+LIFE.GPJP_YEA_SEQ
+LIFE.GPJP_YEA_INSTYPE
+LIFE.GPJP_YEA_INSPROV
+LIFE.GPJP_YEA_INSTERM
+LIFE.GPJP_YEA_INSPOL
+LIFE.GPJP_YEA_INSBENNM
+LIFE.GPJP_YEA_INSBENREL
+LIFE.GPJP_YEA_INSPREM
+LIFE.GPJP_YEA_INS_NEW
+
+   let life.type(#i)      = rtrim(&LIFE.GPJP_YEA_INSTYPE, ' ')
+   let life.prov(#i)      = rtrim(&LIFE.GPJP_YEA_INSPROV, ' ')
+   let life.policy(#i)    = rtrim(&LIFE.GPJP_YEA_INSPOL, ' ')
+   let life.benef_nm(#i)  = rtrim(&LIFE.GPJP_YEA_INSBENNM, ' ')
+   let life.benef_rel(#i) = rtrim(&LIFE.GPJP_YEA_INSBENREL, ' ')
+   let life.term(#i)      = &LIFE.GPJP_YEA_INSTERM
+   let life.prem(#i)      = &LIFE.GPJP_YEA_INSPREM
+   let life.newins(#i)    = &LIFE.GPJP_YEA_INS_NEW
+   if &LIFE.GPJP_YEA_INS_NEW = 'Y'
+    let #tot-life-new = #tot-life-new + &LIFE.GPJP_YEA_INSPREM
+   else
+    let #tot-life-old = #tot-life-old + &LIFE.GPJP_YEA_INSPREM
+   end-if
+   let #i = #i + 1
+
+FROM PS_GPJP_YEA_LIFE LIFE
+WHERE LIFE.EMPLID        = $My_Emplid
+AND LIFE.DATE_YEAR_VAL = #RC_ObjectYear
+ORDER BY GPJP_YEA_SEQ
+
+END-SELECT
+
+   let #LIFE_count = #i
+
+end-procedure  !Get_Life_Ins_Info
+
+
+!***********************************************************************
+! Get_Care_Ins_Info                                                    *
+! Description:  Get_Care_Ins_Info                                      *
+!***********************************************************************
+begin-procedure Get_Care_Ins_Info
+!   DISPLAY '>>> Get_Care_info '
+   let #i = 0
+   let #tot-care = 0
+
+
+BEGIN-SELECT
+CARE.EMPLID
+CARE.GPJP_YEA_SEQ
+CARE.GPJP_YEA_INSTYPE
+CARE.GPJP_YEA_INSPROV
+CARE.GPJP_YEA_INSTERM
+CARE.GPJP_YEA_INSPOL
+CARE.GPJP_YEA_INSBENNM
+CARE.GPJP_YEA_INSBENREL
+CARE.GPJP_YEA_INSPREM
+
+   let care.type(#i)      = rtrim(&CARE.GPJP_YEA_INSTYPE, ' ')
+   let care.prov(#i)      = rtrim(&CARE.GPJP_YEA_INSPROV, ' ')
+   let care.policy(#i)    = rtrim(&CARE.GPJP_YEA_INSPOL, ' ')
+   let care.benef_nm(#i)  = rtrim(&CARE.GPJP_YEA_INSBENNM, ' ')
+   let care.benef_rel(#i) = rtrim(&CARE.GPJP_YEA_INSBENREL, ' ')
+   let care.term(#i)      = &CARE.GPJP_YEA_INSTERM
+   let care.prem(#i)      = &CARE.GPJP_YEA_INSPREM
+
+   let #tot-care = #tot-care + &CARE.GPJP_YEA_INSPREM
+    
+   let #i = #i + 1
+
+FROM PS_GPJP_YEA_CARE CARE
+WHERE CARE.EMPLID        = $My_Emplid
+AND CARE.DATE_YEAR_VAL = #RC_ObjectYear
+ORDER BY GPJP_YEA_SEQ
+
+END-SELECT
+
+   let #CARE_count = #i
+
+end-procedure  !Get_Care_Ins_Info
+
+
+
+!***********************************************************************
+! Get_Pension_Ins_Info                                                 *
+! Called By:    Get_Print_Other_sections                               *
+! Description:  Get_Pension_Ins_Info                                   *
+!***********************************************************************
+begin-procedure Get_Pension_Ins_Info
+!  DISPLAY '>>> Pension_section '
+   let #i = 0
+   let #tot-pensn-old = 0
+   let #tot-pensn-new = 0
+BEGIN-SELECT
+
+PNSN.GPJP_YEA_INSTYPE
+PNSN.GPJP_YEA_INSPROV
+PNSN.GPJP_YEA_INSTERM
+PNSN.GPJP_YEA_INSPOL
+PNSN.GPJP_YEA_INSBENNM
+PNSN.GPJP_YEA_INSBENREL
+PNSN.GPJP_YEA_INSPREM
+PNSN.GPJP_YEA_INSDATE
+PNSN.GPJP_YEA_SEQ
+PNSN.GPJP_YEA_INS_NEW
+
+   let pensn.type(#i)      = rtrim(&PNSN.GPJP_YEA_INSTYPE, ' ')
+   let pensn.prov(#i)      = rtrim(&PNSN.GPJP_YEA_INSPROV, ' ')
+   let pensn.policy(#i)    = rtrim(&PNSN.GPJP_YEA_INSPOL, ' ')
+   let pensn.benef_nm(#i)  = rtrim(&PNSN.GPJP_YEA_INSBENNM, ' ')
+   let pensn.benef_rel(#i) = rtrim(&PNSN.GPJP_YEA_INSBENREL, ' ')
+   let pensn.term(#i)      = &PNSN.GPJP_YEA_INSTERM
+   let pensn.prem(#i)      = &PNSN.GPJP_YEA_INSPREM
+   let pensn.stdate(#i)    = &PNSN.GPJP_YEA_INSDATE
+   let pensn.newins(#i)    = &PNSN.GPJP_YEA_INS_NEW
+   if &PNSN.GPJP_YEA_INS_NEW = 'Y'
+    let #tot-pensn-new = #tot-pensn-new + &PNSN.GPJP_YEA_INSPREM
+   else
+    let #tot-pensn-old = #tot-pensn-old + &PNSN.GPJP_YEA_INSPREM
+   end-if
+
+   let #i = #i + 1
+
+FROM PS_GPJP_YEA_PENSN PNSN
+WHERE PNSN.EMPLID        = $My_Emplid
+AND PNSN.DATE_YEAR_VAL = #RC_ObjectYear
+ORDER BY GPJP_YEA_SEQ
+
+END-SELECT
+
+   let #PENSN_count = #i
+
+
+end-procedure  !Get_Pension_Ins_Info
+
+
+!***********************************************************************
+! Get_NonLife_Ins_Info                                                 *
+! Called By:    Get_Print_Other_sections                               *
+! Description:  Get_NonLife_Ins_Info                                   *
+!***********************************************************************
+begin-procedure Get_NonLife_Ins_Info
+!   DISPLAY '>>> Non_Life_info '
+   let #i = 0
+   let #tot-nonlif-lng = 0
+   !let #tot-nonlif-sht = 0
+   let #tot-quake = 0
+
+BEGIN-SELECT
+
+NLIF.GPJP_YEA_INSTYPE
+NLIF.GPJP_YEA_INSPROV
+NLIF.GPJP_YEA_INSTERM
+NLIF.GPJP_YEA_INSPOL
+NLIF.GPJP_YEA_INSBENNM
+NLIF.GPJP_YEA_INSBENREL
+NLIF.GPJP_YEA_INSPREM
+!NLIF.GPJP_YEA_INSDIV
+NLIF.GPJP_YEA_QUAKE_FLG
+NLIF.GPJP_YEA_SEQ
+
+
+
+   let nonlif.type(#i)      = rtrim(&NLIF.GPJP_YEA_INSTYPE, ' ')
+   let nonlif.prov(#i)      = rtrim(&NLIF.GPJP_YEA_INSPROV, ' ')
+   let nonlif.policy(#i)    = rtrim(&NLIF.GPJP_YEA_INSPOL, ' ')
+   let nonlif.benef_nm(#i)  = rtrim(&NLIF.GPJP_YEA_INSBENNM, ' ')
+   let nonlif.benef_rel(#i) = rtrim(&NLIF.GPJP_YEA_INSBENREL, ' ')
+   let nonlif.term(#i)      = &NLIF.GPJP_YEA_INSTERM
+   let nonlif.prem(#i)      = &NLIF.GPJP_YEA_INSPREM
+   !let nonlif.matur(#i)     = rtrim(&NLIF.GPJP_YEA_INSDIV, ' ')
+   let nonlif.quake(#i)     = rtrim(&NLIF.GPJP_YEA_QUAKE_FLG, ' ')
+
+   let #GPJP_YEA_INSTERM = &NLIF.GPJP_YEA_INSTERM
+
+ !  if  #GPJP_YEA_INSTERM >= 10 AND &NLIF.GPJP_YEA_INSDIV = 'Y'
+ !    let #tot-nonlif-lng =  #tot-nonlif-lng +  &NLIF.GPJP_YEA_INSPREM
+ !  else
+ !     let #tot-nonlif-sht =  #tot-nonlif-sht +  &NLIF.GPJP_YEA_INSPREM
+ !  end-if
+
+ if  &NLIF.GPJP_YEA_QUAKE_FLG = 'Y'
+      let #tot-quake =  #tot-quake +  &NLIF.GPJP_YEA_INSPREM
+   else
+      let #tot-nonlif-lng =  #tot-nonlif-lng +  &NLIF.GPJP_YEA_INSPREM
+   end-if
+
+   let #i = #i + 1
+
+FROM PS_GPJP_YEA_NONLIF NLIF
+WHERE NLIF.EMPLID        = $My_Emplid
+AND NLIF.DATE_YEAR_VAL = #RC_ObjectYear
+ORDER BY GPJP_YEA_SEQ
+
+END-SELECT
+   let #NONLIF_count = #i
+
+end-procedure  !Get_NonLife_Ins_Info
+
+
+!***********************************************************************
+! Get_Soc_Ins_Info                                                     *
+! Called By:    Get_Print_Other_sections                               *
+! Description:  Get_Soc_Ins_Info                                       *
+!***********************************************************************
+begin-procedure Get_Soc_Ins_Info
+!    DISPLAY '>>> Soc_Ins_section '
+
+   let #i    = 0
+   let #tot-socins = 0
+
+BEGIN-SELECT
+SOCI.EMPLID
+SOCI.GPJP_YEA_SEQ
+SOCI.GPJP_YEA_INSTYPE
+SOCI.GPJP_YEA_INSPROV
+SOCI.GPJP_YEA_INSBENNM
+SOCI.GPJP_YEA_INSBENREL
+SOCI.GPJP_YEA_INSPREM
+
+   let socins.type(#i)      = rtrim(&SOCI.GPJP_YEA_INSTYPE, ' ')
+   let socins.prov(#i)      = rtrim(&SOCI.GPJP_YEA_INSPROV, ' ')
+   let socins.benef_nm(#i)  = rtrim(&SOCI.GPJP_YEA_INSBENNM, ' ')
+   let socins.benef_rel(#i) = rtrim(&SOCI.GPJP_YEA_INSBENREL, ' ')
+   let socins.prem(#i)      = &SOCI.GPJP_YEA_INSPREM
+   let #tot-socins =  #tot-socins +  &SOCI.GPJP_YEA_INSPREM
+
+   let #i = #i + 1
+
+FROM PS_GPJP_YEA_SOCINS SOCI
+WHERE SOCI.EMPLID        = $My_Emplid
+AND SOCI.DATE_YEAR_VAL = #RC_ObjectYear
+ORDER BY GPJP_YEA_SEQ
+
+END-SELECT
+
+   let #SOCINS_count = #i
+
+end-procedure  !Get_Soc_Ins_Info
+
+!***********************************************************************
+! Mark_Circle                                                                          *
+! Called By:    Print_NonLif_Ins_Line                                      *
+! Description:  Draws a circle                                                 *
+!***********************************************************************
+begin-procedure Mark_Circle(#xpos, #ypos, #radius)
+   declare-variable
+      decimal #xdif #ydif #psize
+   end-declare
+
+   let #xdif   = #radius * 8.8 / 7.15
+   let #ydif   = #radius * 6.3 / 7.15
+   let #psize  = #radius * 500 / 7.15
+
+   let #xpos   = #xpos - #xdif
+   let #ypos   = #ypos + #ydif
+
+   alter-printer
+      font = 28825
+      point-size = #psize
+
+   do gpjp_print_cm($_Mark_Circle, #xpos, #ypos)
+
+   alter-printer
+      font = 28825
+      point-size = #_gpjpye05-default-point-size
+
+end-procedure
+!***********************************************************************
+! Print Footing                                                        *
+! ICE 547284000                                                        *
+!***********************************************************************
+
+
+begin-procedure Reset
+  move 'Y' to $End_of_Report
+  if #MsgFlagW
+     print $MsgTextW (+2,1)
+  end-if
+end-procedure
+
+begin-footing 1
+!  Print 'Footer text here' (,1)
+
+
+  let $Footing = $BUDesc||'  '||$LocationDesc||'  '||$DeptID||'  '||$Supv_lvl_id||'  '||$My_Emplid
+
+If &RC.GPJP_INCL_BU_LOC = 'Y'
+  print $Footing (,1)
+end-if
+
+
+  if $End_of_Report = 'Y'
+!#ifdef EBCDIC
+!   encode '<39>E' into $Reset
+!#else
+!   encode '<27>E' into $Reset
+!#end-if
+    print $Reset (+0,+1)
+  end-if
+end-footing
+
+
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+! SQCS included in the report                                          *
+!                                                                      *
+!***********************************************************************
+#include 'getestab.sqc'     ! Get-Estab-Name procedure
+#include 'number.sqc'       ! Routines to format numbers
+#include 'datetime.sqc'     ! Routines for date AND time formatting
+#include 'datemath.sqc'     ! Date conversion procedures
+#include 'sqrtrans.sqc'     ! Translate SQR strings to given language
+#include 'prcsapi.sqc'      ! Replaces stdapi.sqc
+#include 'prcslng.sqc'      ! Replaces getrplng.sqc
+#include 'readxlat.sqc'     ! Procedure to read values from xlattable
+#include 'hrsecty.sqc'      ! Get SQR Security parameters
+#Include 'getsetid.sqc'     ! Get Set Id from the Tableset Record Detail
+#include 'getsupjp.sqc'     ! Get Supervisor Level Name
+#include 'gpjpaddr.sqc'  ! Format address to Japanese form
+#include 'gpjpprnt.sqc'    ! Print Functions - Japanese
+#include 'gpjpprt2.sqc'    ! Print Functions2 - Japanese
+#Include 'getlocnm.sqc'      ! Get Location description
+#Include 'getbunam.sqc'      ! Get Business unit description
+#Include 'getdptnm.sqc'      ! Get Department description

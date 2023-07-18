@@ -1,0 +1,811 @@
+!***********************************************************************
+! GPDETX03.SQC:  Fetching SQC for Report                               *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:03:37:05                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!                                                                      *
+!***********************************************************************
+
+!rh 05b8 -- include new sqc -- tests for match in GP_RSLT_PIN for accu processing
+#include 'gpdeut08.sqc'  !accumulator processing; test for user-keys
+
+
+
+begin-procedure Get-Data
+  do Delete_Rp_Tx03
+
+  if rtrim($Ctl_PayEntity,' ') <> '' and rtrim($Cal_Id_Criteria,' ') <> ''
+  do Initial_Convert_Currency
+  do Get-Earn-Ded-Rslt
+  do Get-Accum-Rslt
+
+     !2004Bundle3: added storno mechanism
+     do Make_Storno_Entries
+  do Get-Earn-Ded-Reversal
+  do Get-Accum-Reversal
+  else
+    do Print_Info_User
+  end-if
+end-procedure  Get-Data
+
+!**************************************************
+begin-procedure Get-Earn-Ded-Rslt
+  let #ER_count=0
+
+begin-SELECT
+SS.EMPLID       &SS.EMPLID
+SS.CAL_RUN_ID   &SS.CAL_RUN_ID
+SS.EMPL_RCD     &SS.EMPL_RCD
+SS.GP_PAYGROUP  &SS.GP_PAYGROUP
+SS.CAL_ID       &SS.CAL_ID
+SS.ORIG_CAL_RUN_ID       &SS.ORIG_CAL_RUN_ID
+SS.RSLT_SEG_NUM &SS.RSLT_SEG_NUM
+SS.INSTANCE     &SS.INSTANCE
+SS.PIN_NUM      &SS.PIN_NUM
+SS.SLICE_BGN_DT &SS.SLICE_BGN_DT
+SS.SLICE_END_DT &SS.SLICE_END_DT
+PS.PAY_ENTITY   &PS.PAY_ENTITY
+PS.PRD_END_DT   &PS.PRD_END_DT
+PS.GPDE_AL_CPAY_ENDDT  &PS.GPDE_AL_CPAY_ENDDT
+P.PIN_TYPE      &P.PIN_TYPE
+P.PIN_NM        &P.PIN_NM
+P.DESCR         &P.DESCR
+P.PIN_OWNER     &P.PIN_OWNER 
+SUM(SS.CALC_RSLT_VAL) &CAL_AMT
+SUM(SS.BASE_RSLT_VAL) &BASE_AMT
+SUM(SS.RATE_RSLT_VAL) &RATE_AMT
+SUM(SS.UNIT_RSLT_VAL) &UNIT_AMT
+SUM(SS.PCT_RSLT_VAL)  &PCT_AMT
+PS.CURRENCY_CD
+PS.CUR_RT_TYPE
+PS.GPDE_ASOF_DT_EX_RT
+
+  let $PrdEndDT          = &PS.PRD_END_DT
+  let $Current_Curr      = &PS.CURRENCY_CD
+  let $Current_RT_Type   = &PS.CUR_RT_TYPE
+  let $Current_DT_EX_RT  = &PS.GPDE_ASOF_DT_EX_RT
+
+  if rtrim($Current_RT_Type, ' ') = ''
+    let $Current_RT_Type = $BaseRtType
+  end-if
+
+  if rtrim($Current_DT_EX_RT, ' ') = ''
+    let $Current_DT_EX_RT = $PrdEndDT
+  end-if
+
+  if $Current_Curr <> $ToCurrency
+     do ConvertCurrency(&CAL_AMT,$Current_Curr,$ToCurrency,$Current_RT_Type,
+                     $Current_DT_EX_RT,#CAL_AMT,'F')
+     do ConvertCurrency(&BASE_AMT,$Current_Curr,$ToCurrency,$Current_RT_Type,
+                     $Current_DT_EX_RT,#BASE_AMT,'F')
+     do ConvertCurrency(&RATE_AMT,$Current_Curr,$ToCurrency,$Current_RT_Type,
+                     $Current_DT_EX_RT,#RATE_AMT,'F')
+     do ConvertCurrency(&UNIT_AMT,$Current_Curr,$ToCurrency,$Current_RT_Type,
+                     $Current_DT_EX_RT,#UNIT_AMT,'F')
+     do ConvertCurrency(&PCT_AMT,$Current_Curr,$ToCurrency,$Current_RT_Type,
+                     $Current_DT_EX_RT,#PCT_AMT,'F')
+  else
+     let #CAL_AMT         = &CAL_AMT
+     let #BASE_AMT        = &BASE_AMT
+     let #RATE_AMT        = &RATE_AMT
+     let #UNIT_AMT        = &UNIT_AMT
+     let #PCT_AMT         = &PCT_AMT
+  end-if
+
+  !2004Bundle3: remove first 3 chars only when Owner is not 'C' (customer)
+  !
+  do Get-Description-List(&SS.PIN_NUM,$Language_cd,$Descr,$Descr3)
+  if &P.PIN_OWNER <> 'C'
+     let $PIN_NM = rtrim(substr(&P.PIN_NM,4,18), ' ')
+  else
+     let $PIN_NM = rtrim(&P.PIN_NM, ' ')
+  end-if
+
+  let $Descr = $PIN_NM || '-' || $Descr
+  let $Descr = substr($Descr,1,25)
+
+     do Insert_GPDE_Bl(&SS.EMPLID,&SS.CAL_RUN_ID,&SS.EMPL_RCD,&SS.GP_PAYGROUP,&SS.CAL_ID,&SS.ORIG_CAL_RUN_ID,
+            &SS.RSLT_SEG_NUM,&SS.INSTANCE,&SS.PIN_NUM,&SS.SLICE_BGN_DT,&SS.SLICE_END_DT,
+                &PS.PAY_ENTITY,&PS.PRD_END_DT,&PS.GPDE_AL_CPAY_ENDDT,'E',&P.PIN_TYPE,$PIN_NM,
+                $Descr,#CAL_AMT,#BASE_AMT,#RATE_AMT,#UNIT_AMT,#PCT_AMT)
+
+
+     let #ER_count = #ER_count + 1
+
+FROM   PS_GPDE_RP_0001 PS ,PS_GP_RSLT_ERN_DED SS, PS_GPDE_BL_PRINT D , PS_GP_PIN P
+WHERE  PS.EMPLID = SS.EMPLID
+AND    PS.CAL_RUN_ID=SS.CAL_RUN_ID
+AND    PS.EMPL_RCD = SS.EMPL_RCD
+AND    PS.GP_PAYGROUP = SS.GP_PAYGROUP
+AND    PS.CAL_ID = SS.CAL_ID
+AND    PS.RSLT_SEG_NUM = SS.RSLT_SEG_NUM
+AND    SS.PIN_NUM = P.PIN_NUM
+AND    SS.PIN_NUM = D.PIN_NUM
+AND    (D.GPDE_RC_REPORTNAME= $Ctl_Print)
+AND    D.EFF_STATUS = 'A'
+[$Cal_Id_Criteria_PS]
+[$Emplid_Crit_PS]
+[$PayEntity_Crit_PS]
+[$PayGroup_Crit_PS]
+[$Location_Crit_PS]
+[$Dept_Crit_PS]
+GROUP BY SS.EMPLID,PS.CURRENCY_CD,SS.CAL_RUN_ID,SS.EMPL_RCD,SS.GP_PAYGROUP,SS.CAL_ID,SS.ORIG_CAL_RUN_ID,SS.RSLT_SEG_NUM,
+SS.INSTANCE,SS.PIN_NUM,SS.SLICE_BGN_DT,SS.SLICE_END_DT,PS.PAY_ENTITY,PS.PRD_END_DT,
+PS.GPDE_AL_CPAY_ENDDT,P.PIN_TYPE,P.PIN_NM,P.DESCR,P.PIN_OWNER,PS.CUR_RT_TYPE,PS.GPDE_ASOF_DT_EX_RT
+! we do not want to print zero amounts
+HAVING  SUM(SS.CALC_RSLT_VAL) <> 0
+
+end-SELECT
+
+end-procedure Get-Earn-Ded-Rslt
+
+!**************************************************
+begin-procedure Get-Accum-Rslt
+
+  let #AC_count=0
+  let $EMPLID_save = ' '
+  let $CAL_RUN_ID_save = ' '
+  let #EMPL_RCD_save = 0
+  let $GP_PAYGROUP_save = ' '
+  let $CAL_ID_save = ' '
+  let $ORIG_CAL_RUN_ID_save = ' '
+  let #RSLT_SEG_NUM_save = 0
+  let #PIN_NUM_save = 0
+  let $SLICE_BGN_DT_save = ' '
+  let $SLICE_END_DT_save = ' '
+
+
+begin-SELECT
+
+SSA.EMPLID       &SSA.EMPLID
+SSA.CAL_RUN_ID   &SSA.CAL_RUN_ID
+SSA.EMPL_RCD     &SSA.EMPL_RCD
+SSA.GP_PAYGROUP  &SSA.GP_PAYGROUP
+SSA.CAL_ID       &SSA.CAL_ID
+SSA.ORIG_CAL_RUN_ID       &SSA.ORIG_CAL_RUN_ID
+SSA.RSLT_SEG_NUM &SSA.RSLT_SEG_NUM
+SSA.PIN_NUM      &SSA.PIN_NUM
+SSA.SLICE_BGN_DT &SSA.SLICE_BGN_DT
+SSA.SLICE_END_DT &SSA.SLICE_END_DT
+PSA.PAY_ENTITY   &PSA.PAY_ENTITY
+PSA.PRD_END_DT   &PSA.PRD_END_DT
+PSA.GPDE_AL_CPAY_ENDDT  &PSA.GPDE_AL_CPAY_ENDDT
+SSA.ACM_PRD_OPTN &SSA.ACM_PRD_OPTN
+PA.PIN_TYPE      &PA.PIN_TYPE
+PA.PIN_NM        &PA.PIN_NM
+PA.DESCR         &PA.DESCR
+PA.PIN_OWNER     &PA.PIN_OWNER
+SUM(SSA.CALC_RSLT_VAL) &CAL_AMT_AC
+PSA.CURRENCY_CD
+PSA.CUR_RT_TYPE
+PSA.GPDE_ASOF_DT_EX_RT
+SSA.USER_KEY1    &SSA.USER_KEY1
+ACM.PIN_USER_KEY1_NUM  &ACM.PIN_USER_KEY1_NUM
+SSA.USER_KEY2 &SSA.USER_KEY2 
+ACM.PIN_USER_KEY2_NUM    &ACM.PIN_USER_KEY2_NUM
+SSA.USER_KEY3            &SSA.USER_KEY3
+ACM.PIN_USER_KEY3_NUM &ACM.PIN_USER_KEY3_NUM
+SSA.USER_KEY4 &SSA.USER_KEY4
+ACM.PIN_USER_KEY4_NUM &ACM.PIN_USER_KEY4_NUM
+SSA.USER_KEY5 &SSA.USER_KEY5
+ACM.PIN_USER_KEY5_NUM &ACM.PIN_USER_KEY5_NUM
+SSA.USER_KEY6 &SSA.USER_KEY6
+ACM.PIN_USER_KEY6_NUM &ACM.PIN_USER_KEY6_NUM
+
+
+  let $PrdEndDT          = &PSA.PRD_END_DT
+  let $Current_Curr      = &PSA.CURRENCY_CD
+  let $Current_RT_Type   = &PSA.CUR_RT_TYPE
+  let $Current_DT_EX_RT  = &PSA.GPDE_ASOF_DT_EX_RT
+
+  if rtrim($Current_RT_Type, ' ') = ''
+    let $Current_RT_Type = $BaseRtType
+  end-if
+
+  if rtrim($Current_DT_EX_RT, ' ') = ''
+    let $Current_DT_EX_RT = $PrdEndDT
+  end-if
+
+  if $Current_Curr <> $ToCurrency
+     do ConvertCurrency(&CAL_AMT_AC,$Current_Curr,$ToCurrency,$Current_RT_Type,
+                     $Current_DT_EX_RT,#CAL_AMT_AC,'F')
+  else
+     let #CAL_AMT_AC         = &CAL_AMT_AC
+  end-if
+
+
+  !2004Bundle3: remove first 3 chars only when Owner is not 'C' (customer)
+  !
+  do Get-Description-List(&SSA.PIN_NUM,$Language_cd,$Descr,$Descr3)
+  if &PA.PIN_OWNER <> 'C'
+     let $PIN_NM = rtrim(substr(&PA.PIN_NM,4,18), ' ')
+  else
+     let $PIN_NM = rtrim(&PA.PIN_NM, ' ')
+  end-if
+
+  let $Descr = $PIN_NM || '-' || $Descr
+  let $Descr = substr($Descr,1,25)
+
+  let #count = 0
+
+!rh 05b8 -- call subroutine to test for matching user-key combinations
+ do Insert-ACM(&SSA.EMPLID,&SSA.CAL_RUN_ID,&SSA.EMPL_RCD,&SSA.GP_PAYGROUP,&SSA.CAL_ID,$ORIG_CAL_RUN_ID
+          &SSA.RSLT_SEG_NUM,0,&SSA.PIN_NUM,&SSA.SLICE_BGN_DT,&SSA.SLICE_END_DT,
+          &SSA.USER_KEY1,&ACM.PIN_USER_KEY1_NUM, &SSA.USER_KEY2,
+          &ACM.PIN_USER_KEY2_NUM, &SSA.USER_KEY3, &ACM.PIN_USER_KEY3_NUM, 
+          &SSA.USER_KEY4, &ACM.PIN_USER_KEY4_NUM,&SSA.USER_KEY5, &ACM.PIN_USER_KEY5_NUM,
+          &SSA.USER_KEY6, &ACM.PIN_USER_KEY6_NUM, &SSA.ACM_PRD_OPTN, 'PS_GPDE_RP_AL01', #count)
+
+
+ ! if variable user-key variable was stored but keys don't match Insert-ACM returns 99
+ ! if keys match or variable wasn't stored Insert-ACM returns 0 if row is new, returns 1 if row exists
+ ! and CAL_AMT must be added to existing row
+  
+   if #count <> 99
+      let $temp1 = datetostr(&SSA.SLICE_BGN_DT, 'yyyy-mm-dd')
+      let $temp2 = datetostr(&SSA.SLICE_END_DT, 'yyyy-mm-dd')
+  
+    
+      if ($EMPLID_save = &SSA.EMPLID and
+         $CAL_RUN_ID_save = &SSA.CAL_RUN_ID and
+         #EMPL_RCD_save = &SSA.EMPL_RCD and
+         $GP_PAYGROUP_save = &SSA.GP_PAYGROUP and
+         $CAL_ID_save = &SSA.CAL_ID and
+         $ORIG_CAL_RUN_ID_save = &SSA.ORIG_CAL_RUN_ID and
+         #RSLT_SEG_NUM_save = &SSA.RSLT_SEG_NUM and 
+         #PIN_NUM_save = &SSA.PIN_NUM and 
+         $SLICE_BGN_DT_save = $temp1 and
+         $SLICE_END_DT_save = $temp2) 
+
+  
+            do Update_GPDE_BL(&SSA.EMPLID,&SSA.CAL_RUN_ID,&SSA.EMPL_RCD,&SSA.GP_PAYGROUP,&SSA.CAL_ID,&SSA.ORIG_CAL_RUN_ID,
+                 &SSA.RSLT_SEG_NUM,0,&SSA.PIN_NUM,&SSA.SLICE_BGN_DT,&SSA.SLICE_END_DT,#CAL_AMT_AC)
+
+      else
+      
+         do Insert_GPDE_Bl(&SSA.EMPLID,&SSA.CAL_RUN_ID,&SSA.EMPL_RCD,&SSA.GP_PAYGROUP,&SSA.CAL_ID,&SSA.ORIG_CAL_RUN_ID,
+            &SSA.RSLT_SEG_NUM,0,&SSA.PIN_NUM,&SSA.SLICE_BGN_DT,&SSA.SLICE_END_DT,&PSA.PAY_ENTITY,
+            &PSA.PRD_END_DT,&PSA.GPDE_AL_CPAY_ENDDT,&SSA.ACM_PRD_OPTN,&PA.PIN_TYPE,
+            $PIN_NM,$Descr,#CAL_AMT_AC,0,0,0,0)
+  
+          let #AC_count = #AC_count + 1
+
+    end-if
+  end-if
+
+  let $EMPLID_save = &SSA.EMPLID
+  let $CAL_RUN_ID_save = &SSA.CAL_RUN_ID
+  let #EMPL_RCD_save = &SSA.EMPL_RCD
+  let $GP_PAYGROUP_save = &SSA.GP_PAYGROUP
+  let $CAL_ID_save = &SSA.CAL_ID
+  let $ORIG_CAL_RUN_ID_save = &SSA.ORIG_CAL_RUN_ID
+  let #RSLT_SEG_NUM_save = &SSA.RSLT_SEG_NUM
+  let #PIN_NUM_save = &SSA.PIN_NUM
+  let $SLICE_BGN_DT_save = datetostr(&SSA.SLICE_BGN_DT, 'yyyy-mm-dd')
+  let $SLICE_END_DT_save = datetostr(&SSA.SLICE_END_DT, 'yyyy-mm-dd')
+ 
+
+FROM   PS_GPDE_RP_0001 PSA ,PS_GP_RSLT_ACUM SSA, PS_GPDE_BL_PRINT DA , PS_GP_PIN PA, PS_GP_ACCUMULATOR ACM
+WHERE  PSA.EMPLID = SSA.EMPLID
+AND    PSA.CAL_RUN_ID=SSA.CAL_RUN_ID
+AND    PSA.EMPL_RCD = SSA.EMPL_RCD
+! wdu 04b4: only the accus for the current EmplRcd are relevant
+! ytd-accus store a row for the other EmplRcd as well (!)
+AND    PSA.EMPL_RCD = SSA.EMPL_RCD_ACUM
+!
+AND    PSA.GP_PAYGROUP = SSA.GP_PAYGROUP
+AND    PSA.CAL_ID = SSA.CAL_ID
+AND    PSA.RSLT_SEG_NUM = SSA.RSLT_SEG_NUM
+AND    SSA.PIN_NUM = PA.PIN_NUM
+AND    SSA.PIN_NUM = DA.PIN_NUM
+AND    SSA.PIN_NUM = ACM.PIN_NUM
+AND    (DA.GPDE_RC_REPORTNAME= $Ctl_Print)
+AND    DA.EFF_STATUS = 'A'
+[$Cal_Id_Criteria_PSA]
+[$Emplid_Crit_PSA]
+[$PayEntity_Crit_PSA]
+[$PayGroup_Crit_PSA]
+[$Location_Crit_PSA]
+[$Dept_Crit_PSA]
+GROUP BY SSA.EMPLID,PSA.CURRENCY_CD,SSA.CAL_RUN_ID,SSA.EMPL_RCD,SSA.GP_PAYGROUP,
+      SSA.CAL_ID,SSA.ORIG_CAL_RUN_ID,SSA.RSLT_SEG_NUM,SSA.PIN_NUM,SSA.SLICE_BGN_DT,SSA.SLICE_END_DT,
+          PSA.PAY_ENTITY,PSA.PRD_END_DT,PSA.GPDE_AL_CPAY_ENDDT,SSA.ACM_PRD_OPTN,
+          PA.PIN_TYPE,PA.PIN_NM,PA.DESCR,PA.PIN_OWNER,PSA.CUR_RT_TYPE,PSA.GPDE_ASOF_DT_EX_RT,
+          SSA.USER_KEY1, ACM.PIN_USER_KEY1_NUM, SSA.USER_KEY2, ACM.PIN_USER_KEY2_NUM, SSA.USER_KEY3, ACM.PIN_USER_KEY3_NUM, SSA.USER_KEY4, 
+          ACM.PIN_USER_KEY4_NUM, SSA.USER_KEY5, ACM.PIN_USER_KEY5_NUM, SSA.USER_KEY6, ACM.PIN_USER_KEY6_NUM
+
+end-SELECT
+
+end-procedure Get-Accum-Rslt
+
+!**************************************************
+begin-procedure Get-Earn-Ded-Reversal
+  let #ER_count_F = 0
+  let $CNG_CAL_RUN_ID = ' '
+
+begin-SELECT
+FED.EMPLID              &FED.EMPLID
+FED.CAL_RUN_ID          &FED.CAL_RUN_ID
+FED.EMPL_RCD            &FED.EMPL_RCD
+FED.GP_PAYGROUP         &FED.GP_PAYGROUP
+FED.CAL_ID              &FED.CAL_ID
+FED.ORIG_CAL_RUN_ID              &FED.ORIG_CAL_RUN_ID
+SSM.RSLT_SEG_NUM        &SSM.RSLT_SEG_NUM
+SSF.INSTANCE            &SSF.INSTANCE
+SSF.PIN_NUM             &SSF.PIN_NUM
+SSF.SLICE_BGN_DT        &SSF.SLICE_BGN_DT
+SSF.SLICE_END_DT        &SSF.SLICE_END_DT
+FED.PAY_ENTITY          &FED.PAY_ENTITY
+FED.PRD_END_DT          &FED.PRD_END_DT
+PM.PIN_TYPE             &PM.PIN_TYPE
+PM.PIN_NM               &PM.PIN_NM
+PM.DESCR                &PM.DESCR
+PM.PIN_OWNER            &PM.PIN_OWNER
+SUM(SSF.CALC_RSLT_VAL)  &CAL_AMT_SSM
+SUM(SSF.BASE_RSLT_VAL)  &BASE_AMT_SSM
+SUM(SSF.RATE_RSLT_VAL)  &RATE_AMT_SSM
+SUM(SSF.UNIT_RSLT_VAL)  &UNIT_AMT_SSM
+SUM(SSF.PCT_RSLT_VAL)   &PCT_AMT_SSM
+     let $FED_CAL_RUN_ID = &FED.CAL_RUN_ID
+
+     if  $FED_CAL_RUN_ID <> $CNG_CAL_RUN_ID
+         do Get-Curr-Pay_Enddt($FED_CAL_RUN_ID,&FED.PAY_ENTITY,$FED_GPDE_AL_CPAY_ENDDT)
+     end-if
+
+
+     !2004Bundle3: remove first 3 chars only when Owner is not 'C' (customer)
+     !
+     do Get-Description-List(&SSF.PIN_NUM,$Language_cd,$Descr,$Descr3)
+     if &PM.PIN_OWNER <> 'C'
+        let $PIN_NM = rtrim(substr(&PM.PIN_NM,4,18), ' ')
+     else
+        let $PIN_NM = rtrim(&PM.PIN_NM, ' ')
+     end-if
+
+     let $Descr = $PIN_NM || '-' || $Descr
+     let $Descr = substr($Descr,1,25)
+
+     !-- rh 06b07 - 8.9 
+     !-- modify hadcoded instance#  number to address the missing capability to have multiple instances 
+     !-- assigned for an element via PI.
+
+     let #instance = 99 - &SSF.INSTANCE
+
+
+
+     do Insert_GPDE_Bl(&FED.EMPLID,&FED.CAL_RUN_ID,&FED.EMPL_RCD,&FED.GP_PAYGROUP,
+            &FED.CAL_ID,&FED.ORIG_CAL_RUN_ID,&SSM.RSLT_SEG_NUM,#instance,&SSF.PIN_NUM,&SSF.SLICE_BGN_DT,&SSF.SLICE_END_DT,
+                &FED.PAY_ENTITY,&FED.PRD_END_DT,$FED_GPDE_AL_CPAY_ENDDT,'E',&PM.PIN_TYPE,
+                $PIN_NM,$Descr,0,0,0,0,0)
+
+
+     let $CNG_CAL_RUN_ID =  $FED_CAL_RUN_ID
+
+     let #ER_count_F = #ER_count_F + 1
+
+FROM PS_GP_PYE_PRC_STAT FED ,PS_GP_PYE_SEG_STAT SSM ,PS_GP_RSLT_ERN_DED SSF,
+     PS_GPDE_BL_PRINT DM , PS_GP_PIN PM
+WHERE  FED.EMPLID        = SSM.EMPLID
+AND    FED.CAL_RUN_ID    = SSM.CAL_RUN_ID
+AND    FED.EMPL_RCD      = SSM.EMPL_RCD
+AND    FED.GP_PAYGROUP   = SSM.GP_PAYGROUP
+AND    FED.CAL_ID        = SSM.CAL_ID
+AND    SSM.EMPLID        = SSF.EMPLID
+AND    SSM.EMPL_RCD      = SSF.EMPL_RCD
+AND    SSM.GP_PAYGROUP   = SSF.GP_PAYGROUP
+AND    SSM.CAL_ID        = SSF.CAL_ID
+AND    SSM.RSLT_SEG_NUM  = SSF.RSLT_SEG_NUM
+AND    SSF.PIN_NUM       = DM.PIN_NUM
+AND    SSF.PIN_NUM       = PM.PIN_NUM
+AND    (DM.GPDE_RC_REPORTNAME= $Ctl_Print)
+AND    DM.EFF_STATUS = 'A'
+AND    SSM.CALC_ACTION='V'
+[$Cal_Id_Criteria_FED]
+[$Emplid_Crit_FED]
+[$PayEntity_Crit_FED]
+[$PayGroup_Crit_FED]
+GROUP BY FED.EMPLID,FED.CAL_RUN_ID,FED.EMPL_RCD,FED.GP_PAYGROUP,FED.CAL_ID,FED.ORIG_CAL_RUN_ID,SSM.RSLT_SEG_NUM,
+SSF.INSTANCE,SSF.PIN_NUM,SSF.SLICE_BGN_DT,SSF.SLICE_END_DT,FED.PAY_ENTITY,FED.PRD_END_DT,
+PM.PIN_TYPE,PM.PIN_NM,PM.DESCR,PM.PIN_OWNER
+
+end-SELECT
+
+end-procedure Get-Earn-Ded-Reversal
+
+!**************************************************
+
+
+begin-procedure Get-Accum-Reversal
+  let #AC_count_F = 0
+  let $CNGA_CAL_RUN_ID = ' '
+
+
+
+
+begin-SELECT
+
+FA.EMPLID               &FA.EMPLID
+FA.CAL_RUN_ID           &FA.CAL_RUN_ID
+FA.EMPL_RCD             &FA.EMPL_RCD
+FA.GP_PAYGROUP          &FA.GP_PAYGROUP
+FA.CAL_ID               &FA.CAL_ID
+FA.ORIG_CAL_RUN_ID               &FA.ORIG_CAL_RUN_ID
+STA.RSLT_SEG_NUM        &STA.RSLT_SEG_NUM
+SFA.PIN_NUM             &SFA.PIN_NUM
+SFA.SLICE_BGN_DT        &SFA.SLICE_BGN_DT
+SFA.SLICE_END_DT        &SFA.SLICE_END_DT
+FA.PAY_ENTITY           &FA.PAY_ENTITY
+FA.PRD_END_DT           &FA.PRD_END_DT
+SFA.ACM_PRD_OPTN        &SFA.ACM_PRD_OPTN
+PMA.PIN_TYPE            &PMA.PIN_TYPE
+PMA.PIN_NM              &PMA.PIN_NM
+PMA.DESCR               &PMA.DESCR
+PMA.PIN_OWNER           &PMA.PIN_OWNER
+SUM(SFA.CALC_RSLT_VAL) &CAL_AMT_AC_SFA
+
+
+
+            let $FA_CAL_RUN_ID = &FA.CAL_RUN_ID
+
+            if  $FA_CAL_RUN_ID <> $CNGA_CAL_RUN_ID
+                do Get-Curr-Pay_Enddt($FA_CAL_RUN_ID,&FA.PAY_ENTITY,$FA_GPDE_AL_CPAY_ENDDT)
+            end-if
+
+
+
+            !2004Bundle3: remove first 3 chars only when Owner is not 'C' (customer)
+            !
+            do Get-Description-List(&SFA.PIN_NUM,$Language_cd,$Descr,$Descr3)
+            if &PMA.PIN_OWNER <> 'C'
+               let $PIN_NM = rtrim(substr(&PMA.PIN_NM,4,18), ' ')
+            else
+               let $PIN_NM = rtrim(&PMA.PIN_NM, ' ')
+            end-if
+
+            let $Descr = $PIN_NM || '-' || $Descr
+            let $Descr = substr($Descr,1,25)
+
+            do Insert_GPDE_Bl(&FA.EMPLID,&FA.CAL_RUN_ID,&FA.EMPL_RCD,&FA.GP_PAYGROUP,&FA.CAL_ID,&FA.ORIG_CAL_RUN_ID,
+                       &STA.RSLT_SEG_NUM,99,&SFA.PIN_NUM,&SFA.SLICE_BGN_DT,&SFA.SLICE_END_DT,
+                                           &FA.PAY_ENTITY,&FA.PRD_END_DT,$FA_GPDE_AL_CPAY_ENDDT,&SFA.ACM_PRD_OPTN,
+                                           &PMA.PIN_TYPE,$PIN_NM,$Descr,0,0,0,0,0)
+
+            let $CNGA_CAL_RUN_ID =  $FA_CAL_RUN_ID
+
+            let #AC_count_F = #AC_count_F + 1
+
+
+
+FROM PS_GP_PYE_PRC_STAT FA ,PS_GP_PYE_SEG_STAT STA ,PS_GP_RSLT_ACUM SFA,
+     PS_GPDE_BL_PRINT DMA , PS_GP_PIN PMA
+WHERE  FA.EMPLID        = STA.EMPLID
+AND    FA.CAL_RUN_ID    = STA.CAL_RUN_ID
+AND    FA.EMPL_RCD      = STA.EMPL_RCD
+AND    FA.GP_PAYGROUP   = STA.GP_PAYGROUP
+AND    FA.CAL_ID        = STA.CAL_ID
+
+AND    STA.EMPLID        = SFA.EMPLID
+AND    STA.EMPL_RCD      = SFA.EMPL_RCD
+AND    STA.GP_PAYGROUP   = SFA.GP_PAYGROUP
+AND    STA.CAL_ID        = SFA.CAL_ID
+AND    STA.RSLT_SEG_NUM  = SFA.RSLT_SEG_NUM
+
+AND    SFA.PIN_NUM      = DMA.PIN_NUM
+AND    SFA.PIN_NUM      = PMA.PIN_NUM
+AND    (DMA.GPDE_RC_REPORTNAME= $Ctl_Print)
+AND    DMA.EFF_STATUS = 'A'
+AND    STA.CALC_ACTION='V'
+[$Cal_Id_Criteria_FA]
+[$Emplid_Crit_FA]
+[$PayEntity_Crit_FA]
+[$PayGroup_Crit_FA]
+GROUP BY FA.EMPLID,FA.CAL_RUN_ID,FA.EMPL_RCD,FA.GP_PAYGROUP,FA.CAL_ID,FA.ORIG_CAL_RUN_ID,STA.RSLT_SEG_NUM,
+SFA.PIN_NUM,SFA.SLICE_BGN_DT,SFA.SLICE_END_DT,FA.PAY_ENTITY,FA.PRD_END_DT,SFA.ACM_PRD_OPTN,
+PMA.PIN_TYPE,PMA.PIN_NM,PMA.DESCR,PMA.PIN_OWNER
+
+end-SELECT
+
+end-procedure Get-Accum-Reversal
+
+!**************************************************
+
+begin-procedure Get-Curr-Pay_Enddt($CC_CAL_RUN_ID,$CC_PAY_ENTITY,:$CC_GPDE_AL_CPAY_ENDDT)
+begin-SELECT
+MAX(CC.PRD_END_DT)  &CC_GPDE_AL_CPAY_ENDDT
+   let $CC_GPDE_AL_CPAY_ENDDT =  &CC_GPDE_AL_CPAY_ENDDT
+FROM  PS_GP_CAL_RUN_DTL CC ,PS_GP_CAL_RUN CCS
+WHERE CC.CAL_RUN_ID  = CCS.CAL_RUN_ID
+AND   CC.CAL_RUN_ID  = $CC_CAL_RUN_ID
+AND   CC.PAY_ENTITY  = $CC_PAY_ENTITY
+AND  (CCS.RUN_FINALIZED_IND='Y' OR CCS.RUN_OPEN_IND='Y')
+end-SELECT
+
+end-procedure Get-Curr-Pay_Enddt
+!**************************************************
+
+begin-procedure Insert_GPDE_Bl($EMPLID,$CAL_RUN_ID,#EMPL_RCD,$GP_PAYGROUP,$CAL_ID,$ORIG_CAL_RUN_ID,#RSLT_SEG_NUM,
+           #INSTANCE,#PIN_NUM,$SLICE_BGN_DT,$SLICE_END_DT,$PAY_ENTITY,$PRD_END_DT,
+           $GPDE_AL_CPAY_ENDDT,$ACM_PRD_OPTN,$PIN_TYPE,$PIN_NM,$DESCR,#CAL_AMT,#BASE_AMT,#RATE_AMT,
+           #UNIT_AMT,#PCT_AMT)
+!wdu 04b4 added column list
+begin-sql
+
+INSERT INTO PS_GPDE_RP_TX03 
+(EMPLID,CAL_RUN_ID,EMPL_RCD,GP_PAYGROUP,CAL_ID,ORIG_CAL_RUN_ID,RSLT_SEG_NUM,INSTANCE,PIN_NUM
+,SLICE_BGN_DT,SLICE_END_DT,GPDE_AL_LINE_ID,PAY_ENTITY,PRD_END_DT,GPDE_AL_CPAY_ENDDT,ACM_PRD_OPTN
+,PIN_TYPE,PIN_NM,DESCR,CALC_RSLT_VAL,BASE_RSLT_VAL,RATE_RSLT_VAL,UNIT_RSLT_VAL,PCT_RSLT_VAL )
+VALUES ($EMPLID,$CAL_RUN_ID,#EMPL_RCD,$GP_PAYGROUP,$CAL_ID,$ORIG_CAL_RUN_ID,#RSLT_SEG_NUM,
+            #INSTANCE,#PIN_NUM,$SLICE_BGN_DT,$SLICE_END_DT,'OR',$PAY_ENTITY,$PRD_END_DT,
+            $GPDE_AL_CPAY_ENDDT,$ACM_PRD_OPTN,$PIN_TYPE,$PIN_NM,$DESCR,#CAL_AMT,#BASE_AMT,#RATE_AMT,
+            #UNIT_AMT,#PCT_AMT)
+
+end-sql
+
+end-procedure Insert_GPDE_Bl
+!****************************************************************************************
+
+
+!**************************************************
+! rh 05b8  -- new routine to add up accum rows if user-key-pin wasn't stored. Required due to changed
+!             grouping logic in Get-Acum-RSLT procedure
+
+
+
+begin-procedure Update_GPDE_BL($EMPLID,$CAL_RUN_ID,#EMPL_RCD,$GP_PAYGROUP,$CAL_ID,$ORIG_CAL_RUN_ID, #RSLT_SEG_NUM,
+                               #INSTANCE,#PIN_NUM,$SLICE_BGN_DT,$SLICE_END_DT, #CAL_AMT)
+                               
+begin-sql
+
+UPDATE PS_GPDE_RP_TX03 set CALC_RSLT_VAL = CALC_RSLT_VAL + #CAL_AMT
+where
+EMPLID = $EMPLID and
+CAL_RUN_ID = $CAL_RUN_ID and
+EMPL_RCD = #EMPL_RCD and
+GP_PAYGROUP = $GP_PAYGROUP and
+CAL_ID = $CAL_ID and
+ORIG_CAL_RUN_ID = $ORIG_CAL_RUN_ID and
+RSLT_SEG_NUM = #RSLT_SEG_NUM and
+INSTANCE = #INSTANCE and
+PIN_NUM = #PIN_NUM and
+SLICE_BGN_DT = $SLICE_BGN_DT and
+SLICE_END_DT = $SLICE_END_DT
+
+end-sql
+
+
+end-procedure Update_GPDE_BL     
+!****************************************************************************************
+
+
+begin-procedure Initial_Convert_Currency
+do format-datetime($Ctl_End_Dt,$LastD,{DEFCMP},'','')
+let $Sticht = '2002'  || '01' ||  '01'
+do Format-DateTime($Sticht, $Sticht1, {DEFCMP},'','native')
+do Format-DateTime($Sticht1, $Stichtag, {DEFCMP},'','')
+
+if $LastD >= $Stichtag
+ let $ToCurrency = 'EUR'
+else
+ let $ToCurrency = 'DEM'
+end-if
+end-procedure
+
+!****************************************************************************************
+begin-procedure Print_Info_User
+!Display, if Reqired input on Run Control failed
+   display '-----------------------------------------------------'
+   display 'No Output file for the folowing input:'
+   display '   Pay Entity: ' noline
+   display $Ctl_PayEntity
+   display '   For Year: ' noline
+   display $Ctl_Year
+   display '   Print Class: ' noline
+   display $Ctl_Print
+
+   display '   Pay Group: ' noline
+   display $Ctl_PayGroup
+   display '   Department: ' noline
+   display $Ctl_Deptid
+
+   display '   Location: ' noline
+   display $Ctl_Location
+   display '   Emplid: ' noline
+   display $Ctl_Emplid
+   !
+   display '-----------------------------------------------------'
+end-procedure
+!**************************************************
+
+begin-procedure Delete_Rp_Tx03
+
+Begin-Sql
+
+  DELETE FROM PS_GPDE_RP_TX03
+
+End-Sql
+end-procedure Delete_Rp_Tx03
+
+
+!**************************************************
+begin-procedure Make_Storno_Entries
+! Design:
+! we copy all rows for the employee from TX03 except those, where the 
+! highest 'calculated-in' from GPDE_RP_0001 (Period-driver) matches.
+! This means the last generation for each period is removed driven by 
+! GPDE_RP_0001. Even when an element gets a value of zero (and is not stored)
+! in the latest RSLT generation, all previous values for the element get a storno.
+!
+
+Begin-Sql
+  DELETE FROM PS_GPDE_RP_TX03_S
+End-Sql
+
+Begin-Sql
+INSERT INTO PS_GPDE_RP_TX03_S
+(EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,INSTANCE
+,PIN_NUM
+,SLICE_BGN_DT
+,SLICE_END_DT
+,GPDE_AL_LINE_ID
+,PAY_ENTITY
+,PRD_END_DT
+,GPDE_AL_CPAY_ENDDT
+,ACM_PRD_OPTN
+,PIN_TYPE
+,PIN_NM
+,DESCR
+,CALC_RSLT_VAL
+,BASE_RSLT_VAL
+,RATE_RSLT_VAL
+,UNIT_RSLT_VAL
+,PCT_RSLT_VAL
+)
+SELECT EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,INSTANCE
+,PIN_NUM
+,SLICE_BGN_DT
+,SLICE_END_DT
+,'ST'
+,PAY_ENTITY
+,PRD_END_DT
+,GPDE_AL_CPAY_ENDDT
+,ACM_PRD_OPTN
+,PIN_TYPE
+,PIN_NM
+,DESCR
+,-CALC_RSLT_VAL
+,BASE_RSLT_VAL
+,RATE_RSLT_VAL
+,-UNIT_RSLT_VAL
+,PCT_RSLT_VAL
+FROM PS_GPDE_RP_TX03 A1
+WHERE A1.GPDE_AL_CPAY_ENDDT < ( 
+  SELECT MAX(R1.GPDE_AL_CPAY_ENDDT) FROM PS_GPDE_RP_0001 R1
+  WHERE R1.EMPLID=A1.EMPLID
+! the comments with '!-!' mean, that this join is left out on purpose!
+!-!  AND R1.CAL_RUN_ID=A1.CAL_RUN_ID
+  AND R1.EMPL_RCD=A1.EMPL_RCD
+  AND R1.GP_PAYGROUP=A1.GP_PAYGROUP
+  AND R1.CAL_ID=A1.CAL_ID
+!-!  AND R1.ORIG_CAL_RUN_ID=A1.ORIG_CAL_RUN_ID
+!-!  AND R1.RSLT_SEG_NUM=A1.RSLT_SEG_NUM
+!-!  AND R1.INSTANCE=A1.INSTANCE
+!-!  AND R1.PIN_NUM=A1.PIN_NUM
+!-!  AND R1.SLICE_BGN_DT=A1.SLICE_BGN_DT
+!-!  AND R1.SLICE_END_DT=A1.SLICE_END_DT
+!-!  AND R1.GPDE_AL_LINE_ID=A1.GPDE_AL_LINE_ID
+  AND R1.PAY_ENTITY=A1.PAY_ENTITY
+  AND R1.PRD_END_DT=A1.PRD_END_DT
+!-!  AND R1.GPDE_AL_CPAY_ENDDT=A1.GPDE_AL_CPAY_ENDDT
+  )
+
+End-Sql
+
+
+!Begin-Sql
+!UPDATE PS_GPDE_RP_TX03_S 
+!SET GPDE_AL_LINE_ID='ST'
+!,CALC_RSLT_VAL= -CALC_RSLT_VAL
+!,UNIT_RSLT_VAL= -UNIT_RSLT_VAL
+!End-Sql
+
+
+! copy the storno-values back to the regular table
+Begin-Sql
+INSERT INTO PS_GPDE_RP_TX03
+(EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,INSTANCE
+,PIN_NUM
+,SLICE_BGN_DT
+,SLICE_END_DT
+,GPDE_AL_LINE_ID
+,PAY_ENTITY
+,PRD_END_DT
+,GPDE_AL_CPAY_ENDDT
+,ACM_PRD_OPTN
+,PIN_TYPE
+,PIN_NM
+,DESCR
+,CALC_RSLT_VAL
+,BASE_RSLT_VAL
+,RATE_RSLT_VAL
+,UNIT_RSLT_VAL
+,PCT_RSLT_VAL
+)
+SELECT EMPLID
+,CAL_RUN_ID
+,EMPL_RCD
+,GP_PAYGROUP
+,CAL_ID
+,ORIG_CAL_RUN_ID
+,RSLT_SEG_NUM
+,INSTANCE
+,PIN_NUM
+,SLICE_BGN_DT
+,SLICE_END_DT
+,GPDE_AL_LINE_ID
+,PAY_ENTITY
+,PRD_END_DT
+,GPDE_AL_CPAY_ENDDT
+,ACM_PRD_OPTN
+,PIN_TYPE
+,PIN_NM
+,DESCR
+,CALC_RSLT_VAL
+,BASE_RSLT_VAL
+,RATE_RSLT_VAL
+,UNIT_RSLT_VAL
+,PCT_RSLT_VAL
+FROM PS_GPDE_RP_TX03_S
+End-Sql
+
+end-procedure Make_Storno_Entries
+
+
+
+
+
+
+

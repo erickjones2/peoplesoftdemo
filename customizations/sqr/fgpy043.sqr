@@ -1,0 +1,704 @@
+!***********************************************************************
+!  FGPY043:  TAS BETC Summary Report                                   *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2014, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2014/10/14:11:23:59                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  102                                                 !
+!                                                                      *
+!***********************************************************************
+#include 'setenv.sqc'    !Set environment
+#Include 'setup32.sqc'   !Printer and page-size initialization
+
+begin-report
+
+   do Init-Report
+
+   do Create-Totals-Array
+
+   do Process-Main
+
+   do Delete-Run-Control
+
+   do Commit-Updates
+
+   do Stdapi-Term
+
+end-report
+
+begin-heading 7
+#Include 'stdhdg03.sqc'
+   print '                 '                (4,1,17)
+   print 'Agency:'                          (5,1,7)
+   print $company                           (5,+1,3)
+   print $company_name                      (5,+1,30)
+
+   let $salary_schedule_text = 'Salary Schedules - '
+   let $misc_schedule_text   = 'Miscellaneous Schedules - '
+   let $SalaryTitle = $salary_schedule_text || $status_name
+   let $MiscTitle   = $misc_schedule_text   || $status_name
+
+   evaluate $payment_type_1
+
+       when = 'S'
+           print $SalaryTitle () center
+           break
+       when = 'M'
+           print $MiscTitle () center
+           break
+
+   end-evaluate
+
+   print 'SP ATA AID BPOA EPOA A MAIN SUB'  (7,1,31)    underline
+   print 'BETC'                             (7,33,4)    underline
+
+   evaluate $payment_type_1
+
+       when = 'S'
+           do Salary-headings
+           break
+       when = 'M'
+           do Misc-headings
+           break
+
+   end-evaluate
+
+end-heading
+
+begin-procedure Salary-headings
+   print 'Net Pay'                          (7,55,7)    underline
+   print 'TAS BETC Total'                   (7,71,14)   underline
+end-procedure
+
+begin-procedure Misc-headings
+   print 'Garnishments'                     (7,50,12)   underline
+   print 'Charity'                          (7,78,7)    underline
+   print 'Union Dues'                       (7,97,10)   underline
+   print 'Tax Payments'                     (7,119,12)  underline
+   print 'Other Deductions'                 (7,138,16)  underline
+   print 'TAS BETC Total'                   (7,163,14)  underline
+end-procedure
+
+!**************************
+begin-procedure Init-Report
+!**************************
+
+move 'FGPY043' to $ReportID
+move 'TAS BETC Summary Report' to $ReportTitle
+
+do Init-DateTime
+do Init-Number
+do Get-Current-DateTime
+do Stdapi-Init
+
+let $first_page      = 'Y'
+let $Salary_Schedule = 'N'
+
+if $Prcs_Process_Instance = ''
+
+   display 'TAS BETC Summary Report requires'
+   display 'submission through the Process Scheduler'
+
+   STOP
+
+else
+
+   do retrieve-agency-data
+
+   display '   Process Parameters : '
+   display '              Company            -  ' noline
+   display $company
+   display '              Summary Schedule   -  ' noline
+   display $summ_sched
+   display '              Process Option     -  ' noline
+   display $status_name
+
+end-if
+
+end-procedure       !Init-Report
+
+!***********************************
+begin-procedure retrieve-agency-data
+!***********************************
+
+begin-select
+
+COM.COMPANY
+COM.DESCR
+RCP.GVT_SUMM_SCHED
+RCP.GVT_SCHED_STATUS
+
+    let $company         = rtrim(upper(&COM.COMPANY), ' ')
+    let $company_name    = &COM.DESCR
+    let $summ_sched      = &RCP.GVT_SUMM_SCHED
+    let $sched_status    = &RCP.GVT_SCHED_STATUS
+    do get-schedule-status-XLAT
+
+FROM PS_RUNCTL_FGPY043 RCP,
+     PS_COMPANY_TBL COM
+WHERE RCP.OPRID        = $Prcs_OprID
+AND   RCP.RUN_CNTL_ID  = $Prcs_Run_Cntl_ID
+AND   COM.COMPANY      = RCP.COMPANY
+AND   COM.EFFDT        = (SELECT MAX(EFFDT)
+                          FROM  PS_COMPANY_TBL COM1
+                          WHERE COM1.COMPANY  = COM.COMPANY
+                          AND   COM1.EFFDT   <= $AsOfToday)
+
+end-select
+
+end-procedure       !retrieve-agency-data
+
+!**********************************
+begin-procedure Create-Totals-Array
+!**********************************
+
+create-array name=Totals size=1000 -
+    field=TASBETC:char
+    field=TASBETC_Len:number:2
+    field=Total:number:7
+
+end-procedure       !Create-Totals-Array
+
+!***************************
+begin-procedure Process-Main
+!***************************
+
+begin-select
+
+RCC.GVT_SCHED_PREFIX
+RCC.GVT_SCHED_CODE
+RCC.GVT_SCHED_SEQ
+PC.GVT_ECS_PYMNT_1      () on-break print=never before=create-new-page
+PC.GVT_ECS_PYMNT_2
+
+    let $schedule_prefix = rtrim(&RCC.GVT_SCHED_PREFIX, ' ')
+    let $lpad_prefix     = lpad($schedule_prefix,10,'0')
+    let $schedule_code   = &RCC.GVT_SCHED_CODE
+    let #schedule_seq_no = &RCC.GVT_SCHED_SEQ
+    do Format-Number(#schedule_seq_no, $schedule_seq, '009')
+    let $schedule        = $lpad_prefix || $schedule_code || $schedule_seq
+    let $payment_type_1  = &PC.GVT_ECS_PYMNT_1
+    let $payment_type_2  = &PC.GVT_ECS_PYMNT_2
+
+    display ' '
+    display '     Processing Schedule ' noline
+    display $schedule
+
+    do find-extract-history
+
+    do retrieve-TASBETC
+
+FROM  PS_RC_FGPY043_SCHD RCC,
+      PS_GVT_PAM_SYS_CTL PC
+WHERE RCC.OPRID            = $Prcs_OprID
+AND   RCC.RUN_CNTL_ID      = $Prcs_Run_Cntl_ID
+AND   RCC.GVT_SCHED_CODE   = PC.GVT_SCHED_CODE
+ORDER BY RCC.GVT_SCHED_CODE, RCC.GVT_SCHED_PREFIX, RCC.GVT_SCHED_SEQ
+
+end-select
+
+end-procedure       !Process-Main
+
+!***********************************
+begin-procedure find-extract-history
+!***********************************
+begin-select
+
+MAX(EH.GVT_TASBETC_ADJSEQ) &adj_seq
+
+FROM  PS_GVT_SCHED_EXHST EH
+WHERE EH.GVT_SCHED_PREFIX = &RCC.GVT_SCHED_PREFIX
+AND   EH.GVT_SCHED_CODE   = &RCC.GVT_SCHED_CODE
+AND   EH.GVT_SCHED_SEQ    = &RCC.GVT_SCHED_SEQ
+
+end-select
+
+end-procedure        !find-extract-history
+
+!*******************************
+begin-procedure retrieve-TASBETC
+!*******************************
+
+begin-select
+
+ES.GVT_SCHED_PREFIX
+ES.GVT_SCHED_CODE
+ES.GVT_SCHED_SEQ
+ES.GVT_SCHED_REC_TYPE
+ES.GVT_REPORTING_CD
+ES.GVT_TAS_GWA
+ES.GVT_BETC_CD
+ES.GVT_TOTAL_AMT
+
+   let $load_TASBETC_key    = rtrim(&ES.GVT_TAS_GWA, ' ')||rtrim(&ES.GVT_BETC_CD, ' ' )
+   let #TAS_Len             = length(&ES.GVT_TAS_GWA)
+   let #BETC_Len            = length(&ES.GVT_BETC_CD)
+   let $rec_type            = &ES.GVT_SCHED_REC_TYPE
+   let $reporting_cd        = &ES.GVT_REPORTING_CD
+
+   do load-TASBETC-amounts
+
+FROM  PS_GVT_SCHED_EXSUM ES
+WHERE ES.GVT_SCHED_PREFIX = &RCC.GVT_SCHED_PREFIX
+AND   ES.GVT_SCHED_CODE   = &RCC.GVT_SCHED_CODE
+AND   ES.GVT_SCHED_SEQ    = &RCC.GVT_SCHED_SEQ
+AND   ES.GVT_TOTAL_AMT <> 0
+ORDER BY ES.GVT_SCHED_PREFIX, ES.GVT_SCHED_CODE, ES.GVT_SCHED_SEQ, ES.GVT_TAS_GWA,
+         ES.GVT_BETC_CD, ES.GVT_SCHED_REC_TYPE, ES.GVT_REPORTING_CD
+
+end-select
+
+   do get-TASBETC-amounts
+   do print-schedule-totals
+   clear-array name=Totals
+
+   display '     Process completed.'
+
+end-procedure       !retrieve-TASBETC
+
+!***********************************
+begin-procedure load-TASBETC-amounts
+!***********************************
+let #i = 0
+
+while #i <= 1000
+
+    get $tas_betc from Totals(#i) TASBETC
+
+    evaluate $tas_betc
+
+        when = ''
+
+            put $load_TASBETC_key into Totals(#i) TASBETC
+            put #TAS_Len          into Totals(#i) TASBETC_Len (0)
+            put #BETC_Len         into Totals(#i) TASBETC_Len (1)
+
+            array-add &ES.GVT_TOTAL_AMT to Totals(#i) Total(0)
+
+            evaluate $rec_type
+
+                when = 'E'
+                    put &ES.GVT_TOTAL_AMT into Totals(#i) Total(1)
+                    break
+
+                when = 'G'
+                    put &ES.GVT_TOTAL_AMT into Totals(#i) Total(2)
+                    break
+
+                when = 'D'
+                    if $reporting_cd = 'CF'
+                       put &ES.GVT_TOTAL_AMT into Totals(#i) Total(3)
+                    else
+                       if $reporting_cd = 'UN'
+                          put &ES.GVT_TOTAL_AMT into Totals(#i) Total(4)
+                       else
+                          put &ES.GVT_TOTAL_AMT into Totals(#i) Total(6)
+                       end-if
+                    end-if
+                    break
+
+                when = 'T'
+                    put &ES.GVT_TOTAL_AMT into Totals(#i) Total(5)
+                break
+
+            end-evaluate
+
+            let #i = 1001
+
+            break
+
+        when = $load_TASBETC_key
+
+            array-add &ES.GVT_TOTAL_AMT to Totals(#i) Total(0)
+
+            evaluate $rec_type
+
+                when = 'E'
+                    array-add &ES.GVT_TOTAL_AMT to Totals(#i) Total(1)
+                    break
+
+                when = 'G'
+                    array-add &ES.GVT_TOTAL_AMT to Totals(#i) Total(2)
+                    break
+
+                when = 'D'
+                    if $reporting_cd = 'CF'
+                       array-add &ES.GVT_TOTAL_AMT to Totals(#i) Total(3)
+                    else
+                       if $reporting_cd = 'UN'
+                          array-add &ES.GVT_TOTAL_AMT to Totals(#i) Total(4)
+                       else
+                          array-add &ES.GVT_TOTAL_AMT to Totals(#i) Total(6)
+                       end-if
+                    end-if
+                    break
+
+                when = 'T'
+                    array-add &ES.GVT_TOTAL_AMT to Totals(#i) Total(5)
+                break
+
+            end-evaluate
+
+            let #i = 1001
+
+            break
+
+        when <> $load_TASBETC_key
+
+            let #i = #i + 1
+
+    end-evaluate
+
+end-while
+
+end-procedure       !load-TASBETC-amounts
+
+!**********************************
+begin-procedure get-TASBETC-amounts
+!**********************************
+let #i = 0
+
+while #i <= 1000
+
+    get $tas_betc from Totals(#i) TASBETC
+
+    evaluate $tas_betc
+
+        when = ''
+
+            let #i = 1001
+            break
+
+        when-other
+
+            get #TAS_Len      from Totals(#i) TASBETC_Len(0)
+            get #BETC_Len     from Totals(#i) TASBETC_Len(1)
+            get #tas_betc_tot from Totals(#i) Total(0)
+            get #net_pay_tot  from Totals(#i) Total(1)
+            get #garn_tot     from Totals(#i) Total(2)
+            get #charity_tot  from Totals(#i) Total(3)
+            get #union_tot    from Totals(#i) Total(4)
+            get #tax_tot      from Totals(#i) Total(5)
+            get #oth_ded_tot  from Totals(#i) Total(6)
+
+            do print-TAS-totals
+            let #i = #i + 1
+
+    end-evaluate
+
+end-while
+
+end-procedure       !get-TASBETC-amounts
+
+!*******************************
+begin-procedure print-TAS-totals
+!*******************************
+if #i = 0
+   print 'Schedule Prefix:'   (+1,1,16)
+   print $schedule_prefix     (0,+1,10)
+   print 'Schedule Code:'     (0,+2,14)
+   do get-schedule-code-XLAT
+   print $code_name           (0,+1,11)
+   print 'Schedule Sequence:' (0,+2,18)
+    print #schedule_seq_no    (0,+1,3)  edit bb9
+
+   if &adj_seq > 0
+      print 'TAS BETC Adjustment(s) applied' (0,+5,30)
+   end-if
+
+   print ' '                  (+1,1)
+end-if
+
+let $TAS  = substr($tas_betc, 1, #TAS_Len)
+let #BETC_Start = #TAS_Len + 1
+let $BETC = substr($tas_betc, #BETC_Start, #BETC_Len)
+
+do find-TASBETC-defn
+
+print $SP                     (+1,1)
+print $ATA                    (0,4)
+print $AID                    (0,8)
+print $BPOA                   (0,12)
+print $EPOA                   (0,17)
+print $A_TYPE                 (0,22)
+print $MAIN                   (0,24)
+print $SUB                    (0,29)
+print $BETC                   (0,33)
+
+evaluate $payment_type_1
+
+   when = 'S'
+       do Format-Number(#net_pay_tot,  $out, 'B,999,999,999,999.99')
+       print $out                 (0,42)
+
+       do Format-Number(#tas_betc_tot, $out, 'B,999,999,999,999.99')
+       print $out                 (0,65)
+       break
+
+   when = 'M'
+       do Format-Number(#garn_tot,     $out, 'B,999,999,999,999.99')
+       print $out                 (0,42)
+
+       do Format-Number(#charity_tot,  $out, 'B,999,999,999,999.99')
+       print $out                 (0,65)
+
+       do Format-Number(#union_tot,    $out, 'B,999,999,999,999.99')
+       print $out                 (0,88)
+
+       do Format-Number(#tax_tot,      $out, 'B,999,999,999,999.99')
+       print $out                 (0,111)
+
+       do Format-Number(#oth_ded_tot,  $out, 'B,999,999,999,999.99')
+       print $out                 (0,134)
+
+       do Format-Number(#tas_betc_tot, $out, 'B,999,999,999,999.99')
+       print $out                 (0,157)
+       break
+
+end-evaluate
+
+add #tas_betc_tot to #schd_tas_betc_tot
+add #net_pay_tot  to #schd_net_pay_tot
+add #garn_tot     to #schd_garn_tot
+add #charity_tot  to #schd_charity_tot
+add #union_tot    to #schd_union_tot
+add #tax_tot      to #schd_tax_tot
+add #oth_ded_tot  to #schd_oth_ded_tot
+
+end-procedure       !print-TAS-totals
+
+!********************************
+begin-procedure find-TASBETC-defn
+!********************************
+
+begin-select
+
+TAS.GVT_TAS_GWA
+TAS.GVT_TAS_SP
+TAS.GVT_TAS_ATA
+TAS.GVT_TAS_AID
+TAS.GVT_TAS_BPOA
+TAS.GVT_TAS_EPOA
+TAS.GVT_TAS_A
+TAS.GVT_TAS_MAIN
+TAS.GVT_TAS_SUB
+BETC.GVT_BETC_CD
+BETC.GVT_PYMT_OR_CLLCTN
+BETC.GVT_ADJUSTMENT
+
+   let $SP                   = rtrim(&TAS.GVT_TAS_SP, ' ')
+   let $ATA                  = rtrim(&TAS.GVT_TAS_ATA, ' ')
+   let $AID                  = rtrim(&TAS.GVT_TAS_AID, ' ')
+   let $BPOA                 = rtrim(&TAS.GVT_TAS_BPOA, ' ')
+   let $EPOA                 = rtrim(&TAS.GVT_TAS_EPOA, ' ')
+   let $A_TYPE               = rtrim(&TAS.GVT_TAS_A, ' ')
+   let $MAIN                 = rtrim(&TAS.GVT_TAS_MAIN, ' ')
+   let $SUB                  = rtrim(&TAS.GVT_TAS_SUB, ' ')
+   let $Pymnt_Coll           = &BETC.GVT_PYMT_OR_CLLCTN
+   let $IsAdjustment         = &BETC.GVT_ADJUSTMENT
+
+   if ($Pymnt_Coll = 'P' and $IsAdjustment = 'N') or
+      ($Pymnt_Coll = 'C' and $IsAdjustment = 'Y')
+      let $IsDebit = 'Y'
+   end-if
+
+   if ($Pymnt_Coll = 'P' and $IsAdjustment = 'Y') or
+      ($Pymnt_Coll = 'C' and $IsAdjustment = 'N')
+      let $IsDebit = 'N'
+   end-if
+
+FROM  PS_GVT_TAS_GWA_VW TAS,
+      PS_GVT_BETC_DEFN BETC
+WHERE TAS.GVT_TAS_GWA        = $TAS
+AND   BETC.GVT_TAS_SP        = TAS.GVT_TAS_SP
+AND   BETC.GVT_TAS_ATA       = TAS.GVT_TAS_ATA
+AND   BETC.GVT_TAS_AID       = TAS.GVT_TAS_AID
+AND   BETC.GVT_TAS_BPOA      = TAS.GVT_TAS_BPOA
+AND   BETC.GVT_TAS_EPOA      = TAS.GVT_TAS_EPOA
+AND   BETC.GVT_TAS_A         = TAS.GVT_TAS_A
+AND   BETC.GVT_TAS_MAIN      = TAS.GVT_TAS_MAIN
+AND   BETC.GVT_TAS_SUB       = TAS.GVT_TAS_SUB
+AND   BETC.GVT_BETC_CD       = $BETC
+
+end-select
+
+end-procedure       !find-TASBETC-defn
+
+!************************************
+begin-procedure print-schedule-totals
+!************************************
+
+print 'Schedule '         (+2,6,8)
+print $Schedule           (0,+1,16)
+print 'Total:'            (0,+1,6)
+
+evaluate $payment_type_1
+
+   when = 'S'
+       do Format-Number(#schd_net_pay_tot,  $out, 'B,999,999,999,999.99')
+       print $out                 (0,42)
+
+       do Format-Number(#schd_tas_betc_tot, $out, 'B,999,999,999,999.99')
+       print $out                 (0,65)
+       break
+
+   when = 'M'
+       do Format-Number(#schd_garn_tot,     $out, 'B,999,999,999,999.99')
+       print $out                 (0,42)
+
+       do Format-Number(#schd_charity_tot,  $out, 'B,999,999,999,999.99')
+       print $out                 (0,65)
+
+       do Format-Number(#schd_union_tot,    $out, 'B,999,999,999,999.99')
+       print $out                 (0,88)
+
+       do Format-Number(#schd_tax_tot,      $out, 'B,999,999,999,999.99')
+       print $out                 (0,111)
+
+       do Format-Number(#schd_oth_ded_tot,  $out, 'B,999,999,999,999.99')
+       print $out                 (0,134)
+
+       do Format-Number(#schd_tas_betc_tot, $out, 'B,999,999,999,999.99')
+       print $out                 (0,157)
+       break
+
+end-evaluate
+
+print ' '                 (+1,1)
+
+let #schd_tas_betc_tot    = 0
+let #schd_net_pay_tot     = 0
+let #schd_garn_tot        = 0
+let #schd_charity_tot     = 0
+let #schd_union_tot       = 0
+let #schd_tax_tot         = 0
+let #schd_oth_ded_tot     = 0
+
+end-procedure       !print-schedule-totals
+
+!***************************************
+begin-procedure get-schedule-status-XLAT
+!***************************************
+
+begin-select
+XLATS.FIELDNAME
+XLATS.FIELDVALUE
+
+   let $FieldName   = &XLATS.FIELDNAME
+   let $FieldValue  = &XLATS.FIELDVALUE
+   do Read-Translate-Table
+   let $status_name = rtrim($XlatLongName, ' ')
+
+FROM  PSXLATITEM XLATS
+WHERE XLATS.FIELDNAME   = 'GVT_SCHED_STATUS'
+AND   XLATS.FIELDVALUE  = &RCP.GVT_SCHED_STATUS
+AND   XLATS.EFFDT       = (SELECT MAX(EFFDT)
+                          FROM  PSXLATITEM XLATS1
+                          WHERE XLATS1.FIELDNAME   = XLATS.FIELDNAME
+                          AND   XLATS1.FIELDVALUE  = XLATS.FIELDVALUE
+                          AND   XLATS1.EFFDT       <= $AsOfToday)
+AND   XLATS.EFF_STATUS  = 'A'
+
+end-select
+
+end-procedure        !get-schedule-status-XLAT
+
+!*************************************
+begin-procedure get-schedule-code-XLAT
+!*************************************
+
+begin-select
+XLATC.FIELDNAME
+XLATC.FIELDVALUE
+
+   let $FieldName  = &XLATC.FIELDNAME
+   let $FieldValue = &XLATC.FIELDVALUE
+   do Read-Translate-Table
+   let $xlat_name  = rtrim(upper($XlatShortName), ' ')
+   let $code_name  = $FieldValue || '-' || $xlat_Name
+
+FROM  PSXLATITEM XLATC
+WHERE XLATC.FIELDNAME   = 'GVT_SCHED_CODE'
+AND   XLATC.FIELDVALUE  = &RCC.GVT_SCHED_CODE
+AND   XLATC.EFFDT       = (SELECT MAX(EFFDT)
+                          FROM  PSXLATITEM XLATC1
+                          WHERE XLATC1.FIELDNAME   = XLATC.FIELDNAME
+                          AND   XLATC1.FIELDVALUE  = XLATC.FIELDVALUE
+                          AND   XLATC1.EFFDT       <= $AsOfToday)
+AND   XLATC.EFF_STATUS  = 'A'
+
+end-select
+
+end-procedure        !get-schedule-code-XLAT
+
+!******************************
+begin-procedure create-new-page
+!******************************
+   if $first_page = 'Y'
+      let $first_page = 'N'
+   else
+      New-Page
+   end-if
+
+end-procedure       !create-new-page
+
+!*********************************
+begin-procedure Delete-Run-Control
+!*********************************
+
+begin-sql
+
+   DELETE FROM PS_RUNCTL_FGPY043
+   WHERE OPRID       = $Prcs_OprID
+   AND   RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+
+end-sql
+
+begin-sql
+
+   DELETE FROM PS_RC_FGPY043_SCHD
+   WHERE OPRID       = $Prcs_OprID
+   AND   RUN_CNTL_ID = $Prcs_Run_Cntl_ID
+
+end-sql
+
+end-procedure       !Delete-Run-Control
+
+!*****************************
+begin-procedure Commit-Updates
+!*****************************
+
+do Commit-Transaction
+
+end-procedure       !Commit-Updates
+
+#Include 'reset.sqc'     !Reset printer
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'readxlat.sqc'  !Read-Translate-Table procedure
+#Include 'curdttim.sqc'  !Routines to get current date/time
+#include 'rotname1.sqc'  !Routine to reformat name
+#Include 'stdapi.sqc'    !Routines to Update Run Status
+#Include 'tranctrl.sqc'  !Commit-Transaction

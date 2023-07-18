@@ -1,0 +1,599 @@
+!*********************************************
+!  GPFRDUAF:  DUCS File Generation (FRA)     *
+!*********************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2014, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2014/10/15:13:33:06                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  103                                                 !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+#define BLANKS       '                                               '
+
+Begin-Setup
+
+   Create-Array Name = Attr_List size = 999
+   Field = Attr_Name:char
+   Field = Attr_Type:char
+   Field = Attr_Len:number
+   Field = Attr_Dec:number
+
+End-Setup
+
+begin-report
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Stdapi-Init
+  do Init-Report
+  do Process-Main
+  do Reset
+  do Stdapi-Term
+
+end-report
+
+!***********************************************************************
+!  Init-Report
+!***********************************************************************
+
+begin-procedure Init-Report
+
+if $prcs_process_instance = ''
+   !No Prompt
+else
+   let #prcs_process_instance = To_number($prcs_process_instance)
+   Do Get-values
+end-if
+
+end-procedure Init-Report
+
+!***********************************************************************
+!  Get-Values
+!***********************************************************************
+
+begin-procedure Get-Values
+let $sql-statement = 'GPFRDUCS,Select, Get-Values (1)'
+
+BEGIN-SELECT ON-ERROR = SQL-Error   !SELECTS THE DATA FROM THE PANEL
+RUNDB.GPFR_AF_EXTRACT_ID
+RUNDB.GPFR_AF_TESTIND
+RUNDB.GPFR_AF_FILE_FLAG
+RUNDB.GPFR_AF_DESCR_FLAG
+RUNDB.GPFR_AF_FILE_NAME
+
+   let $Output_flg                  = rtrim(&RUNDB.GPFR_AF_FILE_FLAG,' ')
+   let $FileName                    = rtrim(&RUNDB.GPFR_AF_FILE_NAME,' ')
+   let $Descr_flg                   = rtrim(&RUNDB.GPFR_AF_DESCR_FLAG,' ')
+
+   let $Extract_Id                  = rtrim(&RUNDB.GPFR_AF_EXTRACT_ID,' ')
+   let $Tes_Ind                     = rtrim(&RUNDB.GPFR_AF_TESTIND,' ')
+
+FROM  PS_GPFR_AF_RUNFILE RUNDB
+WHERE RUNDB.OPRID       = $Prcs_OprID
+AND RUNDB.RUN_CNTL_ID   = $Prcs_Run_Cntl_ID
+END-SELECT
+
+!Prepare Node and Attribute Data
+
+BEGIN-SELECT ON-ERROR = SQL-Error
+BB.GPFR_AF_NODE_NAME
+AA.GPFR_AF_ATTR_NAME
+AA.GPFR_AF_MANDATORY
+AA.GPFR_AF_ATTR_TYPE
+AA.GPFR_AF_ATR_LENGTH
+AA.GPFR_AF_ATR_DECIML
+AA.DESCR60
+BB.GPFR_AF_KEY_NODE
+AA.GPFR_AF_KEY_ATTR
+
+   Let $Node_Name = upper(rtrim(&BB.GPFR_AF_NODE_NAME, ' '))
+   Let $Attr_Name = upper(rtrim(&AA.GPFR_AF_ATTR_NAME, ' '))
+   Let $Mandatory = upper(rtrim(&AA.GPFR_AF_MANDATORY, ' '))
+   Let $Attr_Type = upper(rtrim(&AA.GPFR_AF_ATTR_TYPE, ' '))
+   move &AA.GPFR_AF_ATR_LENGTH to #Attr_Length
+   move &AA.GPFR_AF_ATR_DECIML to #Attr_Decimal
+   move &BB.GPFR_AF_KEY_NODE to #KEY_NODE
+   move &AA.GPFR_AF_KEY_ATTR to #KEY_ATTR
+
+   Let $Attr_Descr = upper(rtrim(&AA.DESCR60, ' '))
+   If $Attr_Descr = ''
+      Let $Attr_Descr = ' '
+   End-If
+
+   do Insert-NodeAttr-Data-Tmp
+
+FROM PS_GPFR_AF_ATTR AA, PS_GPFR_AF_NODE BB
+WHERE AA.COUNTRY = BB.COUNTRY
+AND AA.GPFR_AF_APPL = BB.GPFR_AF_APPL
+AND AA.GPFR_AF_KEY_NODE = BB.GPFR_AF_KEY_NODE
+AND AA.GPFR_AF_ATTR_STAT = 'A'
+AND BB.COUNTRY = (SELECT COUNTRY FROM PS_GPFR_AF_RUN_DFN WHERE GPFR_AF_EXTRACT_ID = $Extract_Id)
+AND BB.GPFR_AF_APPL = (SELECT GPFR_AF_APPL FROM PS_GPFR_AF_RUN_DFN WHERE GPFR_AF_EXTRACT_ID = $Extract_Id)
+AND BB.GPFR_AF_NODE_STAT = 'A'
+AND AA.GPFR_AF_RPT_ONLY  = 'N'
+AND BB.GPFR_AF_NODE_NAME NOT IN('YEAR')
+END-SELECT
+
+end-procedure Get-Values
+
+!***********************************************************************
+! Insert-NodeAttr-Data-Tmp                                             *
+!***********************************************************************
+
+Begin-Procedure Insert-NodeAttr-Data-Tmp
+Let $sql-statement = 'GPFRAF.sqr,Insert,Insert-Data-Rec-Tmp'
+Let #prcs_process_instance = To_number($prcs_process_instance)
+
+begin-SQL On-Error=SQL-Error
+INSERT INTO PS_GPFR_AFNA_TAO
+           (PROCESS_INSTANCE,
+            GPFR_AF_NODE_NAME,
+            GPFR_AF_ATTR_NAME,
+            GPFR_AF_MANDATORY,
+            GPFR_AF_ATTR_TYPE,
+            GPFR_AF_ATR_LBLSRC,
+            GPFR_AF_ATR_LENGTH,
+            GPFR_AF_ATR_DECIML,
+            GPFR_AF_CODE_ID,
+            GPFR_AF_PROMPT,
+            GPFR_AF_PR_KEY_FLD,
+            GPFR_AF_PR_LBL_FLD,
+            GPFR_AF_ATTR_FIELD,
+            DESCR60,
+            GPFR_AF_KEY_NODE,
+            GPFR_AF_KEY_ATTR,
+            GPFR_AF_NUM_VAL)
+VALUES (#prcs_process_instance,
+        $Node_Name,
+        $Attr_Name,
+        $Mandatory,
+        $Attr_Type,
+        ' ',
+        #Attr_Length,
+        #Attr_Decimal,
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        $Attr_Descr,
+        #KEY_NODE,
+        #KEY_ATTR,
+        0)
+end-SQL
+end-procedure Insert-Data-Rec-Tmp
+
+!***********************************************************************
+!  Process-Main
+!***********************************************************************
+
+begin-procedure Process-Main
+do get_message_catalog (17145, 20, '')
+
+if $Output_flg = 'Y'
+   OPEN $FileName AS 1 FOR-WRITING RECORD=255:FIXED
+end-if
+Let $DUCS_Line = ''
+BEGIN-SELECT ON-ERROR = SQL-Error
+A.GPFR_AF_NODE_NAME () on-break print=never before=CreateAttrList after=WriteDataToFile
+A.GPFR_AF_KEY_NODE
+A.GPFR_AF_ATTR_NAME
+A.GPFR_AF_KEY_ATTR
+A.GPFR_AF_CHAR_VAL
+A.GPFR_AF_NUM_VAL
+A.GPFR_AF_DATE_VAL
+A.COMPANY
+A.EMPLID
+A.GPFR_AF_NODE_SET
+B.GPFR_AF_MANDATORY
+B.GPFR_AF_ATTR_TYPE
+B.GPFR_AF_ATR_LBLSRC
+B.GPFR_AF_ATR_LENGTH
+B.GPFR_AF_ATR_DECIML
+B.GPFR_AF_CODE_ID
+B.GPFR_AF_PROMPT
+B.GPFR_AF_PR_KEY_FLD
+B.GPFR_AF_PR_LBL_FLD
+B.GPFR_AF_ATTR_FIELD
+B.DESCR60
+A.GPFR_AF_LVL_1_VAL
+A.ESTABID
+
+
+   Let $Node_Name = ltrim(rtrim(&A.GPFR_AF_NODE_NAME,' '),' ')
+   Let $Attr_Name  = ltrim(rtrim(&A.GPFR_AF_ATTR_NAME,' '),' ')
+   If $NewNode = 'Y'
+      If $Attr_Name = '001'
+         Let $NewNode = 'N'
+      Else
+         Show 'Error: Attribute 001 is must for a Node,Please verify the results'
+         stop
+      End-If
+   End-If
+
+   ! As More than One COT Line can come one after another for different COT types, need to write each lien before processing next one
+   Let #Line_Len = Length($DUCS_Line)
+   If $Node_Name = 'COT' And $Attr_Name = '001' And #Line_Len > 0
+       !  show 'Writing COT Node:' $Node_Name '   Attr:' $Attr_Name  '  Length:' #Line_Len ' Line:' $DUCS_Line
+         Do WriteDataToFile
+   End-If
+   If $Attr_Name = '001'
+         Let #Array_Item = 0
+   End-If
+   Let $Array_Attr_Name = Attr_List.Attr_Name(#Array_Item)
+
+   ! Here the array is used to make sure the all the required attributes are printed on the file,even if they are not extracted.
+   ! In case there is no extracted data for a particular attribute, then defualt value (0 for number and blank for text)
+   ! is inserted as the value for that attribute considering the length of the attribute.
+
+   If $Attr_Name != $Array_Attr_Name
+      !show 'Node Name:' $Node_Name
+      !show $Attr_Name '    ' $Array_Attr_Name
+      While $Attr_Name != $Array_Attr_Name
+        !show $Attr_Name '    ' $Array_Attr_Name
+         Let $Array_Item_Type = Attr_List.Attr_Type(#Array_Item)
+         if isnull($Array_Item_Type)
+            Show 'Error: Extracted data is not in proper order. please verify the extraction   ' $Node_Name '   ' $Attr_Name '    ' $Array_Attr_Name
+            Break
+         End-If
+         Evaluate $Array_Item_Type
+         When = 'M'
+         When = 'N'
+            Let #TotalLen = Attr_List.Attr_Len(#Array_Item) + Attr_List.Attr_Dec(#Array_Item)
+            Let $AttrVal_Dflt = ''
+            Let #i = 1
+            While #i <= #TotalLen
+               Let $AttrVal_Dflt = $AttrVal_Dflt || '0'
+               Let #i = #i + 1
+            End-While
+            Let $DUCS_Line = $DUCS_Line || $AttrVal_Dflt
+            Let #Array_Item = #Array_Item + 1
+         Break
+         When = 'D'
+         When = 'T'
+            Let #TotalLen = Attr_List.Attr_Len(#Array_Item)
+            Let $AttrVal_Dflt = ''
+            Let #i = 1
+            While #i <= #TotalLen
+               Let $AttrVal_Dflt = $AttrVal_Dflt || ' '
+               Let #i = #i + 1
+            End-While
+            Let $DUCS_Line = $DUCS_Line || $AttrVal_Dflt
+            Let #Array_Item = #Array_Item + 1
+         Break
+         End-Evaluate
+         Let $Array_Attr_Name = Attr_List.Attr_Name(#Array_Item)
+       End-While
+       Let #Array_Item = #Array_Item + 1
+    Else
+        Let #Array_Item = #Array_Item + 1
+    End-If
+
+
+   ! Normal Attribute Processing when extracted attribute is same as the one in the array (current index)
+   Let $Attr_Val = ''
+   Let #Attr_Length = 0
+   Move &B.GPFR_AF_ATR_LENGTH to #Attr_Length
+   Move &B.GPFR_AF_ATR_DECIML to #Attr_Dec_Len
+   Move &B.GPFR_AF_ATTR_TYPE to $Attr_Type
+   Evaluate $Attr_Type
+   When = 'M'
+   When = 'N'
+        Move &A.GPFR_AF_NUM_VAL to #Attr_Num_Val
+        If #Attr_Num_Val < 0
+           Let #Attr_Num_Val = 0 - #Attr_Num_Val
+        End-If
+        Let $NumMask = '0'
+        While length($NumMask) < #Attr_Length
+           Let $NumMask = $NumMask || '9'
+        End-While
+        Let $DecimalMask = ''
+        If #Attr_Dec_Len > 0
+           While Length($DecimalMask) < #Attr_Dec_Len
+              Let $DecimalMask = $DecimalMask || '9'
+           End-While
+        End-if
+        If isblank($DecimalMask)
+           Let $Mask = $NumMask
+        Else
+           Let $Mask = $NumMask || 'V' || $DecimalMask
+        End-If
+        Do Format-Number(#Attr_Num_Val,$Attr_Val,$Mask)
+        Add #Attr_Dec_Len to #Attr_Length
+        Let $Attr_Val = substr($Attr_Val||{BLANKS},1,#Attr_Length)
+   Break
+   When = 'T'
+      Let $Attr_Val = ltrim(rtrim(&A.GPFR_AF_CHAR_VAL, ' '), ' ')
+      Let $Attr_Val = substr($Attr_Val||{BLANKS},1,#Attr_Length)
+   Break
+   When = 'D'
+      Move &A.GPFR_AF_DATE_VAL to $Attr_Val
+      Let $Attr_Val = substr($Attr_Val||{BLANKS},1,#Attr_Length)
+   Break
+
+   End-Evaluate
+
+   Let $DUCS_Line = $DUCS_Line || $Attr_Val
+
+FROM PS_GPFR_AF_EXTRACT A, PS_GPFR_AFNA_TAO B
+WHERE A.GPFR_AF_EXTRACT_ID = $Extract_Id
+AND A.GPFR_AF_NODE_NAME = B.GPFR_AF_NODE_NAME
+AND A.GPFR_AF_ATTR_NAME = B.GPFR_AF_ATTR_NAME
+AND B.PROCESS_INSTANCE = #prcs_process_instance
+
+ORDER BY A.GPFR_AF_LVL_1_ORD,A.GPFR_AF_LVL_1_VAL,A.GPFR_AF_LVL_2_ORD,A.GPFR_AF_LVL_2_VAL,
+A.GPFR_AF_LVL_3_ORD,A.GPFR_AF_LVL_3_VAL,A.GPFR_AF_LVL_4_ORD,A.GPFR_AF_LVL_4_VAL,
+A.GPFR_AF_LVL_5_ORD,A.GPFR_AF_LVL_5_VAL,A.GPFR_AF_LVL_6_ORD,A.GPFR_AF_LVL_6_VAL,
+A.GPFR_AF_LVL_7_ORD,A.GPFR_AF_LVL_7_VAL,A.GPFR_AF_LVL_8_ORD,A.GPFR_AF_LVL_8_VAL,
+A.GPFR_AF_LVL_9_ORD,A.GPFR_AF_LVL_9_VAL,A.GPFR_AF_LVL_10_ORD,A.GPFR_AF_LVL_10_VAL,
+A.GPFR_AF_NODE_NAME,A.GPFR_AF_KEY_EXTRCT,A.GPFR_AF_ATTR_NAME
+END-SELECT
+
+if $Output_flg = 'Y'
+      CLOSE 1
+end-if
+
+!do Delete-NodeAttr-Data-Tmp
+do get_message_catalog (17145, 23, '')
+end-procedure Process-Main
+
+
+!***********************************************************************
+! CreateAttrList                                                       *
+! Procedure to create the list of  attributes for a Node               *
+!***********************************************************************
+Begin-Procedure CreateAttrList
+
+clear-array name=Attr_List
+Let #Index = 0
+Let $NewNode = 'Y'
+!show 'Before Node: ' &A.GPFR_AF_NODE_NAME ' Index:' #Index ' Array Item:' #Array_Item
+Begin-Select
+TMP.GPFR_AF_ATTR_NAME
+TMP.GPFR_AF_ATTR_TYPE
+TMP.GPFR_AF_ATR_LENGTH
+TMP.GPFR_AF_ATR_DECIML
+
+    Let Attr_List.Attr_Name(#Index) = ltrim(rtrim(&TMP.GPFR_AF_ATTR_NAME,' '),' ')
+    Let Attr_List.Attr_Type(#Index) = ltrim(rtrim(&TMP.GPFR_AF_ATTR_TYPE,' '),' ')
+    Let Attr_List.Attr_Len(#Index) = &TMP.GPFR_AF_ATR_LENGTH
+    Let Attr_List.Attr_Dec(#Index) = &TMP.GPFR_AF_ATR_DECIML
+    Let #Index = #Index + 1
+
+FROM PS_GPFR_AFNA_TAO TMP
+WHERE TMP.PROCESS_INSTANCE = #prcs_process_instance
+AND TMP.GPFR_AF_NODE_NAME = &A.GPFR_AF_NODE_NAME
+ORDER BY TMP.GPFR_AF_ATTR_NAME
+End-Select
+
+End-Procedure
+
+!***********************************************************************
+! Delete-NodeAttr-Data-Tmp                                             *
+!***********************************************************************
+
+begin-procedure Delete-NodeAttr-Data-Tmp
+
+let #prcs_process_instance = To_number($prcs_process_instance)
+
+begin-SQL on-Error=SQL-Error
+DELETE FROM PS_GPFR_AFNA_TAO
+WHERE PROCESS_INSTANCE = #prcs_process_instance
+end-SQL
+
+end-procedure Delete-Data-Rec-Tmp
+
+
+!***********************************************************************
+! Output                                                               *
+!***********************************************************************
+
+begin-procedure convert-to-char($string_in, :$string_out)
+
+#ifdef MVS
+
+#else
+  let $string_in   = translate($string_in, 'é', 'E')
+  let $string_in   = translate($string_in, 'è', 'E')
+  let $string_in   = translate($string_in, 'ê', 'E')
+  let $string_in   = translate($string_in, 'ë', 'E')
+  let $string_in   = translate($string_in, 'â', 'A')
+  let $string_in   = translate($string_in, 'à', 'A')
+  let $string_in   = translate($string_in, 'ä', 'A')
+  let $string_in   = translate($string_in, 'ô', 'O')
+  let $string_in   = translate($string_in, 'ö', 'O')
+  let $string_in   = translate($string_in, 'î', 'I')
+  let $string_in   = translate($string_in, 'ï', 'I')
+  let $string_in   = translate($string_in, 'û', 'U')
+  let $string_in   = translate($string_in, 'ù', 'U')
+  let $string_in   = translate($string_in, 'ü', 'U')
+  let $string_in   = translate($string_in, 'ÿ', 'Y')
+  let $string_in   = translate($string_in, 'ç', 'C')
+
+  let $string_in   = translate($string_in, 'À', 'A')
+  let $string_in   = translate($string_in, 'Â', 'A')
+  let $string_in   = translate($string_in, 'Ä', 'A')
+  let $string_in   = translate($string_in, 'Ç', 'C')
+  let $string_in   = translate($string_in, 'È', 'E')
+  let $string_in   = translate($string_in, 'É', 'E')
+  let $string_in   = translate($string_in, 'Ê', 'E')
+  let $string_in   = translate($string_in, 'Ë', 'E')
+  let $string_in   = translate($string_in, 'Î', 'I')
+  let $string_in   = translate($string_in, 'Ï', 'I')
+  let $string_in   = translate($string_in, 'Ô', 'O')
+  let $string_in   = translate($string_in, 'Ö', 'O')
+  let $string_in   = translate($string_in, 'Ù', 'U')
+  let $string_in   = translate($string_in, 'Û', 'U')
+  let $string_in   = translate($string_in, 'Ü', 'U')
+
+#end-if
+
+  uppercase $string_in
+  let $string_out  = $string_in
+
+end-procedure
+
+!***********************************************************************
+! WriteDataToFile                                                      *
+!***********************************************************************
+
+
+begin-procedure WriteDataToFile
+
+!Check if all the attributes are processed and line is ready with data for all attributes
+! incase any attribute is not processed, then put default value for that attribute to the file
+ If #Index != #Array_Item
+
+    While #Array_Item <= #Index
+
+       Let $Array_Item_Type = Attr_List.Attr_Type(#Array_Item)
+       !show 'Type:' $Array_Item_Type ' Array Item :' #Array_Item ' Index:' #Index
+       if isnull($Array_Item_Type)
+          Break
+       End-If
+       Evaluate $Array_Item_Type
+       When = 'M'
+       When = 'N'
+          Let #TotalLen = Attr_List.Attr_Len(#Array_Item) + Attr_List.Attr_Dec(#Array_Item)
+          Let $AttrVal_Dflt = ''
+          Let #i = 1
+          While #i <= #TotalLen
+              Let $AttrVal_Dflt = $AttrVal_Dflt || '0'
+              Let #i = #i + 1
+          End-While
+          Let $DUCS_Line = $DUCS_Line || $AttrVal_Dflt
+          Let #Array_Item = #Array_Item + 1
+       Break
+       When = 'D'
+       When = 'T'
+         Let #TotalLen = Attr_List.Attr_Len(#Array_Item)
+         Let $AttrVal_Dflt = ''
+         Let #i = 1
+         While #i <= #TotalLen
+            Let $AttrVal_Dflt = $AttrVal_Dflt || ' '
+            Let #i = #i + 1
+         End-While
+         Let $DUCS_Line = $DUCS_Line || $AttrVal_Dflt
+         Let #Array_Item = #Array_Item + 1
+       Break
+       End-Evaluate
+    End-While
+
+ End-If
+
+ do Convert-To-Char($DUCS_Line,$Output_Line)
+ Write 1 from $Output_Line:255
+ Let $DUCS_Line = ''
+end-procedure
+
+
+
+!***********************************************************************
+! FormatField                                                          *
+!***********************************************************************
+
+begin-procedure FormatField(#Value, #Before, #After, #Puiss, $DUCS-Type, :$Output)
+   do Init-Number
+
+   let $mask1 = '0'
+   while length($mask1) < #Before
+      let $mask1 = $mask1 || '9'
+   end-while
+   let $mask2 = ''
+! Gromit#5876001 : Usage of #After, instead of #Before
+   while length($mask2) < #After
+      let $mask2 = $mask2 || '9'
+   end-while
+   if #After <> 0
+      let $mask = $mask1 || 'V' || $mask2
+   else
+      let $mask = $mask1
+   end-if
+   if  #Puiss     =  2
+   and $DUCS-Type = '903'
+       let #Value_in = #Value
+! Gromit#5876001 : For Agirc/Arrco, value is rounded to unit, with 2 decimal equal to zero
+       Do PS_SQR_Round(#Value_in , 0, #Value_out )
+       let #Value = 100 * #Value_out
+   end-if
+
+   do Format-Number(#Value, $Output1, $mask)
+   if instr($Output1, '.', 1)
+      unstring $Output1 by '.' into $part1 $part2
+   else
+      unstring $Output1 by ',' into $part1 $part2
+   end-if
+   while length($part1) < #Before
+      let $part1 = '0' || $part1
+   end-while
+   let $Output = $part1 || $part2
+end-procedure
+
+!***********************************************************************
+! Get_message_catalog                                                  *
+!***********************************************************************
+
+begin-procedure Get_message_catalog (#message_set_nbr, #message_nbr, $NOLINE)
+
+  let #_MessageSetNbr = #message_set_nbr
+  let #_MessageNbr    = #message_nbr
+
+  do Read-MsgCatalog-Table
+
+  let $message_key  = '(' || $_MessageLangCd         || ','  ||
+                         to_char(#message_set_nbr)   || ','  ||
+                         to_char(#message_nbr)       || ') '
+
+  let $message_text   = ' ' || rtrim($_MessageText, ' ') || ' '
+
+  if $NOLINE = 'NOLINE'
+     Show $message_key $_ReportID $message_text NOLINE
+  else
+     Show $message_key $_ReportID $message_text
+  end-if
+
+end-procedure Get_message_catalog
+
+!************************************************************************
+!End of the SQR statements                                              *
+!************************************************************************
+#include 'hrctlfra.sqc'  !Get run control parameter values
+#include 'stdapi.sqc'    !Routines to update run status
+#include 'readmsgc.sqc'  !Read the Message Catalog Table
+#Include 'reset1.sqc'    !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'useprntr.sqc'
+#Include 'sqrtrans.sqc'
+#Include 'datemath.sqc'
+#Include 'getprimj.sqc'  !Routines for selecting EE's primary job
+
+!************************************************************************
+!End of GPFRDUAF                                                       *
+!************************************************************************

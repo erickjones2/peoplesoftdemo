@@ -1,0 +1,1454 @@
+!***********************************************************************
+! GPJPUC01.SQR: Unemployment Certificate                               *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2014, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2014/06/16:04:09:46                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  103                                                 !
+!                                                                      *
+!***********************************************************************
+#Include 'setenv.sqc'                   !SET ENVIRONMENT
+#Include 'gpjpuc01.sqc'                 !SET PAGE LAYOUT
+
+begin-program
+        Do Init-Processing
+        Do Process-Main
+        Do Reset
+        Do Stdapi-Term          !End Of Job Processing is done
+end-program
+
+
+
+!***********************************************************************
+! Init-Processing                                                      *
+! Called By:    begin-program                                          *
+! Calls:        Init-Datetime           - datetime.sqc                 *
+!               Get-Current-Datetime    - prcsapi.sqc (curdttim.sqc)   *
+!               Get-GPJPUC01-runctl                                    *
+!               Init-Report                                            *
+! Description:  Standard PeopleSoft initialization processing.         *
+!***********************************************************************
+
+begin-procedure Init-Processing
+        Do Init-DateTime
+        Do Get-Current-Datetime
+        Do Stdapi-Init
+
+        Do Get-GPJPUC01-Runctl
+
+        Do Build-Select
+        Do Init-Report
+        Do GPJPUC01-Create-Buffer
+        let $_TableAlias = 'LA'
+        Do Security-Param
+end-procedure !Init-Processing
+
+
+
+!***********************************************************************
+! Get-GPJPUC01-Runctl                                                  *
+! Called By:    Init-Processing                                        *
+! Description:  Gets data from GPJP_RC_UC runcotrol record.            *
+!***********************************************************************
+
+begin-procedure Get-GPJPUC01-Runctl
+begin-select
+
+UC.BUSINESS_UNIT
+UC.DEPTID
+UC.GPJP_TAX_ESTAB
+UC.GPJP_START_DATE
+UC.GPJP_END_DATE
+UC.GPJP_PAYEE_IND
+
+        LET $Bus_Unit = rtrim(&UC.BUSINESS_UNIT,' ')
+        LET $DeptId    = rtrim(&UC.DEPTID,' ')
+        LET $Tax_Estab  = rtrim(&UC.GPJP_TAX_ESTAB,' ')
+        LET $Start_Date = &UC.GPJP_START_DATE
+        LET $End_Date   = &UC.GPJP_END_DATE
+        LET $Payee_Ind  = rtrim(&UC.GPJP_PAYEE_IND,' ')
+
+FROM PS_GPJP_RC_UC UC
+
+WHERE UC.OPRID = $PRCS_OPRID
+AND UC.RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+
+end-select
+
+end-procedure !Get-GPJPUC01-Runctl
+
+
+!***********************************************************************
+! Build-select                                                         *
+! Called By:    Init-Processing                                        *
+! Description:  Builds dynamic select statement for main procedure.    *
+!***********************************************************************
+begin-procedure Build-select
+
+     IF $Tax_Estab <> ''
+         let $Select_Clause =  $Select_Clause || 'AND LA.GPJP_TAX_ESTAB= ''' || $Tax_Estab ||''''
+     END-IF
+     IF $Bus_Unit <> ''
+         let $Select_Clause =  $Select_Clause || 'AND JO.BUSINESS_UNIT = ''' || $Bus_Unit ||''''
+     END-IF
+     IF $RC_DeptId <> ''
+         let $Select_Clause =  $Select_Clause || 'AND JO.DEPTID = ''' || $DeptId ||''''
+     END-IF
+
+
+     IF $Payee_Ind   = 'Y'
+         do Select-Employees
+     END-IF
+
+end-procedure !Build-select
+
+
+!***********************************************************************
+! Select-Employees                                                     *
+! Calls:        none                                                   *
+! Description:  Selects employees off run control.  Strings them into  *
+!               a variable for use in the main select clause in        *
+!               the calling report.                                    *
+!***********************************************************************
+
+begin-procedure Select-Employees
+    LET $Quote                  = ''''
+    LET $Multiple = 'N'     ! Controls the stringing format for the Select_Clause.
+    LET $Employee_List          = ' '
+
+begin-SELECT
+
+UCPYE.OPRID                 &UCPYE.OPRID
+UCPYE.RUN_CNTL_ID           &UCPYE.RUN_CNTL_ID
+UCPYE.EMPLID                &UCPYE.EMPLID
+UCPYE.EMPL_RCD              &UCPYE.EMPL_RCD
+
+    LET $Runctl_Emplid = &UCPYE.EMPLID
+    LET $Runctl_EmplRcd = &UCPYE.EMPL_RCD
+
+    if $Multiple = 'N'
+       let $EE_Select_Clause = ' AND (( HE.EMPLID='||''''||
+   $Runctl_Emplid||''''||'AND HE.EMPL_RCD='||$Runctl_EmplRcd||')'
+    else
+       let $EE_Select_Clause = $EE_Select_Clause||' OR ( HE.EMPLID='||''''||$Runctl_Emplid||''''||'AND HE.EMPL_RCD='||
+       $Runctl_EmplRcd||')'
+    end-if
+    let $Multiple = 'Y'
+
+    FROM PS_GPJP_RC_UC_PYE UCPYE
+
+    WHERE UCPYE.OPRID       = $Prcs_OprID
+    AND UCPYE.RUN_CNTL_ID   = $Prcs_Run_Cntl_ID
+
+end-SELECT
+    let $EE_Select_Clause  = $EE_Select_Clause||')'
+end-procedure ! Select-Employees
+
+!***********************************************************************
+! Init-Report                                                          *
+! Called By:    Init-Processing                                        *
+! Calls:        NVariable-Defin                                        *
+!               Security-Param                                         *
+! Description:                                                         *
+!***********************************************************************
+
+begin-procedure Init-Report
+        Do NVariable-Defin      !Defines all the Numeric variable used for positioning in print statements
+        Do Security-Param
+
+        !***********************************************************************
+        ! Translations procedures & Strings Table retrievals.                  *
+        !***********************************************************************
+
+        Do Init_Report_Translation ($ReportID, $curr_language_cd)
+        Do Append_Report_Translation ('GPJPUC01')
+        Do Get_Field_Information ('GPJPUC01','PAGE',       $GPJPUC01_Page,        #dummy_width)
+        Do Get_Field_Information ('GPJPUC01','CONTINUED',  $GPJPUC01_Continued,   #dummy_width)
+        Do Get_Field_Information ('GPJPUC01','MARK_CIRCLE',$GPJPUC01_Mark_circle,   #dummy_width)
+        Do Get_Field_Information ('GPJPUC01','LIESTAB_ADDRESS',$GPJPUC01_LIESTAB_ADDRESS,   #dummy_width)
+end-procedure !Init-Report
+
+
+
+!***********************************************************************
+! Process-Main                                                         *
+! Called By:    begin-report                                           *
+! Calls :       Print_Report                                           *
+! Description:  Main procedure.                                        *
+!***********************************************************************
+begin-procedure Process-Main
+Begin-Select
+
+HE.EMPLID               &Emplid_HE
+HE.EMPL_RCD             &Emplrcd_HE
+HE.GPJP_UC_TERM_DATE    &Termdate_HE
+HE.GPJP_UC_TERM_RSN
+HE.GPJP_UC_RETIRE_AGE
+HE.GPJP_UC_MTH_CONTR
+HE.GPJP_UC_TOT_MTH
+HE.GPJP_UC_NUM_UPDT
+HE.GPJP_UC_TERM_BY
+HE.GPJP_UC_CON_RENEW
+HE.GPJP_UC_TRAINING
+HE.GPJP_UC_OLD_LOC
+HE.GPJP_UC_NEW_LOC
+HE.GPJP_UC_REASON
+HE.GPJP_UC_STATEMENT
+HE.GPJP_UC_NOTE
+HE.GPJP_UC_CONT_EMPL
+
+        Do Print_Report
+
+FROM PS_GPJP_UC_HEADER HE
+,PS_GPJP_LA_PYE_DTA LA
+,PS_JOB JO
+
+WHERE HE.EMPLID = JO.EMPLID
+AND HE.EMPL_RCD = JO.EMPL_RCD
+AND HE.GPJP_UC_ELIGIBLE='Y'
+AND HE.GPJP_UC_TERM_DATE >= $Start_Date
+AND HE.GPJP_UC_TERM_DATE <= $End_Date
+AND HE.EMPLID = LA.EMPLID
+AND HE.EMPL_RCD=LA.EMPL_RCD
+AND HE.GPJP_WC_PROC = 'N'
+AND LA.EFFDT = (SELECT MAX(LA2.EFFDT) FROM PS_GPJP_LA_PYE_DTA LA2
+                WHERE LA.EMPLID = LA2.EMPLID
+                AND LA.EMPL_RCD = LA2.EMPL_RCD
+                AND LA2.EFFDT <= $End_Date)
+AND JO.EFFDT = (SELECT MAX(JO2.EFFDT) FROM PS_JOB JO2
+                WHERE JO.EMPLID = JO2.EMPLID
+                AND JO.EMPL_RCD = JO2.EMPL_RCD
+                AND JO2.EFFDT <= $End_Date)
+AND JO.EFFSEQ = (SELECT MAX(JO2.EFFSEQ) FROM PS_JOB JO2
+                WHERE JO.EMPLID = JO2.EMPLID
+                AND JO.EMPL_RCD = JO2.EMPL_RCD
+                AND JO.EFFDT = JO2.EFFDT)
+[$Select_Clause]
+[$EE_Select_Clause]
+[$SecurityClausewithERN]
+
+End-Select
+
+end-procedure Process-Main
+
+
+
+!***********************************************************************
+! Print-Report                                                         *
+! Called By:    Process-Main                                           *
+! Calls:        Personal_Info                                          *
+!               Personal_Phone                                         *
+!               Ins_Estab_Info                                         *
+!               Print_Reason_for_Unemp                                 *
+!               Print_NextDay_and_Matter                               *
+!               Payment_Situation                                      *
+! Description:  Prints the Unemployment Certificate                    *
+!***********************************************************************
+
+begin-procedure Print_Report
+  LET $PRINT_OK=''
+  LET #PERSON_INFO_FLAG = 1
+
+  Do Check_DETAILS
+
+  IF $PRINT_OK = 'OK'
+        Do Employee_Name
+        Do Employee_Address
+        Do Employee_Ins_Num
+        Do Personal_Phone
+        Do Ins_Estab_Info
+
+        Do Print_Personal_Info
+        Do Print_Ins_Estab_Info
+        Do Print_NextDay_and_Matter
+        Do Print_Reason_for_Unemp
+
+        Do Payment_Situation
+        new-page
+        LET #SE8 =61
+  END-IF
+
+end-procedure Print_Report
+
+
+
+!***********************************************************************
+! Check_Details                                                        *
+! Called By:    Print-Report                                           *
+! Calls:        Check_Eligibility                                      *
+! Description:  Retrieves Payment details from the GPJP_UC_DETAILS     *
+!               table                                                  *
+!***********************************************************************
+
+begin-procedure Check_DETAILS
+
+LET #CNT_LINE = 0
+LET #CNT_ER = 0
+
+Begin-SELECT
+
+DE.GPJP_START_DATE              &START_DATE
+DE.GPJP_END_DATE                &END_DATE
+DE.GPJP_UC_WDAYS_APP            &WDAYS_APP
+DE.PRD_BGN_DT                   &BGN_DT
+DE.PRD_END_DT                   &END_DT
+DE.GPJP_UC_WDAYS_PPRD           &WDAYS_PPRD
+DE.GPJP_UC_WAGE_A               &WAGE_A
+DE.GPJP_UC_WAGE_B               &WAGE_B
+DE.GPJP_UC_REMARKS              &REMARKS
+DE.GPJP_UC_INCLUDE              &INCLUDE
+DE.GPJP_UC_UPDATE               &UPDATE
+
+        Do Check_Eligibility
+
+  IF #CNT_ER >= 12
+        EXIT-SELECT
+  END-IF
+
+FROM PS_GPJP_UC_DETAILS DE
+
+WHERE DE.EMPLID=&Emplid_HE
+AND DE.EMPL_RCD=&Emplrcd_HE
+AND DE.GPJP_UC_TERM_DATE = &Termdate_HE
+
+ORDER BY DE.GPJP_END_DATE DESC
+
+End-SELECT
+ IF #CNT_ER >= 1
+        LET $PRINT_OK = 'OK'
+  END-IF
+
+end-procedure Check_DETAILS
+
+
+
+!***********************************************************************
+! Check_Eligibility                                                    *
+! Called By:    Check_Details                                          *
+! Description:  Checks whether the employee is eligible to receive an  *
+!               Unemployment certificate and stores them in an array.  *
+!***********************************************************************
+
+begin-procedure Check_Eligibility
+
+IF &INCLUDE = 'Y'
+
+    IF &WDAYS_PPRD >= 11
+       LET #CNT_ER = #CNT_ER + 1
+    END-IF
+
+        PUT &START_DATE         INTO Array(#CNT_LINE) GPJP_START_DATE
+        PUT &END_DATE           INTO Array(#CNT_LINE) GPJP_END_DATE
+        PUT &WDAYS_APP          INTO Array(#CNT_LINE) GPJP_UC_WDAYS_APP
+        PUT &BGN_DT             INTO Array(#CNT_LINE) PRD_BGN_DT
+        PUT &END_DT             INTO Array(#CNT_LINE) PRD_END_DT
+        PUT &WDAYS_PPRD         INTO Array(#CNT_LINE) GPJP_UC_WDAYS_PPRD
+        PUT &WAGE_A             INTO Array(#CNT_LINE) GPJP_UC_WAGE_A
+        PUT &WAGE_B             INTO Array(#CNT_LINE) GPJP_UC_WAGE_B
+        PUT &REMARKS            INTO Array(#CNT_LINE) GPJP_UC_REMARKS
+
+  LET  #CNT_LINE = #CNT_LINE + 1
+
+END-IF
+
+end-procedure Check_Eligibility
+
+
+
+!***********************************************************************
+! Employee_Name                                                        *
+! Called By:    Print_Report                                           *
+! Calls:        Print_Personal_Info                                    *
+! Description:  Retrieves Employee's Name as of Termination Date       *
+!***********************************************************************
+
+begin-procedure Employee_Name
+
+Begin-SELECT
+
+NA.NAME_FORMAL
+NA.NAME_AC
+
+FROM PS_NAMES NA
+
+WHERE NA.EMPLID = &Emplid_HE
+AND NA.NAME_TYPE = 'PRI'
+AND NA.EFFDT = (SELECT MAX(NA2.EFFDT) FROM PS_NAMES NA2
+                WHERE NA.EMPLID = NA2.EMPLID
+                AND NA2.EFFDT <= &Termdate_HE)
+
+End-SELECT
+
+end-procedure Employee_Name
+
+
+
+!***********************************************************************
+! Employee_Address                                                     *
+! Called By:    Print_Report                                           *
+! Calls:        Print_Personal_Info                                    *
+! Description:  Retrieves Employee's Address as of Termination Date    *
+!***********************************************************************
+
+begin-procedure Employee_Address
+
+Begin-SELECT
+
+AD.POSTAL               &PostalR
+AD.COUNTRY              &CountryR
+AD.STATE                &StateR
+AD.COUNTY               &CountyR
+AD.CITY                 &CityR
+AD.ADDRESS1             &AdrressR1
+AD.ADDRESS2             &AdrressR2
+AD.ADDRESS3             &AdrressR3
+AD.ADDRESS4             &AdrressR4
+
+FROM PS_ADDRESSES AD
+
+where AD.EMPLID = &Emplid_HE
+AND AD.ADDRESS_TYPE = 'HOME'
+AND AD.EFFDT = (SELECT MAX(AD2.EFFDT) FROM PS_ADDRESSES AD2
+                WHERE AD.EMPLID = AD2.EMPLID
+                AND AD2.EFFDT <= &Termdate_HE)
+
+End-SELECT
+
+         Let $EstabStCd = rtrim(&StateR,' ')
+         Let $Country = rtrim(&CountryR,' ')
+         Do Get-State-Name
+         move $EstabState to $PrefectureR
+
+end-procedure Employee_Address
+
+
+
+!***********************************************************************
+! Employee_Ins_Num                                                     *
+! Called By:    Print_Report                                           *
+! Calls:        Print_Personal_Info                                    *
+! Description:  Retrieves Employee's Employee_Ins_Num as of Termination*
+!               date                                                   *
+!***********************************************************************
+
+begin-procedure Employee_Ins_Num
+
+Begin-SELECT
+
+LA.GPJP_EI_NUM
+
+FROM PS_GPJP_LA_PYE_DTA LA
+
+WHERE LA.EMPLID = &Emplid_HE
+AND LA.EMPL_RCD = &Emplrcd_HE
+AND LA.EFFDT = (SELECT MAX(LA2.EFFDT) FROM PS_GPJP_LA_PYE_DTA LA2
+                WHERE LA.EMPLID = LA2.EMPLID
+                AND LA.EMPL_RCD = LA2.EMPL_RCD
+                AND LA2.EFFDT <= &Termdate_HE)
+
+End-SELECT
+
+end-procedure Employee_Ins_Num
+
+
+
+!***********************************************************************
+! Personal_Phone                                                       *
+! Called By:    Print-Report                                           *
+! Description:  Retrives Employees Personal Phone Number               *
+!***********************************************************************
+
+begin-procedure Personal_Phone
+
+Begin-SELECT
+
+PH.PHONE                &PhoneR
+
+FROM PS_PERSONAL_PHONE PH
+
+WHERE PH.EMPLID = &Emplid_HE
+AND PH.PHONE_TYPE = 'HOME'
+
+End-SELECT
+
+end-procedure Personal_Phone
+
+
+
+!***********************************************************************
+! Ins_Estab_Info                                                       *
+! Called By:    Print_Report                                           *
+! Description:  Retrieves Insurance Establishment related information  *
+!***********************************************************************
+
+begin-procedure Ins_Estab_Info
+
+Begin-SELECT
+
+ES.GPJP_LA_ESTAB_NO     &Estab_No
+ES.DESCR                &EstabName
+ES.GPJP_NAME            &Owner_Name
+ES.GPJP_TITLE           &Title
+ES.COUNTRY              &CountryB
+ES.STATE                &StateB
+ES.CITY                 &CityB
+ES.ADDRESS1             &AdrressB1
+ES.ADDRESS2             &AdrressB2
+ES.ADDRESS3             &AdrressB3
+ES.ADDRESS4             &AdrressB4
+ES.PHONE                &PhoneB
+ES.GPJP_TAX_ESTAB       &Estab
+
+FROM PS_GPJP_LA_PYE_DTA LA
+,PS_GPJP_TAX_ESTAB ES
+
+WHERE LA.EMPLID = &Emplid_HE
+AND LA.EMPL_RCD = &Emplrcd_HE
+AND LA.EFFDT = (SELECT MAX(LA2.EFFDT) FROM PS_GPJP_LA_PYE_DTA LA2
+                WHERE LA.EMPLID = LA2.EMPLID
+                AND LA.EMPL_RCD = LA2.EMPL_RCD
+                AND LA2.EFFDT <= &Termdate_HE)
+AND LA.GPJP_TAX_ESTAB = ES.GPJP_TAX_ESTAB
+AND ES.EFFDT = (SELECT MAX(ES2.EFFDT) FROM PS_GPJP_TAX_ESTAB ES2
+                WHERE ES.GPJP_TAX_ESTAB = ES2.GPJP_TAX_ESTAB
+                AND ES.GPJP_TAX_ESTAB_TYP = ES2.GPJP_TAX_ESTAB_TYP
+                AND ES2.EFFDT <= $AsOfToday)
+
+End-SELECT
+
+         Let $EstabType ='LA'                ! As it is being quired only for Labour Insurance Establishment Type.
+         Let $Estab = rtrim(&Estab,' ')
+         Let $EstabStCd = rtrim(&StateB,' ')
+         Let $Country = rtrim(&CountryB,' ')
+         Let $EstabName = rtrim(&EstabName,' ')
+
+         Do Get-Estab-Name-Lang
+         Do Get-State-Name
+
+         move $EstabState to $PrefectureB
+
+end-procedure Ins_Estab_Info
+
+
+
+!***********************************************************************
+! Payment_Situation                                                    *
+! Called By:    Print-Report                                           *
+! Description:  Prints the UC report.                                  *
+!***********************************************************************
+
+begin-procedure Payment_Situation
+
+LET #CNT12 = 0
+LET #P_CNT_LINE = 0
+LET #C_FLG_OLD = 0
+LET #PAGE_NO = 0
+LET #PRINT_FLAG = 0
+LET #FirstFlg = 1
+
+WHILE #CNT_LINE > 0
+
+        LET #CNT_LINE = #CNT_LINE - 1
+
+        GET $START_DATE         FROM Array(#P_CNT_LINE) GPJP_START_DATE
+        GET $END_DATE           FROM Array(#P_CNT_LINE) GPJP_END_DATE
+        GET #WDAYS_APP          FROM Array(#P_CNT_LINE) GPJP_UC_WDAYS_APP
+        GET $BGN_DT             FROM Array(#P_CNT_LINE) PRD_BGN_DT
+        GET $END_DT             FROM Array(#P_CNT_LINE) PRD_END_DT
+        GET #WDAYS_PPRD         FROM Array(#P_CNT_LINE) GPJP_UC_WDAYS_PPRD
+        GET #WAGE_A             FROM Array(#P_CNT_LINE) GPJP_UC_WAGE_A
+        GET #WAGE_B             FROM Array(#P_CNT_LINE) GPJP_UC_WAGE_B
+        GET $REMARKS            FROM Array(#P_CNT_LINE) GPJP_UC_REMARKS
+        GET #C_FLG_NEW          FROM Array(#P_CNT_LINE) PAGE_CNG_LINE
+
+
+        LET #CNT12 = #CNT12 + 1
+
+        IF #CNT12 > 12  AND #C_FLG_OLD = #C_FLG_NEW
+
+                IF #PRINT_FLG = 0
+                        LET #PAGE_NO = #PAGE_NO + 1
+                        Do Print_Page_No(#PAGE_NO)
+                        LET #PRINT_FLG = 1
+                END-IF
+
+                PRINT $GPJPUC01_Continued (#SE8,#LI_P) ! Prints "To be Continued in the Next page" String.
+
+                new-page
+
+                LET #SE8 = 61 + 5.85
+                LET #CNT12 = 1
+
+                Do Print_Personal_Info
+                Do Print_Ins_Estab_Info
+                LET #PAGE_NO = #PAGE_NO + 1
+                Do Print_Page_No(#PAGE_NO)
+
+        END-IF
+
+        IF #C_FLG_OLD <> #C_FLG_NEW     ! Print a new Certificate
+                new-page
+                LET #SE8 = 61
+                LET #CNT12 = 1
+                LET #FirstFlg = 1
+                LET #PERSON_INFO_FLAG = 0
+
+                Do Print_Personal_Info
+                do Convert-To-DTU-Date ($END_DATE, $END_DATE)
+        !Do dtu-add-days($END_DATE,1,$END_DATE1)
+
+        do Convert-To-DTU-Date ($END_DATE, $YYYYMMDD)
+        LET $YYYYMMDD = SUBSTR($YYYYMMDD,1,4) || SUBSTR($YYYYMMDD,6,2) || SUBSTR($YYYYMMDD,9,2)
+
+        Do Get-DateComponents($YYYYMMDD,#U_YY,#U_MM,#U_DD)
+
+        LET #U_YY = #U_YY - 1988
+        PRINT #U_YY             (#SE4,#LI4Y) edit 99
+        PRINT #U_MM             (#SE4,#LI4M) edit 99
+                PRINT #U_DD             (#SE4,#LI4D) edit 99
+
+                Do Print_Ins_Estab_Info
+                Do Print_NextDay_and_Matter
+                Do Print_Reason_for_Unemp
+
+        END-IF
+
+        Do Print_Wages_Situation
+
+        LET #SE8 = #SE8 + 5.85
+
+        LET #P_CNT_LINE = #P_CNT_LINE + 1
+        LET #C_FLG_OLD = #C_FLG_NEW
+
+        LET #FirstFlg = 0
+
+END-WHILE
+
+end-procedure Payment_Situation
+
+
+
+!***********************************************************************
+! Print_Personal_Info                                                  *
+! Called By:    Print_Report,Payment_Situation                         *
+! Description:  Prints the Employees Personal Data(Name,Address,       *
+!               InsuranceID,Phone)                                     *
+!***********************************************************************
+
+begin-procedure Print_Personal_Info
+
+LET $Gpjp_Ei_Num = RTRIM(&LA.GPJP_EI_NUM,' ')           !Insurance ID
+
+LET $Ano1  = SUBSTR($Gpjp_Ei_Num,1,1)
+LET $Ano2  = SUBSTR($Gpjp_Ei_Num,2,1)
+LET $Ano3  = SUBSTR($Gpjp_Ei_Num,3,1)
+LET $Ano4  = SUBSTR($Gpjp_Ei_Num,4,1)
+LET $Ano5  = SUBSTR($Gpjp_Ei_Num,6,1)
+LET $Ano6  = SUBSTR($Gpjp_Ei_Num,7,1)
+LET $Ano7  = SUBSTR($Gpjp_Ei_Num,8,1)
+LET $Ano8  = SUBSTR($Gpjp_Ei_Num,9,1)
+LET $Ano9  = SUBSTR($Gpjp_Ei_Num,10,1)
+LET $Ano10 = SUBSTR($Gpjp_Ei_Num,11,1)
+LET $Ano11 = SUBSTR($Gpjp_Ei_Num,13,1)
+
+PRINT $Ano1             (#SE1,#LI1_1)
+PRINT $Ano2             (#SE1,#LI1_2)
+PRINT $Ano3             (#SE1,#LI1_3)
+PRINT $Ano4             (#SE1,#LI1_4)
+PRINT $Ano5             (#SE1,#LI1_5)
+PRINT $Ano6             (#SE1,#LI1_6)
+PRINT $Ano7             (#SE1,#LI1_7)
+PRINT $Ano8             (#SE1,#LI1_8)
+PRINT $Ano9             (#SE1,#LI1_9)
+PRINT $Ano10            (#SE1,#LI110)
+PRINT $Ano11            (#SE1,#LI111)
+
+PRINT &NA.NAME_FORMAL   (#SE2,#LI3)                     !Employee Name
+PRINT &NA.NAME_AC       (#SE1,#LI3)
+
+do Convert-To-DTU-Date (&Termdate_HE, $YYYYMMDD)
+LET $YYYYMMDD = SUBSTR($YYYYMMDD,1,4) || SUBSTR($YYYYMMDD,6,2) || SUBSTR($YYYYMMDD,9,2)
+
+        !FROM datetime.sqc
+        Do Get-DateComponents($YYYYMMDD,#U_YY,#U_MM,#U_DD)
+
+LET #U_YY = #U_YY - 1988
+
+IF #PERSON_INFO_FLAG = 1
+PRINT #U_YY             (#SE4,#LI4Y) edit 99
+PRINT #U_MM             (#SE4,#LI4M) edit 99
+PRINT #U_DD             (#SE4,#LI4D) edit 99
+END-IF
+
+PRINT &PostalR  (#SE6YU,#LI6Y)                          !Address
+
+        Do Adrress_Combination_R
+PRINT $AdressR_1        (#SE6JU,#LI6J)
+PRINT $AdressR_2        (#SE6JU2,#LI6J)
+
+PRINT &PhoneR           (#SE6DE,#LI6T1)                 !Phone
+
+end-procedure Print_Personal_Info
+
+
+!***********************************************************************
+! Adrress_Combination_R                                                *
+! Called By:    Print_Personal_Info                                    *
+! Description:  Prints the Employees Personal Address                  *
+!***********************************************************************
+
+begin-procedure Adrress_Combination_R
+
+LET $PrefectureR = RTRIM($PrefectureR,' ')
+LET $CountyR    = RTRIM(&CountyR,' ')
+LET $CityR      = RTRIM(&CityR,' ')
+LET $AdrressR1  = RTRIM(&AdrressR1,' ')
+LET $AdrressR2  = RTRIM(&AdrressR2,' ')
+LET $AdrressR3  = RTRIM(&AdrressR3,' ')
+LET $AdrressR4  = RTRIM(&AdrressR4,' ')
+
+STRING $PrefectureR $CityR $AdrressR1 $AdrressR2 $AdrressR3 $AdrressR4 BY '' INTO $AdressR
+
+LET $AdressR_1 =  SUBSTR($AdressR,1,15)
+LET $AdressR_2 =  SUBSTR($AdressR,16,15)
+
+end-procedure Adrress_Combination_R
+
+
+
+!***********************************************************************
+! Print_Ins_Estab_Info                                                 *
+! Called By:    Print_Report,Payment_Situation                         *
+! Description:  Prints the  Insurance Establishment Information        *
+!***********************************************************************
+
+begin-procedure Print_Ins_Estab_Info
+
+LET $Gpjp_La_Estab_No = RTRIM(&Estab_No,' ')
+
+LET $Eno1  = SUBSTR($Gpjp_La_Estab_No,1,1)
+LET $Eno2  = SUBSTR($Gpjp_La_Estab_No,2,1)
+LET $Eno3  = SUBSTR($Gpjp_La_Estab_No,3,1)
+LET $Eno4  = SUBSTR($Gpjp_La_Estab_No,4,1)
+LET $Eno5  = SUBSTR($Gpjp_La_Estab_No,6,1)
+LET $Eno6  = SUBSTR($Gpjp_La_Estab_No,7,1)
+LET $Eno7  = SUBSTR($Gpjp_La_Estab_No,8,1)
+LET $Eno8  = SUBSTR($Gpjp_La_Estab_No,9,1)
+LET $Eno9  = SUBSTR($Gpjp_La_Estab_No,10,1)
+LET $Eno10 = SUBSTR($Gpjp_La_Estab_No,11,1)
+LET $Eno11 = SUBSTR($Gpjp_La_Estab_No,13,1)
+
+PRINT $Eno1             (#SE2,#LI1_1)
+PRINT $Eno2             (#SE2,#LI1_2)
+PRINT $Eno3             (#SE2,#LI1_3)
+PRINT $Eno4             (#SE2,#LI1_4)
+PRINT $Eno5             (#SE2,#LI1_5)
+PRINT $Eno6             (#SE2,#LI1_6)
+PRINT $Eno7             (#SE2,#LI1_7)
+PRINT $Eno8             (#SE2,#LI1_8)
+PRINT $Eno9             (#SE2,#LI1_9)
+PRINT $Eno10            (#SE2,#LI110)
+PRINT $Eno11            (#SE2,#LI111)
+
+PRINT $EstabName        (#SE5ME,#LI1_1)
+        Do Adrress_Combination_B
+
+LET $AdressB_1 =  SUBSTR($AdressB,1,20)
+LET $AdressB_2 =  SUBSTR($AdressB,21,20)
+
+LET $AdressB_3 =  SUBSTR($GPJPUC01_LIESTAB_ADDRESS,1,15)
+LET $AdressB_4 =  SUBSTR($GPJPUC01_LIESTAB_ADDRESS,16,15)
+
+PRINT $AdressB_1        (#SE5SY,#LI1_1)
+PRINT $AdressB_2        (#SE5SY2,#LI1_1)
+PRINT &PhoneB           (#SE5DE,#LI1_1)
+PRINT $AdressB_3        (#SEJJ,#LI1_1)
+PRINT $AdressB_4        (#SEJJ2,#LI1_1)
+
+LET $TITLE = RTRIM(&Title,' ')
+LET $NAME = RTRIM(&Owner_Name,' ')
+STRING $TITLE $NAME BY ' ' INTO $TITLE_NAME_FULL
+
+LET $TITLE_NAME = SUBSTR($TITLE_NAME_FULL,1,50)
+PRINT $TITLE_NAME       (#SEJS,#LI1_1)
+
+end-procedure Print_Ins_Estab_Info
+
+
+
+!***********************************************************************
+! Adrress_Combination_B                                                *
+! Called By:    Print_Ins_Estab_Info                                   *
+! Description:  Prints the Insurance Establishment Address             *
+!***********************************************************************
+
+begin-procedure Adrress_Combination_B
+
+Let $PrefectureB = RTRIM($PrefectureB,' ')
+Let $CityB        = RTRIM(&CityB,' ')
+Let $AdrressB1    = RTRIM(&AdrressB1,' ')
+Let $AdrressB2    = RTRIM(&AdrressB2,' ')
+Let $AdrressB3    = RTRIM(&AdrressB3,' ')
+Let $AdrressB4    = RTRIM(&AdrressB4,' ')
+
+STRING $PrefectureB $CityB $AdrressB1 $AdrressB2 $AdrressB3 $AdrressB4 BY '' INTO $AdressB
+
+end-procedure Adrress_Combination_B
+
+
+
+!***********************************************************************
+! Print_NextDay_and_Matter                                             *
+! Called By:    Print-Report                                           *
+! Description:  Prints the Termination Next date and Notes             *
+!***********************************************************************
+
+begin-procedure Print_NextDay_and_Matter
+
+IF #C_FLG_OLD <> #C_FLG_NEW
+  do Convert-To-DTU-Date ($END_DATE, $TERM_DATE)
+ELSE
+  do Convert-To-DTU-Date (&Termdate_HE, $TERM_DATE)
+END-IF
+
+!LET $TERM_DATE = SUBSTR(&Termdate_HE,1,10)
+        !FROM datemath.sqc
+        Do dtu-add-days($TERM_DATE,1,$UnempNextDate)
+
+LET $UnempNextDate = SUBSTR($UnempNextDate,1,4) || SUBSTR($UnempNextDate,6,2) || SUBSTR($UnempNextDate,9,2)
+
+        Do Get-DateComponents($UnempNextDate,#TD_YY,#TD_MM,#TD_DD)
+
+   Alter-Printer
+   point-size=9
+
+PRINT #TD_MM            (#SE8N,#LI8NM) edit 99
+PRINT #TD_DD            (#SE8N,#LI8ND) edit 99
+
+   Alter-Printer
+   point-size=7.2
+
+LET $Note1 = SUBSTR(&HE.GPJP_UC_NOTE,1,28)
+LET $Note2 = SUBSTR(&HE.GPJP_UC_NOTE,29,28)
+LET $Note3 = SUBSTR(&HE.GPJP_UC_NOTE,57,28)
+
+PRINT $Note1            (#SE14_1,#LI14)
+PRINT $Note2            (#SE14_2,#LI14)
+PRINT $Note3            (#SE14_3,#LI14)
+
+end-procedure Print_NextDay_and_Matter
+
+
+
+!***********************************************************************
+! Print_Reason_for_Unemp                                               *
+! Called By:    Print-Report                                           *
+! Description:  Prints the Reason for Unemployment.                    *
+!***********************************************************************
+
+begin-procedure Print_Reason_for_Unemp
+
+EVALUATE &HE.GPJP_UC_TERM_RSN
+        WHEN = '001'
+                PRINT 'Åõ'                      (#SE701,#LI7)
+                BREAK
+        WHEN = '002'
+                PRINT 'Åõ'                      (#SE702,#LI7)
+                BREAK
+        WHEN = '003'
+                PRINT 'Åõ'                      (#SE703,#LI7)
+                PRINT &HE.GPJP_UC_RETIRE_AGE    (#SE703,#LI7TE)
+                BREAK
+        WHEN = '004'
+                PRINT 'Åõ'                      (#SE704,#LI7)
+                BREAK
+        WHEN = '005'
+                PRINT 'Åõ'                      (#SE705,#LI7)
+                PRINT &HE.GPJP_UC_MTH_CONTR     (#SE7A,#LI7_1)
+                PRINT &HE.GPJP_UC_TOT_MTH       (#SE7A,#LI7TU)
+                PRINT &HE.GPJP_UC_NUM_UPDT      (#SE7A,#LI7KE)
+                Do Contract_Update
+
+   Alter-Printer
+   point-size=20
+
+                Do Select_Contract
+
+   Alter-Printer
+   point-size=12
+
+                BREAK
+        WHEN = '006'
+                PRINT 'Åõ'                      (#SE706,#LI7)
+                BREAK
+        WHEN = '007'
+                PRINT 'Åõ'                      (#SE707,#LI7)
+                BREAK
+        WHEN = '008'
+                PRINT 'Åõ'                      (#SE708,#LI7)
+                BREAK
+        WHEN = '009'
+                PRINT 'Åõ'                      (#SE709,#LI7)
+                BREAK
+        WHEN = '010'
+                PRINT 'Åõ'                      (#SE710,#LI7)
+                BREAK
+        WHEN = '011'
+                PRINT 'Åõ'                      (#SE711,#LI7)
+                Do Print_Reason (#SE711,#LI7RU,25,&HE.GPJP_UC_REASON)
+                BREAK
+        WHEN = '012'
+                PRINT 'Åõ'                      (#SE712,#LI7)
+                BREAK
+        WHEN = '013'
+                PRINT 'Åõ'                      (#SE713,#LI7)
+                BREAK
+        WHEN = '014'
+                PRINT 'Åõ'                      (#SE714,#LI7)
+                BREAK
+        WHEN = '015'
+                PRINT 'Åõ'                      (#SE715,#LI7)
+
+   Alter-Printer
+   point-size=9
+
+                Do Select_Training
+
+   Alter-Printer
+   point-size=12
+
+                BREAK
+        WHEN = '016'
+                PRINT 'Åõ'                      (#SE716,#LI7)
+
+   Alter-Printer
+   point-size=9
+
+                PRINT &HE.GPJP_UC_OLD_LOC       (#SE716,#LI7ON)
+                PRINT &HE.GPJP_UC_NEW_LOC       (#SE716,+4)
+
+   Alter-Printer
+   point-size=12
+
+                BREAK
+        WHEN = '017'
+                PRINT 'Åõ'                      (#SE717,#LI7)
+                Do Print_Reason (#SE717,#LI7RU,25,&HE.GPJP_UC_REASON)
+                BREAK
+        WHEN = '018'
+                PRINT 'Åõ'                      (#SE718,#LI7)
+                BREAK
+        WHEN = '019'
+                PRINT 'Åõ'                      (#SE719,#LI7)
+                Do Print_Reason (#SE719R,#LI7R2,30,&HE.GPJP_UC_REASON)
+                BREAK
+
+! Continuous Employment After Mandatory Termination
+
+  !Option 'I Hope'
+
+        WHEN = '020'
+                Graphic (#SE7IHOPE,#L20,16) Box 2 10
+                do Select_Option
+                BREAK
+
+  !Option 'I do not Hope'
+
+        WHEN = '021'
+                Graphic (#SE7IDONOTHOPE,#L20,22) Box 2 10
+                BREAK
+
+END-EVALUATE
+
+
+! Termination situation statement
+LET $Statement1 = SUBSTR(&HE.GPJP_UC_STATEMENT,1,48)
+LET $Statement2 = SUBSTR(&HE.GPJP_UC_STATEMENT,49,48)
+LET $Statement3 = SUBSTR(&HE.GPJP_UC_STATEMENT,97,48)
+
+   Alter-Printer
+   point-size=9
+
+PRINT $Statement1       (#SEGU1,#LI7GU)
+PRINT $Statement2       (#SEGU2,#LI7GU)
+PRINT $Statement3       (#SEGU3,#LI7GU)
+
+   Alter-Printer
+   point-size=12
+
+end-procedure Print_Reason_for_Unemp
+
+
+
+!***********************************************************************
+! Contract_Update                                                      *
+! Called By:    Print_Reason_for_Unemp                                 *
+! Description:  Marks the appropriate Kanji charecter based on user    *
+!               selection of "Contract was not updated by intention    *
+!               of Employeer or Employee.                              *
+!***********************************************************************
+
+begin-procedure Contract_Update
+
+EVALUATE &HE.GPJP_UC_TERM_BY
+        WHEN = '1'
+                Graphic (63,190,30) Box 3 10
+                BREAK
+        WHEN = '2'
+                Graphic (65,190,33) Box 3 10
+                BREAK
+        WHEN = '3'
+                Graphic (68,190,33) Box 3 10
+                BREAK
+        WHEN-OTHER
+                BREAK
+END-EVALUATE
+
+end-procedure Contract_Update
+
+
+
+!***********************************************************************
+! Select_Contract Clearly States Renewal Condition:                                                      *
+! Called By:    Print_Reason_for_Unemp                                 *
+! Description:  Circles the appropriate Kanji charecter based on user  *
+!               selection whether "Contract Clearly States Renewal Condition"  or not    *
+!***********************************************************************
+
+begin-procedure Select_Contract
+
+EVALUATE &HE.GPJP_UC_CON_RENEW
+        WHEN = 'Y'
+               do Draw_Circle(#SE720,#L20U)
+                BREAK
+        WHEN = 'N'
+                do Draw_Circle(#SE720,#L20M)
+                do Draw_Circle(#SE720,#L20U2)
+                do Draw_Circle(#SE721,#L20T)
+                BREAK
+        WHEN = 'O'
+                do Draw_Circle(#SE720,#L20M)
+                do Draw_Circle(#SE720,#L20U2)
+                do Draw_Circle(#SE721,#L20T2)
+                BREAK
+        WHEN = 'D'
+                do Draw_Circle(#SE720,#L20M)
+                do Draw_Circle(#SE720,#L20M2)
+                BREAK
+        WHEN-OTHER
+                BREAK
+END-EVALUATE
+
+end-procedure Select_Contract
+
+
+
+!***********************************************************************
+! Select_Training                                                      *
+! Called By:    Print_Reason_for_Unemp                                 *
+! Description:  Circles the appropriate Kanji charecter based on user  *
+!               selection whether "The Company gave appropriate        *
+!               training or not"                                       *
+!***********************************************************************
+
+begin-procedure Select_Training
+
+EVALUATE &HE.GPJP_UC_TRAINING
+        WHEN = 'Y'
+                do Draw_Circle(#SE715,#LI7U)
+                BREAK
+        WHEN = 'N'
+                do Draw_Circle(#SE715,#LI7M)
+                BREAK
+        WHEN-OTHER
+                BREAK
+END-EVALUATE
+
+end-procedure Select_Training
+
+
+!***********************************************************************
+! Select_Option                                                       *
+! Called By:    Print_Reason_for_Unemp                                 *
+! Description:  Selects Option a, b or c based on user selection in   *
+!               'Continuous Employment After Mandatory Termination'    *
+!***********************************************************************
+
+begin-procedure Select_Option
+
+EVALUATE &HE.GPJP_UC_CONT_EMPL
+        WHEN = 'A'
+                PRINT 'Åõ'                      (#SE7OPTIONA,#L18)
+                BREAK
+        WHEN = 'B'
+                PRINT 'Åõ'                      (#SE7OPTIONB,#L18)
+                BREAK
+        WHEN = 'C'
+                PRINT 'Åõ'                      (#SE7OPTIONC,#L18)
+                BREAK
+        WHEN-OTHER
+                BREAK
+END-EVALUATE
+
+end-procedure Select_Option
+
+
+!***********************************************************************
+! Draw_Circle                                                          *
+! Called By:    Select_Contract,Select_Training                        *
+! Description:  Draws a circle in the specified co-ordinates           *
+!***********************************************************************
+
+begin-procedure Draw_Circle(#xpos,#ypos)
+
+PRINT $_GPJPUC01_Mark_circle (#xpos,#ypos)
+
+end-procedure
+
+
+!***********************************************************************
+! Print_Reason                                                         *
+! Called By:    Print_Reason_for_Unemp                                 *
+! Description:  Prints the reason                                      *
+!***********************************************************************
+
+begin-procedure Print_Reason(#xpos,#ypos,#length,$Reason)
+
+LET $Reason = SUBSTR($Reason,1,#length)
+
+   Alter-Printer
+   point-size=9
+
+Print $Reason (#xpos,#ypos)
+
+   Alter-Printer
+   point-size=12
+
+end-procedure
+
+!***********************************************************************
+! Print_Wages_Situation                                                *
+! Called By:    Payment_Situation                                      *
+! Description:  This procedure find out the pay type of the employee   *
+!               in the particular period range and accordingly prints  *
+!               the values in the report                               *
+!***********************************************************************
+
+begin-procedure Print_Wages_Situation
+
+!Begin dates of Appraisal Period
+
+do Convert-To-DTU-Date ($Start_Date, $Start_Date_out)
+LET $StartDate = SUBSTR($START_DATE_out,1,4) || SUBSTR($START_DATE_out,6,2) || SUBSTR($START_DATE_out,9,2)
+
+        Do Get-DateComponents($StartDate,#CS_YY,#CS_MM,#CS_DD)
+
+IF #CS_DD <> 0
+PRINT #CS_MM            (#SE8,#LI8SM) edit 99           !Begin Month of Appraisal Period
+PRINT #CS_DD            (#SE8,#LI8SD) edit 99           !Begin Day of Appraisal Period
+END-IF
+
+!End dates of Appraisal Period
+do Convert-To-DTU-Date ($End_Date, $End_Date_out)
+LET $EndDate = SUBSTR($END_DATE_out,1,4) || SUBSTR($END_DATE_out,6,2) || SUBSTR($END_DATE_out,9,2)
+
+        Do Get-DateComponents($EndDate,#CE_YY,#CE_MM,#CE_DD)
+
+IF #FirstFlg <> 1 AND #CE_DD <> 0
+  PRINT #CE_MM          (#SE8,#LI8EM) edit 99           !End Month of Appraisal Period
+  PRINT #CE_DD          (#SE8,#LI8ED) edit 99           !End Day of Appraisal Period
+END-IF
+
+PRINT #WDAYS_APP        (#SE8,#LI9) edit 99             !Base # of days for Wage Payment in Appraisal Period
+
+! Begin dates of Pay period
+do Convert-To-DTU-Date ($BGN_DT, $BGN_DT_out)
+LET $Prd_Bgn_Dt = SUBSTR($BGN_DT_out,1,4) || SUBSTR($BGN_DT_out,6,2) || SUBSTR($BGN_DT_out,9,2)
+
+        Do Get-DateComponents($Prd_Bgn_Dt,#PB_YY,#PB_MM,#PB_DD)
+
+IF #PB_DD <> 0
+PRINT #PB_MM            (#SE8,#LI10SM) edit 99          !Begin Month of Pay Period
+PRINT #PB_DD            (#SE8,#LI10SD) edit 99          !Begin Day of Pay Period
+END-IF
+
+! End dates of Pay period
+do Convert-To-DTU-Date ($END_DT, $END_DT_out)
+LET $Prd_End_Dt = SUBSTR($END_DT_out,1,4) || SUBSTR($END_DT_out,6,2) || SUBSTR($END_DT_out,9,2)
+
+        Do Get-DateComponents($Prd_End_Dt,#PE_YY,#PE_MM,#PE_DD)
+
+IF #FirstFlg <> 1 AND #PE_DD <> 0
+PRINT #PE_MM            (#SE8,#LI10EM) edit 99          !End Month of Pay Period
+PRINT #PE_DD            (#SE8,#LI10ED) edit 99          !End Day of Pay Period
+END-IF
+
+PRINT #WDAYS_PPRD       (#SE8,#LI11) edit 99            !Base # of days in Pay period
+
+!Wages
+Do Print_Wages
+
+LET   $REMARKS_S = SUBSTRB($REMARKS,1,16)
+PRINT $REMARKS_S  (#SE8,#LI13)
+
+end-procedure Print_Wages_Situation
+
+
+
+!***********************************************************************
+! Print_Wages                                                          *
+! Called By:    Print_Wages_Situation                                  *
+! Description:  This procedure find out the pay type of the employee   *
+!               in the particular period range and accordingly prints  *
+!               the values in the report                               *
+!***********************************************************************
+
+begin-procedure Print_Wages
+
+#ifdef DB2UNIX
+  let $END_DT = substr($END_DT,1,10)
+#endif
+
+BEGIN-SELECT
+
+JOB.COMP_FREQUENCY      &Frequency
+
+        let $Frequency = rtrim(&Frequency, ' ')
+
+FROM PS_JOB JOB
+
+WHERE JOB.EMPLID = &Emplid_HE
+        AND JOB.EMPL_RCD = &Emplrcd_HE
+        AND JOB.EFFDT = (
+                SELECT MAX(B.EFFDT)
+                FROM PS_JOB B
+                WHERE B.EMPLID = JOB.EMPLID!&Emplid_HE
+                        AND B.EMPL_RCD = JOB.EMPL_RCD!&Emplrcd_HE
+                        AND B.EFFDT <= $END_DT)
+        AND JOB.EFFSEQ =(
+                SELECT MAX(C.EFFSEQ)
+                FROM PS_JOB C
+                WHERE C.EMPLID = JOB.EMPLID
+                      AND C.EMPL_RCD = JOB.EMPL_RCD
+                      AND C.EFFDT = JOB.EFFDT)
+END-SELECT
+
+
+   Alter-Printer
+   point-size=9
+
+IF $Frequency = 'M' OR $Frequency = 'JM' OR $Frequency = ''
+
+PRINT #WAGE_A           (#SE8,#LI12A) edit 99,999,999
+
+ELSE
+
+LET #Wages_sum_total = #WAGE_A + #WAGE_B
+
+PRINT #WAGE_A           (#SE8,#LI12A) edit 99,999,999
+PRINT #WAGE_B           (#SE8,#LI12B) edit 99,999,999
+PRINT #Wages_sum_total  (#SE8,#LI12T) edit 99,999,999
+
+END-IF
+
+   Alter-Printer
+   point-size=12
+
+end-procedure Print_Wages
+
+
+!***********************************************************************
+! Print_Page_No                                                        *
+! Called By:                                                           *
+! Description:                                                         *
+!***********************************************************************
+begin-procedure Print_Page_No(#page_num)
+   let $pstr = $_GPJPUC01_Page || ' ' || edit(#page_num, '99')
+   Print $pstr (176,3)   ! Print 'Page' + Page No.
+end-procedure !Print_Page_No
+
+
+
+!***********************************************************************
+! NVariable-Defin                                                      *
+! Called By:    Init-Report                                            *
+! Description:  Initializes all the Numeric variables required for     *
+!               printing positions.                                    *
+!***********************************************************************
+
+begin-procedure NVariable-Defin
+
+LET #SE1        = 3
+LET #SE2        = 9
+LET #SE4        = 6
+LET #SE5ME      = 15
+LET #SE5SY      = 19
+LET #SE5SY2     = 22
+LET #SE5DE      = 26
+LET #SEJJ       = 30
+LET #SEJJ2      = 33
+LET #SEJS       = 38
+LET #SE6YU      = 13
+LET #SE6JU      = 17
+LET #SE6JU2     = 20
+LET #SE6DE      = 25
+LET #SE8N       = 55
+LET #SE8        = 61
+LET #SE14_1     = 137
+LET #SE14_2     = 140
+LET #SE14_3     = 143
+LET #SE_P       = 150
+LET #SE701      = 20
+LET #SE702      = 23
+LET #SE703      = 29
+LET #SE704      = 49
+LET #SE705      = 52
+LET #SE706      = 107
+LET #SE707      = 109
+LET #SE708      = 115
+LET #SE709      = 118
+LET #SE710      = 123
+LET #SE711      = 126
+LET #SE712      = 134
+LET #SE713      = 140
+LET #SE714      = 142
+LET #SE715      = 145
+LET #SE716      = 147
+LET #SE717      = 150
+LET #SE718      = 152
+LET #SE719      = 171
+LET #SE720      = 60
+LET #SE721      = 62
+LET #SE719R     = 174
+LET #SE7A       = 57
+LET #SEGU1      = 182
+LET #SEGU2      = 184
+LET #SEGU3      = 186
+
+! For '020' and '021'
+LET #SE7IHOPE       = 30
+LET #SE7IDONOTHOPE  = 33
+LET #SE7OPTIONA     = 36
+LET #SE7OPTIONB     = 41
+LET #SE7OPTIONC     = 44
+LET #L18            = 157
+LET #L20            = 178
+
+
+LET #LI1_1      = 16
+LET #LI1_2      = 19
+LET #LI1_3      = 22
+LET #LI1_4      = 25
+LET #LI1_5      = 31
+LET #LI1_6      = 34
+LET #LI1_7      = 37
+LET #LI1_8      = 40
+LET #LI1_9      = 43
+LET #LI110      = 46
+LET #LI111      = 52
+LET #LI3        = 67
+LET #LI4Y       = 119
+LET #LI4M       = 125
+LET #LI4D       = 131
+LET #LI6Y       = 92
+LET #LI6J       = 89
+LET #LI6T1      = 101
+LET #LI6T2      = 112
+LET #LI6T3      = 124
+LET #LI8NM      = 18
+LET #LI8ND      = 22
+LET #LI8SM      = 4
+LET #LI8SD      = 9
+LET #LI8EM      = 17
+LET #LI8ED      = 23
+LET #LI9        = 35
+LET #LI10SM     = 41
+LET #LI10SD     = 47
+LET #LI10EM     = 54
+LET #LI10ED     = 60
+LET #LI11       = 66
+LET #LI12A      = 73
+LET #LI12B      = 89
+LET #LI12T      = 105
+LET #LI13       = 120
+LET #LI14       = 14
+LET #LI_P       = 14
+LET #LI7        = 141
+LET #LI7TE      = 177
+LET #LI7_1      = 175
+LET #LI7TU      = 200
+LET #LI7U       = 220
+LET #LI7KE      = 226
+LET #LI7RU      = 186
+LET #LI7R2      = 175
+LET #LI7M       = 225
+LET #L20U       = 203
+LET #L20M       = 208
+LET #L20U2      = 245
+LET #L20M2      = 250
+LET #L20T       = 192
+LET #L20T2      = 199
+LET #LI7ON      = 226
+LET #LI7GU      = 145
+
+end-procedure NVariable-Defin
+
+
+
+!***********************************************************************
+!   Create-Buffer: Creats array for storing the Details information.   *
+!***********************************************************************
+
+begin-procedure GPJPUC01-Create-Buffer
+
+
+CREATE-ARRAY NAME = Array SIZE = 254
+
+        FIELD = GPJP_START_DATE:DATE
+        FIELD = GPJP_END_DATE:DATE
+        FIELD = GPJP_UC_WDAYS_APP:NUMBER
+        FIELD = PRD_BGN_DT:DATE
+        FIELD = PRD_END_DT:DATE
+        FIELD = GPJP_UC_WDAYS_PPRD:NUMBER
+        FIELD = GPJP_UC_WAGE_A:NUMBER
+        FIELD = GPJP_UC_WAGE_B:NUMBER
+        FIELD = GPJP_UC_REMARKS:CHAR
+        FIELD = PAGE_CNG_LINE:number
+
+end-procedure GPJPUC01-Create-Buffer
+
+
+
+!***********************************************************************
+!    SQC FILES                                                         *
+!***********************************************************************
+#Include 'reset.sqc'            ! Reset printer procedure
+#Include 'curdttim.sqc'         ! To get Current date and Time
+#Include 'datetime.sqc'         ! Routines for date AND time formatting
+#Include 'datemath.sqc'         ! Date conversion procedures
+#Include 'hrsecty.sqc'          ! Get SQR Security parameters
+#include 'sqrtrans.sqc'         ! Translate SQR strings to given language
+#Include 'stdapi.sqc'
+#Include 'getestab.sqc'         ! To Get Establishment name and State name to given language

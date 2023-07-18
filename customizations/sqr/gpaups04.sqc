@@ -1,0 +1,801 @@
+!***********************************************************************
+!  GPAUPS04: ETP Payment Summary Print                                 *
+!            A sample program only. May need modifications to suit     *
+!            different laser printers.                                 *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2018, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!       $Release:  HR92                                                !
+!           $Bug:  28291577                                            !
+!                                                                      *
+! Resolution ID - Comments                                             *
+! 135482        - Replace PERSONAL_DT_FST with PERSON - PERSON_NAME    *
+! 141359        - Program crashes on DB2/Unix - Optimize SQL Statement *
+!               - in procedure process-etp-data                        *
+!ICE 726254000 - Deleted new-page in Procedure Process-ETP-Data so that*
+!                ETP Payment Summary Report should not print a blank   *
+!                page between payee's personal and return copies of ETP*
+!                Certificate.                                          *
+!***********************************************************************
+
+begin-procedure ETP-Payment-Summary
+
+  Do Get-Current-DateTime
+ ! Let $AsOfToday = datenow()
+#IFDEF INFORMIX
+  Do Convert-From-DTU-Date($AsOfToday,$AsOfToday)
+#ENDIF
+#IFDEF DB2
+  Do Get-Current-DateTime
+#ENDIF
+
+  move 'ETP Payment Summary  Laser Print' to $ReportTitle
+  display $ReportTitle
+
+  Do Build-ETP-Order-By
+
+  Do Build-ETP-SQL
+
+  Do Process-ETP-Data
+
+
+end-procedure
+
+!***********************************************************************
+! Procedure: Build-ETP-Order-By                                        *
+!            Dynamically build the order by clause according to flags. *
+!***********************************************************************
+begin-Procedure Build-ETP-Order-By
+
+
+  Move ' ' to $OrderClause
+  Move ' ' to $PyGrpSet
+  Move ' ' to $DeptSet
+  Move ' ' to $LocnSet
+  Move ' ' to $PayeeSet
+
+  if $Pyent_SW = 'Y'
+     Let $ETPOrderByClause = 'ORDER BY ETP.PAY_ENTITY'
+  else
+   if $PyGrp_SW = 'Y'
+      Let $ETPOrderByClause = 'ORDER BY EJOB.GP_PAYGROUP'
+      Let $PyGrpSet = 'Y'
+   else
+    if $Dept_SW = 'Y'
+       Let $ETPOrderByClause = 'ORDER BY EJOB.DEPTID'
+       Let $DeptSet = 'Y'
+    else
+     if $Locn_SW = 'Y'
+        Let $ETPOrderByClause = 'ORDER BY EJOB.LOCATION'
+        Let $LocnSet = 'Y'
+     else
+         Let $ETPOrderByClause = 'ORDER BY EPSNM.NAME'
+         Let $PayeeSet = 'Y'
+     end-if
+    end-if
+   end-if
+  end-if
+
+ if $PyGrp_SW = 'Y' and $PyGrpSet <> 'Y'
+    Let $ETPOrderByClause = $ETPOrderByClause || ',' || ' EJOB.GP_PAYGROUP'
+ end-if
+
+ if $Dept_SW = 'Y' and $DeptSet <> 'Y'
+    Let $ETPOrderByClause = $ETPOrderByClause || ',' || ' EJOB.DEPTID'
+ end-if
+
+ if $Locn_SW = 'Y' and $LocnSet <> 'Y'
+    Let $ETPOrderByClause = $ETPOrderByClause || ',' || ' EJOB.LOCATION'
+ end-if
+
+ if $Payee_SW = 'Y' and $PayeeSet <> 'Y'
+    Let $ETPOrderByClause = $ETPOrderByClause || ',' || ' EPSNM.NAME'
+ end-if
+
+end-Procedure
+
+
+!***********************************************************************
+! Procedure: Build-ETP-SQL                                             *
+!                                                                      *
+!***********************************************************************
+begin-procedure Build-ETP-SQL
+
+   if $Pop_Ind = '10'
+      Let $ETP_From = 'PS_GPAU_RC_PSM_PYE EPYE'
+      Let $ETP_Select = 'EPYE.OPRID = ' || '''' || $PRCS_OPRID || ''''
+      Let $ETP_Select = $ETP_Select || ' AND EPYE.RUN_CNTL_ID = ' || '''' || $PRCS_RUN_CNTL_ID || ''''
+      Let $ETP_Select = $ETP_Select || ' AND ETP.PAY_ENTITY = EPYE.PAY_ENTITY'
+  else
+    if $Pop_Ind = '20'
+       Let $ETP_From = 'PS_GPAU_RC_PSM_PYG EPYG'
+       Let $ETP_Select = 'EPYG.OPRID = ' || '''' || $PRCS_OPRID || ''''
+       Let $ETP_Select = $ETP_Select || ' AND EPYG.RUN_CNTL_ID = ' || '''' || $PRCS_RUN_CNTL_ID || ''''
+       Let $ETP_Select = $ETP_Select || ' AND EPYG.GP_PAYGROUP = EJOB.GP_PAYGROUP'
+    else
+        Let $ETP_From = 'PS_GPAU_RC_PSM_EE EEE'
+        Let $ETP_Select = 'EEE.OPRID = ' || '''' || $PRCS_OPRID || ''''
+        Let $ETP_Select = $ETP_Select || ' AND EEE.RUN_CNTL_ID = ' || '''' || $PRCS_RUN_CNTL_ID || ''''
+        Let $ETP_Select = $ETP_Select || ' AND ETP.EMPLID = EEE.EMPLID'
+        Let $ETP_Select = $ETP_Select || ' AND ETP.PAY_ENTITY = EEE.PAY_ENTITY'
+        Let $ETP_Select = $ETP_Select || ' AND ETP.BALANCE_GRP_NUM = EEE.BALANCE_GRP_NUM'
+    end-if
+   end-if
+
+end-procedure
+
+
+!***********************************************************************
+!                                                                      *
+! This is the main driving logic to print the ETP Payment Summaries    *
+!                                                                      *
+!***********************************************************************
+begin-procedure Process-ETP-Data
+  Show 'SQC 04 Process-ETP-Data'
+  Let #Rows_Processed = 0
+
+begin-SELECT DISTINCT
+ETP.EMPLID
+ETP.PAY_ENTITY
+ETP.BALANCE_GRP_NUM
+ETP.GPAU_TAX_YEAR
+ETP.GPAU_ETP_PY_TYPE
+ETP.GPAU_AMENDED_IND
+EJOB.GP_PAYGROUP
+EJOB.DEPTID
+EJOB.LOCATION
+EPSNM.NAME
+EPSNM.NAME_PREFIX
+EPSNM.LAST_NAME
+EPSNM.FIRST_NAME
+EPSNM.MIDDLE_NAME
+EPSN.BIRTHDATE
+ETP.GPAU_TFN
+ETP.GPAU_ETP_PAY_DT
+ETP.GPAU_ETP_SRV_DT
+ETP.GPAU_ETP_DYS_PRE83
+ETP.GPAU_ETP_DYS_PST83
+ETP.GPAU_ETP_PRE83
+ETP.GPAU_ETP_PST83_NTX
+ETP.GPAU_ETP_PST83_TAX
+ETP.GPAU_ETP_PST94_INV
+ETP.GPAU_ETP_GROSS
+ETP.GPAU_ETP_TAX
+ETP.GPAU_ETP_ASSES
+ETP.GPAU_DEATH_SW
+ETP.GPAU_STATUS
+
+ !Let #Rows_Processed = #Rows_Processed + 1
+
+   Do Get-PayEntity-Details
+   Do Get-PayEntity-Address-Details
+   Do Get-EmployeeAddress-Details
+   Do Get-PayEntity-AUS-Details
+   Do Prepare-ETP-Data
+   Let #CU = 5
+   Let #PU = 10
+   Let #LU = 73
+
+!  Print first copy
+   Let $Copy   = '1'
+   Do Print-ETP-Tax-Return-Layout
+   Do Print-ETP-Tax-Return-Data
+   new-page
+
+   !Let $Copy   = '2'
+!   new-page
+  ! Do Print-ETP-Tax-Return-Layout
+   !Do Print-ETP-Tax-Return-Data
+  ! new-page
+
+   Do Update-ETP-Issue-Status
+
+FROM [$ETP_From]
+, PS_GPAU_EE_ETP ETP
+, PS_JOB EJOB
+, PS_PERSON EPSN
+, PS_PERSON_NAME EPSNM
+WHERE [$ETP_Select]
+AND ETP.GPAU_TAX_YEAR = #Tax_Year
+AND ETP.GPAU_STATUS = $PrintStatus
+AND EJOB.EMPLID = ETP.EMPLID
+AND EJOB.EMPL_RCD = 0
+AND EJOB.EFFDT = (SELECT MAX(EJOB2.EFFDT) FROM PS_JOB EJOB2
+                      WHERE EJOB2.EMPLID = EJOB.EMPLID
+                        AND EJOB2.EMPL_RCD = EJOB.EMPL_RCD
+                        AND EJOB2.EFFDT <= $AsOfToday
+                 )
+AND EJOB.EFFSEQ = (SELECT MAX(EFFSEQ) FROM PS_JOB EJOB3
+                      WHERE EJOB3.EMPLID = EJOB.EMPLID
+                        AND EJOB3.EMPL_RCD = EJOB.EMPL_RCD
+                        AND EJOB3.EFFDT = EJOB.EFFDT
+                  )
+AND EPSN.EMPLID = ETP.EMPLID
+AND EPSNM.EMPLID = EPSN.EMPLID
+[$ETPOrderByClause]
+end-Select
+
+end-procedure
+!
+!***********************************************************************
+! Procedure: Get-EmployeeAddress-Details                               *
+!***********************************************************************
+begin-Procedure Get-EmployeeAddress-Details
+BEGIN-SELECT
+EADDR.ADDRESS1
+EADDR.ADDRESS2
+EADDR.CITY
+EADDR.STATE
+EADDR.POSTAL
+EADDR.COUNTRY
+ECNT.DESCR
+  FROM PS_ADDRESSES EADDR
+     , PS_COUNTRY_TBL ECNT
+   WHERE EADDR.EMPLID = &ETP.EMPLID
+     AND (EADDR.ADDRESS_TYPE = 'HOME'
+          OR (EADDR.ADDRESS_TYPE = 'MAIL'
+              AND EADDR.EMPLID NOT IN (SELECT EADDR1.EMPLID FROM PS_ADDRESSES EADDR1
+                                          WHERE EADDR1.EMPLID = EADDR.EMPLID
+                                            AND EADDR1.ADDRESS_TYPE = 'HOME'
+                                      )
+             )
+         )
+     AND EADDR.EFFDT = (SELECT MAX(EADDR2.EFFDT) FROM PS_ADDRESSES EADDR2
+                           WHERE EADDR2.EFFDT <= $AsOfToday
+                             AND EADDR2.EMPLID = EADDR.EMPLID
+                             AND EADDR2.ADDRESS_TYPE = EADDR.ADDRESS_TYPE
+                             AND EADDR2.EFF_STATUS = 'A')
+     AND ECNT.COUNTRY = EADDR.COUNTRY
+END-SELECT
+End-Procedure
+!
+!***********************************************************************
+! Procedure: Get-PayEntity-Details                                     *
+!***********************************************************************
+begin-Procedure Get-PayEntity-Details
+ Let $PayEntityDescr = ''
+BEGIN-SELECT
+EPYENTAU.GPAU_REGISTERED_NM
+  FROM PS_GP_PYENT_SGPAU EPYENTAU
+   WHERE EPYENTAU.PAY_ENTITY = &ETP.PAY_ENTITY
+   AND EPYENTAU.EFFDT = (SELECT MAX(EPYENTAU2.EFFDT) FROM PS_GP_PYENT_SGPAU EPYENTAU2
+                             WHERE EPYENTAU2.PAY_ENTITY = EPYENTAU.PAY_ENTITY
+                               AND EPYENTAU2.EFFDT <= $AsOfToday)
+END-SELECT
+End-Procedure
+
+
+!
+!***********************************************************************
+! Procedure: Get-PayEntity-AUS-Details                                 *
+!***********************************************************************
+begin-Procedure Get-PayEntity-AUS-Details
+  Let $ABN_Branch = ''
+  Let $Signatory = ''
+  Let $Payer_ABN = ''
+BEGIN-SELECT
+EPYENTAU.PHONE
+EPYENTAU.GPAU_ABN
+EPYENTAU.GPAU_ABN_BRANCH
+EPYENTAU.GPAU_SIGNATORY
+
+  Move &EPYENTAU.GPAU_ABN to $Payer_ABN
+
+  Let $ABN_Branch = to_char(&EPYENTAU.GPAU_ABN_BRANCH)
+  Let $ABN_Branch = rtrim($ABN_Branch,' ')
+
+  Let $Signatory = rtrim(&EPYENTAU.GPAU_SIGNATORY, ' ')
+
+    FROM PS_GP_PYENT_SGPAU EPYENTAU
+  WHERE EPYENTAU.PAY_ENTITY = &ETP.PAY_ENTITY
+    AND EPYENTAU.EFFDT = (SELECT MAX(EPYENTAU2.EFFDT) FROM PS_GP_PYENT_SGPAU EPYENTAU2
+                             WHERE EPYENTAU2.PAY_ENTITY = EPYENTAU.PAY_ENTITY
+                               AND EPYENTAU2.EFFDT <= $AsOfToday)
+END-SELECT
+End-Procedure
+!
+!***********************************************************************
+! Procedure: Get-PayEntity-Address-Details                             *
+!***********************************************************************
+begin-Procedure Get-PayEntity-Address-Details
+BEGIN-SELECT
+EPYENTDTL.ADDRESS1
+EPYENTDTL.ADDRESS2
+EPYENTDTL.CITY
+EPYENTDTL.STATE
+EPYENTDTL.POSTAL
+  FROM PS_GP_PYENT_DTL EPYENTDTL
+   WHERE EPYENTDTL.PAY_ENTITY = &ETP.PAY_ENTITY
+     AND EPYENTDTL.EFFDT = (SELECT MAX(EPYENTDTL1.EFFDT) FROM PS_GP_PYENT_DTL EPYENTDTL1
+                               WHERE EPYENTDTL1.PAY_ENTITY = EPYENTDTL.PAY_ENTITY
+                                 AND EPYENTDTL1.EFFDT <= $AsOfToday)
+     AND EPYENTDTL.EFF_STATUS = 'A'
+END-SELECT
+End-Procedure
+!
+!***********************************************************************
+! Procedure: Prepare-ETP-Data                                          *
+!***********************************************************************
+begin-Procedure Prepare-ETP-Data
+
+  Let #Allowance_Tot = 0
+
+  Let $Emplid    = rtrim(&ETP.EMPLID, ' ')
+  Let $PayEntity = rtrim(&ETP.PAY_ENTITY, ' ')
+  Move &ETP.BALANCE_GRP_NUM to $Balance_Grp_Num
+  Move &ETP.GPAU_TFN to $TFN
+
+
+  Move &ETP.GPAU_ETP_PAY_DT to $ETP_Pay_Dt
+  Do Format-Datetime($ETP_Pay_Dt,$ETP_Pay_Dt,{DEFDMY},'','')
+
+  Move &ETP.GPAU_ETP_SRV_DT to $ETP_Srv_Dt
+  Do Format-Datetime($ETP_Srv_Dt,$ETP_Srv_Dt,{DEFDMY},'','')
+
+  Move &ETP.GPAU_ETP_DYS_PRE83 to #ETP_Dys_Pre83
+
+  Move &ETP.GPAU_ETP_DYS_PST83 to #ETP_Dys_Pst83
+
+  Move &ETP.GPAU_ETP_PRE83     to #ETP_Pre83
+  Let #ETP_Pre83X = Trunc(#ETP_Pre83,0)
+
+  Move &ETP.GPAU_ETP_PST83_NTX to #ETP_Pst83_Ntx
+  Let #ETP_Pst83_NtxX = Trunc(#ETP_Pst83_Ntx,0)
+
+  Move &ETP.GPAU_ETP_PST83_TAX to #ETP_Pst83_Tax
+  Let #ETP_Pst83_TaxX = Trunc(#ETP_Pst83_Tax,0)
+
+  Move &ETP.GPAU_ETP_PST94_INV to #ETP_Pst94_Inv
+  Let #ETP_Pst94_InvX = Trunc(#ETP_Pst94_Inv,0)
+
+  Move &ETP.GPAU_ETP_GROSS     to #ETP_Gross
+
+  Move &ETP.GPAU_ETP_TAX       to #ETP_Tax
+
+  Move &ETP.GPAU_ETP_ASSES     to #ETP_Asses
+
+  Let $ETP_Death_Sw             = rtrim(&ETP.GPAU_DEATH_SW, ' ')
+
+  Let $Status                   = rtrim(&ETP.GPAU_STATUS, ' ')
+
+  Move &ETP.GPAU_ETP_PY_TYPE to $ETP_PYMT_TYPE
+
+  Let $ETP_PYMT_TYPEX               = rtrim($ETP_PYMT_TYPE, ' ')
+
+  Let $AMENDED_IND = rtrim(&ETP.GPAU_AMENDED_IND, ' ')
+
+  Let $Name = rtrim(&EPSNM.NAME, ' ')
+  Let $Name_Prefix = rtrim(&EPSNM.NAME_PREFIX, ' ')
+  Let $Last_Name = rtrim(&EPSNM.LAST_NAME, ' ')
+  Let $First_Name = rtrim(&EPSNM.FIRST_NAME, ' ')
+  Let $Middle_Name = rtrim(&EPSNM.MIDDLE_NAME, ' ')
+  Let $Emp_Name = $Name_Prefix || ' ' || $First_Name || ' ' || $Last_Name
+  Let $Emp_FSname =  $FirstName || ' ' || $Name_Prefix
+  Let $Emp_Fname = $First_Name
+  uppercase $First_Name
+  Let $Emp_Sname = $Last_Name
+  uppercase $Last_Name
+
+  Move &EPSN.BIRTHDATE to $Birthdate
+  Do Format-Datetime($Birthdate,$Birthdate,{DEFDMY},'','')
+
+  Let $Address1 = rtrim(&EADDR.ADDRESS1, ' ')
+  uppercase $Address1
+  Let $Address2 = rtrim(&EADDR.ADDRESS2, ' ')
+  uppercase $Address2
+  Let $City     = rtrim(&EADDR.CITY, ' ')
+  Let $State    = rtrim(&EADDR.STATE, ' ')
+  Let $Postal   = rtrim(&EADDR.POSTAL, ' ')
+  Let $CountryCd = rtrim(&EADDR.COUNTRY, ' ')
+  Let $Country  = rtrim(&ECNT.DESCR, ' ')
+
+
+  Move &ETP.GPAU_TFN to $TFN
+
+  Move &EPYENTAU.GPAU_ABN to $ABN
+  Move &EPYENTAU.GPAU_ABN_BRANCH to #ABN_Branch
+  !Let $ABN_Branch = rtrim(&EPYENTAU.GPAU_ABN_BRANCH, ' ')
+  Let $Signatory = rtrim(&EPYENTAU.GPAU_SIGNATORY, ' ')
+
+
+
+ Let $Pay_Entity_Name = rtrim(&EPYENTAU.GPAU_REGISTERED_NM, ' ')
+
+  Let $Heading1 = 'PAYG payment summary - employment termination payment'
+
+
+  Move 'Payment summary for year ending 30 June' to $Heading3
+  Move 'NOTICE TO PAYEE' to $Heading4
+  Move 'This is an amended payment summary' to $Amended_Heading
+  Let $Message1 = 'If this payment summary shows an amount in the total tax withheld box, you must lodge a tax return. If no tax was'
+  Let $Message2 = 'withheld, you may still have to lodge a tax return. For more information about this payment summary or lodging your'
+  Let $Message3 = 'tax return, you can:'
+
+  Let $Message4 = 'If this payment summary shows an amount in the total tax withheld box, you must lodge a tax return. If no tax was'
+  Let $Message5 = 'withheld, you may still have to lodge a tax return. If you have already lodged your tax return, you may need to lodge'
+  Let $Message6 = 'an amendment request. For more information about this payment summary, lodging your tax return or an amendment'
+  Let $Message7 = 'request, you can:'
+
+end-Procedure
+
+!
+!********************************************
+! Procedure: Print-ETP-Tax-Return-Copy      *
+!            Prints the certificate layout  *
+!********************************************
+!
+Begin-Procedure Print-ETP-Tax-Return-Layout
+
+
+
+  graphic () font 4 15
+  Print $Heading1                      (#CU,20)  bold   !Main Heading
+
+    Let #AM = #CU - 3
+  if $AMENDED_IND = 'Y'
+    graphic () font 4 11
+   graphic                             (#AM,48,53)  box 2  !Tax Withheld box
+   Print $Amended_Heading              (+1,50,35)
+  end-if
+
+  Let #CU = #CU + 2
+  graphic () font 4 11
+  Print $Heading3                      (#CU,43,39) bold     !Year Ending Heading
+  Print $Tax_Year_End                  (0,102,4)   bold
+
+  Let #CU = #CU + 20
+
+  Print 'Payee details'                 (#PU,10,13) bold
+   !Let #CU = #CU + 6
+  Print $Heading4                       (#CU,10,15) bold
+
+  Let #CU = #CU + 2
+  graphic () font 4 10
+
+  if $AMENDED_IND = 'Y'
+
+  Print $Message4                        (#CU,10)
+  Let #CU = #CU + 1
+  Print $Message5                        (#CU,10)
+  Let #CU = #CU + 1
+  Print $Message6                        (#CU,10)
+  Let #CU = #CU + 1
+  Print $Message7                        (#CU,10)
+  Let #CU = #CU + 1
+
+  Else
+
+  Print $Message1                        (#CU,10)
+  Let #CU = #CU + 1
+  Print $Message2                        (#CU,10)
+  Let #CU = #CU + 1
+  Print $Message3                        (#CU,10)
+  Let #CU = #CU + 2
+
+  End-if
+
+  graphic () font 4 40
+  Let $Var1 = '.'
+  Print $Var1                            (#CU,13,1) bold
+
+  graphic () font 4 10
+  Print 'visit'                           (0,17,5)
+  Print 'www.ato.gov.au'                  (0,23,14) bold
+
+  Let #CU = #CU + 2
+  graphic () font 4 40
+  Print $Var1                            (#CU,13,1) bold
+  graphic () font 4 10
+  Print 'phone'                          (0,17,5)
+  Print '13 28 61'                       (0,25,8) bold
+  Print 'between 8.00am and 6.00pm (EST), Monday to Friday.' (0,36)
+
+  graphic () font 4 9
+  Let #PU = #PU + 7
+  Print $Emp_Name                       (#PU,15)            !Name
+
+  if $Address1 <> ''
+    Let $Emp_Address1 =   $Address1  || ',  '
+    Let #PU = #PU + 1
+    Print $Emp_Address1                   (#PU,15)
+  end-if
+
+  if $Address2 <> ''
+     Let $Emp_Address1 =   $Address2
+     Let #PU = #PU + 1
+     Print $Emp_Address1                   (#PU,15)
+  end-if
+
+  Let #PU = #PU + 1
+  Let $Emp_Address2 =  $City || ' ' || $State || ' ' || $Postal
+  Print $Emp_Address2                   (#PU,15)
+
+
+  graphic () font 4 7
+  Let #CU = #CU + 2
+  Print 'Day/Month/Year'                (#CU,45,14)
+
+
+  graphic () font 4 10
+  Let #CU = #CU + 1
+  Let #DU1 = #CU
+  Print 'Date of Payment' (#CU,10,16)
+
+
+
+   Let   $PTFN       = 'Payee' || {QUOTE} || 's tax file number'
+  !Let   $DOB        = 'Payee' || {QUOTE} || 's date of birth(optional)'
+
+  Let #CU = #CU + 4
+
+  Print $PTFN                           (#CU,10,23)
+  !Print $DOB                            (0,40,31)
+  Print $TFN                            (0,40) edit  xxxbxxxbxxxb
+  !Print $Birthdate                      (0,49)
+
+  Let #CU = #CU - 2
+  graphic                               (#CU,73,59)  box 4 4 !Tax Withheld box
+  graphic                               (+1,106,25) box 2
+  Print 'TOTAL TAX WITHHELD'            (+1,74,18) bold
+  graphic () font 4 13
+  Print '$'                             (0,104,1) bold
+
+  graphic () font 4 10
+  If #ETP_Tax < 0
+    Move 0 to #ETP_Tax
+  End-if
+
+  Let #ETP_TaxX = Trunc(#ETP_Tax,0)
+  Print #ETP_TaxX                      (0,119)   edit 9,999,999   !Tax Withheld
+
+  Let #CU = #CU + 7
+  Print 'Taxable component'                (#CU,10)                             !row 1
+  Let #CU = #CU - 1
+  graphic                               (#CU,40,26) box 2
+
+  graphic () font 4 12
+  Let #CU = #CU + 1
+  Print '$'                             (#CU,38) bold
+  graphic () font 4 10
+  Print #ETP_Pst83_TaxX                     (0,51)       edit  999,999,999
+  Print 'Tax free component'                (#CU,73)
+  Let #CU = #CU - 1
+  graphic                               (#CU,106,26) box 2
+
+  graphic () font 4 12
+  Let #CU = #CU + 1
+  Print '$'                             (#CU,104) bold
+  graphic () font 4 10
+  Let #ETP_Tax_Free = #ETP_Pre83X + #ETP_Pst94_InvX
+  Print #ETP_Tax_Free                     (0,117)        edit  999,999,999
+
+  Let #CU = #CU + 5
+  Print 'Employment termination payment (ETP) code'  (#CU,10)
+  Let #CU = #CU - 1
+  graphic                               (#CU,73,4) box 2
+
+  Let #CU = #CU + 1
+  if $ETP_PYMT_TYPEX = 'T'
+     MOVE 'Y' to $ETP_PYMT_TYPEX
+   end-if
+   graphic () font 4 12
+   Print $ETP_PYMT_TYPEX                        (#CU,74)
+
+
+
+  !***********************************************************************************************************
+  !Payer's Details
+  !***********************************************************************************************************
+  graphic () font 4 11
+  graphic                               (#LU,10,122) horz-line 5
+  Let #LU = #LU + 2
+  Print 'Payer details'                 (#LU,10,13) bold
+  graphic () font 4 10
+  Let #LU = #LU + 2
+  Let $ABN_Head =  'Payer' || {QUOTE} || 's ABN or withholding payer number'
+  Print $ABN_Head                       (#LU,10,39)
+  Print  $ABN                           (0,61)   edit  xx-xxx-xxx-xxx
+  Print 'Branch Number'                 (0,92,13)
+  Print  #ABN_Branch                    (0,112) edit   999
+
+  Let #LU = #LU + 2
+  Let $Name_Head =  'Payer' || {QUOTE} || 's Name'
+  Print $Name_Head                      (#LU,10,12)
+  Print $Pay_Entity_Name                (0,30)wrap 60 4
+  
+  Let #LU = #LU + 2
+  Print 'Privacy'  (#LU,10) bold
+  Print ' - For information about your privacy, go to '  (0,19)
+  Print 'www.ato.gov.au/privacy'  (0, 68) bold
+  
+  Let #LU = #LU + 4
+  graphic                               (#LU,10,122) box 3
+  Let #LU = #LU + 1
+  Let #DU = #LU
+  Print 'Signature of authorised person' (#LU,11,30)
+  Print $Signatory                       (0,49,35)
+  Print 'Date'                           (0,103,4)
+  !Print $Print_Tax_Yr                    (0,113)
+  Let #LU = #LU + 2
+  graphic () font 4 8
+
+!  if $AMENDED_IND = 'Y'
+!    Print 'NAT72709B-12.2008'              (#LU,10,17)
+!   else
+!   Print 'NAT72708B-12.2008'              (#LU,10,17)
+!  end-if
+
+  !***********************************************************************************************************
+
+
+end-procedure
+!
+!********************************************
+! Procedure: Print-ETP-Tax-Return-Copy      *
+!            Prints the certificate layout  *
+!********************************************
+!
+Begin-Procedure Print-ETP-Tax-Return-Data
+    graphic () font 5 10
+
+    !print &ETP.GPAU_TFN      (39,46)  edit 'xxx xxx xxx'
+    !print &EPSNM.LAST_NAME   (45,4)
+    !print &EPSNM.FIRST_NAME  (48,4)
+    !print &EPSNM.MIDDLE_NAME (51,4)
+    !print &EADDR.ADDRESS1    (55,4)
+    !print &EADDR.ADDRESS2    (58,4)
+    !print &EADDR.CITY        (61,4)
+    !print &EADDR.STATE       (64,4)
+    !print &EADDR.POSTAL      (64,22)
+
+  !  if rtrim(&EADDR.COUNTRY,' ') <> '' AND rtrim(&EADDR.COUNTRY,' ') <> 'AUS'
+  !     print &ECNT.DESCR       (67,4)
+  !  end-if
+  !
+  !  print &EPSN.BIRTHDATE     (70,37)  edit DD
+  !  print &EPSN.BIRTHDATE     (70,45)  edit MM
+  !  print &EPSN.BIRTHDATE     (70,51)  edit YYYY
+  !
+  !  print &EPYENTAU.GPAU_ABN   (13,18)  edit 'xx xxx xxx xxx'
+  !  print &EPYENTAU.GPAU_ABN_BRANCH (13,54)
+  !
+    !print &EPYENT.DESCR       (17,4)
+    !print &EPYENTDTL.ADDRESS1 (23,4)
+    !print &EPYENTDTL.ADDRESS2 (26,4)
+    !print &EPYENTDTL.CITY     (29,4)
+    !print &EPYENTDTL.STATE    (32,4)
+    !print &EPYENTDTL.POSTAL   (32,22)
+
+   ! print &EPYENTAU.GPAU_SIGNATORY  (83,4)
+   ! if rtrim(&EPYENTAU.PHONE,' ') <> ''
+   !    Let #AreaCode = instr(&EPYENTAU.PHONE,' ',1)
+   !    Let #PhoneLen = length(&EPYENTAU.PHONE)
+   !    if #AreaCode < #PhoneLen
+   !       Let $Areacode = substr(&EPYENTAU.PHONE,1,#AreaCode)
+   !       Let #AreaCode = #AreaCode + 1
+   !       Let $PhoneNum = substr(&EPYENTAU.PHONE,#AreaCode,#PhoneLen)
+   !    end-if
+   !    print $AreaCode       (86,12)
+   !    print $PhoneNum       (86,29)
+   ! end-if
+
+
+   print '     /     /'  (#DU,110)
+   print '     /     /'  (#DU1,45)
+
+    Do Convert-To-DTU-Date($AsOfToday,$DTU_TodayDt)
+    Do Dtu-Parse-Date($DTU_TodayDt,#Today_Yr,#Today_Mnth,#Today_Day)
+#ifdef INFORMIX
+
+    print #Today_Day      (#DU,110)   edit '99'
+    print #Today_Mnth     (#DU,114)   edit '99'
+    print #Today_Yr       (#DU,118)   edit '9999'
+
+    Let $PayDt = &ETP.GPAU_ETP_PAY_DT
+    Do Convert-To-DTU-Date($PayDt,$DTU_PayDt)
+    Do Dtu-Parse-Date($DTU_PayDt,#Today_Yr,#Today_Mnth,#Today_Day)
+
+    print #Today_Day      (#DU1,45)   edit '99'
+    print #Today_Mnth     (#DU1,49)   edit '99'
+    print #Today_Yr       (#DU1,53)   edit '9999'
+
+    Let $StartDt = &ETP.GPAU_ETP_SRV_DT
+    Do Convert-To-DTU-Date($StartDt,$DTU_StartDt)
+    Do Dtu-Parse-Date($DTU_StartDt,#Today_Yr,#Today_Mnth,#Today_Day)
+
+    !print #Today_Day      (16,102)   edit '99'
+    !print #Today_Mnth     (16,110)   edit '99'
+    !print #Today_Yr       (16,117)   edit '9999'
+#ELSE
+#IFDEF ORACLE
+    print #Today_Day      (#DU,110)   edit '99'
+    print #Today_Mnth     (#DU,114)   edit '99'
+    print #Today_Yr       (#DU,118)   edit '9999'
+#ELSE
+    print $SysDateTime           (#DU,110)   edit DD
+    print $SysDateTime           (#DU,114)   edit MM
+    print $SysDateTime           (#DU,118)   edit YYYY
+#ENDIF
+    print &ETP.GPAU_ETP_PAY_DT (#DU1,45)  edit DD
+    print &ETP.GPAU_ETP_PAY_DT (#DU1,49)  edit MM
+    print &ETP.GPAU_ETP_PAY_DT (#DU1,53)  edit YYYY
+
+    !print &ETP.GPAU_ETP_SRV_DT (16,102)  edit DD
+    !print &ETP.GPAU_ETP_SRV_DT (16,110)  edit MM
+    !print &ETP.GPAU_ETP_SRV_DT (16,117)  edit YYYY
+#ENDIF
+
+
+   ! print &ETP.GPAU_ETP_DYS_PRE83  (19,120)  edit '99,999'
+   !
+   ! print &ETP.GPAU_ETP_DYS_PST83  (22,120)  edit '99,999'
+
+
+!   Printing of the ETP Components Follows ***************************
+
+   !print #ETP_Pre83           (35,118)  edit '99,999,999'
+   !
+   !print #ETP_Pst83_Tax       (38,118)  edit '99,999,999'
+   !
+   !print #ETP_Pst94_Inv       (44,118)  edit '99,999,999'
+   !
+   !print #ETP_Gross           (47,118)  edit '99,999,999'
+   !
+   !print #ETP_Tax             (52,118)  edit '99,999,999'
+   !
+   !print #ETP_Asses           (56,118)  edit '99,999,999'
+
+
+   ! Let $DeathBnft = rtrim(&ETP.GPAU_DEATH_SW,' ')
+   ! if $DeathBnft = 'N'
+   !    print 'X'  (65,74) ! In Section A Box
+   ! else
+   !    print 'X'  (65,93) ! In Section B Box
+   !    if $DeathBnft = 'T'
+   !       print 'X'  (62,127) ! In Trustee Box
+   !    end-if
+   !    if $DeathBnft = 'D'
+   !       print 'X'  (65,127) ! In Dependant Box
+   !    end-if
+   ! end-if
+end-procedure
+
+!
+!***********************************************************************
+! Procedure: Update-ETP-Issue-Status                                       *
+!            Once the group certs are printed the group cert record is *
+!            updated for on line reference whether printed or not.     *
+!***********************************************************************
+begin-procedure Update-ETP-Issue-Status
+
+begin-SQL !on-error=SQL-Error
+UPDATE PS_GPAU_EE_ETP
+SET GPAU_STATUS = '30'
+WHERE EMPLID = $Emplid
+AND PAY_ENTITY = $PayEntity
+AND BALANCE_GRP_NUM = $Balance_Grp_Num
+AND GPAU_TAX_YEAR  = #Tax_Year
+end-SQL
+end-procedure
+

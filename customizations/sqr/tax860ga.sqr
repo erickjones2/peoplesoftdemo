@@ -1,0 +1,454 @@
+!***********************************************************************
+!  TAX860GA:  Qtrly Wage List - Tape - GEORGIA                         *
+!                                                                      *
+!             NOTE: "#IFDEF TAXTEST" in main SELECT is used for        *
+!                   testing this report against DEMO database          *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2019, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  30446508                                            !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+#include 'setup31.sqc' !Printer and page-size initialization
+#Include 'usarpt.sqc' !USA-specific variables
+
+begin-heading 6
+  #Include 'stdhdg01.sqc'
+  print 'Company'          (3,1,11)
+  print $Company           (0,13,3)
+  print $CompanyName       (0,17)
+  print $RptQtrYr          (3,,)      center
+
+  print ' '                         (+3,1,11)
+  print '     QTD     '             (0,+48,13)
+  print '     QTD      '            (0,+6)
+  print 'QTD'                       (0,+11)
+  print 'EmplID'                    (+1,1,11)
+  print 'Taxable Gross'             (0,+48,13)
+  print 'No Limit Gross'            (0,+6)
+  print 'Non Taxable Gross'         (0,+4)
+  position (+2)
+
+end-heading
+
+begin-report
+  do Init-Report
+  do Process-Main
+
+  if $RecordWritten = 'Y'
+
+     display '' 
+    display 'Upon successful conclusion of this program, ' noline
+    display 'the following file(s) will be created:' 
+    display ' '
+    display '  T86GAxxx  where "xxx" represents a volume identifier'
+    DISPLAY '            for each company code. ' 
+    DISPLAY 'The file(s) are created in the .CSV format.'
+    DISPLAY 'Follow the instructions from the department for ' noline
+    display 'preparing and submitting the file.'
+    display ' '
+
+  else
+    let $Type = 'NoData'
+    do Print-Summary-Data
+  end-if
+
+  do Stdapi-Term
+
+end-report
+
+begin-procedure Init-Report
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Get-Calendar-Year-Id
+  do Stdapi-Init
+
+  do Initialization
+  move 'TAX860GA' to $ReportID
+
+  move 'Georgia Quarterly UI Wage Report' to $ReportTitle
+  display ''
+  display 'Creating File for Georgia UI Wage Reporting'
+
+
+end-procedure
+
+begin-procedure Initialization
+#ifdef TAXTEST
+  move 'CA'              to $State
+#else
+  move 'GA'              to $State
+#endif
+
+  let #FileExtension = 0
+  do Get-Tax-Reporting-Run-Controls
+  move $PeriodEndDate    to $AsOfDate
+
+  display ' '
+  display 'Processing balances for '   noline
+  display $RptQtrYr
+
+  move '000000000000000' to $Zf  !for "write" statements -- zero fill
+  do Select-Parameters
+
+  
+end-procedure
+
+
+begin-procedure Open-File
+   move 0 to #RecordCount
+   let $FileExtension = 'CSV'
+
+#ifdef OS400
+  let $FileID = 'T86GA' || $Company || '(D' || $FileExtension || ')'
+#else
+  #ifdef MVS
+    let $FileID = 'T86GA' || $Company
+  #else
+    let $FileID = 'T86GA' || $Company || '.' || $FileExtension
+  #endif
+#endif
+  let $FileID = '{IMPORTPREFIX}' || $FileID
+#ifdef MVS
+  open $FileID as 10 for-writing record=275:fixed_nolf
+#else
+  open $FileID as 10 for-writing record=275:fixed
+#endif
+
+   move 1 to #FileExtension
+
+end-procedure
+
+
+begin-procedure Close-File
+if #FileExtension > 0
+   close 10
+   move 0 to #FileExtension
+end-if
+end-procedure
+
+begin-procedure Process-Main
+
+begin-SELECT
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+end-SELECT
+
+begin-SELECT
+B.COMPANY
+
+  MOVE &B.COMPANY       to $Company
+  DO Read-Employee-Data
+
+FROM  PS_COMPANY_TBL B
+WHERE B.EFF_STATUS = 'A'
+  AND B.TAX_REPORT_TYPE = '2'
+  AND B.EFFDT =
+  (SELECT MAX(EFFDT)
+     FROM PS_COMPANY_TBL
+     WHERE  COMPANY = B.COMPANY
+       AND  EFFDT  <= $AsOfDate)
+ORDER BY COMPANY
+end-SELECT
+  let $Company     = ' '
+  let $CompanyName = ' '
+  if #Count_F > 0
+    let $Type = 'FileTotal'
+    do Print-Summary-Data
+  end-if
+end-procedure
+
+begin-procedure Read-Employee-Data
+
+begin-SELECT
+C.COMPANY    () on-break print=never before=Before-Company
+                                     AFTER=AFTER-COMPANY
+C.EMPLID
+C.NLGRS_QTD
+C.TXGRS_QTD
+D1.NATIONAL_ID
+PN.NAME
+PN.LAST_NAME_SRCH
+PN.FIRST_NAME_SRCH
+PN.MIDDLE_NAME
+  move &C.EMPLID    to $EmplID
+  move &PN.NAME     to $EmplName
+  move &PN.LAST_NAME_SRCH to $LastNameCaps
+  move &PN.FIRST_NAME_SRCH to $FirstNameCaps
+  move &PN.MIDDLE_NAME to $MiddleName
+  move &C.NlGrs_QTD to #NlGrs_QTD
+  move &C.TXGRS_QTD to #TxGrs_QTD
+
+  if &C.NlGrs_QTD > 0 and &C.NlGrs_QTD
+    do Process-Employee
+  end-if
+
+  if $RC_QTR_UI.Rpt_Totals_Only = 'N'
+      let $Type = 'Detl'
+      do Print-Summary-Data
+  end-if
+  
+FROM  PS_TAX_BALANCE C, PS_NAMES PN, PS_PERS_NID D1
+WHERE C.COMPANY       = &B.Company
+  AND D1.EMPLID = C.EMPLID 
+  AND D1.COUNTRY = {NID_Country}
+  AND D1.NATIONAL_ID_TYPE = $PAYROLL_NID_TYPE
+  AND PN.EMPLID       = C.EMPLID
+  AND C.TAX_CLASS     = 'U'
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+#ifdef TAXTEST
+  AND C.STATE         = 'CA'
+#else
+  AND C.STATE         = 'GA'
+#endif
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND C.NLGRS_QTD <> 0
+  AND PN.NAME_TYPE = 'PRI'
+  AND PN.EFFDT =
+      (SELECT MAX(PX.EFFDT)
+       FROM   PS_NAMES PX
+       WHERE  PX.EMPLID    = PN.EMPLID
+         AND  PX.NAME_TYPE = PN.NAME_TYPE
+         AND  PX.EFFDT    <= $AsOfDate)
+ORDER BY D1.NATIONAL_ID
+end-SELECT
+
+end-procedure
+begin-procedure Process-Employee
+  move &D1.NATIONAL_ID to $S123 xxx       !isolate first 3 digits
+  if $S123 = &Temp_SSN_Mask or RTRIM(&D1.NATIONAL_ID, ' ') = ''
+    move '000000000'   to $SSN
+  else
+    move &D1.NATIONAL_ID        to $SSN
+  end-if
+  move $EmplName       to $Name
+  uppercase $Name
+  do Rotate-Name
+  let $MiddleInitial  = ''
+  extract $MiddleInitial from $MiddleName 0 1
+
+ ! Remove Punctuation from Name
+
+  while INSTR($LastName,'.',1)
+    let #locnper = INSTR($LastName,'.',1)
+    let $LastName = SUBSTR($LastName,1,#locnper - 1)   ||
+                    SUBSTR($LastName,#locnper + 1,40)
+  end-while
+
+  add #NlGrs_QTD to #Co_NlGrs_QTD
+  !multiply 100 times #NlGrs_QTD
+  DO Get-EE-AGE
+  do Write-Employee-Record
+
+  add #TxGrs_QTD to #Co_TxGrs_QTD
+end-procedure
+
+begin-procedure Before-Company
+
+#ifdef TAXTEST
+  move 'CA'              to $State
+#else
+  move 'GA'              to $State
+#endif
+  do Get-Company-Data
+  do Get-State-Tax-Data             !Employer ID
+
+  if RTRIM(&Employer_ID_SUT,' ') = ''
+    display '*** State Unemployment ID missing in Company State Tax Table ***'
+    display '*********************** Processing stopped *********************'
+    stop
+  end-if
+
+  !*** remove blanks and dash from employer ID ***
+  let $Employer_ID_SUT = &Employer_ID_SUT
+  let $Edited_SUT = &Employer_ID_SUT
+  let $Edited_SUT = translate($Edited_SUT, ' ' , '')
+  let $Edited_SUT = translate($Edited_SUT, '-' , '')
+  move $Edited_SUT to $StateEIN 09999999
+
+  move &SUT_Experience_Rt to #Experience_Rt
+  multiply 100 times #Experience_Rt
+  move #Experience_Rt to $Rate 999
+  Do Close-File
+  Do Open-File
+  Do Write-Header-Record
+
+end-procedure
+
+Begin-Procedure Write-Header-Record
+  let $CSVLine = ''
+  let $CSVLine =  'SSN' || ','|| 'Last Name' || ',' ||
+                  'First Name'  || ',' || 'MI'  || ','|| 
+                  'Wage Amount' || ',' || 'Under 18'
+
+  write 10 from  $CSVLine
+End-Procedure
+
+begin-procedure After-Company
+
+  if #Count_S > 0
+    let $Type = 'CoTotal'
+    do Print-Summary-Data
+
+
+    add #Co_NlGrs_QTD to #Tot_NlGrs_QTD
+    add #Co_TxGrs_QTD to #Tot_TxGrs_QTD
+    add #Count_S to #Count_F
+
+    move 0 to #Co_NlGrs_QTD
+    move 0 to #Co_TxGrs_QTD
+    move 0 to #Count_S
+    new-page
+  end-if
+
+end-procedure
+
+Begin-procedure Get-EE-AGE
+
+begin-SELECT
+PD.BIRTHDATE
+
+  MOVE &PD.BIRTHDATE TO $PD_BIRTHDATE
+  DO Get-Minor-Indicator
+   
+FROM PS_PERSONAL_DATA PD 
+WHERE PD.EMPLID = $EmplID
+
+end-SELECT
+End-Procedure
+
+BEGIN-PROCEDURE Get-Minor-Indicator
+  DO Convert-To-DTU-Date($PD_BIRTHDATE, $PD_BIRTHDT)
+  DO Convert-To-DTU-Date($AsOfDate,$AsOfDt)
+  DO dtu-diff-years( $PD_BIRTHDT,$AsOfDt, #EEYears)
+  
+  IF #EEYears < 18
+     MOVE 'Y' TO $AgeInd
+  ELSE
+     MOVE 'N' TO $AgeInd
+  END-IF
+  
+
+  
+END-PROCEDURE
+
+
+begin-procedure Write-Employee-Record
+
+  do Format-Number (#NlGrs_QTD,  $NlGrs_QTD,  '99999999.99')
+  LET $NlGrs_QTD = LTRIM($NlGrs_QTD, ' ')
+  do Write-Record
+
+end-procedure
+
+begin-procedure Write-Record
+
+  let $CSVLine = ''
+  LET $LastNameCaps = substr($LastNameCaps,1,25) 
+  LET $FirstNameCaps  = substr($FirstNameCaps,1,20) 
+  let $CSVLine =  $SSN || ','|| $LastNameCaps || ',' ||
+                  $FirstNameCaps  || ',' || $MiddleInitial  || ','|| 
+                  $NlGrs_QTD || ',' || $AgeInd
+
+  write 10 from  $CSVLine
+
+  add 1 to #RecordCount
+  add 1 to #Count_S
+  MOVE 'Y' TO $RecordWritten
+end-procedure
+
+
+begin-procedure Print-Summary-Data
+
+  move &C.NlGrs_QTD to #NlGrs_QTD
+  move &C.TXGRS_QTD to #TxGrs_QTD
+    evaluate $Type
+        when = 'Detl'
+            print $EmplID          (+1,1,14)
+            print $EmplName        (0,+1,40)
+            print #TxGrs_QTD       (0,56) edit 99,999,999,999.99mi
+            print #NlGrs_QTD       (0,76) edit 99,999,999,999.99mi
+            let #NonTxGrs_QTD   = #NlGrs_QTD - #TxGrs_QTD
+            print #NonTxGrs_QTD    (0,97) edit 99,999,999,999.99mi
+            if #NlGrs_QTD < 0
+                print '****'       (0,116)
+            end-if
+
+        when = 'CoTotal'
+            print 'Company Total'  (+2,1,14)
+            print #Co_TxGrs_QTD    (0,55) edit 999,999,999,999.99mi
+            print #Co_NlGrs_QTD    (0,75) edit 999,999,999,999.99mi
+            let #NonTxGrs_QTD   = #Co_NlGrs_QTD - #Co_TxGrs_QTD
+            print #NonTxGrs_QTD    (0,96) edit 999,999,999,999.99mi
+
+            print 'Employer ID'    (+2,1,14)
+            print $Employer_ID_SUT (0,21)
+
+        when = 'FileTotal'
+            print 'Total *******'  (+2,1,14)
+            print #Tot_TxGrs_QTD    (0,55) edit 999,999,999,999.99mi
+            print #Tot_NlGrs_QTD    (0,75) edit 999,999,999,999.99mi
+            let #NonTxGrs_QTD   = #Tot_NlGrs_QTD - #Tot_TxGrs_QTD
+            print #NonTxGrs_QTD     (0,96) edit 999,999,999,999.99mi
+
+        when = 'NoData'
+            move '' to $_LastCompany
+            move '' to $_LastCompanyName
+            print '******  No Data Selected  ******'  (+2,) center
+
+    end-evaluate
+
+end-procedure
+
+
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'getstdta.sqc'  !Get-State-Tax-Data procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'datemath.sqc'  !Routines for date comparisons
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'rotname2.sqc'  !Rotate-Name procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'txrnctl1.sqc'  !Get-Run-Control procedure
+

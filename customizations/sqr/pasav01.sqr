@@ -1,0 +1,653 @@
+!***********************************************
+!  parpt1: Actuarial Valuation Extract
+!***********************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/17:14:59:35                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!                                                                      *
+!***********************************************************************
+
+!***********************************************************************
+!* Revision Notes
+!* 6/21/2004 PY  MODIFY TO USE EFFECTIVE DATED DEPENDENT BENEFICIARY
+!*               INFORMATION
+!* 6/8/2004 PY   MODIFY TO USE THE VIEW PS_ORIG_HIR_EMP_VW 
+!* 06/11/03 Lee: ICE 25634000 - Use latest scheduled amount
+!*               ICE 28004000 - Set hours function result
+!*               ICE 28422000 - Omit end_dt from inactive fld names
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+#include 'usarpt.sqc' !Get USA variables
+
+begin-report
+  DO Init-DateTime
+  DO Init-Number
+  DO Get-Current-DateTime
+  DO P-100-Init-Report
+  DO P-200-Process-Main
+  DO P-600-End-Report
+  DO StdApi-Term
+END-report
+
+#Include 'setup06.sqc'   !Printer and page-size initialization
+
+
+begin-procedure P-100-Init-Report
+  OPEN '{IMPORTPREFIX}PAWAV01.EXT{IMPORTSUFFIX}' as 1 for-writing record=1000;fixed_nolf
+  OPEN '{IMPORTPREFIX}PAWAV02.EXT{IMPORTSUFFIX}' as 2 for-writing record=1000;fixed_nolf
+  LET $first-pass-active = 'Y'
+  LET $first-pass-inactive = 'Y'
+  DO StdApi-Init
+  IF $prcs_process_instance = ''
+   DO P-125-Ask-values
+  ELSE
+   DO P-150-Get-values-Pa
+  END-IF
+end-procedure
+
+begin-procedure P-125-Ask-Values
+  INPUT $ben_plan_inpt             'Enter Benefit Plan'
+  INPUT $asofdate_inpt             'Enter As of Date'
+  INPUT $py_val_date_inpt          'Enter Prior Year Valuation Date'
+  LET $benefit_plan     = rtrim($ben_plan_inpt,'')
+  LET $asofdate         = $asofdate_inpt
+  LET $py_val_date      = $py_val_date_inpt
+end-procedure
+
+begin-procedure P-150-Get-Values-Pa
+  DO Select-Parameters-PA
+  LET $benefit_plan      = rtrim(&pa_run_cntl.benefit_plan,' ')
+  LET $asofdate          = &pa_run_cntl.as_of_date
+  LET $py_val_date       = &pa_run_cntl.prior_val_date
+  LET $svc_functn_result = rtrim(&pa_run_cntl.svc_functn_result,' ')
+  LET $vst_functn_result = rtrim(&pa_run_cntl.vst_functn_result,' ')
+  LET $hrs_functn_result = rtrim(&pa_run_cntl.hrs_functn_result,' ')
+  LET $ern_functn_result = rtrim(&pa_run_cntl.ern_functn_result,' ')
+  LET $bal_functn_result = rtrim(&pa_run_cntl.act_functn_result,' ')
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-200-Process-Main
+let $sql-statement = 'PASAV01 - P-200-Process-Main'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+MAIN.EMPLID
+MAIN.PENSION_STATUS
+   LET $emplid = rtrim(&main.emplid,' ')
+   DO P-220-Retrieve-PY-Val-Code
+   DO P-240-Determine-CY-Val-Code
+   DO P-260-Compare-Val-Codes
+   DO P-440-Update-Val-Code-and-Date
+FROM PS_PA_EMP_PEN_STAT MAIN
+WHERE MAIN.BENEFIT_PLAN = $benefit_plan
+AND MAIN.EFFDT = (SELECT MAX(MAIN2.EFFDT) FROM PS_PA_EMP_PEN_STAT MAIN2
+WHERE MAIN2.EFFDT <= $ASOFDATE AND MAIN2.BENEFIT_PLAN = $benefit_plan
+AND MAIN2.EMPLID=MAIN.EMPLID)
+END-SELECT
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-220-Retrieve-PY-Val-Code
+LET $found_flag = 'N'
+let $sql-statement = 'PASAV01 - P-220-Retrieve-PY-Val-Code'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+PPRIOR.PY_VAL_CODE
+   LET $py_val_code     = rtrim(&pprior.py_val_code,' ')
+   LET $found_flag      = 'Y'
+FROM PS_PA_EMP_VAL PPRIOR
+WHERE PPRIOR.PY_VAL_DATE = $py_val_date
+AND PPRIOR.EMPLID        = $emplid
+AND PPRIOR.BENEFIT_PLAN = $benefit_plan
+END-SELECT
+IF $found_flag = 'N'
+   LET $py_val_code = 'N'
+END-IF
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-240-Determine-CY-Val-Code
+LET $found_flag = 'N'
+let $sql-statement = 'PASAV01 - P-240-Determine-CY-Val-Code'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+CUR.VAL_CATEGORY
+   LET $cy_val_code = rtrim(&cur.val_category,' ')
+   LET $found_flag = 'Y'
+FROM PS_PA_PEN_VAL CUR
+WHERE CUR.EFFDT <= $asofdate
+AND CUR.BENEFIT_PLAN = $benefit_plan
+AND CUR.PENSION_STATUS = &main.pension_status
+END-SELECT
+
+IF $found_flag = 'N'
+   let $error_statement = 'Valuation code not assigned to pension status, ' || rtrim(&main.pension_status,' ')
+   LET $cy_val_code = 'N'
+   display $error_statement
+   let $error_statement = 'Therefore no active or inactive file is written for this employee '  || $emplid
+   display $error_statement
+END-IF
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-260-Compare-Val-Codes
+LET $found_flag = 'N'
+let $sql-statement = 'PASAV01 - P-260-Compare-Val-Codes'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+A.ACTIVE_EXTRACT
+A.INACTIVE_EXTRACT
+   if rtrim(&a.active_extract,' ') = 'Y'
+      DO P-300-Active-Extract-File
+   end-if
+   if rtrim(&a.inactive_extract,' ') = 'Y'
+      DO P-320-Inactive-Extract-File
+   end-if
+   LET $found_flag = 'Y'
+FROM PS_PA_PEN_VAL_MTX A
+WHERE A.CY_VAL_CODE = $cy_val_code
+AND A.PY_VAL_CODE   = $py_val_code
+END-SELECT
+IF $found_flag = 'N'
+   let $error_statement = 'Valuation matrix invalid for CY_VAL_CODE = ' || $cy_val_code ||  ' PY_VAL_CODE = ' || $py_val_code
+   display $error_statement
+   let $error_statement = 'Therefore no active or inactive file is written for this employee '  || $emplid
+   display $error_statement
+END-IF
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-300-Active-Extract-File
+
+  do P-400-Retrieve-Active-Data
+  move '1' to $Year4
+  do Format-DateTime(&pers.birthdate,$pers.birthdate, {DEFDATE}, '', '',)
+  move '1' to $Year4
+  do Format-DateTime(&orig_hir.orig_hire_dt,$orig_hir.orig_hire_dt, {DEFDATE}, '', '',)
+  move '1' to $Year4
+  do Format-DateTime(&ben.birthdate,$ben.birthdate, {DEFDATE}, '', '',)
+  do P-420-Write-Active-File
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-400-Retrieve-Active-Data
+let $sql-statement = 'PASAV01 - P-400-Retrieve-Active-Data 1'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+MAX(EFFDT)  &max
+    LET $max_effdt = &max
+FROM PS_JOB
+WHERE EMPLID = $emplid
+AND EFFDT   <= $asofdate
+END-SELECT
+
+let $sql-statement = 'PASAV01 - P-400-Retrieve-Active-Data 2'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+JOB.EMPLID
+JOB.ACTION
+JOB.ACTION_REASON
+JOB.LOCATION
+JOB.COMPANY
+JOB.EMPL_TYPE
+JOB.STD_HOURS
+JOB.COMP_FREQUENCY
+JOB.COMPRATE
+PERS.NAME
+PERS.SEX
+PERS.MAR_STATUS
+PERS.BIRTHDATE
+ORIG_HIR.ORIG_HIRE_DT
+NID.NATIONAL_ID
+    LET $name = rtrim(&PERS.NAME,' ')
+    unstring $name by ',' into $name_last $name_first
+
+     ! Determine the QDRO_IND_YN value
+      Do  P-700-QDRO-IND
+      Let $PERS_QDRO_IND_YN = $QDRO_IND_YN
+
+
+FROM PS_JOB JOB,
+PS_PERSONAL_DT_FST PERS,
+PS_PERS_NID NID,
+PS_ORIG_HIR_EMP_VW ORIG_HIR
+WHERE PERS.EMPLID = $emplid
+AND PERS.EMPLID   = JOB.EMPLID
+AND JOB.EFFDT     = $max_effdt
+AND PERS.EMPLID   = NID.EMPLID
+AND NID.COUNTRY   = {NID_COUNTRY}
+AND NID.NATIONAL_ID_TYPE = $PAYROLL_NID_TYPE
+AND PERS.EMPLID = ORIG_HIR.EMPLID
+END-SELECT
+
+let $sql-statement = 'PASAV01 - P-400-Retrieve-Active-Data 3'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+BEN.BIRTHDATE
+BEN_EFF.SEX
+FROM PS_DEP_BEN BEN, PS_DEP_BEN_EFF BEN_EFF
+WHERE BEN_EFF.EMPLID     = $emplid
+AND BEN_EFF.EMPLID = BEN.EMPLID
+AND BEN_EFF.DEPENDENT_BENEF = BEN.DEPENDENT_BENEF
+AND BEN_EFF.EFFDT =
+(SELECT MAX (BEN_EFF2.EFFDT) FROM PS_DEP_BEN_EFF BEN_EFF2
+     WHERE BEN_EFF2.EMPLID = BEN_EFF.EMPLID
+     AND BEN_EFF2.DEPENDENT_BENEF = BEN_EFF.DEPENDENT_BENEF
+     AND BEN_EFF2.EFFDT <= $ASOFDATE
+     AND BEN_EFF2.RELATIONSHIP = 'SP')
+AND BEN_EFF.RELATIONSHIP = 'SP'
+END-SELECT
+
+
+let $sql-statement = 'PASAV01 - P-400-Retrieve-Active-Data 4'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+EARN.ERN_ADJ_AMT
+FROM PS_PA_CONS_ARRAY EARN
+WHERE EARN.FUNCTN_RESULT_NM = $ern_functn_result
+AND EARN.END_DT            <= $asofdate
+AND EARN.EMPLID     = $emplid
+END-SELECT
+
+let $sql-statement = 'PASAV01 - P-400-Retrieve-Active-Data 5'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+HRS.ERN_ADJ_HRS
+FROM PS_PA_CONS_HRS_AY HRS
+!* ICE 28004000
+WHERE HRS.FUNCTN_RESULT_NM = $hrs_functn_result
+AND HRS.END_DT            <= $asofdate
+AND HRS.EMPLID     = $emplid
+END-SELECT
+
+let $sql-statement = 'PASAV01 - P-400-Retrieve-Active-Data 6'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+SVC.ACCUM_SVC_W_BRKS
+FROM PS_PA_SVC_HIST  SVC
+WHERE SVC.FUNCTN_RESULT_NM = $svc_functn_result
+AND SVC.END_DATE          <= $asofdate
+AND SVC.EMPLID     = $emplid
+END-SELECT
+
+let $sql-statement = 'PASAV01 - P-400-Retrieve-Active-Data 7'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+VST.ACCUM_SVC_W_BRKS
+FROM PS_PA_SVC_HIST  VST
+WHERE VST.FUNCTN_RESULT_NM = $vst_functn_result
+AND VST.END_DATE          <= $asofdate
+AND VST.EMPLID     = $emplid
+END-SELECT
+
+let $sql-statement = 'PASAV01 - P-400-Retrieve-Active-Data 8'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+BAL.END_BALANCE
+FROM PS_PA_ACCUMS BAL
+WHERE BAL.FUNCTN_RESULT_NM = $bal_functn_result
+AND BAL.END_DATE          <= $asofdate
+AND BAL.EMPLID     = $emplid
+END-SELECT
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+
+begin-procedure P-420-Write-Active-File
+
+if $first-pass-active = 'Y'
+let $stmt_1 = 'EMPLID,PEN_STAT,ACTION,ACTION_REASON,LOCATION,COMPANY,EMPL_TYPE,STD_HOURS,COMP_FREQUENCY,COMPRATE,NAME,NATIONAL_ID,SEX,MAR_STATUS,BIRTHDATE,QDRO_IND_YN'
+let $stmt_2 = ',ORIG_HIRE_DT,ACTUAL_EARININGS,ACTUAL_HOURS,BENEFIT_SERVICE,VST_SERVICE,END_BALANCE,BEN_BIRTHDATE,BEN_SEX'
+let $stmt_1 = $stmt_1 || $stmt_2
+write 1 from $stmt_1
+
+let $first-pass-active = 'N'
+end-if
+
+LET $JOB_EMPLID          = RTRIM(&JOB.EMPLID,' ')
+LET $MAIN.PENSION_STATUS = RTRIM(&MAIN.PENSION_STATUS,' ')
+LET $JOB.ACTION          = RTRIM(&JOB.ACTION,' ')
+LET $JOB.ACTION_REASON   = RTRIM(&JOB.ACTION_REASON,' ')
+LET $JOB.LOCATION        = RTRIM(&JOB.LOCATION,' ')
+LET $JOB.COMPANY         = RTRIM(&JOB.COMPANY,' ')
+LET $JOB.EMPL_TYPE       = RTRIM(&JOB.EMPL_TYPE,' ')
+LET $JOB.COMP_FREQUENCY  = RTRIM(&JOB.COMP_FREQUENCY,' ')
+
+
+LET $NID.NATIONAL_ID        = RTRIM(&NID.NATIONAL_ID,' ')
+LET $PERS.SEX               = RTRIM(&PERS.SEX,' ')
+LET $PERS.MAR_STATUS        = RTRIM(&PERS.MAR_STATUS,' ')
+LET $PERS.QDRO_IND_YN       = RTRIM($PERS_QDRO_IND_YN,' ')
+LET $BEN_EFF.SEX                = RTRIM(&BEN_EFF.SEX,' ')
+
+write 1 from
+$JOB_EMPLID           ','
+$MAIN.PENSION_STATUS  ','
+$JOB.ACTION           ','
+$JOB.ACTION_REASON    ','
+$JOB.LOCATION         ','
+$JOB.COMPANY          ','
+$JOB.EMPL_TYPE        ','
+&JOB.STD_HOURS        ','
+$JOB.COMP_FREQUENCY   ','
+&JOB.COMPRATE         ','
+$NAME_FIRST ' ' $NAME_LAST  ','
+$NID.NATIONAL_ID      ','
+$PERS.SEX             ','
+$PERS.MAR_STATUS      ','
+$PERS.BIRTHDATE       ','
+$PERS.QDRO_IND_YN     ','
+$ORIG_HIR.ORIG_HIRE_DT    ','
+&EARN.ERN_ADJ_AMT     ','
+&HRS.ERN_ADJ_HRS      ','
+&SVC.ACCUM_SVC_W_BRKS ','
+&VST.ACCUM_SVC_W_BRKS ','
+&BAL.END_BALANCE      ','
+$BEN.BIRTHDATE        ','
+$BEN_EFF.SEX
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+
+begin-procedure P-320-Inactive-Extract-File
+
+let $sql-statement = 'PASAV01 - P-320-Inactive-Extract-File 1'
+let $found_flag='N'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+SETUP2.EMPL_RCD_PAYEE
+SETUP2.EMPLID_PAYEE
+   let $found_flag='Y'
+FROM PS_PA_RT_EMP_SETUP SETUP2
+WHERE SETUP2.EMPLID_PAYEE = $emplid
+AND SETUP2.BENEFIT_PLAN = $benefit_plan
+END-SELECT
+
+if $found_flag='N'
+    LET $ERROR_STATEMENT = 'There is not a valid payee setup for emplid= ' || $emplid
+    display $ERROR_STATEMENT
+end-if
+
+let $sql-statement = 'PASAV01 - P-320-Inactive-Extract-File 2'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+MAX(J.EFFDT)  &JMAX, COUNT(*) &COUNT
+    LET $max_effdt = &JMAX
+FROM PS_JOB J
+WHERE J.EMPLID = $emplid
+AND J.EMPL_RCD = &SETUP2.EMPL_RCD_PAYEE
+AND J.EFFDT <= $asofdate
+END-SELECT
+
+if &COUNT=0
+   let $error_statement = 'Job data not found for employee '  || $emplid || ' ' || $asofdate
+   display $error_statement
+else
+let $sql-statement = 'PASAV01 - P-320-Inactive-Extract-File 3'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+JOB2.EMPLID
+JOB2.LOCATION
+JOB2.COMPANY
+PERS2.NAME
+NID2.NATIONAL_ID
+PERS2.SEX
+PERS2.MAR_STATUS
+PERS2.BIRTHDATE
+ORIG_HIR2.ORIG_HIRE_DT
+
+   ! Determine the QDRO_IND_YN value
+      Do  P-700-QDRO-IND
+      Let $PERS2_QDRO_IND_YN = $QDRO_IND_YN
+
+
+    LET $name = &PERS2.NAME
+    unstring $name by ',' into $name_last $name_first
+    LET $pmt-sched-valid='N'
+    DO P-460-Select-Payment-Schedule
+    IF $pmt-sched-valid = 'Y'
+    do P-480-Write-Inactive-Record
+    ELSE
+    LET $ERROR_STATEMENT = 'There is not a valid payment schedule for emplid= ' || $emplid
+    display $ERROR_STATEMENT
+    END-IF
+    LET $pmt-sched-valid='N'
+
+FROM PS_JOB JOB2,
+PS_PERSONAL_DT_FST PERS2,
+PS_PERS_NID NID2,
+PS_ORIG_HIR_PER_VW ORIG_HIR2
+WHERE PERS2.EMPLID = $emplid
+AND PERS2.EMPLID   = JOB2.EMPLID
+AND JOB2.EMPL_RCD = &SETUP2.EMPL_RCD_PAYEE
+AND JOB2.EFFDT     = $max_effdt
+AND PERS2.EMPLID   = NID2.EMPLID
+AND NID2.COUNTRY   = {NID_COUNTRY}
+AND NID2.NATIONAL_ID_TYPE = $PAYROLL_NID_TYPE
+AND PERS2.EMPLID = ORIG_HIR2.EMPLID
+END-SELECT
+end-if
+end-procedure
+
+!***********************************************************************
+begin-procedure P-440-Update-Val-Code-and-Date
+
+let $ROW_EXISTS = 'N'
+BEGIN-SELECT
+VAL.EMPLID
+VAL.BENEFIT_PLAN
+VAL.PY_VAL_CODE
+VAL.PY_VAL_DATE
+  LET $ROW_EXISTS = 'Y'
+FROM PS_PA_EMP_VAL VAL
+WHERE VAL.EMPLID     = $emplid
+AND VAL.BENEFIT_PLAN = $benefit_plan
+END-SELECT
+
+if $ROW_EXISTS = 'N'
+   let $sql-statement = 'PASAV01 - P-440-Update-Val-Code-and-Date  1'
+   BEGIN-SQL ON-ERROR=SQL-ERROR
+   INSERT INTO PS_PA_EMP_VAL
+   (EMPLID,BENEFIT_PLAN,PY_VAL_CODE,PY_VAL_DATE)
+   VALUES
+   ($EMPLID,$BENEFIT_PLAN,$CY_VAL_CODE,$ASOFDATE)
+   END-SQL
+else
+   let $sql-statement = 'PASAV01 - P-440-Update-Val-Code-and-Date '
+   BEGIN-SQL ON-ERROR=SQL-ERROR
+   UPDATE PS_PA_EMP_VAL SET
+   PY_VAL_CODE      = $cy_val_code,
+   PY_VAL_DATE      = $asofdate
+   WHERE EMPLID     = $emplid
+   AND BENEFIT_PLAN = $benefit_plan
+   END-SQL
+end-if
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-460-Select-Payment-Schedule
+  let #PA_PMT_AMT = 0
+  let #PA_PMT_HOLD = 0
+  let $pa_pmt_hold = ' '
+let $sql-statement = 'PASAV01 - P-460-Select-Payment-Schedule'
+BEGIN-SELECT ON-ERROR=SQL-ERROR
+PAY.EMPLID
+PAY.EMPL_RCD
+PAY.BENEFIT_PLAN
+PAY.PA_PMT_NBR
+PAY.EFFDT
+PAY.PA_PMT_STAT
+PAY.PA_PMT_RSN
+PAY.PYMT_FREQ
+PAY.FORM_CODE
+PAY.PA_PMT_CHOICE
+PAY.PA_PMT_TYP1
+PAY.PA_PMT_TYP2
+PAY.PA_PMT_TYP3
+PAY.PA_PMT_TYP4
+PAY.PA_PMT_AMT1
+PAY.PA_PMT_AMT2
+PAY.PA_PMT_AMT3
+PAY.PA_PMT_AMT4
+SETUP.PA_PAYEE_TYPE
+SETUP.EMPL_RCD
+SETUP.EMPLID
+  if &PAY.PA_PMT_STAT='A'
+     or (&PAY.PA_PMT_STAT='D' and &MAIN.PENSION_STATUS = 'TDF')
+    evaluate &PAY.PA_PMT_CHOICE
+     when = '1'
+      let #PA_PMT_AMT = &PAY.PA_PMT_AMT1
+     when = '2'
+      let #PA_PMT_AMT = &PAY.PA_PMT_AMT2
+     when = '3'
+      let #PA_PMT_AMT = &PAY.PA_PMT_AMT3
+     when = '4'
+      let #PA_PMT_AMT = &PAY.PA_PMT_AMT4
+    end-evaluate
+    do P-500-Evaluate-Payment-Schedule
+    let $PA_PMT_HOLD = TO_CHAR(#PA_PMT_HOLD)
+  end-if
+FROM PS_PA_RT_PAY_SCHED PAY,
+     PS_PA_RT_EMP_SETUP SETUP
+WHERE PAY.EMPLID     =  $emplid
+AND PAY.EMPLID       =  SETUP.EMPLID_PAYEE
+AND PAY.EMPL_RCD    =  SETUP.EMPL_RCD_PAYEE
+AND PAY.BENEFIT_PLAN =  $benefit_plan
+!* ICE 25634000
+AND PAY.EFFDT = (SELECT MAX(PAY2.EFFDT) FROM PS_PA_RT_PAY_SCHED PAY2
+WHERE PAY2.EFFDT <= $ASOFDATE AND PAY2.BENEFIT_PLAN = $benefit_plan
+AND PAY2.EMPLID=PAY.EMPLID)
+END-SELECT
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-480-Write-Inactive-Record
+  move '1' to $Year4
+  do Format-DateTime(&pers2.birthdate,$pers2.birthdate, {DEFDATE}, '', '',)
+  move '1' to $Year4
+  do Format-DateTime(&orig_hir2.orig_hire_dt,$orig_hir2.orig_hire_dt, {DEFDATE}, '', '',)
+
+!* ICE 28422000
+if $first-pass-inactive = 'Y'
+  write 2 from
+  'EMPLID,PENSION_STATUS,LOCATION,COMPANY,NAME,NATIONAL_ID,SEX,MAR_STATUS,BIRTHDATE,QDRO_IND_YN,ORIG_HIRE_DT,BENEFIT_PLAN,APPLIES_AT_DATE,PAY_STATUS,PAYEE_TYPE,PYMT_FREQ,FORM_CODE,PMT_AMT '
+  let $first-pass-inactive = 'N'
+end-if
+
+write 2 from
+&job2.emplid                ','
+&main.pension_status        ','
+&job2.location              ','
+&job2.company               ','
+$name_first ' ' $name_last  ','
+&nid2.national_id           ','
+&pers2.sex                  ','
+&pers2.mar_status           ','
+$pers2.birthdate            ','
+$pers2_qdro_ind_yn          ','
+$orig_hir2.orig_hire_dt         ','
+&PAY.BENEFIT_PLAN           ','
+&PAY.EFFDT                  ','
+&PAY.PA_PMT_STAT            ','
+&SETUP.PA_PAYEE_TYPE        ','
+&pay.pymt_freq              ','
+&pay.form_code              ','
+$pa_pmt_hold
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-500-Evaluate-Payment-schedule
+EVALUATE &setup.PA_PAYEE_TYPE
+ when = 'B'
+  if &PAY.EFFDT <= $ASOFDATE
+  let #PA_PMT_HOLD=#PA_PMT_AMT + #PA_PMT_HOLD
+  LET $pmt-sched-valid='Y'
+  end-if
+ when = 'Q'
+  let #PA_PMT_HOLD=#PA_PMT_AMT + #PA_PMT_HOLD
+  LET $pmt-sched-valid='Y'
+ when = 'R'
+  if (&PAY.EFFDT <= $ASOFDATE) OR (&PAY.FORM_CODE='LIO')
+  let #PA_PMT_HOLD=#PA_PMT_AMT + #PA_PMT_HOLD
+  LET $pmt-sched-valid='Y'
+  end-if
+ when = 'T'
+  if (&PAY.EFFDT <= $ASOFDATE)
+  let #PA_PMT_HOLD=#PA_PMT_AMT + #PA_PMT_HOLD
+  LET $pmt-sched-valid='Y'
+  end-if
+END-EVALUATE
+end-procedure
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-600-End-Report
+  close 1
+  close 2
+end-procedure
+
+
+!***********************************************************************
+!***********************************************************************
+begin-procedure P-700-QDRO-IND
+
+!    If there is a PA_QDRODAT record that has the person entered in the QDRO_ID field,
+!    then the person is a  A
+!    else if there is a PA_QDRODAT record that has the person entered in the EMPLID field,
+!    then the person is an  Q,
+!    else the person is a blank.
+
+  Let $QDRO_IND_YN = ' '
+
+Begin-Select
+Q.EMPLID
+Q.QDRO_ID
+
+  If &Q.QDRO_ID = $EMPLID
+     let $QDRO_IND_YN = 'A'
+  else
+     let $QDRO_IND_YN = 'Q'
+  end-if
+
+FROM PS_PA_QDRODAT Q
+WHERE Q.EMPLID = $emplid
+ or   Q.QDRO_ID = $Emplid
+
+End-select
+End-Procedure
+!***********************************************************************
+!***********************************************************************
+
+
+!*#include 'askrept.sqc'   !Report ID INPUT
+!*#include 'extract.sqc'   !Report ID INPUT
+#include 'stdapi.sqc'    !Update Process Request API
+#include 'parnctl1.sqc'  !Get run control parameter values
+#include 'pagetval.sqc'  !Get values mask routines
+#include 'readxlat.sqc'  !read translate table
+!*#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers

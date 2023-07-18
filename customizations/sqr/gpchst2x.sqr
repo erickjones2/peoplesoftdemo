@@ -1,0 +1,1258 @@
+!***********************************************************************
+! GPCHST02.SQR  :Salary Structure Analysis(Niveau & Struktur der Löhne)*
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+! Copyright (C) 1988, 2019, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!       $Release:  HR92                                                !
+!           $Bug:  29421492                                            !
+!                                                                      *
+!***********************************************************************
+#include 'setenv.sqc'    ! set Default environment
+#include 'gpchut10.sqc'  ! setenv override for Swiss Default.
+#include 'gpchut12.sqc'  ! Substitution Variables Defined.
+#define PAPER_SIZE   LETTER
+#include 'setup32.sqc'
+
+!**********************************************************************************************
+begin-PROGRAM
+
+ do Init-DateTime
+ do Init-Number
+ do Get-Current-DateTime
+ do Init-Report
+
+ If $GPCH_EG_YEP_FLG <> 'Y'
+   do Get-Output-Directory('GPCHST02',$Output_Directory,$prcs_no)
+ End-If
+
+ If $GPCH_EG_YEP_FLG = 'Y'
+   If $Run_Option = 'Y'
+      do Init_Statustbl
+      do Process-Main
+      do Delete-Temp-Records
+      do Stdapi-Term
+      do Get-Log
+      Do Update_Status($Ctl_Year,#ptot_domainid,$Comp,$providertype,$Run_Option,$SysDateTime,$Cancel_option)
+    Else
+      If $Cancel_Option = 'Y'
+         do Cancle_YEA($ptot_requestid,$Ctl_Year,$comp,$providertype,#ptot_domainid)
+         Do Update_Status($Ctl_Year,#ptot_domainid,$Comp,$providertype,$Run_Option,'',$Cancel_option)
+      End-If
+      do Stdapi-Term
+      do Get-Log
+    End-If
+ End-if
+ 
+end-PROGRAM
+!**********************************************************************************************
+begin-procedure Init-Report
+#debug show 'Init-Report In'
+
+  do Stdapi-Init
+  move 'GPCHST02' to $ReportID
+  let $providertype='9'
+
+  If $prcs_process_instance = ''
+    do ask-input
+  Else
+    do Get-Report-Parameters
+  End-if
+ 
+  If $GPCH_EG_YEP_FLG = 'Y'
+    let $Provider_crit=' '
+    do Get-PTotals-Data($Provider_crit,$providertype,#Domainid,$ptot_company,$ptot_year,#ptot_domainid,$ptot_providercd,$ptot_provtype,$ptot_requestid,$ptot_userkey)
+    do Check_Run_Report(#ptot_domainid,$Ctl_Year,$comp,$providertype,$Run_Option,$Cancel_option,$Rpt_Type)
+  End-If
+
+  do Init_Report_Translation($ReportID, $language_cd)
+  do Append_Report_Translation('GPCHGLOB')
+  do Gpce_Init_Report_Translation($ReportID, $language_cd)
+  do Gpce_Append_Report_Translation('GPCHGLOB', $language_cd)
+  do Report-Translation
+
+  If rtrim($Ctl_Curr_Pay_End_Dt,' ') <> ''
+    do ConvertToComponents($Ctl_Curr_Pay_End_Dt,$yys,$mms,$dds)
+    let $Jahr = $yys
+  End-if
+
+  If $Ctl_comp <> ''
+    let $Comp_Crit_st02       = ' AND PBD.COMPANY = ' ||'''' ||$Ctl_comp||''''
+  Else
+    let $Comp_Crit_st02=''
+  End-if
+
+  If $GPCH_EG_YEP_FLG = 'Y'
+#debug show ' build $Ctl_Curr_Pay_End_Dt $ptot_year = ' $ptot_year
+    Let $Ctl_Curr_Pay_End_Dt = $Ctl_Year || '1231'
+    do Format-DateTime($Ctl_Curr_Pay_End_Dt, $Ctl_Curr_Pay_End_Dt, {DEFCMP},'','native')
+  End-IF
+  
+  do Get-LegalEntity-Flag
+  do Bracket-COmpany-Data
+  
+  If $GPCH_EG_YEP_FLG = 'Y'
+    Let $Ctl_PayEntity = $comp
+  End-If
+
+  If $GPCH_EG_YEP_FLG = 'Y'
+    Let $payentitycondition  = ' PBD.COMPANY  = ''' || $Ctl_PayEntity || ''' '
+  Else
+    Let $payentitycondition  = ' PBD.PAY_ENTITY  = ''' || &GPCH_RUN_CNTL.PAY_ENTITY || ''' '
+  End-if
+
+  Let $payentitycondition1  = ' PRD_END_DT  = ''' || $Ctl_Curr_Pay_End_Dt || ''' '
+  
+#debug show 'Init-Report Out'
+end-procedure
+!**********************************************************************************************
+! FMB 20060416 removed begin-procedure Count-Employees
+
+!**********************************************************************************************
+begin-procedure Process-Main
+#debug show 'Process-Main In'
+
+ let $ExtedDat = 'N'
+ let #Counter_tmp = 0
+ let #Counter_tmp_Interf = 0
+ let #SeitenNummer = 0
+ let $Empl = ''
+ let $Empl_Old = ''
+
+ let #CountMeth1 = 0
+ let #CountMeth2 = 0
+  
+ If rtrim($Ctl_Count_Meth,' ') <> ''
+    move $Ctl_Count_Meth to #Ctl_Count_Meth
+ Else
+    move '1' to #Ctl_Count_Meth
+ End-if
+
+ If $GPCH_EG_YEP_FLG = 'Y'
+   Let $Ctl_PayEntity = $comp
+ End-If
+
+ do CalculateMissingData
+
+ let $Ctl_Addr_Effdt = $Ctl_Curr_Pay_End_Dt
+ do Get-PayEnt-Address($Ctl_PayEntity,$Ctl_Curr_Pay_End_Dt,$ADDLINE1,$ADDLINE2,$ADDLINE3,$ADDLINE31,
+                      $ADDLINE4,$ADDLINE5,$ADDLINE6,$PAYENTITY_DESCR,$PAYENTITY_DESCRSHORT,$CITY,
+                      $STATE,$POSTAL)
+
+begin-select !shilpa Ice 1875845000
+COUNT (*) &EmplCount
+FROM PS_GPCHST2X1_TMP
+end-select
+
+let #No_of_employees = &EmplCount
+
+
+begin-select
+PBD.EMPLID
+PDE.EMPLID
+PBD.EMPL_RCD
+PBD.SLICE_BGN_DT
+PBD.SLICE_END_DT
+PBD.PAY_ENTITY
+PBD.COMPANY 
+PBD.LOCATION
+PBD.HIRE_DT
+PBD.TERMINATION_DT
+PBD.BIRTHDATE
+PBD.SEX
+PBD.MAR_STATUS
+PBD.CONTRACT_TYPE
+PBD.VISA_PERMIT_TYPE
+PBD.EMPL_CTG
+PBD.GRADE
+PBD.SETID_JOBCODE
+PBD.JOBCODE
+PBD.EMPL_CLASS
+PBD.FTE
+PDE.HIGHEST_EDUC_LVL
+PBD.GPCH_RP_AMOUNT1
+PBD.GPCH_RP_AMOUNT2
+PBD.GPCH_RP_AMOUNT3
+PBD.GPCH_RP_AMOUNT4
+PBD.GPCH_RP_AMOUNT5
+PBD.GPCH_RP_AMOUNT6
+PBD.GPCH_RP_AMOUNT7
+PBD.GPCH_RP_AMOUNT8
+PBD.GPCH_RP_AMOUNT9
+PBD.GPCH_RP_AMOUNT10
+PBD.GPCH_RP_AMOUNT11
+PBD.GPCH_RP_AMOUNT12
+PBD.GPCH_RP_AMOUNT13
+PBD.GPCH_RP_AMOUNT14
+PBD.GPCH_RP_AMOUNT15
+PBD.GPCH_RP_AMOUNT21
+PBD.GPCH_RP_AMOUNT22
+PBD.GPCH_RP_AMOUNT23
+PBD.GPCH_RP_AMOUNT24
+PBD.GPCH_RP_AMOUNT25
+PBD.GPCH_RP_AMOUNT26
+PBD.GPCH_RP_AMOUNT27
+PBD.GPCH_RP_AMOUNT34
+
+ let #CountMeth1 = #CountMeth1 + 1
+ 
+ If (#CountMeth1 > 1)
+    If (mod(#CountMeth1 - 1, #Ctl_Count_Meth) <> 0)
+        If ($ExclusionFound = 'N')
+           goto weiter
+        End-if
+    End-if
+ End-if
+
+ let $EmplId_tmp       = &PBD.EMPLID
+ let #EmplRcd_tmp      = &PBD.EMPL_RCD
+ let $BeginDt_tmp      = rtrim(&PBD.SLICE_BGN_DT, ' ')
+ let $EndDt_tmp        = rtrim(&PBD.SLICE_END_DT, ' ')
+ let $HireDt_tmp       = rtrim(&PBD.HIRE_DT, ' ')
+ let $TermDt_tmp       = rtrim(&PBD.TERMINATION_DT, ' ')
+ let $BirthDT_tmp      = rtrim(&PBD.BIRTHDATE,' ')
+ let $Sex_tmp          = rtrim(&PBD.SEX,' ')
+ let $MarStat_tmp      = rtrim(&PBD.MAR_STATUS,' ')
+ let $HighEdLvl_tmp    = rtrim(&PDE.HIGHEST_EDUC_LVL,' ')
+ let $ContrType_tmp    = rtrim(&PBD.CONTRACT_TYPE, ' ')
+ show ' $EmplId_tmp = ' $EmplId_tmp ' $ContrType_tmp = ' $ContrType_tmp
+ let $Permit           = rtrim(&PBD.VISA_PERMIT_TYPE, ' ')
+ let $EmplCtg          = rtrim(&PBD.EMPL_CTG, ' ')
+ let $Grade_tmp        = rtrim(&PBD.GRADE, ' ')
+ let $JobCode_tmp      = rtrim(&PBD.JOBCODE, ' ')
+ let $EmplClass_tmp    = rtrim(&PBD.EMPL_CLASS, ' ')
+
+ let $Comp_br          = rtrim(&PBD.COMPANY, ' ')
+ let $LOCATION         = rtrim(&PBD.LOCATION, ' ')
+ let $SETID_JOBCODE    = &PBD.SETID_JOBCODE
+ let #LeOFTE_tmp       = &PBD.FTE 
+
+ show ' $EmplRcd_tmp = ' #EmplRcd_tmp ' $Grade_tmp = ' $Grade_tmp ' $JobCode_tmp: ' $JobCode_tmp
+  if (&PBD.EMPL_RCD >= 990) 
+     Do Get-Primary-Record-from-Job
+     Do Get-Primary-record-data-from-GPCH_RP_0001 
+  end-if
+    
+ let #LeJF1_tmp       = &PBD.GPCH_RP_AMOUNT1
+ let #LeJF2_tmp       = &PBD.GPCH_RP_AMOUNT2
+ let #LeJI_tmp        = &PBD.GPCH_RP_AMOUNT3
+ let #LeJJ_tmp        = &PBD.GPCH_RP_AMOUNT4
+ let #LeJK_tmp        = &PBD.GPCH_RP_AMOUNT5
+ let #LeJL_tmp        = &PBD.GPCH_RP_AMOUNT6
+ let #LeJM_tmp        = &PBD.GPCH_RP_AMOUNT7
+ let #LeJO_tmp        = &PBD.GPCH_RP_AMOUNT8
+ let #LeJP_tmp        = &PBD.GPCH_RP_AMOUNT9
+ let #LeJQ_tmp        = &PBD.GPCH_RP_AMOUNT10
+ let #LeJR_tmp        = &PBD.GPCH_RP_AMOUNT11
+ let #LeJS_tmp        = &PBD.GPCH_RP_AMOUNT12
+ let #LeJT_tmp        = &PBD.GPCH_RP_AMOUNT13
+ let #LeJY_tmp        = &PBD.GPCH_RP_AMOUNT14  
+ let #LeJZ_tmp        = &PBD.GPCH_RP_AMOUNT15 
+
+ let #LeOF1_tmp       = &PBD.GPCH_RP_AMOUNT21
+ let #LeOF2_tmp       = &PBD.GPCH_RP_AMOUNT22
+ let #LeOI_tmp        = &PBD.GPCH_RP_AMOUNT23
+ let #LeOJ_tmp        = &PBD.GPCH_RP_AMOUNT24
+ let #LeOK_tmp        = &PBD.GPCH_RP_AMOUNT25
+ let #LeOL_tmp        = &PBD.GPCH_RP_AMOUNT26
+ let #LeOM_tmp        = &PBD.GPCH_RP_AMOUNT27   
+ let #LeOY_tmp        = &PBD.GPCH_RP_AMOUNT34
+ 
+ do PrintData
+
+ weiter:
+
+from PS_GPCHST2X1_TMP PBD, {Record_PersDataEffDt} PDE
+where PBD.EMPLID           = PDE.EMPLID
+and   PBD.PROCESS_INSTANCE = #prcs_process_instance
+and   PBD.GPCH_RP_AMOUNT23 > 1
+and  [$Company_Criteria_BR1] !PBD.PAY_ENTITY       = $Ctl_PayEntity
+{Where_PersDataEffDt}
+order by PBD.EMPLID,PBD.EMPL_RCD, PBD.HIRE_DT
+end-SELECT
+
+!    do ... last row
+
+ If $EmplId_old  <> '' and $ExclusionFound <> 'Y' 
+    Let $StatisticSalaries = '<StatisticSalaries>' || $StatisticSal_old || '</StatisticSalaries>'
+    do Convert-To-DTU-Date($Ctl_Curr_Pay_End_Dt, $DTU_Date)
+    do dtu-parse-date($DTU_Date, #Year, #Month, #Day)
+    do Convert-To-DTU-Date($TermDt_tmp, $DTU_Date)
+    do dtu-parse-date($DTU_Date, #Year, #Month, #Day)
+    do dtu-format-date(#Year, 1, 1, $YearStart)
+    do dtu-format-date(#Year, 12, 31, $YearEnd)
+    do Convert-From-DTU-Date($YearStart, $YearStart)
+    do Convert-From-DTU-Date($YearEnd, $YearEnd)
+    do format-number(#Year,$Year,'9999')
+
+    If $GPCH_EG_YEP_FLG <> 'Y'
+      let #ptot_domainid = 1
+      let $ptot_year = $Year
+      let $ptot_company = $Ctl_PayEntity
+      let $ptot_provtype = '9'
+      let $ptot_providercd = '#OFS'
+    End-If
+
+    Do Insert_Employee_XML
+ 
+ End-If
+
+! If $ExtedDat = 'Y'
+!    close 10
+!    close 20
+! Else
+!   let #success = delete($FileNm1)
+!   let #success = delete($FileNm2)
+! End-if
+#debug show 'Process-Main Out'
+end-procedure
+!**********************************************************************************************
+begin-procedure PrintData
+#debug show 'PrintData In'
+alter-printer
+font = 3
+pitch = 10
+point-size = 11
+ let #flag = 0 !shilpa Ice 1875845000
+ 
+ do Get-Education-Lvl
+ do Get-JobTitle
+ do Get-Position
+ do Get-Function
+ do Get-Activity
+ do Get-Contract-Type
+ do Get-Wage-Form
+ If $EmplClass_tmp <> 'S' and rtrim($EmplClass_tmp,' ') <> ''
+    let #LseWt_tmp = 0
+ End-if
+
+#DEBUG SHOW '$HighEdTmp= ' $HighEdTmp ' $PositionTmp=  ' $PositionTmp ' $GradeTmp= ' $GradeTmp ' $JobCodeTmp= ' $JobCodeTmp ' $ContrTypeTmp= ' $ContrTypeTmp ' $EmplClassTmp= ' $EmplClassTmp ' $NationCat_tmp= ' $NationCat_tmp
+
+ If $HighEdTmp = '99' or $PositionTmp = '99' or
+  ! $GradeTmp = '99' or $JobCodeTmp = '99' or  
+  ! $ContrTypeTmp = '99' or $EmplClassTmp = '99' or 
+    $ContrTypeTmp = '99' or 
+    $NationCat_tmp = '99'
+    let $ExclusionFound = 'Y'
+    goto NoPrintDat
+ Else
+    let $ExclusionFound = 'N'
+ End-if
+
+SecondLastEmployee: !shilpa Ice 1875845000
+ let #Counter_tmp = #Counter_tmp + 1
+ let #Counter_tmp_Interf = #Counter_tmp_Interf + 1
+
+ do format-number(#Counter_tmp,$Counter_tmp,'09')
+ do format-number(#Counter_tmp_Interf,$Counter_tmp_Interf,'099999')
+ do ConvertToComponents($BirthDT_tmp,$BYr,$Bmt,$Bdy)
+
+!----------------------------------------!
+ If $BYr = ''
+   let $BYr = '    '
+ End-if
+
+ Evaluate $Sex_tmp
+   when = 'M'
+     let $SexEqu = '1'
+   break
+   when = 'F'
+     let $SexEqu = '2'
+   break
+   when-other
+     let $SexEqu = ' '
+   break
+ End-evaluate
+
+ Evaluate $MarStat_tmp
+   when = 'S'
+     let $MarStatEqu = '1'
+   break
+   when = 'M'
+     let $MarStatEqu = '2'
+   break
+   when-other
+     let $MarStatEqu = '3'
+   break
+ End-evaluate
+
+ Do Create_Employee_XML
+ 
+ let $ExtedDat = 'Y'
+
+NoPrintDat:
+
+#debug show 'PrintData Out'
+end-procedure
+!**********************************************************************************************
+Begin-Procedure Create_Employee_XML
+#debug show '-> Create_Employee_XML'
+
+ do format-number(#LeJF1_tmp,$LeJF1_tmp,'9999.99')
+ do format-number(#LeJF2_tmp,$LeJF2_tmp,'9999')
+ do format-number(#LeJI_tmp,$LeJI_tmp,'9999999.99')
+ do format-number(#LeJJ_tmp,$LeJJ_tmp,'9999999.99')
+ do format-number(#LeJK_tmp,$LeJK_tmp,'9999999.99')
+  let #LeJL_tmp = #LeJL_tmp * -1
+ do format-number(#LeJL_tmp,$LeJL_tmp,'9999999.99')
+  let #LeJM_tmp = #LeJM_tmp * -1
+ do format-number(#LeJM_tmp,$LeJM_tmp,'9999999.99')
+ do format-number(#LeJO_tmp,$LeJO_tmp,'9999999.99')
+ do format-number(#LeJP_tmp,$LeJP_tmp,'9999999.99')
+ do format-number(#LeJQ_tmp,$LeJQ_tmp,'9999999.99')
+ do format-number(#LeJR_tmp,$LeJR_tmp,'9999999.99')
+ do format-number(#LeJS_tmp,$LeJS_tmp,'9999999.99')
+ do format-number(#LeJT_tmp,$LeJT_tmp,'9999999.99')
+ do format-number(#LeJY_tmp,$LeJY_tmp,'9999999.99')
+   let #LeJZ_tmp = #LeJZ_tmp * -1
+ do format-number(#LeJZ_tmp,$LeJZ_tmp,'9999999.99')
+
+!FMB 20100301
+ let #LeOFTE_tmp = #LeOFTE_tmp * 100
+ do format-number(#LeOFTE_tmp,$LeOFTE_tmp,'999')
+ do format-number(#LeOF1_tmp,$LeOF1_tmp,'9999.99')
+ do format-number(#LeOF2_tmp,$LeOF2_tmp,'9999')
+ do format-number(#LeOI_tmp,$LeOI_tmp,'9999999.99')
+ do format-number(#LeOJ_tmp,$LeOJ_tmp,'9999999.99')
+ do format-number(#LeOK_tmp,$LeOK_tmp,'9999999.99')
+  let #LeOL_tmp = #LeOL_tmp * -1
+ do format-number(#LeOL_tmp,$LeOL_tmp,'9999999.99')
+  let #LeOM_tmp = #LeOM_tmp * -1
+ do format-number(#LeOM_tmp,$LeOM_tmp,'9999999.99')
+ do format-number(#LeOY_tmp,$LeOY_tmp,'9999999.99')
+
+ Evaluate $HighEdLvl_tmp_Equ
+ 
+
+!When = '11'
+ When = '12'
+   Let $HighEdLvl_tmp_Equ = 'universityMaster'
+   Break
+!When = '12'
+ When = '13'
+   Let $HighEdLvl_tmp_Equ = 'universityBachelor'
+   Break
+!When = '21'
+ When = '22'
+   Let $HighEdLvl_tmp_Equ = 'higherEducationMaster'
+   Break
+
+!When = '22'
+ When = '23'
+   Let $HighEdLvl_tmp_Equ = 'higherEducationBachelor'
+   Break
+
+ When = '30'
+   Let $HighEdLvl_tmp_Equ = 'higherVocEducation'
+   Break
+
+ When = '40'
+   Let $HighEdLvl_tmp_Equ = 'teacherCertificate'
+   Break
+
+ When = '50'
+    Let $HighEdLvl_tmp_Equ = 'universityEntranceCertificate'
+    Break
+
+ When = '60'
+    Let $HighEdLvl_tmp_Equ = 'vocEducationCompl'
+    Break
+
+ When = '70'
+    Let $HighEdLvl_tmp_Equ = 'enterpriseEducation'
+    Break
+
+ When = '80'
+    Let $HighEdLvl_tmp_Equ = 'mandatorySchoolOnly'
+    Break
+
+ When = '91'
+    Let $HighEdLvl_tmp_Equ = 'doctorate'
+    Break
+
+ When-Other
+    Let $HighEdLvl_tmp_Equ = 'mandatorySchoolOnly'
+    Break
+
+ End-Evaluate
+
+ Evaluate $Grade_tmp_Equ
+
+ When = '1'
+   Let $Grade_tmp_Equ = 'highestCadre'
+   Break
+
+ When = '2'
+   Let $Grade_tmp_Equ = 'middleCadre'
+   Break
+
+ When = '3'
+   Let $Grade_tmp_Equ = 'lowerCadre'
+   Break
+
+ When = '4'
+   Let $Grade_tmp_Equ = 'lowestCadre'
+   break
+
+ When = '5'
+   Let $Grade_tmp_Equ = 'noCadre'
+   Break
+
+ When-Other
+   Let $Grade_tmp_Equ = 'noCadre'
+   Break
+
+ End-Evaluate
+
+ Evaluate $Position_Equ
+
+ When = '1'
+  Let $Position_Equ = 'mostDemanding'
+  Break
+
+ When = '2'
+  Let $Position_Equ = 'qualified'
+  Break
+
+ When = '3'
+  Let $Position_Equ = 'specialized'
+  Break
+
+ When = '4'
+  Let $Position_Equ = 'simple'
+  Break
+ When-Other
+    Let $Position_Equ = 'simple'
+    Break
+
+ End-Evaluate
+
+ Evaluate $ContrType_tmp_Equ
+
+  When = '1'
+    Let $ContrType_tmp_Equ = 'collectivePayAgreementAssociation'
+    Break
+
+  When = '2'
+    Let $ContrType_tmp_Equ = 'collectivePayAgreementEnterprise'
+    Break
+
+  When = '3'
+    Let $ContrType_tmp_Equ = 'agreementUnderPublicLaw'
+    Break
+
+  When = '4'
+    Let $ContrType_tmp_Equ = 'individualContract'
+    Break
+
+! FMB 20100308 Re-Introduced for individual Contract_Type 
+
+  When = '41'
+    Let $ContrType_tmp_Equ = 'indefiniteSalaryMth'
+    Break
+
+  When = '42'
+    Let $ContrType_tmp_Equ = 'indefiniteSalaryMthAWT'
+    Break
+
+  When = '43'
+    Let $ContrType_tmp_Equ = 'indefiniteSalaryHrs'
+    Break
+  
+  When = '44'
+    Let $ContrType_tmp_Equ = 'fixedSalaryMth'
+    Break
+
+  When = '45'
+    Let $ContrType_tmp_Equ = 'fixedSalaryHrs'
+    Break
+
+  When = '46'
+    Let $ContrType_tmp_Equ = 'apprentice'
+    Break
+
+  When = '47'
+    Let $ContrType_tmp_Equ = 'internship'
+    Break
+
+  When = '48'
+    Let $ContrType_tmp_Equ = 'indefiniteSalaryNoTimeConstraint'
+  Break
+
+  When = '49'
+    Let $ContrType_tmp_Equ = 'fixedSalaryNoTimeConstraint'
+  Break
+  
+  When-Other
+    Let $ContrType_tmp_Equ = ''
+    Break
+
+ End-Evaluate
+
+
+
+ Evaluate $NationCat_tmp
+
+ When = '1'
+  Let $NationCat_tmp = ''
+  Break
+ When = '2'
+  Let $NationCat_tmp = 'shortTerm'
+  Break
+ When = '3'
+  Let $NationCat_tmp = 'annual'
+  Break
+ When = '4'
+  Let $NationCat_tmp = 'settled'
+  Break
+ When = '5'
+  Let $NationCat_tmp = 'crossBorder'
+  Break
+ When = '6'
+  Let $NationCat_tmp = 'OthersNotSwiss'
+  Break
+  When-Other
+     Let $NationCat_tmp = 'othersNotSwiss'
+     Break
+
+ End-Evaluate
+
+ Evaluate $EmplClass_tmp_Equ
+
+ When = '1'
+    Let $EmplClass_tmp_Equ  = 'timeWages'
+    Break
+ When = '2'
+    Let $EmplClass_tmp_Equ = 'premiumWage'
+    Break
+ When = '3'
+    Let $EmplClass_tmp_Equ = 'wagesCommission'
+    Break
+ When = '4'
+    Let $EmplClass_tmp_Equ = 'pieceWorkWage'
+    Break
+ When-Other
+    Let $EmplClass_tmp_Equ  = 'timeWages'
+    Break
+
+ End-Evaluate
+
+ If $TermDt_tmp = ''
+
+    do Convert-To-DTU-Date($Ctl_Curr_Pay_End_Dt, $DTU_Date)
+    do dtu-parse-date($DTU_Date, #Year, #Month, #Day)
+    do dtu-format-date(#Year, 1, 1, $YearStart)
+    do dtu-format-date(#Year, 12, 31, $YearEnd)
+    do Convert-From-DTU-Date($YearStart, $YearStart)
+    do Convert-From-DTU-Date($YearEnd, $YearEnd)
+
+  let $TermDt_tmp = $YearEnd
+ End-If
+
+    do Convert-To-DTU-Date($TermDt_tmp, $DTU_Date)
+    do dtu-parse-date($DTU_Date, #Year, #Month, #Day)
+    do dtu-format-date(#Year, 1, 1, $YearStart)
+    do dtu-format-date(#Year, 12, 31, $YearEnd)
+    do Convert-From-DTU-Date($YearStart, $YearStart)
+    do Convert-From-DTU-Date($YearEnd, $YearEnd)
+
+ ! FMB 20071111
+ ! If $HireDt_tmp <= $YearStart
+  !   let $HireDt_tmp = $YearStart
+  ! End-If
+
+
+  do ConvertToComponents($HireDt_tmp,$HYr,$Hmt,$Hdy)
+  do ConvertToComponents($TermDt_tmp,$TYr,$Tmt,$Tdy)
+
+    do ConvertToComponents($YearEnd,$Year,$Month,$Day)
+
+   If $HYr  < $Year
+    Let $From_Date = $Year || '-' || '01-01'
+  else
+    Let $From_Date = $HYr || '-' || $Hmt || '-' ||$Hdy
+  end-if
+
+    Let $To_Date = $TYr || '-' || $Tmt || '-' ||$Tdy
+
+
+ Let $Period = '<Period>' || '<from>' ||$From_Date||'</from>' || '<until>' ||$To_Date|| '</until>'|| '</Period>'
+ Let $TotalHoursOfWork       = ''
+ Let $TotalLessonsOfWork     = ''
+ Let $GrossEarnings          = ''
+ Let $Allowances             = ''
+ Let $SocialContributions    = ''
+ Let $FamilyIncomeSupplement = ''  
+ Let $Earnings13th           = ''
+ Let $Overtime               = ''
+ Let $SporadicBenefits       = ''
+ Let $FringeBenefits         = ''
+ Let $CapitalPayment         = ''
+ Let $OtherBenefits          = ''
+ Let $PaymentsByThird        = ''
+ Let $BVG-LPP-RegularContribution = ''
+ Let $BVG-LPP-PurchaseContribution = ''
+! Let $LaborCost = ''
+
+
+!FMB 20100308 October TAG
+ Let $OctActivityRate           = ''
+ Let $OctTotalHoursOfWork       = ''
+ Let $OctTotalLessonsOfWork     = ''
+ Let $OctGrossEarnings          = ''
+ Let $OctSocialContributions    = ''
+ Let $OctPaymentsByThird        = ''
+ Let $OctAllowances             = ''
+ Let $OctFamilyIncomeSupplement = ''  
+ Let $OctBVG-LPP-RegularContribution = ''
+ 
+ Let $AllowHrs = 'N'
+   
+   If $ContrType_tmp_Equ <> 'indefiniteSalaryMth' and $ContrType_tmp_Equ <> 'indefiniteSalaryMthAWT' and $ContrType_tmp_Equ <> 'fixedSalaryMth' and $ContrType_tmp_Equ <> 'apprentice' and $ContrType_tmp_Equ <> 'internship'
+    Let $AllowHrs = 'Y'
+   End-If
+
+
+
+  if #LeOFTE_tmp <> 0.00
+     Let $OctActivityRate        = '<ActivityRate >'          || RTRIM(LTRIM($LeOFTE_tmp ,' '),' ') || '</ActivityRate >'
+  End-if
+  If #LeOF1_tmp        <> 0.00 and $AllowHrs = 'Y'
+     Let $OctTotalHoursOfWork    = '<TotalHoursOfWork>'       || RTRIM(LTRIM($LeOF1_tmp,' '),' ')   || '</TotalHoursOfWork>'
+  Else
+     Let $OctTotalHoursOfWork    = ''
+  End-If
+  If #LeOF2_tmp <> 0.00  and $AllowHrs = 'Y'
+     Let $OctTotalLessonsOfWork  = '<TotalLessonsOfWork>'     || RTRIM(LTRIM($LeOF2_tmp,' '),' ')   || '</TotalLessonsOfWork>'
+  Else
+     Let $OctTotalLessonsOfWork  = ''
+  End-If
+  If #LeOI_tmp <> 0.00 
+     Let $OctGrossEarnings       = '<GrossEarnings>'          || RTRIM(LTRIM($LeOI_tmp,' '),' ')    || '</GrossEarnings>'
+  End-if
+  If #LeOL_tmp <> 0.00 
+     Let $OctSocialContributions = '<SocialContributions>'    || RTRIM(LTRIM($LeOL_tmp,' '),' ')    || '</SocialContributions>'
+  End-if
+  If #LeOJ_tmp <> 0.00
+     Let $OctAllowances          = '<Allowances>'             || RTRIM(LTRIM($LeOJ_tmp,' '),' ')    || '</Allowances>'
+  End-if
+  If #LeOK_tmp <> 0.00
+     Let $OctFamilyIncomeSupplement = '<FamilyIncomeSupplement>' || RTRIM(LTRIM($LeOK_tmp,' '),' ')    || '</FamilyIncomeSupplement>'
+  End-if
+  If #LeOM_tmp <> 0.00
+     Let $OctBVG-LPP-RegularContribution = '<BVG-LPP-RegularContribution>' || RTRIM(LTRIM($LeOM_tmp,' '),' ') || '</BVG-LPP-RegularContribution>'
+  End-if
+  If #LeOY_tmp <> 0.00
+     Let $OctPaymentsByThird     = '<PaymentsByThird>'        || RTRIM(LTRIM($LeOY_tmp,' '),' ')    || '</PaymentsByThird>'
+  End-if  
+  
+  Let $October = '<October>'          || $OctActivityRate || $OctTotalHoursOfWork ||$OctTotalLessonsOfWork     || $OctGrossEarnings
+   || $OctSocialContributions         || $OctAllowances   || $OctPaymentsbyThird  ||$OctFamilyIncomeSupplement || $OctBVG-LPP-RegularContribution 
+   ||  '</October>'
+! End October TAG
+
+  If #LeJF1_tmp        <> 0.00 and $AllowHrs = 'Y'
+     Let $TotalHoursOfWork       = '<TotalHoursOfWork>'       || RTRIM(LTRIM($LeJF1_tmp,' '),' ')   || '</TotalHoursOfWork>'
+  Else
+     Let $TotalHoursOfWork       = ''
+  End-If
+  If #LeJF2_tmp <> 0.00 and $AllowHrs = 'Y'
+     Let $TotalLessonsOfWork     = '<TotalLessonsOfWork>'     || RTRIM(LTRIM($LeJF2_tmp,' '),' ')   || '</TotalLessonsOfWork>'
+  Else
+     Let $TotalLessonsOfWork     = ''
+  End-If
+  If #LeJI_tmp <> 0.00
+     Let $GrossEarnings          = '<GrossEarnings>'          || RTRIM(LTRIM($LeJI_tmp,' '),' ')    || '</GrossEarnings>'
+  End-if
+  If #LeJL_tmp <> 0.00
+     Let $SocialContributions    = '<SocialContributions>'    || RTRIM(LTRIM($LeJL_tmp,' '),' ')    || '</SocialContributions>'
+  End-if
+  If #LeJJ_tmp <> 0.00
+     Let $Allowances             = '<Allowances>'             || RTRIM(LTRIM($LeJJ_tmp,' '),' ')    || '</Allowances>'
+  End-if
+  If #LeJK_tmp <> 0.00
+     Let $FamilyIncomeSupplement = '<FamilyIncomeSupplement>' || RTRIM(LTRIM($LeJK_tmp,' '),' ')    || '</FamilyIncomeSupplement>'
+  End-if
+  If #LeJO_tmp        <> 0.00
+     Let $Earnings13th           = '<Earnings13th>'          || RTRIM(LTRIM($LeJO_tmp,' '),' ')     || '</Earnings13th>'
+  End-If
+  If #LeJP_tmp <> 0.00
+     Let $Overtime               = '<Overtime >'             || RTRIM(LTRIM($LeJP_tmp,' '),' ')     || '</Overtime >'
+  End-If
+  If #LeJQ_tmp <> 0.00
+     Let $SporadicBenefits       = '<SporadicBenefits>'      || RTRIM(LTRIM($LeJQ_tmp,' '),' ')     || '</SporadicBenefits>'
+  End-if
+  If #LeJR_tmp <> 0.00
+     Let $FringeBenefits         = '<FringeBenefits >'       || RTRIM(LTRIM($LeJR_tmp,' '),' ')     || '</FringeBenefits >'
+  End-if
+  If #LeJS_tmp <> 0.00
+     Let $CapitalPayment         = '<CapitalPayment>'        || RTRIM(LTRIM($LeJS_tmp,' '),' ')     || '</CapitalPayment>'
+  End-if
+  If #LeJT_tmp <> 0.00
+     Let $OtherBenefits          = '<OtherBenefits >'        || RTRIM(LTRIM($LeJT_tmp,' '),' ')     || '</OtherBenefits >'
+  End-if 
+  If #LeJY_tmp <> 0.00
+     Let $PaymentsByThird        = '<PaymentsByThird>'       || RTRIM(LTRIM($LeJY_tmp,' '),' ')     || '</PaymentsByThird>'
+  End-if  
+  If #LeJM_tmp <> 0.00
+     Let $BVG-LPP-RegularContribution = '<BVG-LPP-RegularContribution>' || RTRIM(LTRIM($LeJM_tmp,' '),' ') || '</BVG-LPP-RegularContribution>'
+  End-if
+  If #LeJZ_tmp <> 0.00
+     Let $BVG-LPP-PurchaseContribution     = '<BVG-LPP-PurchaseContribution>'  || RTRIM(LTRIM($LeJZ_tmp,' '),' ')  || '</BVG-LPP-PurchaseContribution>'
+  End-if   
+ 
+ Let $Education = '<Education>' || $HighEdLvl_tmp_Equ || '</Education>'
+! Let $Skill     = '<Skill>'     || $Position_Equ      || '</Skill>'
+ Let $Position  = '<Position>'  || $Grade_tmp_Equ     || '</Position>'
+! Let $Activity  = '<Activity>'  || $JobCode_tmp_Equ   || '</Activity>'
+! Let $WageForm  = '<WageForm>'  || $EmplClass_tmp_Equ || '</WageForm>'
+ Let $Contract  = '<Contract>'  || $ContrType_tmp_Equ || '</Contract>'
+ Let $JobTitle  = '<JobTitle>'  || $JobTitle          || '</JobTitle>'
+
+ Let $workplaceIDRef = $ptot_company || $SETID_JOBCODE || $LOCATION
+
+ Let $StatisticSalary0 =  '<StatisticSalary workplaceIDRef=' || '"#' || $workplaceIDRef || '"' ||'>'
+ 
+ Let $LeYear =  $TotalHoursOfWork       || $TotalLessonsOfWork || $GrossEarnings    || $SocialContributions || $Allowances      
+             || $Overtime               || $Earnings13th       || $SporadicBenefits || $PaymentsByThird 
+             || $FamilyIncomeSupplement || $FringeBenefits     || $CapitalPayment  
+             || $OtherBenefits          || $BVG-LPP-RegularContribution || $BVG-LPP-PurchaseContribution
+             
+!FMB 20100909 Begin 
+ show ' $EmplId_tmp = ' $EmplId_tmp ' $ptot_year = ' $ptot_year ' $Year = ' $Year
+ 
+ IF substr($From_Date,6,2) <= '10' and substr($To_Date,6,2) >= '10' and substr($From_Date,1,4) = $ptot_year
+   let $StatisticSalary1 =  $StatisticSalary0 || $October || $Period || $LeYear
+ Else
+   let $StatisticSalary1 =  $StatisticSalary0 || $Period || $LeYear
+ End-If
+
+! Let $StatisticSalary = $StatisticSalary1 || $Education || $Skill || $Position || $Activity || $WageForm || $Contract ||'</StatisticSalary>'
+ Let $StatisticSalary = $StatisticSalary1 || $Education || $Position ||$Contract || $JobTitle || '</StatisticSalary>'
+ 
+ #debug show '$EmplId_tmp = ' $EmplId_tmp '$EmplId_old = ' $EmplId_old '$StatisticSal_old = ' $StatisticSal_old
+
+ If ( $EmplId_tmp <> $EmplId_old and $EmplId_old <> '' ) or
+    ( #EmplRcd_tmp# <> #EmplRcd_old and $EmplId_old <> '')
+         
+    Let $StatisticSalaries = '<StatisticSalaries>' ||$StatisticSal_old || '</StatisticSalaries>'
+  
+    do Convert-To-DTU-Date($Ctl_Curr_Pay_End_Dt, $DTU_Date)
+    do dtu-parse-date($DTU_Date, #Year, #Month, #Day)
+    do Convert-To-DTU-Date($TermDt_tmp, $DTU_Date)
+    do dtu-parse-date($DTU_Date, #Year, #Month, #Day)
+    do dtu-format-date(#Year, 1, 1, $YearStart)
+    do dtu-format-date(#Year, 12, 31, $YearEnd)
+    do Convert-From-DTU-Date($YearStart, $YearStart)
+    do Convert-From-DTU-Date($YearEnd, $YearEnd)
+    do format-number(#Year,$Year,'9999')
+
+    If $GPCH_EG_YEP_FLG <> 'Y'
+      let #ptot_domainid = 1
+      let $ptot_year = $Year
+      let $ptot_company = $Ctl_PayEntity
+      let $ptot_provtype = '9'
+      let $ptot_providercd = '#OFS'
+    End-If
+
+! missing last row
+    Do Insert_Employee_XML
+    let $StatisticSal_old = ' '
+ End-If
+
+ let $EmplId_old = $EmplId_tmp
+ let #EmplRcd_old = #EmplRcd_tmp
+ let $StatisticSal_old = $StatisticSal_old || $StatisticSalary
+
+#debug show '<- Create_Employee_XML'
+End-Procedure
+!*********************************************************************************************
+Begin-Procedure Insert_Employee_XML
+#debug show '-> Insert_Employee_XML'
+
+let #ptot_year = $ptot_year  
+
+Begin-Sql on-error=give_warning
+ DELETE FROM PS_GPCH_EG_PERSON WHERE  GPCH_EG_DOMAINID= #ptot_domainid AND GPCH_RC_PAY_YEAR = #ptot_year AND COMPANY = $ptot_company AND  EMPLID = $EmplId_old AND EMPL_RCD = #EmplRcd_old AND GPCH_SI_PROV_TYPE='9'
+End-SQL
+
+Begin-Sql on-error=give_warning
+ Insert into PS_GPCH_EG_PERSON (GPCH_EG_DOMAINID,GPCH_RC_PAY_YEAR,COMPANY,GPCH_SI_PROV_TYPE,GPCH_SI_PROV_CD,EMPLID,EMPL_RCD,BEGIN_DT,END_DT,GPCH_IF_VER,GPCH_EG_PRSN_XML)
+ values (#ptot_domainid,#ptot_year,$ptot_company,$ptot_provtype,$ptot_providercd,$EmplId_old,#EmplRcd_old,$YearStart,$Ctl_Curr_Pay_End_Dt,1,$StatisticSalaries)
+End-SQL
+
+#debug show '<- Insert_Employee_XML'
+End-Procedure
+!**********************************************************************************************
+! FMB removed 20070416 begin-procedure Get_Nationality
+
+!**********************************************************************************************
+begin-procedure Get-Education-Lvl
+let $HighEdLvl_tmp_Equ = ' '
+let $HighEdTmp = ''
+begin-select
+LSECF.GPCH_RP_LSETVAL
+   let $HighEdLvl_tmp_Equ = edit(&LSECF.GPCH_RP_LSETVAL,'B8')
+   let $HighEdLvl_tmp_Equ = substr($HighEdLvl_tmp_Equ,1,2)
+from PS_GPCH_RP_LSECF LSECF
+where LSECF.HIGHEST_EDUC_LVL = $HighEdLvl_tmp
+end-select
+
+   let $HighEdTmp = edit(&LSECF.GPCH_RP_LSETVAL,'B8')
+   let $HighEdTmp = substr($HighEdTmp,1,2)
+end-procedure
+!**********************************************************************************************
+begin-procedure Get-Position
+let $Position_Equ = ' '
+let $PositionTmp = ''
+begin-select
+LSEPS.GPCH_RP_LSETVAL
+   let $Position_Equ = edit(&LSEPS.GPCH_RP_LSETVAL,'B8')
+   let $Position_Equ = substr($Position_Equ,1,1)
+   let $PositionTmp = edit(&LSEPS.GPCH_RP_LSETVAL,'B8')
+from PS_GPCH_RP_LSEPS LSEPS
+where LSEPS.GPCH_RP_LSESVAL = $Grade_tmp
+end-select
+
+if (isblank($Position_Equ) and isblank($PositionTmp))
+    let $Position_Equ = '0'
+    let $PositionTmp = '0'
+end-if
+end-procedure
+!**********************************************************************************************
+begin-procedure Get-Function
+let $Grade_tmp_Equ = ' '
+let $GradeTmp = ''
+begin-select
+LSESK.GPCH_RP_LSETVAL
+   let $Grade_tmp_Equ = edit(&LSESK.GPCH_RP_LSETVAL,'B8')
+   let $Grade_tmp_Equ = substr($Grade_tmp_Equ,1,1)
+   let $GradeTmp = edit(&LSESK.GPCH_RP_LSETVAL,'B8')
+from PS_GPCH_RP_LSESK LSESK
+where LSESK.GPCH_RP_LSESVAL = $Grade_tmp
+end-select
+
+if (isblank($Grade_tmp_Equ) and isblank($GradeTmp))
+    let $Grade_tmp_Equ = '0'
+    let $GradeTmp = '0'
+end-if
+end-procedure
+!**********************************************************************************************
+begin-procedure Get-JobTitle
+#debug show 'Get-JobTitle In'
+let $JobTitle = ' '
+
+begin-select
+LEJT.DESCR
+   let $JobTitle = &LEJT.DESCR
+
+from PS_JOBCODE_TBL LEJT
+where LEJT.SETID   = $SETID_JOBCODE
+  AND LEJT.JOBCODE = $JobCode_tmp
+end-select
+
+#debug show 'Get-JobTitle Out'
+end-procedure
+!**********************************************************************************************
+begin-procedure Get-Activity
+let $JobCode_tmp_Equ = '99'
+let $JobCodeTmp = '99'
+begin-select
+LSEJC.GPCH_RP_LSETVAL
+   let $JobCode_tmp_Equ = edit(&LSEJC.GPCH_RP_LSETVAL,'B8')
+   let $JobCode_tmp_Equ = substr($JobCode_tmp_Equ,1,2)
+   let $JobCodeTmp = edit(&LSEJC.GPCH_RP_LSETVAL,'B8')
+from PS_GPCH_RP_LSEJC LSEJC
+where LSEJC.GPCH_RP_LSESVAL = $JobCode_tmp
+end-select
+
+if (isblank($JobCode_tmp_Equ) and isblank($JobCodeTmp))
+    let $Grade_tmp_Equ = '99'
+    let $GradeTmp = '99'
+end-if
+end-procedure
+!**********************************************************************************************
+! FMB removed 20070416 / Re-introduced 20100308 begin-procedure Get-Contract-Type
+!*******************************************************************************************
+begin-procedure Get-Contract-Type
+let $ContrType_tmp_Equ = '99'
+let $ContrTypeTmp = '99'
+begin-select
+LSECT.GPCH_RP_LSETVAL
+   let $ContrType_tmp_Equ = edit(&LSECT.GPCH_RP_LSETVAL,'B88')
+   Let $ContrType_tmp_Equ = substr($ContrType_tmp_Equ,1,2)
+   let $ContrTypeTmp = edit(&LSECT.GPCH_RP_LSETVAL,'B88')
+from PS_GPCH_RP_LSECT LSECT
+where LSECT.GPCH_RP_LSESVAL = $ContrType_tmp
+end-select
+if (isblank($JContrType_tmp_Equ) and isblank($ContrTypeTmp))
+    let $ContrType_tmp_Equ = '99'
+    let $ContrTypeTmp = '99'
+end-if
+end-procedure
+!***********************************************************************
+begin-procedure Get-Wage-Form
+let $EmplClass_tmp_Equ = ' '
+let $EmplClassTmp = ''
+begin-select
+LSEMP.GPCH_RP_LSETVAL
+   let $EmplClass_tmp_Equ = edit(&LSEMP.GPCH_RP_LSETVAL,'B8')
+   Let $EmplClass_tmp_Equ = substr($EmplClass_tmp_Equ,1,1)
+   let $EmplClassTmp = edit(&LSEMP.GPCH_RP_LSETVAL,'B8')
+from PS_GPCH_RP_LSEMP LSEMP
+where LSEMP.EMPL_CLASS = $EmplClass_tmp
+end-select
+end-procedure
+!***********************************************************************
+begin-procedure Strings_LPads ( $Str1 , :$Str2 , #Len1,$Chr1)
+   let $Str1 = rtrim(ltrim($Str1 , ' ' ) , ' ' )
+   let $Str01 = rtrim(substr($Str1 , 1 , #Len1) ,' ' )
+   let $Str2 = lpad($Str01 , #Len1 , $Chr1)
+end-procedure
+!***********************************************************************
+begin-procedure Strings_RPads ( $Str1 , :$Str2 , #Len1,$Chr1)
+   let $Str1 = rtrim(ltrim($Str1 , ' ' ) , ' ' )
+   let $Str01 = rtrim(substr($Str1 , 1 , #Len1) ,' ' )
+   let $Str2 = rpad($Str01 , #Len1 , $Chr1)
+end-procedure
+!***************************************************************
+! Removed FMB 20070416 begin-procedure GetCompanyAddress
+!********************************************************************
+! FMB 20070416 reomoved begin-procedure Write_Heading
+
+!**********************************************************************************************
+! FMB 20070416 reomoved begin-procedure Print_Interface
+
+!**********************************************************************************************
+
+!**********************************************************************************************
+! FMB 20070416 reomoved begin-procedure Open_File
+
+!**********************************************************************************************
+
+!**********************************************************************************************
+begin-procedure Get-Values
+ let $GPCH_EG_YEP_FLG = RTRIM(LTRIM(&GPCH_RUN_CNTL.GPCH_EG_YEP_FLG,' '),' ')
+let #Domainid = &GPCH_RUN_CNTL.GPCH_EG_DOMAINID
+
+     If $GPCH_EG_YEP_FLG = 'Y'
+      Let $comp                  = RTRIM(LTRIM(&GPCH_RUN_CNTL.COMPANY,' '),' ')
+      Let $Type                  = 'SalaryStructure'
+      let $Ctl_Year                 = RTRIM(to_char(&GPCH_RUN_CNTL.GPCH_RC_PAY_YEAR), ' ')
+      Let $PAY_BGN_DT               = $Ctl_Year || '0101'
+      do Format-DateTime($PAY_BGN_DT, $PAY_BGN_DT, {DEFCMP},'','native')
+    End-If
+
+   If $GPCH_EG_YEP_FLG = 'Y'
+     let $GPCH_EG_TRNS_SEQ = RTRIM(LTRIM($GPCH_EG_TRNS_SEQ,' '),' ')
+   End-If
+let $language_cd           = $PRCS_LANGUAGE_CD
+let #Ctl_WKHours           = &GPCH_RUN_CNTL.GPCH_RC_WKHOURS
+let $Ctl_GPCH_RC_DESCR2    = &GPCH_RUN_CNTL.GPCH_RC_DESCR2
+
+let $Ctl_GPCH_RC_NAME       = &GPCH_RUN_CNTL.NAME
+let $Ctl_GPCH_RC_PAY_ENTITY = &GPCH_RUN_CNTL.PAY_ENTITY
+let $Ctl_Count_Meth        = rtrim(&GPCH_RUN_CNTL.GPCH_RC_COUNT_METH,' ')
+let $Ctl_comp        = rtrim(&GPCH_RUN_CNTL.COMPANY,' ')
+end-procedure
+!**********************************************************************************************
+begin-procedure Ask-Input
+input $Ctl_Curr_Pay_End_Dt   'Pay End Date '         type=date
+input $Ctl_PayEntity         'Pay Entity '
+input #Ctl_WKHours    'Weekly Hours '
+input $Ctl_GPCH_RC_DESCR2    'Phone '
+input $Ctl_Count_Meth    'Count Method 1=Every Employee / 6=Every 6.th '
+end-procedure Ask-Input
+!**********************************************************************************************
+Begin-Procedure Report-Translation
+  do Get_Field_Information ('GPCHGLOB', 'LG_BDTTIME',     $LG_BDTTIME,     #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_DBNAME',      $LG_DBNAME,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_DBTYPE',      $LG_DBTYPE,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_EDTTIME',     $LG_EDTTIME,     #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_OPERID',      $LG_OPERID,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_OPERSYS',     $LG_OPERSYS,     #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_OUTDESTFOR',  $LG_OUTDESTFOR,  #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_OUTDESTTYPE', $LG_OUTDESTTYPE, #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PRCINSTNUM',  $LG_PRCINSTNUM,  #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PRCNM',       $LG_PRCNM,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PRCTYPE',     $LG_PRCTYPE,     #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_REPLNG',      $LG_REPLNG,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_REPNM',       $LG_REPNM,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_RUNCTLID',    $LG_RUNCTLID,    #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_RUNLOC',      $LG_RUNLOC,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_RUNSTAT',     $LG_RUNSTAT,     #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_TOTDURA',     $LG_TOTDURA,     #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_CURRDT',      $LG_CURRDT,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_SRTORD',      $LG_SRTORD,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PAYENT',      $LG_PAYENT,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PSTYPE',      $LG_PSTYPE,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_FORYR',       $LG_FORYR,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_RUNCTLPA',    $LG_RUNCTLPA,    #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_VALUE',       $LG_VALUE,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_REPLOG',      $LG_REPLOG,      #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_LOGITEM',     $LG_LOGITEM,     #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PINNM',       $LG_PINNM,       #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_SERIAL_NUM',  $LG_SERIAL_NUM,  #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_AHV_CONTR',   $LG_AHV_CONTR,   #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_ALV1_CONTR',  $LG_ALV1_CONTR,  #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_ALV2_CONTR',  $LG_ALV2_CONTR,  #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_ADJ_DATE',    $LG_ADJ_DATE,    #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_PRINT_OPT',   $LG_PRINT_OPT,   #CW)
+  do Get_Field_Information ('GPCHGLOB', 'LG_CANTON',      $LG_CANTON,      #CW)
+end-Procedure Report-Translation
+!************************************************************************************
+Begin-procedure Get_English_Strings($ReportID)
+#Debug show 'Get_English_Strings -> '  $ReportID
+
+evaluate $ReportID
+          when = 'GPCHGLOB'
+               do Get_Eng_GPCHGLOB
+               break
+          when = 'ALL'
+               do Get_Eng_GPCHGLOB
+               break
+          when-other
+               break
+ end-evaluate
+
+#Debug show 'Get_English_Strings <- ' #_str_cnt
+End-procedure Get_English_Strings
+!****************************************************************************
+Begin-procedure Get_German_Strings($ReportID)
+#Debug show 'Get_German_Strings -> '  $ReportID
+
+evaluate $ReportID
+          when = 'GPCHGLOB'
+               do Get_Ger_GPCHGLOB
+               break
+          when = 'ALL'
+               do Get_Ger_GPCHGLOB
+               break
+          when-other
+               break
+ end-evaluate
+
+#Debug show 'Get_German_Strings <- ' #_str_cnt
+End-procedure Get_German_Strings
+!****************************************************************************
+Begin-procedure Get_Italian_Strings($ReportID)
+#Debug show 'Get_Italian_Strings -> '  $ReportID
+
+ evaluate $ReportID
+          when = 'GPCHGLOB'
+               do Get_Ita_GPCHGLOB
+               break
+          when = 'ALL'
+               do Get_Ita_GPCHGLOB
+               break
+          when-other
+               break
+ end-evaluate
+
+#Debug show 'Get_Italian_Strings <- ' #_str_cnt
+End-procedure Get_Italian_Strings
+!****************************************************************************
+Begin-procedure Get_French_Strings($ReportID)
+#Debug show 'Get_French_Strings -> '  $ReportID
+
+evaluate $ReportID
+          when = 'GPCHGLOB'
+               do Get_Fra_GPCHGLOB
+               break
+          when = 'ALL'
+               do Get_Fra_GPCHGLOB
+               break
+          when-other
+               break
+ end-evaluate
+
+#Debug show 'Get_French_Strings <- ' #_str_cnt
+End-procedure Get_French_Strings
+
+!******************************************************************************************
+begin-procedure Get-Primary-Record-from-Job 
+
+let #Empl_Rcd_Primary = 0
+
+begin-select
+JOB.EMPL_RCD
+   let #Empl_Rcd_Primary = &JOB.EMPL_RCD
+   
+    show ' Get-Primary-Record-from-Job $EmplId_tmp = ' $EmplId_tmp ' #Empl_Rcd_Primary = ' #Empl_Rcd_Primary
+   
+from PS_JOB JOB
+where JOB.EMPLID = $EmplId_tmp
+and JOB.JOB_INDICATOR = 'P'
+and JOB.EFFDT = (SELECT MAX(ED.EFFDT)
+                       FROM PS_JOB ED
+                       WHERE JOB.EMPLID = ED.EMPLID AND JOB.EMPL_RCD = ED.EMPL_RCD
+                       AND ED.EFFDT <= $EndDt_tmp)
+AND JOB.EFFSEQ =  (SELECT MAX(EE.EFFSEQ)
+                       FROM PS_JOB EE
+                       WHERE JOB.EMPLID = EE.EMPLID AND JOB.EMPL_RCD = EE.EMPL_RCD AND
+                             JOB.EFFDT = EE.EFFDT)
+end-select
+
+end-procedure
+
+!******************************************************************************************
+begin-procedure Get-Primary-record-data-from-GPCH_RP_0001 
+
+let #Empl_Rcd_Primary = 0
+
+begin-select
+RP1.CONTRACT_TYPE
+RP1.GRADE
+RP1.JOBCODE
+ let $ContrType_tmp    = rtrim(&RP1.CONTRACT_TYPE, ' ')
+ let $Grade_tmp        = rtrim(&RP1.GRADE, ' ')
+ let $JobCode_tmp      = rtrim(&RP1.JOBCODE, ' ')
+    show ' Get-Primary-record-data-from-GPCH_RP_0001 $EmplId_tmp = ' $EmplId_tmp ' $ContrType_tmp = ' $ContrType_tmp
+    show ' Get-Primary-record-data-from-GPCH_RP_0001 $Grade_tmp = ' $Grade_tmp ' $JobCode_tmp = ' $JobCode_tmp
+   
+from PS_GPCH_RP_0001 RP1
+where RP1.EMPLID = $EmplId_tmp
+and RP1.EMPL_RCD = #Empl_Rcd_Primary 
+and RP1.SLICE_END_DT = (SELECT MAX(ED.SLICE_END_DT)
+                       FROM PS_GPCH_RP_0001 ED
+                       WHERE RP1.EMPLID = ED.EMPLID AND RP1.EMPL_RCD = ED.EMPL_RCD
+                       AND ED.SLICE_END_DT <= $EndDt_tmp)
+
+end-select
+
+end-procedure
+
+!**********************************************************************************************
+#include 'gpchst2x.sqc'  !calculate missing data
+#include 'gpchut03.sqc'  ! ask input parameters (instead of ask input)
+#include 'gpchut01.sqc'  !get company informations
+#include 'gpchut04.sqc'  !get company informations
+#include 'gpchut06.sqc'  !get run control parameter values
+#include 'curdttim.sqc'  !get-current-datetime procedure
+#include 'readxlat.sqc'  !read-translate-table procedure
+#include 'datetime.sqc'  !routines for date and time formatting
+#include 'validdt.sqc'   !validate date routine
+#include 'number.sqc'    !routines to format numbers
+#include 'stdapi.sqc'    !routines to update run status
+#include 'sqrtrans.sqc'  !sqr strings table procedures
+#include 'datemath.sqc'  !function for date-calculation
+#include 'gpchut07.sqc'  !get run control parameter values
+#include 'gpchglbs.sqc'  !Get Strings Values for GPCHGLOB

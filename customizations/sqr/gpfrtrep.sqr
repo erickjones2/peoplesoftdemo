@@ -1,0 +1,561 @@
+!*********************************************
+!  GPFRTREP :  Payments report (FRA)         *
+!*********************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2013/01/18:03:43:43                                 
+!       $Release:  HR92                                                
+!      $Revision:  101                                                 
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+
+begin-report
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Report
+  !do Security-Param
+  !show '$SecurityClause = ' $SecurityClause
+  show ' '  
+  do Process-Main
+  do Reset
+  do Stdapi-Term
+end-report
+
+#Include 'setup02.sqc'   !Printer and page-size initialization
+
+begin-heading 7
+  #Include 'stdhdg01.sqc'
+PRINT $CAL_RUN_ID                                       (+2,1,18)
+PRINT $PAY_ENTITY                                       (,27,10)
+end-heading
+
+begin-procedure Init-Report
+
+!Set default masks for French edits
+alter-locale
+  thousand-separator = ' '
+  decimal-separator  = ','
+
+  move 'FRTREP' to $ReportID
+  move 'PAYMENT REPORT' to $ReportTitle
+  display $ReportTitle
+
+  do Define-Prcs-Vars
+  do Stdapi-Init
+
+  let $language_cd='FRA'
+  let $curr_language_cd='FRA'
+
+  if $prcs_process_instance = ''
+        !No Prompt
+  else
+        let #prcs_process_instance = To_number($prcs_process_instance)
+        Do Get-values
+  end-if
+end-procedure Init-Report
+
+begin-procedure Get-Values
+!Comments
+end-procedure Get-Values
+
+!***********************************************************************
+!  FRTREP:  Process-Main                                               *
+!***********************************************************************
+
+begin-procedure Process-Main
+   let $sql-statement = 'GPFRTREP,Select, Process-Main'
+begin-select
+DISTINCT(CAL_RUN_ID)      &CAL_RUN_ID
+        let $CAL_RUN_ID = &CAL_RUN_ID
+        do Process_PAY
+
+FROM
+        PS_GPFR_EFT_RNCTL
+  where
+        OPRID           = $prcs_oprid
+        AND RUN_CNTL_ID = $prcs_run_cntl_id
+group by CAL_RUN_ID
+
+end-select
+end-procedure Process_Main
+
+!***********************************************************************
+!  FRTREP:  Process_PAY                                                *
+!***********************************************************************
+
+begin-procedure Process_PAY
+   let $sql-statement = 'GPFRTREP,Select, Process_PAY'
+   let #count = 1
+begin-select
+DISTINCT A.PAY_ENTITY    &A.PAY_ENTITY
+        let $PAY_ENTITY = &A.PAY_ENTITY
+        let $VAR_BREAK  = 'N'
+A.GPFR_ONE_RPT &A.GPFR_ONE_RPT
+        let $GPFR_ONE_RPT = &A.GPFR_ONE_RPT
+A.GPFR_BEN_EE_OPT   &A.GPFR_BEN_EE_OPT        
+        let $GPFR_BEN_EE_OPT = &A.GPFR_BEN_EE_OPT
+        
+       PRINT 'Type of Beneficiary     :'                                 (+1,1,25) bold
+        if $GPFR_BEN_EE_OPT='N'
+             let $TypeOfBeneficiary='Net to be Paid'                                              
+        else
+            if $GPFR_BEN_EE_OPT='O'
+               let $TypeOfBeneficiary='Other Payments'
+            else
+               let $TypeOfBeneficiary='All' 
+            end-if
+        end-if    
+        PRINT $TypeOfBeneficiary                                     (,27,18)
+       
+        if($GPFR_ONE_RPT = 'Y')
+           do Get-Srcbank
+           do Employee-Header
+           do Payment-Change
+           do Print-Subtotal
+           do PRINT_08
+         else
+           do PRINT_06
+           do PRINT_08
+          
+        end-if
+
+FROM
+        PS_GPFR_EFT_RNCTL A
+
+  where
+        A.CAL_RUN_ID    = $CAL_RUN_ID
+        AND A.OPRID       = $prcs_oprid
+        AND A.RUN_CNTL_ID = $prcs_run_cntl_id
+group by A.PAY_ENTITY,A.GPFR_ONE_RPT,A.GPFR_BEN_EE_OPT
+end-select
+end-procedure Process_PAY
+
+!***********************************************************************
+!  FRTREP:  PRINT_06                                                   *
+!***********************************************************************
+
+begin-procedure PRINT_06
+
+   let $sql-statement = 'GPFRTREP,Select, PRINT_06'
+   Let $_TableAlias = 'G'
+   do Security-Param
+   show '$SecurityClauseWithoutERN = ' $SecurityClauseWithoutERN
+
+   if $GPFR_BEN_EE_OPT='N'  !Fetch only Employees  
+      let $temp = ' AND (G.RECIPIENT_ID = '''' OR G.RECIPIENT_ID IS NULL) AND G.RECIPIENT_NAME = '''' '
+   else  
+     if $GPFR_BEN_EE_OPT='O' !Fetch only Recipients
+        let $temp = ' AND ((G.RECIPIENT_ID) <> '''' OR (G.RECIPIENT_NAME) <> '''') '
+     else  !Fetch ALL
+        let $temp=''
+     end-if   
+   end-if
+     
+Begin-select
+G.SRC_BANK_ID  &G.SRC_BANK () on-break PRINT=NEVER after = Print-Subtotal
+     let $SRC_BANK = &G.SRC_BANK 
+     
+     !......Break if the Source Bank Changes ..............................
+       
+     
+             let $SRC_BANK  = &G.SRC_BANK
+             if  $SRC_BANK <> $OLD_SRC_BANK
+             AND $OLD_SRC_BANK <> ''
+                 !show $SRC_BANK 
+                 do Print_08     
+                 let $VAR_BREAK = 'Y'
+                 new-page 
+                 do Employee-Header
+             end-if 
+             
+             if $OLD_SRC_BANK = ''    
+                do Employee-Header
+        end-if
+ 
+!......Break if the payment method change..............................
+!H.SRC_BANK_ID
+G.PAYMENT_MTHD                 &G.PAYMENT_MTHD
+        let $PAYMENT_MTHD  = &G.PAYMENT_MTHD
+        if  $PAYMENT_MTHD <> $OLD
+        AND $OLD          <> ''
+         do Print-Subtotal
+            let $VAR_BREAK = 'Y'
+            new-page
+            do Employee-Header
+        end-if
+G.EMPLID                                                          (+1,  3 ,11)
+G.NAME                    &G.NAME
+!I.DESCR                                                           (  ,39  ,25)
+G.RECIPIENT_NAME          &G.RECIPIENT_NAME
+G.RECIPIENT_ID            &G.RECIPIENT_ID 
+G.GP_PMT_AMT              &G.GP_PMT_AMT                           
+G.CURRENCY_CD                                                     (  , 95 , 3)
+G.BANK_CD                                                         (  , 109 , 7)
+G.BRANCH_EC_CD                                                    (  , 116 , 6)
+G.ACCOUNT_EC_ID                                                   (  , 122 ,13)
+G.DEBIT_DT                                                        (  , 135 , 9) edit 'DD/MM/YY'
+G.GPFR_BANK_NAME          &G.GPFR_BANK_NAME
+
+       let $OLD       = $PAYMENT_MTHD
+        let $OLD_SRC_BANK = $SRC_BANK
+       let $NAME      = rtrim(&G.NAME, ' ')
+       let $BANK_NAME = rtrim(&G.GPFR_BANK_NAME, ' ')
+       !PRINT $NAME                                              (  , 14 ,25)
+       PRINT $BANK_NAME                                         (  ,146 ,19)
+       let $RECIPIENT_ID_2 = rtrim(&G.RECIPIENT_ID,' ')
+       let $RECIPIENT_NAME=rtrim(&G.RECIPIENT_NAME, ' ')
+       
+       IF ($RECIPIENT_ID_2 <> '' OR $RECIPIENT_NAME <> '')
+          PRINT $NAME                                              (  , 39 ,25)       
+       else
+          PRINT $NAME                                              (  , 14 ,25)       
+       end-if
+
+       let #GP_PMT_AMT_2 = &G.GP_PMT_AMT 
+
+       if ($RECIPIENT_ID_2 <> '' OR $RECIPIENT_NAME <> '')
+            PRINT #GP_PMT_AMT_2                                              (  , 78 ,12) edit B,999,999.99
+       else
+            PRINT #GP_PMT_AMT_2                                              (  , 64 ,12)edit B,999,999.99
+       end-if
+
+       move 'PAYMENT_MTHD'     to $FieldName
+       move $PAYMENT_MTHD      to $FieldValue
+       do Read-Translate-Table
+       let $SHOW   = $XlatShortName
+       PRINT  $XlatShortName                                    (  , 98 ,9)
+       
+  FROM
+        PS_GPFR_PAYMENT G, PS_GPFR_EFT_SRCBNK H
+  WHERE
+        G.CAL_RUN_ID     = $CAL_RUN_ID
+        AND G.PAY_ENTITY = $PAY_ENTITY
+        AND G.SRC_BANK_ID = H.SRC_BANK_ID 
+        AND H.OPRID       = $prcs_oprid
+        AND H.RUN_CNTL_ID = $prcs_run_cntl_id
+        [$temp]
+        [$SecurityClauseWithoutERN]
+  ORDER BY G.SRC_BANK_ID, G.PAYMENT_MTHD, G.EMPLID, G.NAME
+end-select
+end-procedure PRINT_06
+
+!***********************************************************************
+!  FRTREP:  PRINT_08                                                   *
+!***********************************************************************
+
+begin-procedure PRINT_08
+        
+   let $sql-statement = 'GPFRTREP,Select, PRINT_08'
+      Let $_TableAlias = 'I'
+      do Security-Param
+      show '$SecurityClauseWithoutERN = ' $SecurityClauseWithoutERN
+   
+  if $GPFR_BEN_EE_OPT='N'  !Fetch only Employees   
+      let $temp = ' AND ((I.RECIPIENT_ID = '''' OR I.RECIPIENT_ID IS NULL) AND I.RECIPIENT_NAME = '''')'
+  else  
+     if $GPFR_BEN_EE_OPT='O' !Fetch only Recipients
+        let $temp = ' AND (I.RECIPIENT_ID <> '''' OR I.RECIPIENT_NAME <> '''')'
+     else  !Fetch ALL
+        let $temp=''
+     end-if   
+  end-if   
+  
+Begin-select
+SUM(I.GP_PMT_AMT)    &I.SRC_SUM                           
+!COUNT(DISTINCT J.SRC_BANK_ID) &J.SRC_COUNT
+        let #SRC_SUM = &I.SRC_SUM
+ !       let #SRC_COUNT = &J.SRC_COUNT
+               
+ !       if (#SRC_COUNT > 1)
+           GRAPHIC (+2,2,88) box 3
+           PRINT #SRC_SUM                      (+1, 62 ,14) edit 999,999,999.99
+           PRINT 'TOTAL :'               (,39,8)
+ !       end-if
+FROM
+        PS_GPFR_PAYMENT I, PS_GPFR_EFT_SRCBNK J
+    WHERE
+        I.CAL_RUN_ID       = $CAL_RUN_ID
+        AND I.PAY_ENTITY   = $PAY_ENTITY
+        !AND I.PAYMENT_MTHD = $OLD
+        AND I.SRC_BANK_ID  = J.SRC_BANK_ID
+        AND I.SRC_BANK_ID  = $OLD_SRC_BANK
+        AND J.RUN_CNTL_ID  = $prcs_run_cntl_id
+        [$temp]
+        [$SecurityClauseWithoutERN]
+end-select
+end-procedure PRINT_08
+
+!***********************************************************************
+!  FRTREP:  Payment-Change                                             *
+!***********************************************************************
+
+begin-procedure Payment-Change
+
+      Let $_TableAlias = 'C'
+      do Security-Param
+      show '$SecurityClauseWithoutERN = ' $SecurityClauseWithoutERN
+   if $GPFR_BEN_EE_OPT='N'  !Fetch only Employees   
+      let $temp = ' AND (C.RECIPIENT_ID = '''' OR C.RECIPIENT_ID IS NULL) AND C.RECIPIENT_NAME = '''' '
+   else  
+     if $GPFR_BEN_EE_OPT='O' !Fetch only Recipients
+        let $temp = ' AND (C.RECIPIENT_ID <> '''' OR C.RECIPIENT_NAME <> '''' ) '
+     else  !Fetch ALL
+        let $temp=''
+     end-if   
+   end-if
+        
+Begin-select
+ 
+!......Break if the payment method change..............................
+
+C.PAYMENT_MTHD                 &C.PAYMENT_MTHD
+        let $PAYMENT_MTHD  = &C.PAYMENT_MTHD
+        if  $PAYMENT_MTHD <> $OLD
+        AND $OLD          <> ''
+            do Print-Subtotal
+            let $VAR_BREAK = 'Y'
+            new-page
+            do Employee-Header
+         end-if
+          let $OLD_SRC_BANK = $GET_SRC_BANK
+C.EMPLID                                                          (+1,  3 ,11)
+C.NAME                    &C.NAME
+!D.DESCR                                                           (  ,46  ,25)
+C.RECIPIENT_NAME          &C.RECIPIENT_NAME
+C.RECIPIENT_ID            &C.RECIPIENT_ID                        ! (  , 35 ,10)
+C.GP_PMT_AMT              &C.GP_PMT_AMT                           
+C.CURRENCY_CD                                                     (  , 95 , 3)
+C.BANK_CD                                                         (  , 109 , 7)
+C.BRANCH_EC_CD                                                    (  , 116 , 6)
+C.ACCOUNT_EC_ID                                                   (  , 122 ,13)
+C.DEBIT_DT                                                        (  , 135 , 9) edit 'DD/MM/YY'
+C.GPFR_BANK_NAME          &C.GPFR_BANK_NAME
+       let $OLD       = $PAYMENT_MTHD
+       let $NAME      = rtrim(&C.NAME, ' ')
+       let $BANK_NAME = rtrim(&C.GPFR_BANK_NAME, ' ')
+       PRINT $NAME                                              (  , 14 ,25)
+       PRINT $BANK_NAME                                         (  ,146 ,19)
+       move 'PAYMENT_MTHD'     to $FieldName
+       move $PAYMENT_MTHD      to $FieldValue
+       do Read-Translate-Table
+       let $PAYMENT_MTHD_NM   = $XlatShortName
+       PRINT  $XlatShortName                                    (  , 98 ,9)
+       let $RECIPIENT_ID_1 = rtrim(&C.RECIPIENT_ID,' ')
+       let $RECIPIENT_NAME=rtrim(&C.RECIPIENT_NAME, ' ')
+       
+       IF ($RECIPIENT_ID_1 <> '' OR $RECIPIENT_NAME <> '')
+                 PRINT $NAME                                              (  , 39 ,25)       
+       else
+                 PRINT $NAME                                              (  , 14 ,25)       
+       end-if
+       
+       let #GP_PMT_AMT_1 = &C.GP_PMT_AMT 
+              
+          
+       if ($RECIPIENT_ID_1 <> '' OR $RECIPIENT_NAME <> '')
+         PRINT #GP_PMT_AMT_1                                              (  , 78 ,12)  edit B,999,999.99
+       else
+         PRINT #GP_PMT_AMT_1                                              (  , 64 ,12) edit B,999,999.99
+       end-if
+                                        
+FROM
+        PS_GPFR_PAYMENT C
+  WHERE
+        C.CAL_RUN_ID     = $CAL_RUN_ID
+        AND C.PAY_ENTITY = $PAY_ENTITY
+        AND C.SRC_BANK_ID = $GET_SRC_BANK
+        [$temp]
+        [$SecurityClauseWithoutERN]
+        ORDER BY C.PAYMENT_MTHD
+end-select
+end-procedure Payment-Change
+
+!***********************************************************************
+!  FRTREP:  Print-Subtotal                                             *
+!***********************************************************************
+
+begin-procedure Print-Subtotal
+   !DO Print-ColTotal  !CALLING THE COLUMNWISE TOTAL PROCEDURE
+         Let $_TableAlias = 'A'
+         do Security-Param
+         show '$SecurityClauseWithoutERN = ' $SecurityClauseWithoutERN
+
+   if $GPFR_BEN_EE_OPT='N'  !Fetch only Employees   
+      let $temp = ' AND (A.RECIPIENT_ID = '''' OR A.RECIPIENT_ID IS NULL) AND A.RECIPIENT_NAME = '''' '
+   else  
+     if $GPFR_BEN_EE_OPT='O' !Fetch only Recipients
+        let $temp = ' AND (A.RECIPIENT_ID <> '''' OR A.RECIPIENT_NAME <> '''')'
+     else  !Fetch ALL
+        let $temp=''
+     end-if   
+   end-if
+   
+begin-select
+SUM(A.GP_PMT_AMT)  &SUB_TOT  
+      let #SUB_TOT = &SUB_TOT
+        PRINT 'Sous-Total'     (+3,30,12)  
+ !       if length($SRC_BANK) > 0
+           PRINT $DES (, 45, 17)
+ !       else   
+           PRINT $DES (, 45, 17)
+ !       end-if
+        
+        PRINT #SUB_TOT (,64,12) edit B,999,999.99           
+  FROM
+          PS_GPFR_PAYMENT A
+     WHERE
+        A.CAL_RUN_ID       = $CAL_RUN_ID
+        AND A.PAY_ENTITY   = $PAY_ENTITY
+        AND PAYMENT_MTHD = $OLD   
+        AND (A.SRC_BANK_ID  = $SRC_BANK 
+        OR A.SRC_BANK_ID  = $GET_SRC_BANK)
+        [$temp]
+        [$SecurityClauseWithoutERN]
+end-select
+
+end-procedure Print-Subtotal
+
+!***********************************************************************
+!  FRTREP:  Get-Source-Bank-Description                                *
+!***********************************************************************
+
+begin-procedure Get-Source-Bank-Description
+Begin-select
+DESCR  &DES 
+  let $DES = &DES
+  PRINT 'Banque Emettrice        :'(+2,1,25) bold
+  PRINT $DES (,27,20)
+FROM PS_SRC_BANK
+WHERE SRC_BANK_ID = $GET_SRC_BANK
+OR SRC_BANK_ID = &G.SRC_BANK
+
+end-select
+end-procedure Get-Source-Bank-Description
+
+!***********************************************************************
+!  FRTREP:  Get-Srcbank                                                *
+!***********************************************************************
+begin-procedure Get-Srcbank
+begin-select
+F.SRC_BANK_ID &F.SRC_BANK
+    let $GET_SRC_BANK = &F.SRC_BANK
+FROM
+    PS_GPFR_EFT_SRCBNK F
+WHERE
+    !F.CAL_RUN_ID     = $CAL_RUN_ID
+    !AND F.PAY_ENTITY = $PAY_ENTITY
+    F.RUN_CNTL_ID = $prcs_run_cntl_id
+    AND F.OPRID      = $prcs_oprid
+end-select
+end-procedure Get-Srcbank
+
+!***********************************************************************
+!  FRTREP:  Employee-Header                                            *
+!***********************************************************************
+
+begin-procedure Employee-Header
+do Get-Source-Bank-Description
+PRINT 'Code Banque Emettrice   :' (+2,1,25) bold
+if($GPFR_ONE_RPT = 'Y')
+  PRINT $GET_SRC_BANK (,27) bold
+else
+  PRINT &G.SRC_BANK (,27) bold
+end-if
+PRINT 'EMPLID'                                          (+3,3,11) bold
+PRINT 'Bénéficiaire'                                    (,14,25) bold
+PRINT 'Recipient'                                       (,39,25) bold   
+PRINT 'Net à payer'                                     (,65,12) bold
+PRINT 'Amount'                                          (,82,8) bold
+PRINT 'En'                                              (,95,3) bold
+PRINT 'Paiement'                                        (,98,9) bold
+PRINT 'Numéro de compte'                                (,112,27) bold
+PRINT 'Date'                                            (,137,5) bold
+PRINT 'Banque'                                          (,146,) bold
+PRINT ''                                                (+1)  
+end-procedure Employee-Header
+
+!***********************************************************************
+!  FRTREP:  Print-ColTotal                                        *
+!***********************************************************************
+begin-procedure Print-ColTotal
+         Let $_TableAlias = 'P'
+         do Security-Param
+         show '$SecurityClauseWithoutERN = ' $SecurityClauseWithoutERN
+begin-select
+SUM(P.GP_PMT_AMT)  &COL_TOT_EMP
+      let #COL_TOT_EMP = &COL_TOT_EMP
+      PRINT 'Sous-total :'(+3, 30 ,12)
+      if #COL_TOT_EMP > 0 AND ($GPFR_BEN_EE_OPT='A' OR $GPFR_BEN_EE_OPT='N')
+        PRINT #COL_TOT_EMP (, 64 ,12) edit B,999,999.99           
+      end-if  
+  FROM
+          PS_GPFR_PAYMENT P
+     WHERE
+        P.CAL_RUN_ID       = $CAL_RUN_ID
+        AND P.PAY_ENTITY   = $PAY_ENTITY
+        AND (P.SRC_BANK_ID  = $SRC_BANK 
+        OR P.SRC_BANK_ID  = $GET_SRC_BANK)
+        AND (P.RECIPIENT_ID = ' ' OR P.RECIPIENT_ID IS NULL)
+        AND (P.RECIPIENT_NAME = ' ' OR P.RECIPIENT_NAME IS NULL)
+        [$SecurityClauseWithoutERN]
+
+end-select 
+
+         Let $_TableAlias = 'R'
+         do Security-Param
+         show '$SecurityClauseWithoutERN = ' $SecurityClauseWithoutERN
+begin-select
+SUM(R.GP_PMT_AMT)  &COL_TOT_RCP  
+      let #COL_TOT_RCP= &COL_TOT_RCP
+      if #COL_TOT_RCP > 0 AND ($GPFR_BEN_EE_OPT='A' OR $GPFR_BEN_EE_OPT='O')
+        PRINT #COL_TOT_RCP (, 78 ,12) edit B,999,999.99          
+      end-if  
+  FROM
+          PS_GPFR_PAYMENT R
+     WHERE
+        R.CAL_RUN_ID       = $CAL_RUN_ID
+        AND R.PAY_ENTITY   = $PAY_ENTITY
+        AND (R.SRC_BANK_ID  = $SRC_BANK 
+        OR R.SRC_BANK_ID  = $GET_SRC_BANK)
+        AND (R.RECIPIENT_ID <> ' ' OR R.RECIPIENT_NAME <> ' ')
+        [$SecurityClauseWithoutERN]
+end-select 
+
+end-procedure Print-ColTotal
+
+!***********************************************************************
+#include 'prcsapi.sqc'   !Update Process Request API
+#include 'prcsdef.sqc'   !Update Process Request variable declare
+#include 'stdapi.sqc'    !Get Runcntl values
+#Include 'readxlat.sqc'  !Read Translate Table
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'hrsecty.sqc'    !Read SQR Security Parameters
+!***********************************************************************

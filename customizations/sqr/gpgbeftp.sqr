@@ -1,0 +1,1054 @@
+!***********************************************************************
+!  GPGBEFTP:  BACS Payment List Report                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2014, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!          $Date:  2014/06/27:03:04:07                                 *
+!       $Release:  HR92                                                *
+!      $Revision:  104                                                 *
+!----------------------------------------------------------------------
+!  Descr   : Provide a list of all Payments that have been transferred *
+!            via the BACS EFT file generation process                  *
+!
+!***********************************************************************
+!  Change History                                                      *
+!----------------------------------------------------------------------
+!  Date       Change Description
+!  ----       ------------------
+!
+!***********************************************************************
+
+
+#define  TitleCol        2
+#define  DateCol        150
+
+#define  SortCodeCol    2
+#define  BankNameCol    9
+#define  EmployeeNoCol  55
+#define  AccountNMCol   70
+#define  AccountNoCol   110
+#define  AmountCol      125
+
+#define  BranchTotCol   145
+#define  TotalTotCol    130
+
+#define  Page_Max       15
+
+
+#include 'setenv.sqc'    !Set environment
+#include 'setup02.sqc'   !Set Orientation
+
+
+!******************************************************
+Begin-Report
+   #debugf 'Begin-Report'
+
+   do Init-DateTime
+   do Init-Number
+   do Get-Current-DateTime
+   do Init-Report
+   do Process-Main
+   do Reset
+   do Stdapi-Term
+
+End-Report
+!******************************************************
+
+
+!******************************************************
+Begin-Heading 6
+
+  print 'Bankers Automated Clearing Services Audit List'      (1,{TitleCol}) bold
+  print 'Date: '                               (1,{DateCol}) bold
+
+  Let $Curr_Date = edit(datenow(),'dd/mm/yyyy')
+  print $Curr_Date                             ()
+
+  print 'Pay Entity: '                         (+1,{TitleCol}) bold
+  print $PAY_ENTITY_DESCR                      ()
+  print 'Page: '                               (,{DateCol}) bold
+  page-number                                  ()
+  print ' of '                                 ()
+  last-page                                    ()
+
+  If $CAL_RUN = ''
+     print 'Period: '                             (+1,{TitleCol}) bold
+     print $CAL_PRD                               ()
+  Else
+     print 'Calendar Run: '                       (+1,{TitleCol}) bold
+     print $CAL_RUN                               ()
+  End-If
+
+  print 'Code'                                 (+3,{SortCodeCol}) bold
+  print 'Bank and Branch'                      (,{BankNameCol}) bold
+  print 'Emp/Recip'                            (,{EmployeeNoCol}) bold
+  print 'Account Name'                         (,{AccountNMCol}) bold
+  print 'Account Number'                       (,{AccountNoCol}) bold
+  print 'Amount Paid(£)'                       (,{AmountCol}) bold
+  print 'Branch Total(£)'                      (,{BranchTotCol}) bold
+
+
+End-Heading
+!******************************************************
+
+!******************************************************
+Begin-Procedure Init-Report
+
+   #debugf 'Begin Init-Report'
+
+   move 'GPGBEFTP' to $ReportID
+   move 'BACS Summary Report' to $ReportTitle
+   display $ReportTitle
+
+   do Stdapi-Init
+   do Get-Run-Control-Vals
+   let #current_page = 1
+
+   #debugf 'Exit Init-Report'
+
+End-Procedure
+!******************************************************
+
+!******************************************************
+Begin-Procedure Get-Run-Control-Vals
+
+   #debugf 'Begin Get-Run-Control-Vals'
+
+
+  SHOW 'OPRID:       ' $PRCS_OPRID
+  SHOW 'RUN CONTROL: ' $PRCS_RUN_CNTL_ID
+Begin-SELECT ON-ERROR=SQL-ERROR-TRAP
+A.CAL_RUN_ID       &A.CAL_RUN_ID
+A.CAL_PRD_ID       &A.CAL_PRD_ID
+A.PAY_ENTITY       &A.PAY_ENTITY
+
+   LET $CAL_RUN = RTRIM(&A.CAL_RUN_ID,' ')
+   LET $CAL_PRD = RTRIM(&A.CAL_PRD_ID,' ')
+   LET $PAY_ENTITY = RTRIM(&A.PAY_ENTITY,' ')
+
+FROM PS_GPGB_RC_BACS A
+WHERE A.OPRID = $PRCS_OPRID
+AND A.RUN_CNTL_ID = $PRCS_RUN_CNTL_ID
+End-select
+
+   IF $CAL_RUN <> ''
+      LET $PAYMENT_WHERE = 'AND A.CAL_RUN_ID = ''' || $CAL_RUN || ''''
+   ELSE
+      SHOW 'Calendar Period being used: ' $CAL_PRD
+      DO Build-Calendar-Run-Criteria
+   END-IF
+
+   SHOW 'WHERE CLAUSE: ' $PAYMENT_WHERE
+
+   #debugf 'Exit Get-Run-Control-Vals'
+
+End-Procedure
+!******************************************************
+
+!******************************************************
+Begin-Procedure Build-Calendar-Run-Criteria
+
+
+   #debugf 'Exit Build-Calendar-Run-Criteria'
+
+   LET #CAL_RUN_COUNT = 0
+   LET $PAYMENT_WHERE = 'AND A.CAL_RUN_ID IN ('
+Begin-SELECT DISTINCT
+GBRB.CAL_RUN_ID
+
+   LET $WHERE_CAL_RUN_ID = RTRIM(&GBRB.CAL_RUN_ID,' ')
+
+   IF #CAL_RUN_COUNT > 0
+      LET $PAYMENT_WHERE = $PAYMENT_WHERE || ',''' ||  $WHERE_CAL_RUN_ID || ''''
+   ELSE
+     LET $PAYMENT_WHERE = $PAYMENT_WHERE || '''' ||  $WHERE_CAL_RUN_ID || ''''
+   END-IF
+
+   LET #CAL_RUN_COUNT = #CAL_RUN_COUNT + 1
+
+FROM PS_GPGB_PRD_EFTVW GBRB
+ WHERE GBRB.PAY_ENTITY = $PAY_ENTITY AND
+       GBRB.CAL_PRD_ID = $CAL_PRD
+
+END-SELECT
+
+   LET $PAYMENT_WHERE = $PAYMENT_WHERE || ')'
+   SHOW '$WHERE_CAL_RUN_ID =  '  $WHERE_CAL_RUN_ID
+
+
+   #debugf 'Exit Build-Calendar-Run-Criteria'
+
+End-Procedure Build-Calendar-Run-Criteria
+!******************************************************
+
+
+!******************************************************
+Begin-Procedure Process-Main
+
+   #debugf 'Begin Process-Main'
+
+   do Select-Payments
+   do Pay-Entity-Change
+   do Select-Negative-Payments
+   do Pay-Entity-Change
+
+   #debugf 'Exit Process-Main'
+
+End-Procedure Process-Main
+!******************************************************
+
+
+!******************************************************
+Begin-Procedure Select-Payments
+
+   #debugf 'Begin Select-Payments'
+
+   PRINT '' (1,1,1)
+   LET $Last_SortCode = ''
+   Let $Last_Account_Nbr = ''
+
+   LET #EMP_COUNT   = 0
+   LET #EMP_TOTAL   = 0
+
+   LET #PAYE        = 0
+   LET #PAYE_COUNT  = 0
+   LET #PAYE_TOTAL  = 0
+
+   LET #NI    = 0
+   LET #NI_COUNT    = 0
+   LET #NI_TOTAL    = 0
+
+   LET #NI_RE = 0
+   LET #NI_RE_COUNT = 0
+   LET #NI_RE_TOTAL = 0
+
+   LET #STL   = 0
+   LET #STL_COUNT   = 0
+   LET #STL_TOTAL   = 0
+
+   Let #OTH   = 0
+   LET #OTH_COUNT   = 0
+   LET #OTH_TOTAL   = 0
+
+   Let #DetRowCount = 0
+   Let $RowInc = 1
+
+BEGIN-SELECT
+C.DESCR                 &C.DESCR                            () on-break PRINT=NEVER BEFORE=Pay-Entity-Change level=1
+A.GPGB_DEST_SORTCODE    &A.GPGB_DEST_SORTCODE
+A.EMPLID                &A.EMPLID
+A.RECIPIENT_ID          &A.RECIPIENT_ID
+A.GPGB_DEST_ACCT_NBR    &A.GPGB_DEST_ACCT_NBR
+A.ROLL_NUMBER           &A.ROLL_NUMBER
+A.GPGB_DEST_ACCTNAME    &A.GPGB_DEST_ACCTNAME
+A.ROLL_NAME             &A.ROLL_NAME
+A.GPGB_PMT_AMT          &A.GPGB_PMT_AMT
+
+   Let #Select_Count = #Select_Count + 1
+   Let #Entity_Count = #Entity_Count + 1
+
+   Let $Pay_Entity_Descr = rtrim(&C.DESCR,' ')
+ 
+   Let $Curr_Account_Nbr = RTRIM(&A.GPGB_DEST_ACCT_NBR,' ')
+   If  $Curr_Account_Nbr <> $Last_Account_Nbr
+
+      If #PAYE > 0
+         Print 'PAYE'                                 (+#RowInc,{EmployeeNoCol})
+         Print #PAYE                                  (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $PAYE_Account_Nbr                      (  ,{AccountNoCol})
+         Print $PAYE_Account_Name                     (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #PAYE
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #PAYE_TOTAL = #PAYE_TOTAL + #PAYE
+         Let #PAYE = 0
+         Let #PAYE_COUNT = #PAYE_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #STL > 0
+         Print 'STL'                                  (+#RowInc,{EmployeeNoCol})
+         Print #STL                                   (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $STL_Account_Nbr                       (  ,{AccountNoCol})
+         Print $STL_Account_Name                      (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #STL
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #STL_TOTAL = #STL_TOTAL + #STL
+         Let #STL = 0
+         Let #STL_COUNT = #STL_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #NI > 0
+         Print 'NI'                                   (+#RowInc,{EmployeeNoCol})
+         Print #NI                                    (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $NI_Account_Nbr                        (  ,{AccountNoCol})
+         Print $NI_Account_Name                       (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #NI
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #NI_TOTAL = #NI_TOTAL + #NI
+         Let #NI = 0
+         Let #NI_COUNT = #NI_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #NI_RE > 0
+         Print 'NI_RE'                                (+#RowInc,{EmployeeNoCol})
+         Print #NI_RE                                 (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $NI_RE_Account_Nbr                     (  ,{AccountNoCol})
+         Print $NI_RE_Account_Name                    (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #NI_RE
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #NI_RE_TOTAL = #NI_RE_TOTAL + #NI_RE
+         Let #NI_RE = 0
+         Let #NI_RE_COUNT = #NI_RE_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #OTH > 0
+         Print 'OTH'                                  (+#RowInc,{EmployeeNoCol})
+         Print #OTH                                   (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $OTH_Account_Nbr                       (  ,{AccountNoCol})
+         Print $OTH_Account_Name                      (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #OTH
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #OTH_TOTAL = #OTH_TOTAL + #OTH
+         Let #OTH = 0
+         Let #OTH_COUNT = #OTH_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+
+      Let $Last_Account_Nbr = $Curr_Account_Nbr 
+   End-If
+
+   Let $Curr_SortCode = RTRIM(&A.GPGB_DEST_SORTCODE,' ')
+   If $Curr_SortCode <> $Last_SortCode
+      print $Curr_SortCode                                         (+2,{SortCodeCol})
+
+      IF $Curr_SortCode <> ''
+         do Get-Bank-Details
+         print $Curr_Bank_Name                                     (,{BankNameCol})
+      END-IF
+      Let $Last_SortCode = $Curr_SortCode
+      Let #DetRowCount = 0
+      Let #Branch_Total = 0
+      Let #RowInc = 0
+   End-If
+
+   Let $Curr_Emplid = RTRIM(&A.EMPLID,' ')
+   Let $Recip_Id = rtrim(&A.RECIPIENT_ID,' ')
+   Let $Curr_Account_Name = RTRIM(&A.GPGB_DEST_ACCTNAME,' ')
+   Let $Curr_Roll_Name = RTRIM(&A.ROLL_NAME,' ')
+   Let $Curr_Roll_Number = RTRIM(&A.ROLL_NUMBER,' ')
+
+   If $Curr_Emplid <> '' and $Recip_Id = ''
+      print $Curr_Emplid                                           (+#RowInc,{EmployeeNoCol})
+      IF $Curr_Roll_Name <> ''
+         Let $RollNameNumber = $Curr_Roll_Name || ' ' || $Curr_Roll_Number
+        print $RollNameNumber                                      (,{AccountNMCol})
+      ELSE
+        print $Curr_Account_Name                                   (,{AccountNMCol})
+      END-IF
+   
+      print $Curr_Account_Nbr                                      (,{AccountNoCol})
+   End-If 
+
+   Let #Curr_Pmt_Amount = &A.GPGB_PMT_AMT
+   Let #Curr_Pmt_Amount = #Curr_Pmt_Amount / 100
+
+   If $Recip_Id <> ''
+   Evaluate $Recip_Id
+
+   When='PAYE'
+      Let #PAYE  = #PAYE  + #Curr_Pmt_Amount
+!      Let #PAYE_TOTAL = #PAYE_TOTAL + #PAYE
+!      Let #PAYE_COUNT = #PAYE_COUNT + 1
+      Let $PAYE_Account_Nbr  = $Curr_Account_Nbr
+      Let $PAYE_Account_Name = $Curr_Account_Name
+      Break
+   When='NI'
+      Let #NI    = #NI    + #Curr_Pmt_Amount
+!      Let #NI_TOTAL = #NI_TOTAL + #NI
+!      Let #NI_COUNT = #NI_COUNT + 1
+      Let $NI_Account_Nbr  = $Curr_Account_Nbr
+      Let $NI_Account_Name = $Curr_Account_Name
+      Break
+   When='NI_RE'
+      Let #NI_RE = #NI_RE + #Curr_Pmt_Amount
+!      Let #NI_RE_TOTAL = #NI_RE_TOTAL + #NI_RE
+!      Let #NI_RE_COUNT = #NI_RE_COUNT + 1
+      Let $NI_RE_Account_Nbr  = $Curr_Account_Nbr
+      Let $NI_RE_Account_Name = $Curr_Account_Name
+      Break
+   When='STL'
+      Let #STL   = #STL   + #Curr_Pmt_Amount
+!      Let #STL_TOTAL = #STL_TOTAL + #STL
+!      Let #STL_COUNT = #STL_COUNT + 1
+      Let $STL_Account_Nbr  = $Curr_Account_Nbr
+      Let $STL_Account_Name = $Curr_Account_Name
+      Break
+   When-Other
+      Let #OTH   = #OTH   + #Curr_Pmt_Amount
+!      Let #OTH_TOTAL = #OTH_TOTAL + #OTH
+!      Let #OTH_COUNT = #OTH_COUNT + 1
+      Let $OTH_Account_Nbr  = $Curr_Account_Nbr
+      Let $OTH_Account_Name = $Curr_Account_Name
+      Break
+   End-Evaluate
+   End-If
+
+   If $Curr_Emplid <> '' and $Recip_Id = ''
+      print #Curr_Pmt_Amount                                       (,{AmountCol}) edit 9,999,999,999.99
+      Let #EMP_TOTAL = #EMP_TOTAL + #Curr_Pmt_Amount
+      Let #EMP_COUNT = #EMP_COUNT + 1
+      Let #Branch_Total = #Branch_Total + #Curr_Pmt_Amount
+      print #Branch_Total                                       (,{BranchTotCol}) edit 9,999,999,999.99
+      Let #DetRowCount = #DetRowCount + 1
+      Let #RowInc = 1
+      Do Print-Address
+   End-If
+
+ 
+FROM PS_GPGB_PAYMENT A, PS_PERSON_NAME B, PS_GP_PYENT C
+WHERE A.EMPLID = B.EMPLID
+AND A.PAY_ENTITY = C.PAY_ENTITY
+[$PAYMENT_WHERE]
+AND A.PAYMENT_MTHD = 'T'
+AND A.GPGB_PMT_AMT  >= 0
+ORDER BY A.PAY_ENTITY, A.GPGB_DEST_SORTCODE, A.GPGB_DEST_ACCT_NBR, B.LAST_NAME_SRCH, A.RECIPIENT_ID
+!AND A.PMT_TYPE='01'
+!ORDER BY A.PAY_ENTITY, A.GPGB_DEST_SORTCODE, B.LAST_NAME_SRCH, A.RECIPIENT_ID
+
+END-Select
+
+
+      If #PAYE > 0
+         Print 'PAYE'                                 (+#RowInc,{EmployeeNoCol})
+         Print #PAYE                                  (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $PAYE_Account_Nbr                      (  ,{AccountNoCol})
+         Print $PAYE_Account_Name                     (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #PAYE
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #PAYE_TOTAL = #PAYE_TOTAL + #PAYE
+         Let #PAYE = 0
+         Let #PAYE_COUNT = #PAYE_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #STL > 0
+         Print 'STL'                                  (+#RowInc,{EmployeeNoCol})
+         Print #STL                                   (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $STL_Account_Nbr                       (  ,{AccountNoCol})
+         Print $STL_Account_Name                      (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #STL
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #STL_TOTAL = #STL_TOTAL + #STL
+         Let #STL = 0
+         Let #STL_COUNT = #STL_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #NI > 0
+         Print 'NI'                                   (+#RowInc,{EmployeeNoCol})
+         Print #NI                                    (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $NI_Account_Nbr                        (  ,{AccountNoCol})
+         Print $NI_Account_Name                       (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #NI
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #NI_TOTAL = #NI_TOTAL + #NI
+         Let #NI = 0
+         Let #NI_COUNT = #NI_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #NI_RE > 0
+         Print 'NI_RE'                                (+#RowInc,{EmployeeNoCol})
+         Print #NI_RE                                 (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $NI_RE_Account_Nbr                     (  ,{AccountNoCol})
+         Print $NI_RE_Account_Name                    (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #NI_RE
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #NI_RE_TOTAL = #NI_RE_TOTAL + #NI_RE
+         Let #NI_RE = 0
+         Let #NI_RE_COUNT = #NI_RE_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #OTH > 0
+         Print 'OTH'                                  (+#RowInc,{EmployeeNoCol})
+         Print #OTH                                   (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $OTH_Account_Nbr                       (  ,{AccountNoCol})
+         Print $OTH_Account_Name                      (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #OTH
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #OTH_TOTAL = #OTH_TOTAL + #OTH
+         Let #OTH = 0
+         Let #OTH_COUNT = #OTH_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+
+
+
+   #debugf 'Exit Select-Payments'
+
+End-Procedure
+!******************************************************
+
+!******************************************************
+Begin-Procedure Select-Negative-Payments
+
+   #debugf 'Begin Select-Negative-Payments'
+
+  ! PRINT '' (1,1,1)
+   LET $Last_SortCode = ''
+   Let $Last_Account_Nbr = ''
+
+   LET #EMP_COUNT   = 0
+   LET #EMP_TOTAL   = 0
+
+   LET #PAYE        = 0
+   LET #PAYE_COUNT  = 0
+   LET #PAYE_TOTAL  = 0
+
+   LET #NI    = 0
+   LET #NI_COUNT    = 0
+   LET #NI_TOTAL    = 0
+
+   LET #NI_RE = 0
+   LET #NI_RE_COUNT = 0
+   LET #NI_RE_TOTAL = 0
+
+   LET #STL   = 0
+   LET #STL_COUNT   = 0
+   LET #STL_TOTAL   = 0
+
+   Let #OTH   = 0
+   LET #OTH_COUNT   = 0
+   LET #OTH_TOTAL   = 0
+
+   Let #DetRowCount = 0
+   Let $RowInc = 1
+
+BEGIN-SELECT
+C.DESCR                 &C.DESCR_N                           ! () on-break PRINT=NEVER BEFORE=Pay-Entity-Change level=1
+A.GPGB_DEST_SORTCODE    &A.GPGB_DEST_SORTCODE_N
+A.EMPLID                &A.EMPLID_N
+A.RECIPIENT_ID          &A.RECIPIENT_ID_N
+A.GPGB_DEST_ACCT_NBR    &A.GPGB_DEST_ACCT_NBR_N
+A.ROLL_NUMBER           &A.ROLL_NUMBER_N
+A.GPGB_DEST_ACCTNAME    &A.GPGB_DEST_ACCTNAME_N
+A.ROLL_NAME             &A.ROLL_NAME_N
+A.GPGB_PMT_AMT          &A.GPGB_PMT_AMT_N
+
+   Let #Select_Count = #Select_Count + 1
+   Let #Entity_Count = #Entity_Count + 1
+
+   Let $Pay_Entity_Descr = rtrim(&C.DESCR_N,' ')
+ 
+   Let $Curr_Account_Nbr = RTRIM(&A.GPGB_DEST_ACCT_NBR_N,' ')
+   If  $Curr_Account_Nbr <> $Last_Account_Nbr
+
+      If #PAYE > 0
+         Print 'PAYE'                                 (+#RowInc,{EmployeeNoCol})
+         Print #PAYE                                  (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $PAYE_Account_Nbr                      (  ,{AccountNoCol})
+         Print $PAYE_Account_Name                     (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #PAYE
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #PAYE_TOTAL = #PAYE_TOTAL + #PAYE
+         Let #PAYE = 0
+         Let #PAYE_COUNT = #PAYE_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #STL > 0
+         Print 'STL'                                  (+#RowInc,{EmployeeNoCol})
+         Print #STL                                   (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $STL_Account_Nbr                       (  ,{AccountNoCol})
+         Print $STL_Account_Name                      (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #STL
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #STL_TOTAL = #STL_TOTAL + #STL
+         Let #STL = 0
+         Let #STL_COUNT = #STL_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #NI > 0
+         Print 'NI'                                   (+#RowInc,{EmployeeNoCol})
+         Print #NI                                    (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $NI_Account_Nbr                        (  ,{AccountNoCol})
+         Print $NI_Account_Name                       (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #NI
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #NI_TOTAL = #NI_TOTAL + #NI
+         Let #NI = 0
+         Let #NI_COUNT = #NI_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #NI_RE > 0
+         Print 'NI_RE'                                (+#RowInc,{EmployeeNoCol})
+         Print #NI_RE                                 (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $NI_RE_Account_Nbr                     (  ,{AccountNoCol})
+         Print $NI_RE_Account_Name                    (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #NI_RE
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #NI_RE_TOTAL = #NI_RE_TOTAL + #NI_RE
+         Let #NI_RE = 0
+         Let #NI_RE_COUNT = #NI_RE_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #OTH > 0
+         Print 'OTH'                                  (+#RowInc,{EmployeeNoCol})
+         Print #OTH                                   (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $OTH_Account_Nbr                       (  ,{AccountNoCol})
+         Print $OTH_Account_Name                      (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #OTH
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #OTH_TOTAL = #OTH_TOTAL + #OTH
+         Let #OTH = 0
+         Let #OTH_COUNT = #OTH_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+
+      Let $Last_Account_Nbr = $Curr_Account_Nbr 
+   End-If
+
+   Let $Curr_SortCode = RTRIM(&A.GPGB_DEST_SORTCODE_N,' ')
+   If $Curr_SortCode <> $Last_SortCode
+      print $Curr_SortCode                                         (+2,{SortCodeCol})
+      
+      IF $Curr_SortCode <> ''
+         show $Curr_SortCode
+         do Get-Bank-Details
+         print $Curr_Bank_Name                                     (,{BankNameCol})
+      END-IF
+      Let $Last_SortCode = $Curr_SortCode
+      Let #DetRowCount = 0
+      Let #Branch_Total = 0
+      Let #RowInc = 0
+   End-If
+
+   Let $Curr_Emplid = RTRIM(&A.EMPLID_N,' ')
+   Let $Recip_Id = rtrim(&A.RECIPIENT_ID_N,' ')
+   Let $Curr_Account_Name = RTRIM(&A.GPGB_DEST_ACCTNAME_N,' ')
+   Let $Curr_Roll_Name = RTRIM(&A.ROLL_NAME_N,' ')
+   Let $Curr_Roll_Number = RTRIM(&A.ROLL_NUMBER_N,' ')
+
+   If $Curr_Emplid <> '' and $Recip_Id = ''
+      print $Curr_Emplid                                           (+#RowInc,{EmployeeNoCol})
+      IF $Curr_Roll_Name <> ''
+         Let $RollNameNumber = $Curr_Roll_Name || ' ' || $Curr_Roll_Number
+        print $RollNameNumber                                      (,{AccountNMCol})
+      ELSE
+        print $Curr_Account_Name                                   (,{AccountNMCol})
+      END-IF
+   
+      print $Curr_Account_Nbr                                      (,{AccountNoCol})
+   End-If 
+
+   Let #Curr_Pmt_Amount = &A.GPGB_PMT_AMT_N
+   Let #Curr_Pmt_Amount = #Curr_Pmt_Amount / 100
+
+   If $Recip_Id <> ''
+   Evaluate $Recip_Id
+
+   When='PAYE'
+      Let #PAYE  = #PAYE  + #Curr_Pmt_Amount
+!      Let #PAYE_TOTAL = #PAYE_TOTAL + #PAYE
+!      Let #PAYE_COUNT = #PAYE_COUNT + 1
+      Let $PAYE_Account_Nbr  = $Curr_Account_Nbr
+      Let $PAYE_Account_Name = $Curr_Account_Name
+      Break
+   When='NI'
+      Let #NI    = #NI    + #Curr_Pmt_Amount
+!      Let #NI_TOTAL = #NI_TOTAL + #NI
+!      Let #NI_COUNT = #NI_COUNT + 1
+      Let $NI_Account_Nbr  = $Curr_Account_Nbr
+      Let $NI_Account_Name = $Curr_Account_Name
+      Break
+   When='NI_RE'
+      Let #NI_RE = #NI_RE + #Curr_Pmt_Amount
+!      Let #NI_RE_TOTAL = #NI_RE_TOTAL + #NI_RE
+!      Let #NI_RE_COUNT = #NI_RE_COUNT + 1
+      Let $NI_RE_Account_Nbr  = $Curr_Account_Nbr
+      Let $NI_RE_Account_Name = $Curr_Account_Name
+      Break
+   When='STL'
+      Let #STL   = #STL   + #Curr_Pmt_Amount
+!      Let #STL_TOTAL = #STL_TOTAL + #STL
+!      Let #STL_COUNT = #STL_COUNT + 1
+      Let $STL_Account_Nbr  = $Curr_Account_Nbr
+      Let $STL_Account_Name = $Curr_Account_Name
+      Break
+   When-Other
+      Let #OTH   = #OTH   + #Curr_Pmt_Amount
+!      Let #OTH_TOTAL = #OTH_TOTAL + #OTH
+!      Let #OTH_COUNT = #OTH_COUNT + 1
+      Let $OTH_Account_Nbr  = $Curr_Account_Nbr
+      Let $OTH_Account_Name = $Curr_Account_Name
+      Break
+   End-Evaluate
+   End-If
+
+   If $Curr_Emplid <> '' and $Recip_Id = ''
+      print #Curr_Pmt_Amount                                       (,{AmountCol}) edit 9,999,999,999.99
+      Let #EMP_TOTAL = #EMP_TOTAL + #Curr_Pmt_Amount
+      Let #EMP_COUNT = #EMP_COUNT + 1
+      Let #Branch_Total = #Branch_Total + #Curr_Pmt_Amount
+      print #Branch_Total                                       (,{BranchTotCol}) edit 9,999,999,999.99
+      Let #DetRowCount = #DetRowCount + 1
+      Let #RowInc = 1
+      Do Print-Address
+   End-If
+
+ 
+FROM PS_GPGB_PAYMENT A, PS_PERSON_NAME B, PS_GP_PYENT C
+WHERE A.EMPLID = B.EMPLID
+AND A.PAY_ENTITY = C.PAY_ENTITY
+[$PAYMENT_WHERE]
+AND A.PAYMENT_MTHD = 'T'
+AND A.GPGB_PMT_AMT  < 0
+ORDER BY A.PAY_ENTITY, A.GPGB_DEST_SORTCODE, A.GPGB_DEST_ACCT_NBR, B.LAST_NAME_SRCH, A.RECIPIENT_ID
+!AND A.PMT_TYPE='01'
+!ORDER BY A.PAY_ENTITY, A.GPGB_DEST_SORTCODE, B.LAST_NAME_SRCH, A.RECIPIENT_ID
+
+END-Select
+
+
+      If #PAYE > 0
+         Print 'PAYE'                                 (+#RowInc,{EmployeeNoCol})
+         Print #PAYE                                  (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $PAYE_Account_Nbr                      (  ,{AccountNoCol})
+         Print $PAYE_Account_Name                     (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #PAYE
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #PAYE_TOTAL = #PAYE_TOTAL + #PAYE
+         Let #PAYE = 0
+         Let #PAYE_COUNT = #PAYE_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #STL > 0
+         Print 'STL'                                  (+#RowInc,{EmployeeNoCol})
+         Print #STL                                   (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $STL_Account_Nbr                       (  ,{AccountNoCol})
+         Print $STL_Account_Name                      (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #STL
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #STL_TOTAL = #STL_TOTAL + #STL
+         Let #STL = 0
+         Let #STL_COUNT = #STL_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #NI > 0
+         Print 'NI'                                   (+#RowInc,{EmployeeNoCol})
+         Print #NI                                    (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $NI_Account_Nbr                        (  ,{AccountNoCol})
+         Print $NI_Account_Name                       (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #NI
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #NI_TOTAL = #NI_TOTAL + #NI
+         Let #NI = 0
+         Let #NI_COUNT = #NI_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #NI_RE > 0
+         Print 'NI_RE'                                (+#RowInc,{EmployeeNoCol})
+         Print #NI_RE                                 (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $NI_RE_Account_Nbr                     (  ,{AccountNoCol})
+         Print $NI_RE_Account_Name                    (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #NI_RE
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #NI_RE_TOTAL = #NI_RE_TOTAL + #NI_RE
+         Let #NI_RE = 0
+         Let #NI_RE_COUNT = #NI_RE_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+      If #OTH > 0
+         Print 'OTH'                                  (+#RowInc,{EmployeeNoCol})
+         Print #OTH                                   (  ,{AmountCol}) edit 9,999,999,999.99
+         Print $OTH_Account_Nbr                       (  ,{AccountNoCol})
+         Print $OTH_Account_Name                      (  ,{AccountNMCol})
+         Let #Branch_Total = #Branch_Total + #OTH
+         print #Branch_Total                          (  ,{BranchTotCol}) edit 9,999,999,999.99
+         Let #OTH_TOTAL = #OTH_TOTAL + #OTH
+         Let #OTH = 0
+         Let #OTH_COUNT = #OTH_COUNT + 1
+         Let #DetRowCount = #DetRowCount + 1
+         Let #RowInc = 1
+         Do Print-Address
+      End-If
+
+
+
+   #debugf 'Exit Select-Negative-Payments'
+
+End-Procedure
+!******************************************************
+
+
+!******************************************************
+Begin-Procedure Print-Address
+
+   IF $Curr_Address1 <> '' AND #DetRoWCount = 2
+      print  $Curr_Address1                                  (  ,{BankNameCol})
+   End-If
+   IF $Curr_Address2 <> '' AND #DetRoWCount = 3
+      print  $Curr_Address2                                  (  ,{BankNameCol})
+   End-If
+   IF $Curr_Address3 <> '' AND #DetRoWCount = 4
+      print  $Curr_Address3                                  (  ,{BankNameCol})
+   End-If
+   IF $Curr_Address4 <> '' AND #DetRoWCount = 5
+      print  $Curr_Address3                                  (  ,{BankNameCol})
+   End-if
+
+End-Procedure
+!******************************************************
+
+
+!******************************************************
+Begin-Procedure Print-Totals
+
+   #debugf 'Begin Print-Totals'
+
+Let #Summ_Count = 0
+Let #Summ_Total = 0
+
+Print 'Summary'      (+3,{SortCodeCol})
+Print 'Recipient'    (+1,{SortCodeCol})
+Print '     Count'   (  ,12)
+Print '       Total' (  ,24)
+Print 'Notes'        (  ,44)
+GRAPHIC  (+1,2,162) horz-line
+
+Print 'Employees'  (+1,{SortCodeCol})
+Print #EMP_COUNT   (  ,12) edit 9,999,999
+Print #EMP_TOTAL   (  ,24) edit 9,999,999,999.99
+Print 'Net pay (contained in *_EMP.DAT file in BACs submission)'    (  ,44)
+Let #Summ_Count = #Summ_Count + #EMP_COUNT
+Let #Summ_Total = #Summ_Total + #EMP_TOTAL
+
+Print 'PAYE'       (+1,{SortCodeCol})
+Print #PAYE_COUNT  (  ,12) edit 9,999,999
+Print #PAYE_TOTAL  (  ,24) edit 9,999,999,999.99
+Print 'Tax deductions (contained in *_PAYE.DAT file in BACs submission - may be offset by tax credits)'    (  ,44)
+Let #Summ_Count = #Summ_Count + #PAYE_COUNT
+Let #Summ_Total = #Summ_Total + #PAYE_TOTAL
+
+Print 'STL'        (+1,{SortCodeCol})
+Print #STL_COUNT   (  ,12) edit 9,999,999
+Print #STL_TOTAL   (  ,24) edit 9,999,999,999.99
+Print 'Student loan deductions (included with tax deductions in *_PAYE.DAT file in BACs submission)'    (  ,44)
+Let #Summ_Count = #Summ_Count + #STL_COUNT
+Let #Summ_Total = #Summ_Total + #STL_TOTAL
+
+Print 'NI'         (+1,{SortCodeCol})
+Print #NI_COUNT    (  ,12) edit 9,999,999
+Print #NI_TOTAL    (  ,24) edit 9,999,999,999.99
+Print 'NI deductions (contained in *_PAYE.DAT file in BACs submission)'    (  ,44)
+Let #Summ_Count = #Summ_Count + #NI_COUNT
+Let #Summ_Total = #Summ_Total + #NI_TOTAL
+
+Print 'NI_RE'      (+1,{SortCodeCol})
+Print #NI_RE_COUNT (  ,12) edit 9,999,999
+Print #NI_RE_TOTAL (  ,24) edit 9,999,999,999.99
+Print 'NI deduction rebates (offset against NI deductions in *_PAYE.DAT file in BACs submission)'    (  ,44)
+Let #Summ_Count = #Summ_Count + #NI_RE_COUNT
+Let #Summ_Total = #Summ_Total + #NI_RE_TOTAL
+
+Print 'OTH'        (+1,{SortCodeCol})
+Print #OTH_COUNT   (  ,12) edit 9,999,999
+Print #OTH_TOTAL   (  ,24) edit 9,999,999,999.99
+Print 'Other deduction recipients (consolidated and contained in *_OTH.DAT file in BACs submission)'    (  ,44)
+Let #Summ_Count = #Summ_Count + #OTH_COUNT
+Let #Summ_Total = #Summ_Total + #OTH_TOTAL
+
+GRAPHIC  (+1,2,162) horz-line
+Print 'Total'      (+1,{SortCodeCol})
+Print #Summ_Count  (  ,12) edit 9,999,999
+Print #Summ_Total  (  ,24) edit 9,999,999,999.99
+
+   #debugf 'End Print-Totals'
+
+End-Procedure
+!******************************************************
+
+
+!******************************************************
+Begin-Procedure Reset-Totals
+
+   #debugf 'Begin Reset-Totals'
+
+   LET $Last_SortCode = ''
+   Let $Last_Account_Nbr = ''
+
+   LET #EMP_COUNT   = 0
+   LET #EMP_TOTAL   = 0
+
+   LET #PAYE        = 0
+   LET #PAYE_COUNT  = 0
+   LET #PAYE_TOTAL  = 0
+
+   LET #NI    = 0
+   LET #NI_COUNT    = 0
+   LET #NI_TOTAL    = 0
+
+   LET #NI_RE = 0
+   LET #NI_RE_COUNT = 0
+   LET #NI_RE_TOTAL = 0
+
+   LET #STL   = 0
+   LET #STL_COUNT   = 0
+   LET #STL_TOTAL   = 0
+
+   Let #OTH   = 0
+   LET #OTH_COUNT   = 0
+   LET #OTH_TOTAL   = 0
+
+   Let #DetRowCount = 0
+   Let $RowInc = 1
+
+   #debugf 'End Reset-Totals'
+
+End-Procedure
+!******************************************************
+
+
+!******************************************************
+Begin-Procedure SQL-ERROR-TRAP
+
+   #debugf 'Begin SQL-ERROR-TRAP'
+
+   SHOW 'SQL-ERROR            ' $SQL-ERROR
+   SHOW 'SQL-STATUS           ' #SQL-STATUS
+   SHOW 'SQL-STATEMENT        ' $SQL-STATEMENT
+
+   do Rollback-Transaction
+
+   Let #prcs_run_status = #prcs_run_status_error
+   Let #prcs_continuejob = 0
+   do update-prcs-run-status
+
+   #debugf 'Exit SQL-ERROR-TRAP'
+
+End-Procedure
+!******************************************************
+
+
+!******************************************************
+Begin-Procedure Get-Bank-Details
+   #debugf 'Begin Get-Bank-Details'
+
+   LET $Curr_Bank_Name = ''
+
+Begin-SELECT ON-ERROR=SQL-ERROR-TRAP
+BANK_NM                &BANK_NAME
+ADDRESS1               &ADDRESS1
+ADDRESS2               &ADDRESS2
+ADDRESS3               &ADDRESS3
+ADDRESS4               &ADDRESS4
+   LET $Curr_Bank_Name = RTRIM(&BANK_NAME,' ')
+   LET $Curr_Address1 = RTRIM(&ADDRESS1,' ')
+   LET $Curr_Address2 = RTRIM(&ADDRESS2,' ')
+   LET $Curr_Address3 = RTRIM(&ADDRESS3,' ')
+   LET $Curr_Address4 = RTRIM(&ADDRESS4,' ')
+FROM PS_BANK_EC_TBL
+WHERE BANK_CD = $Curr_SortCode
+End-Select
+
+   #debugf 'Exit Get-Bank-Details'
+End-Procedure
+!******************************************************
+
+
+!******************************************************
+Begin-Procedure START-NEW-PAGE
+   #debugf 'Begin START-NEW-PAGE'
+
+   If #Select_Count > 0
+      NEW-PAGE
+   End-If
+
+   Let #Entity_Count = 0
+
+   #debugf 'Exit START-NEW-PAGE'
+End-Procedure
+!******************************************************
+
+
+!******************************************************
+Begin-Procedure Pay-Entity-Change
+
+   #debugf 'Begin Pay-Entity-Change'
+
+   If #Total_Count > 0 or #Select_Count > 0
+      do Print-Totals
+      do Reset-Totals
+      Let #Entity_Count = 0
+      NEW-PAGE
+   End-If
+
+   #debugf 'End Pay-Entity-Change'
+
+
+End-Procedure Pay-Entity-Change
+!******************************************************
+
+
+#include 'stdapi.sqc'    !Routine to update run status
+#include 'prcsapi.sqc'   !Routine to update process scheduler
+#Include 'readxlat.sqc'  !Read Translate Table Procedure
+#Include 'datemath.sqc'  !Routines for date arithmetic
+#Include 'reset.sqc'     !Reset printer Procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime Procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers

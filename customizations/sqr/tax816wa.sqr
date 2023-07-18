@@ -1,0 +1,653 @@
+!***********************************************************************
+!  tax816WA:  Qtrly Wage List - Washington                             *
+!                                                                      *
+!             NOTE: "#IFDEF TAXTEST" in main SELECT is used for        *
+!                   testing this report against DEMO database          *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2020, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  30696402                                            !
+!                                                                      *
+!***********************************************************************
+
+#include 'setenv.sqc' !Set environment
+#include 'setup31.sqc' !Printer and page-size initialization
+#include 'usarpt.sqc'  ! NID_COUNTRY defined
+
+begin-report
+  do Init-Report
+
+! These variables are used by rptsmmry.sqc
+  MOVE 'TAX816WA' TO  $Program
+
+  do Process-Main
+
+  if #Count_F > 0
+    DISPLAY ' '
+    display 'Upon successful conclusion of this program, ' noline
+    display 'the following file(s) will be created:' 
+    display ' '
+    display '  WAPFLxxx  where "xxx" represents a volume identifier'
+    DISPLAY '            for each company code. ' 
+    DISPLAY 'The file(s) are created in the .CSV format.'
+    DISPLAY 'Follow the instructions from the department for preparing'
+    display 'and submitting the file electronically.'
+    display ' '
+  else
+    do Print-Summary-Data('NoData')
+  end-if
+  
+  do Stdapi-Term
+end-report
+
+
+begin-procedure Init-Report
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Get-Calendar-Year-Id
+  do Stdapi-Init
+  do Initialization
+  move 'TAX816WA' to $ReportID
+
+  move 'Washington Paid Leave Report ' to $ReportTitle
+  display ''
+  display 'Creating CSV file for Washington Paid Leave Reporting'
+
+end-procedure
+
+begin-procedure Initialization
+
+  #ifdef TAXTEST
+    move 'CA'              to $State
+  #else
+    move 'WA'              to $State
+  #endif
+
+  MOVE 0 TO #FileExtension
+  MOVE 'CSV' to $FileExtension
+  
+ 
+  do Get-Tax-Reporting-Run-Controls
+  move &TX.Balance_Year to $RptYear 9999
+  move &TX.Balance_Qtr  to $RptQuarter 9
+  move $RptYear          to $CalendarYr
+  move $RptYear          to $RptYear ~~xx
+  move $PeriodEndDate    to $AsOfDate
+
+  display ' '
+  display 'Processing balances for '   noline
+  display $RptQtrYr
+
+  do Select-Parameters
+
+
+  move '1' to $Year4
+  move '' to $DDelimiter
+  do Format-DateTime($AsOfToday,$CreationDate,{DEFMDY},'','')
+  Move 0 to $ZeroFill 09999999999999
+
+  move &TX.Balance_Year to $QtrBeginDate xxxx
+  let #QtrBeginMonth = #QtrEndMonth - 2
+  move #QtrBeginMonth to $QtrBeginMonth 09
+
+  let $QtrBeginDate = $QtrBeginDate || '-' || $QtrBeginMonth || '-01'
+
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime($PeriodEndDate,$PeriodEndDate,{DEFYMD},'','')
+
+  do DTU-DayOfWeek#($QtrBeginDate,#QtrBeginWeekday)
+  if #QtrBeginWeekday <> 1
+    let #BegOffsetDays = #QtrBeginWeekday - 1
+    do DTU-Subtract-Days($QtrBeginDate,#BegOffsetDays,$EarnsBeginDate)
+  else
+    move $QtrBeginDate to $EarnsBeginDate
+  end-if
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime($EarnsBeginDate,$SlctEarnsBeginDate,{DEFYMD},'','native')
+
+  do DTU-DayOfWeek#($PeriodEndDate,#QtrEndWeekday)
+  if #QtrEndWeekday <> 7
+    let #EndOffsetDays = 7 - #QtrEndWeekday
+    do DTU-Add-Days($PeriodEndDate,#EndOffsetDays,$EarnsEndDate)
+  else
+    move $PeriodEndDate to $EarnsEndDate
+  end-if
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime($EarnsEndDate,$SlctEarnsEndDate,{DEFYMD},'','native')
+
+  do DTU-Diff-Days($QtrBeginDate, $PeriodEndDate, #DaysInQtr)
+  let #DaysInQtr = #DaysInQtr + 1
+
+  create-array name=QtrWeeks size=1  field=WeekWorked:char:15
+  create-array name=QtrDays  size=20 field=PayGroup:char:1
+                                     field=WkSched:char:1
+                                     field=WeekDay:number:100
+                                     field=Week#:number:100
+                                     field=WorkDay:char:100
+                                     field=Wages:number:100
+  move 0 to #StateMinimum
+end-procedure
+
+begin-procedure Process-Main
+
+begin-SELECT
+TEMP_SSN_MASK
+FROM PS_INSTALLATION
+end-SELECT
+
+  move &TX.Company       to $Company  !TX.Company is the Transmitter
+  if RTRIM($Company,' ') = ''
+    display '*** Company field blank on Tax Run Control Record ***'
+  end-if
+  do Get-Company-Data                 !Transmitter identifying data
+
+begin-SELECT
+B.COMPANY
+B.FEDERAL_EIN
+
+  move &B.Company to $Company
+
+  do Read-Employee-Data
+
+FROM  PS_COMPANY_TBL B
+WHERE B.EFF_STATUS = 'A'
+  AND B.TAX_REPORT_TYPE = '2'
+  AND B.EFFDT =
+  (SELECT MAX(EFFDT)
+     FROM PS_COMPANY_TBL
+     WHERE  COMPANY = B.COMPANY
+       AND  EFFDT  <= $AsOfDate)
+ORDER BY COMPANY
+end-SELECT
+  if #Count_F > 0
+    !divide 100 into #Tot_NlGrs_QTD
+    !divide 100 into #Tot_TxGrs_QTD
+    !divide 100 into #TotTotTxGrs_QTD
+    do Print-Summary-Data('FileTotal815')
+  end-if
+end-procedure
+
+begin-procedure Read-Employee-Data
+
+begin-SELECT
+C.COMPANY    () on-break level=1 print=never before=Before-Company
+                                      AFTER=After-Company
+C.EMPLID     () on-break level=2 print=never before=Before-EMPL
+                                      AFTER=After-EMPL
+C.BALANCE_PERIOD
+C.TAX_CLASS 
+C.NLGRS_QTD
+C.TXGRS_QTD
+C.TAX_QTD
+D.LAST_NAME
+D.FIRST_NAME
+D.MIDDLE_NAME
+D1.NATIONAL_ID
+
+  MOVE &C.EMPLID  TO $EMPLID_AMT
+  MOVE &C.COMPANY TO $COMPANY_AMT
+  MOVE &C.BALANCE_PERIOD TO #BALANCE_PERIOD_AMT
+  IF $Company_Selected = 'Y'
+!    
+     if &C.NlGrs_QTD > 0
+       move &C.NlGrs_QTD to #NlGrs_QTD 
+     else
+        if &C.NlGrs_QTD < 0
+           DO WRITE-NEGATIVE-DATA
+           move 0 to #NlGrs_QTD
+           MOVE 0 TO #Tax_QTD
+        end-if
+     end-if
+
+  END-IF
+
+
+FROM  PS_TAX_BALANCE C, PS_PERSON_NAME D, PS_PERS_NID D1
+WHERE C.COMPANY       = &B.Company
+  AND D.EMPLID        = C.EMPLID
+  AND C.TAX_CLASS     IN ('I','O','Y','0','1','2','3','4')
+  AND C.LOCALITY      = ' '
+  AND C.BALANCE_ID    = $Calendar_Year_Id
+  AND C.BALANCE_YEAR  = &TX.Balance_Year
+  AND C.BALANCE_QTR   = &TX.Balance_Qtr
+  #ifdef TAXTEST
+    AND C.STATE         = 'CA'
+  #else
+    AND C.STATE         = 'WA'
+  #endif
+
+  AND C.BALANCE_PERIOD  =
+      (SELECT MAX(BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE
+       WHERE  EMPLID        = C.EMPLID
+         AND  COMPANY       = C.COMPANY
+         AND  BALANCE_ID    = C.BALANCE_ID
+         AND  BALANCE_YEAR  = C.BALANCE_YEAR
+         AND  BALANCE_QTR   = C.BALANCE_QTR
+         AND  STATE         = C.STATE
+         AND  LOCALITY      = C.LOCALITY
+         AND  TAX_CLASS     = C.TAX_CLASS)
+  AND (C.NLGRS_QTD <> 0 OR C.TXGRS_QTD <> 0)
+  AND D.EMPLID            = D1.EMPLID
+  AND D1.COUNTRY = {NID_Country}
+  AND D1.NATIONAL_ID_TYPE = $Payroll_NID_Type
+ORDER BY D1.NATIONAL_ID, C.BALANCE_PERIOD
+end-SELECT
+end-procedure
+
+BEGIN-PROCEDURE WRITE-NEGATIVE-DATA
+
+   MOVE ' ' TO $ErMsg
+   MOVE 'WA QTD PFML Wages Negative (' TO $ErMsg
+   
+   MOVE &C.TAX_CLASS TO $TAX_CLASS
+   LET $TAX_CLASS = RTRIM(LTRIM($TAX_CLASS, ' '), ' ')
+   
+   EVALUATE $TAX_CLASS
+    when = '0'
+      LET $ErMsg = $ErMsg || 'Vol MLI/ER'
+      break
+
+    when = '1'
+      LET $ErMsg = $ErMsg || 'Vol MLI/EE'
+      break
+
+    when = '2'
+       LET $ErMsg = $ErMsg || 'MLI/ER'
+      break
+
+    when = '3'
+       LET $ErMsg = $ErMsg || 'MLI/EE'
+      break
+
+    when = '4'
+      LET $ErMsg = $ErMsg || 'FLI/ER'
+      break
+      
+    when = 'I'
+      LET $ErMsg = $ErMsg || 'FLI/EE'
+      break
+      
+    when = 'O'
+      LET $ErMsg = $ErMsg || 'Vol FLI/EE'
+      break
+
+    when = 'Y'
+      LET $ErMsg = $ErMsg || 'Vol FLI/ER'
+      break
+      
+    when-other
+      break
+      
+  end-evaluate
+
+   LET $ErMsg = $ErMsg || ')'
+   move &C.NlGrs_QTD to #Neg_NlGrs_QTD
+   move &C.Tax_QTD to #Tax_QTD
+   do Print-Summary-Data('NegAmt')
+
+END-PROCEDURE
+
+
+begin-procedure Before-EMPL
+  IF $Company_Selected = 'Y'
+     move &D1.NATIONAL_ID to $S123 xxx       !isolate first 3 digits
+     if $S123 = &Temp_SSN_Mask or RTRIM(&D1.NATIONAL_ID, ' ') = ''
+       move 'I        '   to $NATIONAL_ID
+     else
+       move &D1.NATIONAL_ID        to $NATIONAL_ID
+     end-if
+     
+     let $LastName   = rtrim(&D.LAST_NAME, ' ')
+     let $FirstName  = rtrim(&D.FIRST_NAME, ' ')
+     let $MidInitial = {ps-substr}(&D.MIDDLE_NAME,1,1)
+     
+     uppercase $LastName
+     uppercase $FirstName
+     
+     LET $Valid_Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ -'''
+     MOVE 0   TO #Invalid
+     
+     MOVE $LastName TO $LastNameAUX
+     LET $LastNameAUX = RTRIM($LastNameAUX,' ')
+     LET $Invalid_Chars = Translate($LastNameAUX, $Valid_Chars, '')
+     LET #Invalid = length($Invalid_Chars)
+     
+     IF #Invalid
+       DISPLAY ' '
+       DISPLAY 'Only alphabetical characters, spaces, hyphens, and apostrophes are allowed for Last Name.'
+       DISPLAY 'Verify the employee Last Name for the EMPLID '  NOLINE
+       DISPLAY &C.EMPLID NOLINE
+       DISPLAY ' before submitting the file.' 
+       DISPLAY ' '
+       MOVE 0   TO #Invalid
+     END-IF
+     
+     MOVE $FirstName TO $FirstNameAUX
+     LET $FirstNameAUX = RTRIM($FirstNameAUX,' ')
+     LET $Invalid_Chars = Translate($FirstNameAUX, $Valid_Chars, '')
+     LET #Invalid = length($Invalid_Chars)
+     
+     IF #Invalid
+       DISPLAY ' '
+       DISPLAY 'Only alphabetical characters, spaces, hyphens, and apostrophes are allowed for First Name.'
+       DISPLAY 'Verify the employee First Name for the EMPLID '  NOLINE
+       DISPLAY &C.EMPLID NOLINE
+       DISPLAY ' before submitting the file.' 
+       DISPLAY ' '
+       MOVE 0   TO #Invalid
+     END-IF
+     
+     
+     move &C.EmplID to $EmplID
+     move 0 to #NlGrs_QTD
+  END-IF
+
+end-procedure
+
+begin-procedure After-EMPL
+  IF $Company_Selected = 'Y'
+     move 'PS_RC_TAX815WA D'  to $TAX810X1
+     move 'PS_RC_TAX815WA D1' to $TAX810X2
+     move 'PS_RC_TAX815WA D2' to $TAX810X3
+     move 'PS_RC_TAX815WA D3' to $TAX810X4
+     do Get-Hours
+     if #Hours > 9999
+        let $Hours = '9999'
+     else
+        if #Hours >= 0
+           let #Hours = #Hours + .99
+           let #Hours = trunc (#Hours,0)
+           do Format-Number(#Hours, $Hours, '0999')
+        end-if
+     end-if
+     move '0'  to $ExemptOfficer                   !Assume 0 until the state says otherwise
+     
+     if #Hours < 0
+        do Format-Number(#Hours, $NegHours, '99999.99')
+        do Print-Negative-Hours
+        let #Co_NlGrs_QTD = #Co_NlGrs_QTD - #NlGrs_QTD
+     else
+        DO VALIDATE-SAME-AMOUNTS
+        IF $ProcessEE = 'Y'
+           DO FORMAT-AMOUNTS
+           DO Write-S-Record
+        END-IF
+     end-if
+  END-IF
+
+end-procedure
+
+
+
+begin-procedure Before-Company
+  
+  let $Company_Selected = 'N'
+  Do Company-Run-Control
+  if $Company_Selected = 'N'
+     Display '*** Company ' NOLINE
+     Display $Company NOLINE     
+     DISPLAY ' not on the Run Control Page   ***'
+     display '*** Employees for this Company not processed. ***' 
+     display ' '
+  ELSE
+     do Get-Company-Data
+     do Get-State-Tax-Data             !Employer ID
+
+     DO Close-File
+     DO Open-File
+     LET $PrevCo = $Company
+
+#ifdef TAXTEST              !Reset so Getweeks will work
+  move 'CA' to $State
+#endif
+
+  END-IF
+
+end-procedure
+
+begin-procedure After-Company
+  IF $Company_Selected = 'Y'
+
+     MOVE 0 TO #TotAmtPrem
+     MOVE ' ' TO $TotAmtPrem
+     if #Count_S > 0
+       Do Get-EE-Premium-Withheld
+     end-if
+
+     add #Co_NlGrs_QTD to #Tot_NlGrs_QTD
+     ADD #TotAmtPrem TO #Tot_TotAmtPrem
+     !divide 100 into #Co_NlGrs_QTD
+     !divide 100 into #Co_TxGrs_QTD
+     !divide 100 into #CoTotTxGrs_QTD
+     
+     do Print-Summary-Data('CoAmt815')
+     
+     add #Count_S to #Count_F
+     move 0 to #Co_NlGrs_QTD
+     move 0 to #Count_S
+     new-page
+  END-IF
+
+end-procedure
+
+
+BEGIN-PROCEDURE VALIDATE-SAME-AMOUNTS
+   MOVE 'Y' TO $ProcessEE
+
+BEGIN-SELECT
+
+MAX(TB1.NLGRS_QTD) &MAX_NLGRS_QTD
+MIN(TB1.NLGRS_QTD) &MIN_NLGRS_QTD
+ 
+   IF (&MAX_NLGRS_QTD <> &MIN_NLGRS_QTD) AND &MAX_NLGRS_QTD > 0
+      DISPLAY ' '
+      DISPLAY '*** Warning: Employee ID ' NOLINE
+      DISPLAY $EMPLID_AMT NOLINE 
+      DISPLAY ' is included in the file, however, ' NOLINE 
+      DISPLAY 'the no limit grosses for state ' NOLINE 
+      DISPLAY 'and/or voluntary FLI-EE, FLI-ER, MLI-EE, MLI-ER' NOLINE 
+      DISPLAY ' are not the same amount.' 
+      DISPLAY 'The file will report the no limit gross ' NOLINE
+      DISPLAY 'for the highest gross.'
+      DISPLAY 'Review the tax balances of the employee ' NOLINE 
+      DISPLAY 'to ensure they are accurate.'
+      DISPLAY 'If corrections are needed, correct the balances ' NOLINE
+      DISPLAY 'with the online Balance Adjustment pages and rerun the file.'
+      DISPLAY ' '
+      MOVE &MAX_NLGRS_QTD TO #NlGrs_QTD
+   END-IF
+
+   IF (&MAX_NLGRS_QTD < 0)
+      MOVE 'N' TO $ProcessEE
+   END-IF
+   
+FROM PS_TAX_BALANCE TB1
+WHERE 
+       TB1.EMPLID = $EMPLID_AMT
+   AND TB1.COMPANY = $COMPANY_AMT
+   AND TB1.BALANCE_ID = $Calendar_Year_Id
+   AND TB1.BALANCE_YEAR = &TX.Balance_Year
+   AND TB1.BALANCE_QTR =  &TX.Balance_Qtr
+   AND TB1.BALANCE_PERIOD = #BALANCE_PERIOD_AMT !&C.BALANCE_PERIOD
+   #ifdef TAXTEST
+   AND TB1.STATE         = 'CA'
+   #else
+   AND TB1.STATE         = 'WA'
+  #endif
+   AND TB1.TAX_CLASS  IN ('I','O','Y','0','1','2','3','4')
+END-SELECT
+END-PROCEDURE
+
+BEGIN-PROCEDURE FORMAT-AMOUNTS
+     add #NlGrs_QTD to #Co_NlGrs_QTD
+END-PROCEDURE
+
+Begin-Procedure Get-EE-Premium-Withheld
+! This TAX CLASSES are paid once per quarter
+begin-SELECT
+
+#ifdef DB2ALL
+DECIMAL(SUM(TB.TAX_QTD),15,3) &TB.TAX_QTD
+#else
+SUM(TB.TAX_QTD) &TB.TAX_QTD
+#endif
+
+   ADD &TB.TAX_QTD TO #TotAmtPrem
+   multiply 100 times #TotAmtPrem
+   do Format-Number(#TotAmtPrem,  $TotAmtPrem,  '09999999999999')
+   divide 100 into #TotAmtPrem
+
+FROM  PS_TAX_BALANCE TB
+WHERE TB.COMPANY        = &B.Company
+  AND TB.BALANCE_ID     = $Calendar_Year_Id
+  AND TB.BALANCE_YEAR   = &TX.Balance_Year
+  AND TB.BALANCE_QTR    = &TX.Balance_Qtr
+  
+  AND TB.BALANCE_PERIOD  =
+      (SELECT MAX(TBS.BALANCE_PERIOD)
+       FROM   PS_TAX_BALANCE TBS
+       WHERE  TBS.EMPLID        = TB.EMPLID
+         AND  TBS.COMPANY       = TB.COMPANY
+         AND  TBS.BALANCE_ID    = TB.BALANCE_ID
+         AND  TBS.BALANCE_YEAR  = TB.BALANCE_YEAR
+         AND  TBS.BALANCE_QTR   = TB.BALANCE_QTR
+         AND  TBS.STATE         = TB.STATE
+         AND  TBS.LOCALITY      = TB.LOCALITY
+         AND  TBS.TAX_CLASS     = TB.TAX_CLASS)
+  
+  #ifdef TAXTEST
+    AND TB.STATE        = 'CA'
+  #else
+    AND TB.STATE        = 'WA'
+  #endif
+  
+  AND TB.TAX_CLASS      IN ('1','3','I','O') 
+  AND TB.TAX_QTD > 0
+  AND TB.NLGRS_QTD > 0
+end-SELECT
+
+End-Procedure
+
+begin-procedure Company-Run-Control
+begin-SELECT
+RC_TAX816WA.COMPANY
+
+  let $Company_Selected  = 'Y'
+
+FROM  PS_RC_TAX816WA RC_TAX816WA
+WHERE RC_TAX816WA.OPRID              = $Prcs_OprID
+AND   RC_TAX816WA.RUN_CNTL_ID        = $Prcs_Run_Cntl_ID
+AND   RC_TAX816WA.COMPANY            = $Company
+end-select
+end-procedure
+
+begin-procedure Write-S-Record
+  LET $NlGrs_QTD  = ''
+  MOVE #NlGrs_QTD TO $NlGrs_QTD
+  
+  let #Loc = (Instr($NlGrs_QTD,'.',1) + 2 )
+  LET $NlGrs_QTD = SUBSTR ($NlGrs_QTD, 1, #Loc)
+  add 1 to #Count_S
+  LET $CSVLine = ''
+  let $CSVLine = $NATIONAL_ID || ',' || $LastName  || ',' || $FirstName || ',' || 
+                 $MidInitial  || ',' || $Hours     || ',' || $NlGrs_QTD 
+
+  write 10 from  $CSVLine
+
+  add 1 to #RecordCount
+end-procedure
+
+begin-procedure Open-File
+   
+#ifdef OS400
+  let $FileID = 'WAPFL' || $Company || '(D' || $FileExtension || ')'
+#else
+  #ifdef MVS
+    let $FileID = 'WAPFL' || $Company
+  #else
+    let $FileID = 'WAPFL' || $Company || '.' || $FileExtension
+  #endif
+#endif
+  let $FileID = '{IMPORTPREFIX}' || $FileID
+#ifdef MVS
+  open $FileID as 10 for-writing record=275:fixed_nolf
+#else
+  open $FileID as 10 for-writing record=275:fixed
+#endif
+move 1 to #FileExtension
+end-procedure
+
+
+begin-procedure Close-File
+if #FileExtension > 0
+   close 10
+   move 0 to #FileExtension
+end-if
+end-procedure
+
+begin-procedure Print-Negative-Hours
+
+  if $_Company <> $_LastCompany
+    move $_Company     to $_LastCompany
+    move $_CompanyName to $_LastCompanyName
+    move '' to $PrintHeader
+  end-if
+
+  if $PrintHeader = ''
+     print '**** Negative Hours ******'  (+1,1)
+        print 'EmplID'                   (+2,1)
+        print 'Hours'                     (0,55)
+        position (+1)
+        move 'N' to $PrintHeader
+  end-if
+
+  let $EmpName = substr($LastName, 1, 20) || ', ' || substr($FirstName, 1, 15)
+
+  print $EmplID       (+1,1)
+  print $EmpName       (0,15)
+  print $NegHours      (0,52)    edit 99999.99
+
+end-procedure
+
+
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'taxrnctl.sqc'  !Get-Tax-Reporting-Run-Controls procedure
+#Include 'getcodta.sqc'  !Get-Company-Data procedure
+#Include 'getstdta.sqc'  !Get-State-Tax-Data procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'rptsmmry.sqc'  !Print-Summary-Data procedure
+#Include 'getbalid.sqc'  !Get-Calendar-Year-Id
+#Include 'stdapi.sqc'    !Update Process API
+#Include 'txrnctl1.sqc'  !Get-Run-Control procedure
+#Include 'getweksa.sqc'  !Get-Weeks procedure
+#Include 'datemath.sqc'  !Date math procedures
+#Include 'gethours.sqc'  !Get-Hours procedure
+

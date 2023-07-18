@@ -1,0 +1,901 @@
+
+!***********************************************************************
+!  GPGBRPRF.SQR - PROFILE REPORTING                                    *
+!                                                                      *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!
+! Copyright (C) 1988, 2013, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!----------------------------------------------------------------------
+!
+!          $Date:  2013/01/18:04:05:57                                 !
+!       $Release:  HR92                                                !
+!      $Revision:  101                                                 !
+!                                                                      *
+!***********************************************************************
+
+!******************************************************************
+! Programmer            Start Dt   End Date  Orig. Pgm            *
+! --------------------- ---------  --------  ---------            *
+! McCollin Riccardo     31/8/2000   /8/2000                       *
+! 18/8/2003             Include the pnl_profile, cal_run_id in    *
+!                       RETRIEVE-PROFILE-DATA procedure.          *
+!******************************************************************
+
+!******************************************************************
+!*** Setting up the environment
+!******************************************************************
+
+#include 'setenv.sqc'   ! Set environment
+#include 'setup32.sqc'  ! Printer and page-size initialization
+
+!******************************************************************
+!*** Constants definitions
+!******************************************************************
+
+!Define Column Location Variables
+#define PageLength              177
+#define PosNumPage              165
+
+#define Pos1                    1
+#define Pos2                    17
+#define Pos3                    34
+#define Pos4                    51
+#define Pos5                    68
+#define Pos6                    85
+#define Pos7                    102
+#define Pos8                    119
+#define Pos9                    136
+#define Pos10                   153
+
+!******************************************************************
+!*** Heading section - Title
+!******************************************************************
+
+begin-heading 4 !This number must be changed to match the number
+                !of lines in the header (including column headings)
+
+        print $ReportTitle              ()   bold center
+        print 'Report ID:  '            (+1,1)
+        print $ReportID                 (,{Pos2})
+        page-number                     ( ,{PosNumPage}) 'Page: '
+        last-page                       () ' / '
+        print 'Date:'                   (+1,1)
+        print $Time_Begin               (,{Pos2})
+        print 'Pay Entity:'             (+1,1)
+        print $DESCR                    (,{Pos2})
+
+!******************************************************************
+!*** Heading section - Headers
+!******************************************************************
+
+end-heading
+
+!******************************************************************
+!***    Begin Report Section
+!******************************************************************
+begin-report
+
+        SHOW 'Profile Reporting'
+
+        !----------------------------------------------------------
+        !***    ! SHOW timedate of the beginning
+        !----------------------------------------------------------
+        let $Time_Begin = edit(datenow(), 'DD/MM/YYYY HH24:MI:SS')
+        show 'Time Program Began = ' $Time_Begin
+
+        !----------------------------------------------------------
+        !***    Call the main procedures
+        !----------------------------------------------------------
+        do INIT-REPORT
+        do MAIN-REPORT
+
+        !----------------------------------------------------------
+        !***    SHOW informations
+        !----------------------------------------------------------
+
+        move #CountError to $CountError 99999
+        SHOW 'CountError  ==> ' noline
+        SHOW $CountError
+        SHOW ' '
+
+        !----------------------------------------------------------
+        !***    SHOW timedate of the end
+        !----------------------------------------------------------
+        !let $Time_Ended = edit(datenow(), 'DD/MM/YYYY HH24:MI:SS')
+        !show 'Time Program Ended = ' $Time_Ended
+
+end-report
+
+
+!******************************************************************
+! I N I T I A L I Z E   A N D / O R   G E T    V A R I A B L E S
+!******************************************************************
+
+
+!*=================================================================
+! Procedure     :INIT-REPORT
+! Comment       :This procedure performs the application
+!                initializations formats variables for use, and
+!                calls the procedures to get input parameters.
+!*=================================================================
+begin-procedure INIT-REPORT
+
+        let $ProcedureName      = 'INIT-REPORT'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+        do INIT-DATETIME
+        do INIT-NUMBER
+        do INIT-VARIABLES
+        do DEFINE-PRCS-VARS
+        do GET-RUN-CONTROL-PARMS
+        do GET-CURRENT-DATETIME
+
+        if isnull($prcs_process_instance)
+                SHOW 'Running Profile Reporting.SQR'
+                do ASK-VALUES !SQR not run through process scheduler
+        else
+                SHOW 'Running Profile Reporting.SQR in the Process Scheduler'
+                do GET-VALUES !SQR run through process scheduler
+        end-if
+
+        let $ReportID    = 'RPRF'
+        let $ReportTitle = 'Profile Reporting'
+        !let $ReportSubTitle = ' '
+        SHOW  ' '
+        show $ReportID  ' '      $ReportTitle
+        SHOW ' '
+        show    'Operator ID: ' $Prcs_OprID  ' ' $Prcs_Run_Cntl_ID
+        SHOW ' '
+
+end-procedure INIT-REPORT
+
+!*=================================================================
+! Procedure    :INIT-VARIABLES
+! Comment      :Initializations of all varaibles used by the report
+!*=================================================================
+begin-procedure INIT-VARIABLES
+
+        let $ProcedureName      = 'INIT-VARIABLES'
+
+        LET #TRUE               = 1
+        LET #FALSE              = 0
+        LET #CountError         = 0
+        LET #RECCOUNT           = 0
+        LET #MAXLOOP            = 0
+
+
+end-procedure INIT-VARIABLES
+
+
+!*=================================================================
+! Procedure   :ASK-VALUES
+! Comment     :This procedure prompts the user for those variable
+!              values that will be used throughout the report.
+!              ASK-VALUES is called when the user is not using
+!              the process scheduler. This procedure calls whatever
+!              procedures are needed. (eg. do ASK-FROM-THRU-DATE).
+!*=================================================================
+begin-procedure ASK-VALUES
+
+        let $ProcedureName      = 'ASK-VALUES'
+
+        !*---------------------------------------------------------
+        !***    Enter the Calender Run ID
+        !*---------------------------------------------------------
+        !input $PNL_CAL_RUN_ID 'Enter Calender Run ID'
+
+        !*---------------------------------------------------------
+        !***    Enter the Pay Entity
+        !*---------------------------------------------------------
+        !input $PNL_PAY_ENTITY 'Enter Pay Entity'
+
+        !*---------------------------------------------------------
+        !***    Enter the Deptid
+        !*---------------------------------------------------------
+        !input $PNL_DEPTID 'Enter Department ID'
+
+        !*---------------------------------------------------------
+        !***    Enter the Pay Group
+        !*---------------------------------------------------------
+        !input $PNL_PAYGROUP 'Enter Pay Group '
+
+        !*---------------------------------------------------------
+        !***    Enter the Employee ID
+        !*---------------------------------------------------------
+        !input $PNL_EMPLID 'Enter Employee ID '
+
+        !*---------------------------------------------------------
+        !***    Enter the Tax Period
+        !*---------------------------------------------------------
+        !input $PNL_TAX_PERIOD 'Enter Tax Period'
+
+        !*---------------------------------------------------------
+        !***    Enter the Frequency ID
+        !*---------------------------------------------------------
+        !input $PNL_FREQUENCY_ID 'Enter Frequency ID'
+
+        !*---------------------------------------------------------
+        !***    Enter the Tax Year
+        !*---------------------------------------------------------
+        !input $PNL_TAX_YEAR 'Enter The Year the Tax Year Begins In'
+
+        !*---------------------------------------------------------
+        !***    Enter the Profile
+        !*---------------------------------------------------------
+        !input $PNL_PROFILE 'Enter The Report Profile Required'
+
+
+end-procedure ASK-VALUES
+
+
+!*=================================================================
+! Procedure     :GET-VALUES
+! Comment       :This procedure gets the variable name (beginning
+!                with a $) that will be used throughout the report
+!                using the run control parameters called in
+!                GET-RUN-CONTROL-PARMS.
+!*=================================================================
+begin-procedure GET-VALUES
+
+        let $ProcedureName      = 'GET-VALUES'
+
+begin-SELECT on-error=ERROR-SQL   !SELECTS THE DATA FROM THE PANEL
+RUNDB.CAL_RUN_ID
+RUNDB.DEPTID
+RUNDB.PAY_ENTITY
+RUNDB.GP_PAYGROUP
+RUNDB.EMPLID
+RUNDB.FREQUENCY_ID
+RUNDB.GPGB_TAX_PERIOD
+RUNDB.GPGB_TAX_BGN_YR
+RUNDB.DESCR20
+
+        LET $PNL_CAL_RUN_ID         = RTRIM(&RUNDB.CAL_RUN_ID,' ')
+        LET $PNL_DEPTID             = RTRIM(&RUNDB.DEPTID,' ')
+        LET $PNL_PAY_ENTITY         = RTRIM(&RUNDB.PAY_ENTITY,' ')
+        LET $PNL_PAYGROUP           = RTRIM(&RUNDB.GP_PAYGROUP,' ')
+        LET $PNL_EMPLID             = RTRIM(&RUNDB.EMPLID,' ')
+        LET #PNL_TAX_PERIOD         = &RUNDB.GPGB_TAX_PERIOD
+        LET $PNL_FREQUENCY_ID       = RTRIM(&RUNDB.FREQUENCY_ID,' ')
+        LET $PNL_TAX_YEAR           = RTRIM(EDIT(&RUNDB.GPGB_TAX_BGN_YR, '9999'),' ')
+        LET #PNL_TAX_YEAR           = &RUNDB.GPGB_TAX_BGN_YR
+        LET $PNL_PROFILE            = RTRIM(&RUNDB.DESCR20,' ')
+
+        LET $PNL_TAX_PERIOD         = EDIT(#PNL_TAX_PERIOD,'09')
+
+
+        FROM  PS_GPGB_RUNCTL_SQR RUNDB
+        WHERE RUNDB.OPRID         = $Prcs_OprID
+          AND RUNDB.RUN_CNTL_ID   = $Prcs_Run_Cntl_ID
+
+end-SELECT
+
+end-procedure GET-VALUES
+
+!******************************************************************
+!           S T A R T   O F   T H E   R E P O R T
+!******************************************************************
+
+!*=================================================================
+! Procedure     : MAIN REPORT                                     !
+! Descr         : This procedure is the main procedure of the     !
+!                 report and calls other procedures               !
+!                                                                 !
+!*=================================================================
+
+begin-procedure MAIN-REPORT
+
+        let $ProcedureName      = 'MAIN-REPORT'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+
+        DO INITIALIZE-ARRAY
+        DO POPULATE-ARRAY
+
+        DO PRINT-HEADERS
+
+        SHOW $ProcedureName '->#RECCOUNT->' #RECCOUNT
+        SHOW $ProcedureName '->#MAXLOOP->' #MAXLOOP
+        SHOW $ProcedureName '->#_MAXLOOP->' #_MAXLOOP
+
+
+        DO SELECT-EMPLOYEES ($PNL_CAL_RUN_ID, $PNL_DEPTID, $PNL_PAY_ENTITY,$PNL_PROFILE,
+        $PNL_PAYGROUP, $PNL_EMPLID, $PNL_TAX_PERIOD, $PNL_FREQUENCY_ID,
+        $PNL_TAX_YEAR, $SELECTED_EMPLOYEE, #SELECTED_TAX_PERIOD,
+        $SELECTED_FREQUENCY,#_MAXLOOP)
+
+        DO UPDATE-PRCS-RUN-STATUS
+
+end-procedure MAIN-REPORT
+
+!*==================================================================
+! Procedure     : SELECT EMPLOYEES                                 !
+! Descr         : Retrieves employees for selected criteria chosen !
+!               : from the run control panel                       !
+!*==================================================================
+
+begin-procedure SELECT-EMPLOYEES($PNL_CAL_RUN_ID, $PNL_DEPTID,
+                $PNL_PAY_ENTITY, $PNL_PROFILE,$PNL_PAYGROUP,$PNL_EMPLID,
+                $PNL_TAX_PERIOD, $PNL_FREQUENCY_ID, $PNL_TAX_YEAR,
+                :$SELECTED_EMPLOYEE, :#SELECTED_TAX_PERIOD, :$SELECTED_FREQUENCY, #MAXLOOP)
+
+        let $ProcedureName      = 'SELECT-EMPLOYEES'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+        LET $Q                  = ''''
+
+        LET $WHERE_STATEMENT    = 'WHERE GER.GPGB_TAX_BGN_YR = '
+                                  || $PNL_TAX_YEAR
+        LET $FREQ_WHERE         = ' AND GER.FREQUENCY_ID = '''
+                                  || $PNL_FREQUENCY_ID || $Q
+        LET $PERIOD_WHERE       = ' AND GER.GPGB_TAX_PERIOD = '
+                                  || $PNL_TAX_PERIOD
+        LET $CALENDER_WHERE     = ' AND GER.CAL_RUN_ID = '''
+                                  || $PNL_CAL_RUN_ID || $Q
+        LET $DEPTID_WHERE       = ' AND GER.DEPTID = '''
+                                  || $PNL_DEPTID || $Q
+        LET $PAY_ENTITY_WHERE   = ' AND GER.PAY_ENTITY = '''
+                                  || $PNL_PAY_ENTITY || $Q
+        LET $EMPLID_WHERE       = ' AND GER.EMPLID = '''
+                                  || $PNL_EMPLID || $Q
+        LET $PAYGROUP_WHERE     = ' AND GER.GP_PAYGROUP = '''
+                                  || $PNL_PAYGROUP || $Q
+
+        MOVE $PNL_TAX_PERIOD    TO   #TAX_PERIOD
+
+        IF  #TAX_PERIOD <> 00
+                LET $WHERE_STATEMENT= $WHERE_STATEMENT
+                                      || $PERIOD_WHERE
+        END-IF
+
+        EVALUATE ''
+        WHEN <> $PNL_FREQUENCY_ID
+                LET $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $FREQ_WHERE
+        WHEN <> $PNL_CAL_RUN_ID
+                LET $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $CALENDER_WHERE
+        WHEN <> $PNL_DEPTID
+                LET $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $DEPTID_WHERE
+                BREAK
+        WHEN <> $PNL_PAY_ENTITY
+                LET $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $PAY_ENTITY_WHERE
+
+        WHEN <> $PNL_EMPLID
+                LET $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $EMPLID_WHERE
+                BREAK
+        WHEN <> $PNL_PAYGROUP
+                LET $WHERE_STATEMENT = $WHERE_STATEMENT
+                                       || $PAYGROUP_WHERE
+                BREAK
+        END-EVALUATE
+
+SHOW 'FINAL WHERE-> '  $Where_statement
+
+begin-SELECT
+GER.PAY_ENTITY          &PAY_ENTITY  () on-break print=never after=START-NEW-PAGE level=1
+GER.EMPLID              &EMPLID      () on-break print=never after=RETRIEVE-PROFILE-DATA ($SELECTED_EMPLOYEE,$SELECTED_CAL_RUN_ID,$PNL_PROFILE,#MAXLOOP) level=1
+GER.GPGB_TAX_PERIOD     &TAX_PERIOD
+GER.CAL_RUN_ID          &CAL_RUN_ID
+GER.DEPTID
+GER.GP_PAYGROUP
+GER.FREQUENCY_ID        &FREQUENCY
+GER.GPGB_TAX_BGN_YR
+
+                LET $SELECTED_EMPLOYEE   = RTRIM(&EMPLID, ' ')
+                LET #SELECTED_TAX_PERIOD = &TAX_PERIOD
+                LET $SELECTED_CAL_RUN_ID = RTRIM(&CAL_RUN_ID, ' ')
+                LET $SELECTED_FREQUENCY  = &FREQUENCY
+
+        DO RETRIEVE-EMPLOYEE-DATA ($SELECTED_EMPLOYEE,
+        #SELECTED_TAX_PERIOD, $SELECTED_FREQUENCY, $PERIOD, $NI_CATEGORY, $EMPLID,
+        $PAY_ENTITY)
+
+FROM PS_GPGB_EE_RSLT GER, PS_GP_PYE_PRC_STAT GPPS
+[$Where_statement]
+AND GER.EMPLID = GPPS.EMPLID
+AND GER.CAL_RUN_ID = GPPS.CAL_RUN_ID
+AND GER.EMPL_RCD = GPPS.EMPL_RCD
+AND GER.CAL_ID = GPPS.CAL_ID
+AND GER.GP_PAYGROUP = GPPS.GP_PAYGROUP
+AND GPPS.CALC_TYPE = 'P'
+
+ORDER BY GER.GPGB_TAX_BGN_YR, GER.PAY_ENTITY,GER.EMPLID,GER.FREQUENCY_ID,
+GER.GPGB_TAX_PERIOD
+
+
+END-SELECT
+
+end-procedure SELECT-EMPLOYEES
+
+
+!*=================================================================
+! Procedure: PRINT-HEADERS                                        !
+! Descr:     Prints Header Information from Profile               !
+!                                                                 !
+!*=================================================================
+begin-procedure PRINT-HEADERS
+
+        LET $ProcedureName = 'PRINT-HEADERS'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+        LET #RECCOUNT = 0
+        LET #PRINTCOUNT = 1
+
+        PRINT 'Employee Name'            (+1,{Pos1})
+
+        SHOW $ProcedureName '->#RECCOUNT->' #RECCOUNT
+        SHOW $ProcedureName '->#MAXLOOP->' #MAXLOOP
+        SHOW $ProcedureName '->#_MAXLOOP->' #_MAXLOOP
+
+        WHILE #RECCOUNT <> #_MAXLOOP
+
+                GET $A_R_PIN_CODE FROM EMPVALUES(#RECCOUNT) PIN_CODE
+                GET $ARRAY_DESCR FROM EMPVALUES(#RECCOUNT) DESCRIPTION
+                GET #A_R_VALUE FROM EMPVALUES(#RECCOUNT) VALUE
+
+                MOVE $ARRAY_DESCR TO $A_R_DESCR 'XXXXXXXXXXXXXXX'
+                IF #PRINTCOUNT = 11
+                        LET #PRINTCOUNT = 1
+                END-IF
+
+                EVALUATE #PRINTCOUNT
+                WHEN = 1
+                        PRINT $A_R_DESCR       (+1,{Pos1})
+                        BREAK
+                BREAK
+                WHEN = 2
+                        PRINT $A_R_DESCR       (,{Pos2})
+                        BREAK
+                BREAK
+                WHEN = 3
+                        PRINT $A_R_DESCR       (,{Pos3})
+                        BREAK
+                BREAK
+                WHEN = 4
+                        PRINT $A_R_DESCR       (,{Pos4})
+                        BREAK
+                BREAK
+                WHEN = 5
+                        PRINT $A_R_DESCR       (,{Pos5})
+                        BREAK
+                BREAK
+                WHEN = 6
+                        PRINT $A_R_DESCR       (,{Pos6})
+                        BREAK
+                BREAK
+                WHEN = 7
+                        PRINT $A_R_DESCR       (,{Pos7})
+                        BREAK
+                BREAK
+                WHEN = 8
+                        PRINT $A_R_DESCR       (,{Pos8})
+                        BREAK
+                BREAK
+                WHEN = 9
+                        PRINT $A_R_DESCR       (,{Pos9})
+                        BREAK
+                BREAK
+                WHEN = 10
+                        PRINT $A_R_DESCR       (,{Pos10})
+                        BREAK
+                BREAK
+                END-EVALUATE
+
+                ADD 1 TO #RECCOUNT
+                ADD 1 TO #PRINTCOUNT
+
+        END-WHILE
+
+        graphic                 (+1,1,178) horz-line
+
+end-procedure PRINT-HEADERS
+
+!*=================================================================
+! Procedure:  START-NEW-PAGE                                      !
+! Descr:      New page each time the Pay Entity changes           !
+!                                                                 !
+!*=================================================================
+begin-procedure START-NEW-PAGE
+
+        let $ProcedureName      = 'START-NEW-PAGE'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+        SHOW 'CURRENT-LINE->' #CURRENT-LINE
+        IF #_CURRENT-LINE > 7
+                NEW-PAGE
+                DO PRINT-HEADERS
+        END-IF
+
+end-procedure START-NEW-PAGE
+
+
+!*=================================================================
+! Procedure: PRINT-REPORT/CALCULATE VALUES                        !
+! Descr:                                 !
+!                                                                 !
+!*=================================================================
+
+begin-procedure PRINT-REPORT ($PIN_CODE, $PERIOD, $NI_CATEGORY,
+                $EMPLID, $PAY_ENTITY)
+
+        LET $ProcedureName = 'PRINT-REPORT'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+
+end-procedure PRINT-REPORT
+
+
+!*=================================================================
+! Procedure: RETRIEVE-PROFILE-DATA                                !
+! Descr:     Retrieves Profile information,                       !
+!                                                                 !
+!*=================================================================
+
+begin-procedure RETRIEVE-PROFILE-DATA($SELECTED_EMPLOYEE,$SELECTED_CAL_RUN_ID,$PNL_PROFILE,#MAXLOOP)
+
+        LET $ProcedureName = 'RETRIEVE-PROFILE-DATA'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+BEGIN-SELECT
+GRED.EMPLID
+GRED.CALC_RSLT_VAL      &CALC_RSLT_VAL
+GPIN.PIN_CODE           &PIN_CODE
+GP.SEQNUM
+GP.DESCR20
+
+        LET $_PINCODE = RTRIM(&PIN_CODE, ' ')
+        LET #_PROF_VAL =  &CALC_RSLT_VAL
+        SHOW $SELECTED_EMPLOYEE '<-PROFILE VALUE->' #_PROF_VAL '<->' $_PINCODE
+
+        DO ADD-TO-ARRAY
+
+FROM PS_GP_RSLT_ERN_DED GRED,PS_GP_PIN GPIN,PS_GPGB_PROF GP, PS_GPGB_RUNCTL_SQR GRS
+WHERE GP.GPGB_PIN_NUM_CUR = GRED.PIN_NUM
+AND GRED.PIN_NUM = GPIN.PIN_NUM
+AND GP.DESCR20 = GRS.DESCR20
+AND GP.DESCR20 = $PNL_PROFILE
+AND GRED.EMPLID = $SELECTED_EMPLOYEE
+AND GRED.CAL_RUN_ID = $SELECTED_CAL_RUN_ID
+ORDER BY GRED.EMPLID,GP.SEQNUM
+
+END-SELECT
+
+DO RETRIEVE-PROFILE-DATA-ACUM ($SELECTED_EMPLOYEE,$SELECTED_CAL_RUN_ID,$PNL_PROFILE,#MAXLOOP)
+
+end-procedure RETRIEVE-PROFILE-DATA
+
+!*=================================================================
+! Procedure: RETRIEVE-PROFILE-DATA-ACUM                           !
+! Descr:     Retrieves Profile information,                       !
+!                                                                 !
+!*=================================================================
+
+begin-procedure RETRIEVE-PROFILE-DATA-ACUM($SELECTED_EMPLOYEE,$SELECTED_CAL_RUN_ID,$PNL_PROFILE,#MAXLOOP)
+
+        LET $ProcedureName = 'RETRIEVE-PROFILE-DATA-ACUM'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+
+BEGIN-SELECT
+GRED.EMPLID
+GRED.CALC_RSLT_VAL      &CALC_RSLT_VAL
+GPIN.PIN_CODE           &PIN_CODE
+GP.SEQNUM
+GP.DESCR20
+
+        LET $_PINCODE = RTRIM(&PIN_CODE, ' ')
+        LET #_PROF_VAL =  &CALC_RSLT_VAL
+        SHOW $SELECTED_EMPLOYEE '<-PROFILE VALUE->' #_PROF_VAL '<->' $_PINCODE
+
+        DO ADD-TO-ARRAY
+
+FROM PS_GP_RSLT_ACUM GRED,PS_GP_PIN GPIN,PS_GPGB_PROF GP, PS_GPGB_RUNCTL_SQR GRS
+WHERE GP.GPGB_PIN_NUM_CUR = GRED.PIN_NUM
+AND GRED.PIN_NUM = GPIN.PIN_NUM
+AND GP.DESCR20 = $PNL_PROFILE
+AND GRED.EMPLID = $SELECTED_EMPLOYEE
+AND GRED.CAL_RUN_ID = $SELECTED_CAL_RUN_ID
+ORDER BY GRED.EMPLID,GP.SEQNUM
+
+END-SELECT
+
+        SHOW $ProcedureName '->#RECCOUNT->' #RECCOUNT
+        SHOW $ProcedureName '->#MAXLOOP->' #MAXLOOP
+        SHOW $ProcedureName '->#_MAXLOOP->' #_MAXLOOP
+
+        DO PRINT-SUMMARY($_FULLNAME, #MAXLOOP)
+
+end-procedure RETRIEVE-PROFILE-DATA-ACUM
+
+
+!*====================================================================================
+! Procedure: Initialize-Array                                                        !
+! Comment:   This Array contains the all the Pin codes and associted values to be    !
+!            printed                                                                 !
+!                                                                                    !
+!*====================================================================================
+
+begin-procedure INITIALIZE-ARRAY
+
+        LET $ProcedureName = 'INTIALIZE-ARRAY'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+!SETS UP THE ARRAY
+CREATE-ARRAY    NAME  = EMPVALUES
+                SIZE  = 50
+                FIELD = PIN_CODE:CHAR
+                FIELD = DESCRIPTION:CHAR
+                FIELD = VALUE:NUMBER
+
+end-procedure INITIALIZE-ARRAY
+
+!*========================================================================
+! Procedure: Populate-Array                                              !
+! Descr:     Populate array with Pin code information,                   !
+!                                                                        !
+!*========================================================================
+
+!POPULATES THE ARRAY WITH THE DATA NECESSARY
+
+begin-procedure Populate-Array
+
+        LET $ProcedureName = 'POPULATE-ARRAY'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+        LET #RECCOUNT = 0
+
+begin-SELECT
+GPIN.PIN_CODE     &ARRAY_PIN_CODE
+GP.DESCR15        &ARRAY_DESCR
+GP.SEQNUM
+
+        LET $A_DESCR    = RTRIM(&ARRAY_DESCR, ' ' )
+        LET $A_PIN_CODE = RTRIM(&ARRAY_PIN_CODE, ' ')
+
+        !EACH PIN CODE IN THE PROFILE IS ADDED TO THE ARRAY
+
+        PUT $A_PIN_CODE $A_DESCR    0
+        INTO EMPVALUES(#RECCOUNT) PIN_CODE      DESCRIPTION      VALUE
+
+        GET $A_R_DESCR FROM EMPVALUES(#RECCOUNT) DESCRIPTION
+        GET #A_R_VALUE FROM EMPVALUES(#RECCOUNT) VALUE
+
+        SHOW 'ARRAY D->'  $A_R_DESCR
+        SHOW 'RC->' #RECCOUNT
+
+        ADD 1 TO #RECCOUNT
+
+FROM PS_GPGB_PROF GP, PS_GP_PIN GPIN
+WHERE GP.DESCR20 = $PNL_PROFILE
+AND GP.GPGB_PIN_NUM_CUR = GPIN.PIN_NUM
+ORDER BY GP.SEQNUM
+
+END-SELECT
+
+        LET #_MAXLOOP = #RECCOUNT
+        SHOW $ProcedureName '->#RECCOUNT->' #RECCOUNT
+        SHOW $ProcedureName '->#MAXLOOP->' #MAXLOOP
+        SHOW $ProcedureName '->#_MAXLOOP->' #_MAXLOOP
+
+end-procedure Populate-Array
+
+!*=================================================================
+! Procedure: ADD-T0-ARRAY                                         !
+! Descr:     Adds Pin Code amounts to array                       !
+!                                                                 !
+!*=================================================================
+
+begin-procedure ADD-TO-ARRAY
+
+        LET $ProcedureName = 'ADD-TO-ARRAY'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+
+        LET #RECCOUNT = 0
+
+        SHOW $ProcedureName '->#RECCOUNT->' #RECCOUNT
+        SHOW $ProcedureName '->#MAXLOOP->' #MAXLOOP
+        SHOW $ProcedureName '->#_MAXLOOP->' #_MAXLOOP
+
+        WHILE #RECCOUNT <> #_MAXLOOP
+
+                GET $A_R_PIN_CODE FROM EMPVALUES(#RECCOUNT) PIN_CODE
+
+                SHOW 'ATA-RC->' #RECCOUNT
+                !SHOW 'ATA-ARPC->' $A_R_PIN_CODE '<-'
+                !SHOW 'ATA-PC->' $PINCODE '<-'
+                !SHOW 'ATA-PROF_VAL->' #PROF_VAL
+
+                IF $A_R_PIN_CODE = $PINCODE
+                        ARRAY-ADD #PROF_VAL TO EMPVALUES(#RECCOUNT) VALUE
+                        BREAK
+                ELSE
+                        ADD 1 TO #RECCOUNT
+                END-IF
+
+        END-WHILE
+
+end-procedure ADD-TO-ARRAY
+
+!*=================================================================
+! Procedure: PRINT-SUMMARY                                        !
+! Descr:     Prints Employee information                          !
+!                                                                 !
+!*=================================================================
+begin-procedure PRINT-SUMMARY($EE_NAME,#MAXLOOP)
+
+        LET $ProcedureName = 'PRINT-SUMMARY'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+        LET #RECCOUNT = 0
+        LET #PRINTCOUNT = 1
+
+        PRINT   $EE_NAME              (+1,{Pos1}) bold
+
+        SHOW $ProcedureName '->#RECCOUNT->' #RECCOUNT
+        SHOW $ProcedureName '->#MAXLOOP->' #MAXLOOP
+        SHOW $ProcedureName '->#_MAXLOOP->' #_MAXLOOP
+
+        WHILE #RECCOUNT <> #MAXLOOP
+
+                GET $A_R_PIN_CODE FROM EMPVALUES(#RECCOUNT) PIN_CODE
+                GET $A_R_DESCR FROM EMPVALUES(#RECCOUNT) DESCRIPTION
+                GET #ARRAY_VALUE FROM EMPVALUES(#RECCOUNT) VALUE
+
+                MOVE #ARRAY_VALUE TO $A_R_VALUE '9999,999,999.99'
+
+                SHOW 'PS-RC->' #RECCOUNT
+                SHOW 'PS-P#C->' #PRINTCOUNT
+                SHOW 'PS-DESCR->' $A_R_DESCR
+                SHOW 'PS-PC->' $A_R_PIN_CODE
+                SHOW 'PS-VAL->' #A_R_VALUE
+
+                IF #PRINTCOUNT = 11
+                        LET #PRINTCOUNT = 1
+                END-IF
+
+                EVALUATE #PRINTCOUNT
+                WHEN = 1
+                        PRINT $A_R_VALUE       (+1,{Pos1})
+                        BREAK
+                BREAK
+                WHEN = 2
+                        PRINT $A_R_VALUE       (,{Pos2})
+                        BREAK
+                BREAK
+                WHEN = 3
+                        PRINT $A_R_VALUE       (,{Pos3})
+                        BREAK
+                BREAK
+                WHEN = 4
+                        PRINT $A_R_VALUE       (,{Pos4})
+                        BREAK
+                BREAK
+                WHEN = 5
+                        PRINT $A_R_VALUE       (,{Pos5})
+                        BREAK
+                BREAK
+                WHEN = 6
+                        PRINT $A_R_VALUE       (,{Pos6})
+                        BREAK
+                BREAK
+                WHEN = 7
+                        PRINT $A_R_VALUE       (,{Pos7})
+                        BREAK
+                BREAK
+                WHEN = 8
+                        PRINT $A_R_VALUE       (,{Pos8})
+                        BREAK
+                BREAK
+                WHEN = 9
+                        PRINT $A_R_VALUE       (,{Pos9})
+                        BREAK
+                BREAK
+                WHEN = 10
+                        PRINT $A_R_VALUE       (,{Pos10})
+                        BREAK
+                BREAK
+                END-EVALUATE
+
+                ADD 1 TO #RECCOUNT
+                ADD 1 TO #PRINTCOUNT
+
+        END-WHILE
+
+        DO RESET-ARRAY
+
+end-procedure PRINT-SUMMARY
+
+!*====================================================================================
+! Procedure: Reset-Array                                                             !
+! Comment:   This Clear all the Array amount for the previous Pay Entities to be     !
+!                                                                                    !
+!*====================================================================================
+
+begin-procedure RESET-ARRAY
+
+        LET $ProcedureName = 'RESET-ARRAY'
+        SHOW 'PROCEDURE->' $ProcedureName
+
+        LET #RECCOUNT = 0
+
+        SHOW $ProcedureName '->#RECCOUNT->' #RECCOUNT
+        SHOW $ProcedureName '->#MAXLOOP->' #MAXLOOP
+        SHOW $ProcedureName '->#_MAXLOOP->' #_MAXLOOP
+
+        WHILE #RECCOUNT <> #_MAXLOOP
+
+                PUT  0
+                INTO EMPVALUES(#RECCOUNT) VALUE
+
+                GET $A_R_PIN_CODE FROM EMPVALUES(#RECCOUNT) PIN_CODE
+                GET $A_R_PIN_DESCR FROM EMPVALUES(#RECCOUNT) DESCRIPTION
+                GET #A_R_VALUE FROM EMPVALUES(#RECCOUNT) VALUE
+
+                ADD 1 TO #RECCOUNT
+
+        END-WHILE
+
+        LET #RECCOUNT           = 0
+
+
+end-procedure RESET-ARRAY
+
+
+!******************************************************************
+!                  G E N E R A L   F U N C T I O N S
+!******************************************************************
+
+!******************************************************************
+!***    ERROR - SQL error procedure
+!******************************************************************
+begin-procedure ERROR-SQL
+
+        add 1 to #CountError
+
+        show 'SQL Error -> ' $ProcedureName
+        show 'SQL Error -> ' $ErrorMessage
+        show 'SQL Error -> ' $SQL-ERROR
+
+        stop
+
+end-procedure ERROR-SQL
+
+!******************************************************************
+!***    Common SQC Modules Copied In For Program Usage
+!******************************************************************
+#include 'reset1.sqc'    ! Reset printer procedure
+#include 'curdttim.sqc' ! Get-Current-DateTime procedure
+#include 'datetime.sqc' ! Routines for date and time formatting
+#include 'number.sqc'   ! Routines to format numbers
+#include 'prcsapi.sqc'  ! Update Process Request API
+#include 'prcsdef.sqc' !Update Process Request variable declaration
+#include 'readxlat.sqc' ! Read Translate Table
+#include 'gpgbrtee.sqc'
+#include 'gpgbrttc.sqc'
+#include 'gpgbrttd.sqc'
+
+!******************************* End Of Program *******************

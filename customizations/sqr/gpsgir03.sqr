@@ -1,0 +1,1652 @@
+!***********************************************************************
+!  GPSGIR03:   Generate IRAS IR8S Interface files                      *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2017, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  25339323                                            !
+!***********************************************************************
+! Modification History                                                 *
+! Dated      Author  ICE       Changes                                 *
+! 28/11/02   KWH    549698000  Include setubdb in setup section        *
+! 12/01/07   Deepak 1538443000 Change in the format of IR8S            *
+!26/11/2007 1715373000 Modified SQR to cater to the changes in the file*
+!                      specifications effective 01-Jan-2008            *
+!06/03/2008 1744280000 The sqr has been modified such that the details *
+!                      of foreign workers with voluntary contributions *
+!                      are getting printed in IR8S flat file           *
+!***********************************************************************
+!
+#Include 'setenv.sqc'  !Set environment
+
+
+
+#DEFINE CRITERIA_NUM 9999 !Maximum rows in one data file
+
+begin-setup
+!
+#Include 'setupdb.sqc'
+
+end-setup
+#Include 'gpsgamnd.sqc'  !Set environment
+
+begin-report
+  do Init-DateTime
+  do Init-Number
+  do Stdapi-Init
+  do Select-Parameters
+    
+ let $prcs_inst = ''
+  IF $Iras_form_type = 'A'
+    do fill_staging_data_amnd   
+ End-if
+
+  do Build-Process
+  
+  do reset
+  IF $Iras_form_type = 'A'
+  DO DEL_STG_IRAS
+  end-if
+  
+  do Stdapi-Term
+  create-Array NAME= MTH_CTRB SIZE =14
+                     FIELD=Month:CHAR
+                     FIELD=OrdWages:number
+                     FIELD=CpfOrdEr:number
+                     FIELD=CpfOrdEe:number
+                     FIELD=CpfOrdFundEr:number
+                     FIELD=AdlWages:number
+                     FIELD=CpfAdlEr:number
+                     FIELD=CpfAdlEe:number
+                     FIELD=CpfAdlFundEr:number
+end-report
+!
+!***********************************************************************
+!  Procedure: Build-Process                                            *
+!             The main driving procedure                               *
+!***********************************************************************
+begin-Procedure Build-Process
+    do Get-Company-Details
+    do Process-Empls
+end-procedure
+!
+
+!***********************************************************************
+! Procedure: Get-Company-Details                                       *
+!            Gets the Company Details that are printed on the form.    *
+!***********************************************************************
+begin-procedure Get-Company-Details
+begin-SELECT
+CO.GPSG_REGISTERED_NM
+CO.GPSG_CPY_DESCR
+CO.GPSG_TAX_CONT_ID
+CO.PHONE
+CO.GPSG_CPY_TYPE
+CO.GPSG_ROB_ROC_NO
+CO.GPSG_ROB_ROC_TYPE
+CO.EMAIL_ADDR
+
+  FROM PS_GPSG_IRAS_CPY CO
+ WHERE CO.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+   AND CO.EFFDT = (SELECT MAX(EFFDT)
+                     FROM PS_GPSG_IRAS_CPY
+                    WHERE GPSG_CPY_TAX_REF = CO.GPSG_CPY_TAX_REF
+                      AND EFFDT <= $AsofToday)
+end-SELECT
+  let $Co_Tax_Contact_Id = rtrim(&CO.GPSG_TAX_CONT_ID, ' ')
+  let $Co_Name = rtrim(&CO.GPSG_REGISTERED_NM, ' ')
+  Let $Email_Company = rtrim(&CO.EMAIL_ADDR, ' ')
+  if $Co_Name = ''
+     let $Co_Name = rtrim(&CO.GPSG_CPY_DESCR, ' ')
+  end-if
+
+!get Name of Tax Contact
+
+begin-SELECT
+A.NAME
+
+  FROM PS_PERSON_NAME A
+ WHERE A.EMPLID = $Co_Tax_Contact_Id
+end-SELECT
+
+ let $Co_Tax_Contact_Name = rtrim(&A.NAME, ' ')
+
+! Get Email Addresses
+
+begin-SELECT
+E.EMAIL_ADDR
+FROM PS_EMAIL_ADDRESSES E
+WHERE E.EMPLID = $Co_Tax_Contact_Id
+AND E.PREF_EMAIL_FLAG = 'Y'
+end-SELECT
+
+    let $email_add = &E.EMAIL_ADDR
+
+  If $Email_Company = ''
+    Let $email_add_file = $email_add
+  else
+    Let $email_add_file = $Email_Company
+  End-if
+
+begin-SELECT
+C.CITIZENSHIP_STATUS,
+C.PERM_STATUS_DT_SGP
+FROM PS_CITIZENSHIP C
+WHERE C.EMPLID = $Co_Tax_Contact_Id
+end-SELECT
+
+!get Designation of Authorised Person
+
+begin-SELECT
+JC.DESCR
+
+  FROM PS_JOBCODE_TBL JC, PS_JOB J
+ WHERE JC.JOBCODE = J.JOBCODE
+   AND JC.SETID   = J.SETID_JOBCODE
+   AND J.EMPLID   = $Co_Tax_Contact_Id
+   AND J.EFFDT    = (SELECT MAX(EFFDT)
+                       FROM PS_JOB
+                      WHERE EMPLID = $Co_Tax_Contact_Id
+                        AND EMPL_RCD = 0
+                        AND EFFDT <= $AsofToday )
+end-SELECT
+
+ let $AuthPersDesig  = rtrim(&JC.DESCR, ' ')
+
+  let $irasAlias = 'I8A'
+    do iras_form_where_clause
+
+begin-SELECT
+I8A.GPSG_DIVISION
+FROM [$iras_form_where] I8A
+WHERE I8A.EMPLID = $Co_Tax_Contact_Id
+end-SELECT
+
+  MOVE &I8A.GPSG_DIVISION to $Division
+
+end-procedure
+
+begin-Procedure Process-Empls
+  let $NewFile = 'Y'
+  Let $PrevEmplid = ''
+  Let $Prev_BalanceGrp = ''
+  let $irasAlias = 'I'
+    do iras_form_where_clause
+    
+Begin-SELECT
+I.EMPLID
+I.BALANCE_GRP_NUM
+I.GPSG_CPY_TAX_REF
+I.GPSG_TAX_YEAR
+I.SEX
+I.GPSG_8A_GROSS
+I.GPSG_8A_NC_BONUS
+I.GPSG_8A_DIR_FEE
+I.GPSG_8A_COMMSN
+I.GPSG_8A_PENSION
+I.GPSG_8A_ALLOW_TOT
+I.GPSG_8A_GRATUITY
+I.GPSG_8A_RETIRE
+I.GPSG_8A_OS_PENSION
+I.GPSG_CPF_VOL_ER
+I.GPSG_8A_SHARE_GAIN
+I.NATIONAL_ID_TYPE
+I.NATIONAL_ID
+I.GPSG_OS_CPF_REQD
+I.GPSG_CPF_CAP_APPLD
+I.GPSG_CPF_VOL_REQD
+I.GPSG_OS_FROM_DT
+I.GPSG_OS_TO_DT
+I.GPSG_8S_CPF_VOL_ER
+I.GPSG_8S_CPF_VOL_EE
+I.GPSG_8S_REMARKS
+I.GPSG_DIVISION
+I.NAME
+I.GPSG_CPF_CONT
+I.GPSG_APP_IRAS
+C1.CITIZENSHIP_STATUS
+C1.PERM_STATUS_DT_SGP
+RC.GPSG_CREATE_DATE
+
+    
+   Move &I.EMPLID to $Emplid
+   Move &I.BALANCE_GRP_NUM to $Balance_Grp_Num
+   Do get-creation-date
+    if $Iras_form_type = 'A'
+          let $chk_flg = 'Y'    
+          show '$Emplid1 - ' $Emplid 
+          show '$PrevEmplid1 - ' $PrevEmplid 
+          if $PrevEmplid = $Emplid AND $Prev_BalanceGrp = $Balance_Grp_Num
+          let $chk_flg = 'N'
+          end-if
+          
+           IF $PrevEmplid = $Emplid  AND $Prev_BalanceGrp <> $Balance_Grp_Num       
+           Move $Emplid to $CmpEmplid
+           Do Add-Var-Values
+           
+           else
+            show $chk_flg
+           Let $PrevEmplid = $Emplid
+           Let $Prev_BalanceGrp = $Balance_Grp_Num
+           Move $Emplid to $CmpEmplid     
+           Do Move-To-Var
+           Do Process-Empl-Val
+           END-IF
+           
+            if $Citizen_Status = '5' or $Citizen_Status = '7' or
+            (($Citizen_Status <> '5' or $Citizen_Status <> '7') and
+            (#IIr8sVolCpfEr <> 0 or #IIr8sVolCpfEe <> 0 or #IDirefeeYtd <> 0))
+            
+            Do Create-File
+            
+            end-if
+            
+    else
+        If $PrevEmplid = ''
+            Move $Emplid to $CmpEmplid
+            Let $PrevEmplid = $Emplid
+            Let $Prev_BalanceGrp = $Balance_Grp_Num
+      
+            Do Move-To-Var
+         
+        else
+         
+                if $PrevEmplid <> $Emplid
+                    let $EmplChanged = 'Y'
+                    Move $PrevEmplid to $CmpEmplid
+         
+                    Do Process-Empl-Val
+
+                        if $Citizen_Status = '5' or $Citizen_Status = '7' or
+                        (($Citizen_Status <> '5' or $Citizen_Status <> '7') and
+                        (#IIr8sVolCpfEr <> 0 or #IIr8sVolCpfEe <> 0 or #IDirefeeYtd <> 0))
+                    
+                        Do Create-File
+                        end-if
+                    Let $PrevEmplid = $Emplid
+                    Let $Prev_BalanceGrp = $Balance_Grp_Num
+                
+                    Do Move-To-Var
+                
+                else
+                
+                    Move $Emplid to $CmpEmplid
+                    Do Add-Var-Values
+                end-if
+        end-if
+    end-if  
+        
+          
+
+   If $EmplChanged = 'Y'       
+       If #TempVar1 = 1
+           if #EmplOcc = {CRITERIA_NUM}
+               do Close-File
+               let $NewFile = 'Y'
+           end-if
+       end-if
+   end-if
+
+   FROM [$iras_form_where] I, PS_CITIZENSHIP C1,PS_GPSG_RC_IRAS RC
+
+ WHERE I.GPSG_TAX_YEAR    = #Tax_Year 
+   AND I.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+   AND I.GPSG_IR8S_REQD = 'Y'   
+   AND I.GPSG_8A_STATUS = 'Y'
+   AND RC.OPRID           = $Prcs_OprID
+   AND RC.RUN_CNTL_ID     = $Prcs_Run_Cntl_ID
+   AND RC.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+   AND RC.GPSG_CREATE_DATE <= $AsofToday
+!   AND RC.GPSG_CREATE_DATE =
+!               (SELECT MAX(RC1.GPSG_CREATE_DATE) from PS_GPSG_RC_IRAS RC1
+!                       where RC1.GPSG_TAX_YEAR = #Tax_Year)
+   AND (EXISTS (SELECT 'X'
+                  FROM [$iras_form_where2] M
+                 WHERE M.EMPLID = I.EMPLID
+                   AND M.BALANCE_GRP_NUM = I.BALANCE_GRP_NUM
+                   AND M.GPSG_TAX_YEAR = I.GPSG_TAX_YEAR
+                   AND M.GPSG_CPY_TAX_REF = I.GPSG_CPY_TAX_REF)
+     OR EXISTS (SELECT 'X'
+                  FROM [$iras_form_where3] R
+                 WHERE R.EMPLID = I.EMPLID
+                   AND R.BALANCE_GRP_NUM = I.BALANCE_GRP_NUM
+                   AND R.GPSG_TAX_YEAR = I.GPSG_TAX_YEAR
+                   AND R.GPSG_CPY_TAX_REF = I.GPSG_CPY_TAX_REF))
+   and I.EMPLID = C1.EMPLID
+   [$prcs_inst]
+ORDER BY I.EMPLID, I.BALANCE_GRP_NUM
+
+end-SELECT
+if $Iras_form_type = 'A'
+Else
+  If $PrevEmplid <> ''
+     Move $Emplid to $CmpEmplid
+     
+     Do Check-IR8S-Exists-YN
+     
+     if $EE_IR8S_Exists = 'Y'
+        Do Process-Empl-Val
+        if $Citizen_Status = '5' or $Citizen_Status = '7' or
+            (($Citizen_Status <> '5' or $Citizen_Status <> '7') and
+              (#IIr8sVolCpfEr <> 0 or #IIr8sVolCpfEe <> 0 or #IDirefeeYtd <> 0))
+               Do Create-File
+        end-if
+     end-if
+   end-if
+  if $FileOpen ='Y'
+    do Close-File
+  else
+    if $NewFile = 'Y'
+      move 'N' to $NewFile
+      do Start-New-File
+      do Close-File
+    end-if
+  end-if
+End-if
+end-procedure
+
+Begin-Procedure Process-Empl-Val
+
+ IF $Iras_form_type = 'A'
+
+ Begin-SELECT
+SG1.EMPLID
+SG1.BALANCE_GRP_NUM
+SG1.GPSG_CPY_TAX_REF
+SG1.GPSG_TAX_YEAR
+SG1.GPSG_MONTHCD
+SG1.GPSG_A_ORD_WAGES
+SG1.GPSG_ADD_WAGES
+
+        Let #Sum_of_amounts = 0
+          Add &SG1.GPSG_A_ORD_WAGES to #Sum_of_amounts
+          Add &SG1.GPSG_ADD_WAGES to #Sum_of_amounts
+
+            Let #TempVar1 = 1
+        
+
+   FROM PS_GPSG_IR8S_A_STG SG1
+WHERE SG1.EMPLID = $PrevEmplid
+   AND SG1.BALANCE_GRP_NUM = $Prev_BalanceGrp
+   AND SG1.GPSG_TAX_YEAR     = #Tax_Year
+   AND SG1.GPSG_CPY_TAX_REF  = $Company_Tax_Ref
+   AND SG1.GPSG_MONTHCD      = '99'
+   AND SG1.GPSG_IRAS_STG_FLG = $chk_flg
+   AND SG1.PROCESS_INSTANCE = $iras_prcs_instance
+ORDER BY SG1.EMPLID, SG1.BALANCE_GRP_NUM
+End-SELECT
+
+ELSE
+ 
+Begin-SELECT
+S1.EMPLID
+S1.BALANCE_GRP_NUM
+S1.GPSG_CPY_TAX_REF
+S1.GPSG_TAX_YEAR
+S1.GPSG_MONTHCD
+S1.GPSG_ORD_WAGES
+S1.GPSG_ADD_WAGES
+
+        Let #Sum_of_amounts = 0
+          Add &S1.GPSG_ORD_WAGES to #Sum_of_amounts
+          Add &S1.GPSG_ADD_WAGES to #Sum_of_amounts
+          If #Sum_of_amounts = 0
+            Let #TempVar1 = 0
+          Else
+            Let #TempVar1 = 1
+          End-If
+
+   FROM PS_GPSG_IR8S_MONTH S1
+WHERE S1.EMPLID = $PrevEmplid
+   AND S1.BALANCE_GRP_NUM = $Prev_BalanceGrp
+   AND S1.GPSG_TAX_YEAR     = #Tax_Year
+   AND S1.GPSG_CPY_TAX_REF  = $Company_Tax_Ref
+   AND S1.GPSG_MONTHCD      = '99'
+ORDER BY S1.EMPLID, S1.BALANCE_GRP_NUM
+End-SELECT
+END-IF
+End-Procedure
+
+!**************************************************************************
+! Procedure: Check-IR8S-Exists-YN                                         *
+!                                                                         *
+!**************************************************************************
+begin-procedure Check-IR8S-Exists-YN
+
+  let $EE_IR8S_Exists = 'N'
+  let $irasAlias = 'SCHK'
+    do iras_form_where_clause
+    
+Begin-SELECT DISTINCT
+SCHK.EMPLID
+
+     let $EE_IR8S_Exists = 'Y'
+
+   FROM [$iras_form_where2] SCHK
+  WHERE SCHK.EMPLID           = $CmpEmplid
+    AND SCHK.BALANCE_GRP_NUM  = $Balance_Grp_Num
+    AND SCHK.GPSG_CPY_TAX_REF = &I.GPSG_CPY_TAX_REF
+    AND SCHK.GPSG_TAX_YEAR    = &I.GPSG_TAX_YEAR
+[$prcs_inst]
+End-SELECT
+
+end-procedure
+
+!***************************************************************************
+! Procedure: get-creation-date
+!***************************************************************************
+begin-procedure get-creation-date
+
+Do format-Datetime(&RC.GPSG_CREATE_DATE, $Date_Created_Out, {DEFCMP},'','')
+
+end-procedure
+
+!
+!**************************************************************************
+! Procedure: Create-File                                                  *
+!                                                                         *
+!**************************************************************************
+begin-procedure Create-File
+
+  if $NewFile = 'Y'
+    do Start-New-File
+    move 'N' to $NewFile
+    let #EmplOcc = 0
+  end-if
+  If #TempVar1 = 1
+      do Process-Employee
+  End-If
+
+End-Procedure
+
+
+!**************************************************************************
+! Procedure: Start-New-File                                               *
+!            Initialises variables and writes header information for a new*
+!            file.                                                        *
+!**************************************************************************
+begin-procedure Start-New-File
+
+  do Open-File
+
+!IR8S
+
+!Message Title
+  do Write-Entry-Detail(1,'IR8S','','','','','','','','','')        !Segment 1 - UNB
+!Message Header
+  do Write-Entry-Detail(2,'IRCPPF','','','','','','','','','')      !Segment 2 - UNH
+!Beginning of Message
+  do Write-Entry-Detail(3,'','','','','','','','','','')            !Segment 3 - BGM
+
+!Header Information - Indicators  (Three Occurences)
+  do Write-Entry-Detail(4,'AWJ','0','','','','','','','','')        !Segment 4 - RFF
+!
+  let $Source = &CO.GPSG_CPY_TYPE
+  do Write-Entry-Detail(4,'AWK',$Source,'','','','','','','','')    !Segment 4 - RFF
+  evaluate &CO.GPSG_ROB_ROC_TYPE
+    when = '8' !ROC
+      let $PayerIdType = '8'
+    when = '7' !ROB
+      let $PayerIdType = '7'
+    !when = 'X'
+    !  let $PayerIdType = 'C'
+    when = 'A'
+      let $PayerIdType = 'A'
+    when = 'I'
+      let $PayerIdType = 'I'
+    !when = 'M'
+    !  let $PayerIdType = 'M'
+    !when = 'G'
+    !  let $PayerIdType = 'G'
+    when = 'U'
+      let $PayerIdType = 'U'
+    when-other
+      let $PayerIdType = '0'
+  end-evaluate
+!
+  do Write-Entry-Detail(4,'AWM',$PayerIdType,'','','','','','','','')
+                                                           !Segment 4 - RFF
+
+!Rec Indicator
+  IF $Iras_form_type = 'A'
+  do Write-Entry-Detail(4,'AWZ','A','','','','','','','','')        !Segment 4 - RFF
+  else
+  do Write-Entry-Detail(4,'AWZ','O','','','','','','','','')        !Segment 4 - RFF
+  end-if
+
+
+!Header Information - Dates (Two Occurences)
+  move &GRPCT.GPSG_Tax_Year  to #TaxYear
+  do Format-Number(#TaxYear, $TaxYear, '0009')
+  do Write-Entry-Detail(5,'441',$TaxYear,'602','','','','','','','')!Segment 5 - DTM
+
+! convert native date to dtu without delimiters eg. 19990101
+  !do format-Datetime($Date_Created,$Date_Created_Out,{DEFCMP},'','')
+
+  do Write-Entry-Detail(5,'416',$Date_Created_Out,'102','','','','','','','')
+                                                           !Segment 5 - DTM
+!Employer's Information
+
+
+  if $PayerIdType = '7'
+  or $PayerIdType = '8'
+  or $PayerIdType = 'A'
+  or $PayerIdType = 'I'
+  or $PayerIdType = 'C'
+  or $PayerIdType = 'M'
+  or $PayerIdType = 'G'
+  or $PayerIdType = 'U'
+     let $PayerIdNo     = &CO.GPSG_ROB_ROC_NO
+  else
+     let $PayerIdNo     = $Company_Tax_Ref
+  end-if
+
+
+  let $email_add = &E.EMAIL_ADDR
+  do Write-Entry-Detail(6,$PayerIdNo,'',
+                          $Co_Name,'',
+!                          $email_add,'',
+                          $email_add_file,'',
+                          '','','',
+                          $Division)                              !Segment 6 - NAD
+!Employer's Contact No
+  let $TelNum = rtrim(&CO.PHONE, ' ')
+  do Write-Entry-Detail(7,$TelNum,'','','','','','','','','')       !Segment 7 - COM
+
+end-procedure
+
+
+
+!**************************************************************************
+! Procedure: Process-Employee                                             *
+!            Write employee details to file                               *
+!**************************************************************************
+begin-procedure Process-Employee
+
+! 8.LIN
+!Line No denoting the occurence of employee
+
+  let #EmplOcc = #EmplOcc + 1
+  let $EmplOcc = ltrim(edit(to_char(#EmplOcc),'9999'),' ')
+
+  do Write-Entry-Detail(8,$EmplOcc,'','','','','','','','','')       !Segment 8 - LIN
+
+
+! 9.RFF
+!Details Information - Indicators (6 Occurences)
+
+!Rec Type
+  do Write-Entry-Detail(4,'AWJ','1','','','','','','','','')        !Segment 4 - RFF
+
+!Payee's ID Type
+
+  evaluate $ITaxRefTypeSgp
+    when = 'IC'                   ! Nat. Registration ID Card
+    when = 'PR'                   ! Permanent Residency Number
+      let $PayeeIdType     = '1'  ! NRIC
+    when = 'EP'                   ! Employment Pass
+    when = 'FI'                   ! Foreign ID
+      let $PayeeIdType = '2'      ! FIN
+    When = 'IF'
+       let $PayeeIdType = '3'
+
+    when = 'WP'   ! Work Permit
+       let $PayeeIdType = '4'
+
+    when = 'MI1'   ! Malaysian NRIC
+    When = 'MI2'
+    When = 'MI3'
+       let $PayeeIdType = '5'
+
+    when = 'PP'                   ! Passport
+       let $PayeeIdType = '6'
+
+     when = 'VP'                   ! Work Pass
+    when = 'WP'                   ! Work Permit
+    when = 'CI'                   ! Certificate Of Identity
+    when = 'MI'                   ! Malaysian NRIC
+      let $PayeeIdType     = '0'  ! Others
+    when-other
+      let $PayeeIdType     = '0'  ! Others
+
+  end-evaluate
+
+  do Write-Entry-Detail(4,'AWM',$PayeeIdType,'','','','','','','','')
+                                                           !Segment 4 - RFF
+!CPF contributions in respect of overseas posting are obligatory
+!by contract of employment indicator
+  let $IOsCpfRequired = ''
+  do Write-Entry-Detail(4,'AYA',$IOsCpfRequired,'','','','','','','','')
+                                                           !Segment 4 - RFF
+!CPF capping applied indicator
+  if $ICappingRequired  <> 'Y'
+    let $CappingApplied = 'N'
+  else
+    let $CappingApplied = $ICappingRequired
+  end-if
+  let $CappingApplied = ''
+  do Write-Entry-Detail(4,'AYB',$CappingApplied,'','','','','','','','')
+                                                           !Segment 4 - RFF
+!Voluntary CPF contributions are obligatory by contract of employment ind
+  !do Write-Entry-Detail(4,'AYC',$IVolCpfRequired ,'','','','','')
+                                                           !Segment 4 - RFF
+
+
+ If($ITaxRefTypeSgp = 'IC')
+    Move &I.GPSG_TAX_YEAR to $Tax_Year '9999'
+    Move $Tax_Year to #Tax_Year
+    Let #Res_Stat_Yr = #Tax_Year - 2
+    Move #Res_Stat_Yr to $Res_Stat_Yr '9999'
+    Let $tax_date = $Res_Stat_Yr||'.01.01'
+    if( $App_Dt >= $tax_date and $Citizen_Status = '7' and ($CPF_Approval = 'Y' or $CPF_Approval = 'N'))
+        let $Res_Status = 'Y'
+    else
+        If (($App_Dt < $tax_date or $App_Dt >= $tax_date) and $Citizen_Status = '7' and ($CPF_Approval = 'N' or $CPF_Approval = ' '))
+             let $Res_Status = 'N'
+        else
+             let $Res_Status = ' '
+             let $CPF_Approval = ' '
+        End-If
+    End-If
+ else
+    let $Res_Status = ' '
+ End-If
+
+!Singapore Permanent Resident Status approved on or after 31.12.YYYY
+                                                           !Segment 4 - RFF
+     do Write-Entry-Detail(4,'AYD',$Res_Status,'','','','','','','','')        !Segment 4 - RFF
+
+!Approval from CPF Board to make full Contribution.
+ ! LET $Approval = &CPF.GPSG_CPF_CONT
+ ! If ($Approval = 'Y')
+ !   Let $Cpf_Approval = 'Y'
+ ! else
+ !   Let $Cpf_Approval = 'N'
+ ! end-if
+    do Write-Entry-Detail(4,'AYE',$Cpf_Approval,'','','','','','','','')        !Segment 4 - RFF
+
+
+!Fetch Country name format
+
+begin-Select
+
+PN.COUNTRY_NM_FORMAT
+
+  LET $COUNTRY_NM_FORMAT = &PN.COUNTRY_NM_FORMAT
+
+FROM PS_PERSON_NAME PN
+WHERE PN.EMPLID = $PrevEmplid
+
+End-Select
+
+!10.NAD
+!Employee's Information
+
+  let $PayeeIdNo        = rtrim($ITaxRefSgp, ' ')
+
+begin-SELECT
+NM.EMPLID,
+NM.LAST_NAME,
+NM.MIDDLE_NAME,
+NM.FIRST_NAME
+
+   Let $PayeeFName = &NM.FIRST_NAME
+   Let $PayeeLName = &NM.LAST_NAME
+   Let $PayeeMName = &NM.MIDDLE_NAME
+   Let $PayeeName = rtrim($PayeeFName,' ') || ' ' || rtrim($PayeeLName,' ') || ' ' || rtrim($PayeeMName,' ')
+
+    If $COUNTRY_NM_FORMAT = 'CHN'
+     Let $PayeeName  = rtrim($PayeeLName, ' ') || ' ' ||rtrim($PayeeFName, ' ') || ' ' ||rtrim($PayeeMName, ' ')
+    End-if
+
+     from PS_NAMES_VW NM, PS_GPSG_IR8A_FORM I
+     where NM.EMPLID = $PrevEmplid
+       and NM.NAME_TYPE = 'PRI'
+       and NM.EFFDT <= $Asoftoday
+end-SELECT
+
+
+  do Write-Entry-Detail(10,$PayeeIdNo,
+                           '',
+                           $PayeeName,
+                           '','','','','','','')                   !Segment 10 - NAD
+! process all ir8s-month-sgp rows for this emplid, empl occr,company & taxyear
+  let $MonthsFlag = 'N'
+
+  do process-ir8s-month-sgp
+  if $MonthsFlag = 'N'
+! no months data, write blank segments
+    do Write-Entry-Detail(8,'TTL','','','','','','','','','')       !Segment 8 - LIN
+    do Write-Entry-Detail(11,'400','' ,'','','','','','','','')     !Segment 11 - MOA
+    do Write-Entry-Detail(11,'401','' ,'','','','','','','','')     !Segment 11 - MOA
+    do Write-Entry-Detail(11,'402','' ,'','','','','','','','')     !Segment 11 - MOA
+    do Write-Entry-Detail(11,'404','' ,'','','','','','','','')     !Segment 11 - MOA
+    do Write-Entry-Detail(11,'405','' ,'','','','','','','','')     !Segment 11 - MOA
+    do Write-Entry-Detail(11,'406','' ,'','','','','','','','')
+
+  end-if
+
+!13.DTM
+!Details Information - Overseas Posting Dates
+
+!Overseas posting from date
+  if rtrim($IOsFromDt ,' ') <> ''
+     ! convert native date to dtu without delimiters eg. 19990101
+     Do format-Datetime($IOsFromDt,$OsFromDt,{DEFCMP},'','')
+     let $OsFromDt = ''
+     do Write-Entry-Detail(13,'500',$OsFromDt ,'102','','','','','','','')
+                                                          !Segment 13 - DTM
+  else
+     let $OsFromDt = ''
+     do Write-Entry-Detail(13,'500',$OsFromDt ,'','','','','','','','')
+                                                          !Segment 13 - DTM
+  end-if
+
+!Overseas posting to date
+  if rtrim($IOsToDt ,' ') <> ''
+     ! convert native date to dtu without delimiters eg. 19990101
+     Do format-Datetime($IOsToDt,$OsToDt,{DEFCMP},'','')
+     let $OsToDt = ''
+     do Write-Entry-Detail(13,'501',$OsToDt ,'102','','','','','','','')
+                                                          !Segment 13 - DTM
+  else
+     let $OsToDt = ''
+     do Write-Entry-Detail(13,'501',$OsToDt ,'','','','','','','','')
+                                                          !Segment 13 - DTM
+  end-if
+
+!14.MOA
+!Details Information - Contributions
+
+!Employer contribution
+  let $VolCpfEr = ltrim(edit(to_char(#IIr8sVolCpfEr),'9999999'),' ')
+  do Write-Entry-Detail(11,'408', $VolCpfEr,'','','','','','','','')
+                                                          !Segment 11 - MOA
+!Employee contribution
+  let $VolCpfEE = ltrim(edit(to_char(#IIr8sVolCpfEe),'9999999'),' ')
+  do Write-Entry-Detail(11,'409', $VolCpfEE,'','','','','','','','')
+                                                          !Segment 11 - MOA
+!15.RFF
+!Segment Separator
+
+!Rec Type
+  do Write-Entry-Detail(4,'AWJ','3','','','','','','','','')        !Segment 4 - RFF
+
+
+!process all ir8s-refund-sgp rows for this emplid, empl occr,company & taxyear
+  let $RefundsFlag = 'N'
+  do process-ir8s-refund-sgp
+
+end-procedure
+
+!***********************************************************************
+! Procedure: Open-File                                                 *
+!            This procedure opens the CPFLine file.                    *
+!***********************************************************************
+begin-procedure Open-File
+
+  let #filenum = #filenum + 1
+  do Format-Number(#filenum, $filenum, '009')
+let $File1 = 'IR8S' || $Company_Tax_Ref || $FileNum || '.txt'
+  let $File1 = '{FILEPREFIX}' || $File1 || '{FILESUFFIX}'
+  show 'CPFLine FileName = ' $File1
+  open $File1 as 1 for-writing record=425:fixed  ! CPFLine File
+
+  let $FileOpen = 'Y'
+end-procedure
+
+!***********************************************************************
+! Procedure: process-ir8s-month-sgp                                    *
+! process all ir8s-month-sgp rows for this emplid, company & taxyear   *
+!***********************************************************************
+begin-procedure process-ir8s-month-sgp
+
+  CLEAR-ARRAY name = MTH_CTRB
+IF $Iras_form_type = 'A'
+
+begin-SELECT
+SUM(ST.GPSG_A_ORD_WAGES)      &ST_GPSG_A_ORD_WAGES
+SUM(ST.GPSG_A_ER_ORD_CPF)     &ST_GPSG_A_ER_ORD_CPF
+SUM(ST.GPSG_A_EE_ORD_CPF)     &ST_GPSG_A_EE_ORD_CPF
+SUM(ST.GPSG_A_APP_FND_ORD)   &ST_GPSG_A_APP_FND_ORD
+SUM(ST.GPSG_ADD_WAGES)      &ST_GPSG_ADD_WAGES
+SUM(ST.GPSG_A_ER_ADD_CPF)     &ST_GPSG_A_ER_ADD_CPF
+SUM(ST.GPSG_A_EE_ADD_CPF)     &ST_GPSG_A_EE_ADD_CPF
+SUM(ST.GPSG_A_APP_FND_ADD)   &ST_GPSG_A_APP_FND_ADD
+ST.GPSG_MONTHCD
+
+   Let $MonthsFlag = 'Y'
+   Let #MonthVar = edit(&ST.GPSG_MONTHCD,'99')
+   Let #MonthAry = #MonthVar - 1
+   If  #MonthAry = 98
+       Let #MonthAry = 12
+   end-if
+   If #MonthAry > 12
+       Let #MonthAry = 13
+   end-if
+   Array-Add &ST_GPSG_A_ORD_WAGES         to MTH_CTRB(#MonthAry) OrdWages
+   Array-Add &ST_GPSG_A_ER_ORD_CPF        to MTH_CTRB(#MonthAry) CpfOrdEr
+   Array-Add &ST_GPSG_A_EE_ORD_CPF        to MTH_CTRB(#MonthAry) CpfOrdEe
+   Array-Add &ST_GPSG_A_APP_FND_ORD      to MTH_CTRB(#MonthAry) CpfOrdFundEr
+   Array-Add &ST_GPSG_ADD_WAGES         to MTH_CTRB(#MonthAry) AdlWages
+   Array-Add &ST_GPSG_A_ER_ADD_CPF        to MTH_CTRB(#MonthAry) CpfAdlEr
+   Array-Add &ST_GPSG_A_EE_ADD_CPF        to MTH_CTRB(#MonthAry) CpfAdlEe
+   Array-Add &ST_GPSG_A_APP_FND_ADD      to MTH_CTRB(#MonthAry) CpfAdlFundEr
+
+   evaluate &ST.GPSG_MONTHCD
+       when = '01'
+              Put  'JAN' into MTH_CTRB(#MonthAry)
+       when = '02'
+              Put  'FEB' into MTH_CTRB(1)
+       when = '03'
+              Put  'MAR' into MTH_CTRB(2)
+       when = '04'
+              Put  'APR' into MTH_CTRB(3)
+       when = '05'
+              Put  'MAY' into MTH_CTRB(4)
+       when = '06'
+              Put  'JUN' into MTH_CTRB(5)
+       when = '07'
+              Put  'JUL' into MTH_CTRB(6)
+       when = '08'
+              Put  'AUG' into MTH_CTRB(7)
+       when = '09'
+              Put  'SEP' into MTH_CTRB(8)
+       when = '10'
+              Put  'OCT' into MTH_CTRB(9)
+       when = '11'
+              Put  'NOV' into MTH_CTRB(10)
+       when = '12'
+              Put  'DEC' into MTH_CTRB(11)
+       when = '99'
+              Put  'TTL' into MTH_CTRB(12)
+       when-other
+              Put  '***' into MTH_CTRB(13)
+   end-evaluate
+
+   FROM PS_GPSG_IR8S_A_STG ST
+ WHERE ST.EMPLID           = $PrevEmplid
+   AND ST.GPSG_CPY_TAX_REF = &I.GPSG_CPY_TAX_REF
+   AND ST.GPSG_TAX_YEAR    = &I.GPSG_TAX_YEAR
+   AND ST.PROCESS_INSTANCE = $iras_prcs_instance
+   AND ST.BALANCE_GRP_NUM  = $Prev_BalanceGrp
+   AND ST.GPSG_IRAS_STG_FLG = $chk_flg
+  GROUP BY ST.EMPLID, ST.GPSG_CPY_TAX_REF, ST.GPSG_TAX_YEAR, ST.GPSG_MONTHCD
+
+ORDER BY ST.EMPLID, ST.GPSG_MONTHCD
+end-SELECT
+
+ELSE
+  
+begin-SELECT
+SUM(S.GPSG_ORD_WAGES)      &GPSG_ORD_WAGES
+SUM(S.GPSG_ER_ORD_CPF)     &GPSG_ER_ORD_CPF
+SUM(S.GPSG_EE_ORD_CPF)     &GPSG_EE_ORD_CPF
+SUM(S.GPSG_APP_FUND_ORD)   &GPSG_APP_FUND_ORD
+SUM(S.GPSG_ADD_WAGES)      &GPSG_ADD_WAGES
+SUM(S.GPSG_ER_ADD_CPF)     &GPSG_ER_ADD_CPF
+SUM(S.GPSG_EE_ADD_CPF)     &GPSG_EE_ADD_CPF
+SUM(S.GPSG_APP_FUND_ADD)   &GPSG_APP_FUND_ADD
+S.GPSG_MONTHCD
+
+   Let $MonthsFlag = 'Y'
+   Let #MonthVar = edit(&S.GPSG_MONTHCD,'99')
+   Let #MonthAry = #MonthVar - 1
+   If  #MonthAry = 98
+       Let #MonthAry = 12
+   end-if
+   If #MonthAry > 12
+       Let #MonthAry = 13
+   end-if
+   Array-Add &GPSG_ORD_WAGES         to MTH_CTRB(#MonthAry) OrdWages
+   Array-Add &GPSG_ER_ORD_CPF        to MTH_CTRB(#MonthAry) CpfOrdEr
+   Array-Add &GPSG_EE_ORD_CPF        to MTH_CTRB(#MonthAry) CpfOrdEe
+   Array-Add &GPSG_APP_FUND_ORD      to MTH_CTRB(#MonthAry) CpfOrdFundEr
+   Array-Add &GPSG_ADD_WAGES         to MTH_CTRB(#MonthAry) AdlWages
+   Array-Add &GPSG_ER_ADD_CPF        to MTH_CTRB(#MonthAry) CpfAdlEr
+   Array-Add &GPSG_EE_ADD_CPF        to MTH_CTRB(#MonthAry) CpfAdlEe
+   Array-Add &GPSG_APP_FUND_ADD      to MTH_CTRB(#MonthAry) CpfAdlFundEr
+
+   evaluate &S.GPSG_MONTHCD
+       when = '01'
+              Put  'JAN' into MTH_CTRB(#MonthAry)
+       when = '02'
+              Put  'FEB' into MTH_CTRB(1)
+       when = '03'
+              Put  'MAR' into MTH_CTRB(2)
+       when = '04'
+              Put  'APR' into MTH_CTRB(3)
+       when = '05'
+              Put  'MAY' into MTH_CTRB(4)
+       when = '06'
+              Put  'JUN' into MTH_CTRB(5)
+       when = '07'
+              Put  'JUL' into MTH_CTRB(6)
+       when = '08'
+              Put  'AUG' into MTH_CTRB(7)
+       when = '09'
+              Put  'SEP' into MTH_CTRB(8)
+       when = '10'
+              Put  'OCT' into MTH_CTRB(9)
+       when = '11'
+              Put  'NOV' into MTH_CTRB(10)
+       when = '12'
+              Put  'DEC' into MTH_CTRB(11)
+       when = '99'
+              Put  'TTL' into MTH_CTRB(12)
+       when-other
+              Put  '***' into MTH_CTRB(13)
+   end-evaluate
+
+   FROM PS_GPSG_IR8S_MONTH S
+ WHERE S.EMPLID           = $PrevEmplid
+   AND S.GPSG_CPY_TAX_REF = &I.GPSG_CPY_TAX_REF
+   AND S.GPSG_TAX_YEAR    = &I.GPSG_TAX_YEAR
+!   AND S.BALANCE_GRP_NUM  = $Prev_BalanceGrp
+  GROUP BY S.EMPLID, S.GPSG_CPY_TAX_REF, S.GPSG_TAX_YEAR, S.GPSG_MONTHCD
+
+ORDER BY S.GPSG_MONTHCD
+end-SELECT
+END-IF
+       get $Monthvalue  from MTH_CTRB(0) Month
+       if $Monthvalue = ''
+          Put 'JAN' into MTH_CTRB(0)
+       end-if
+
+       get $Monthvalue  from MTH_CTRB(1) Month
+       if $Monthvalue = ''
+          Put 'FEB' into MTH_CTRB(1)
+       end-if
+       get $Monthvalue  from MTH_CTRB(2) Month
+       if $Monthvalue = ''
+          Put 'MAR' into MTH_CTRB(2)
+       end-if
+       get $Monthvalue  from MTH_CTRB(3) Month
+       if $Monthvalue = ''
+          Put 'APR' into MTH_CTRB(3)
+       end-if
+       get $Monthvalue  from MTH_CTRB(4) Month
+       if $Monthvalue = ''
+          Put 'MAY' into MTH_CTRB(4)
+       end-if
+       get $Monthvalue  from MTH_CTRB(5) Month
+       if $Monthvalue = ''
+          Put 'JUN' into MTH_CTRB(5)
+       end-if
+       get $Monthvalue  from MTH_CTRB(6) Month
+       if $Monthvalue = ''
+          Put 'JUL' into MTH_CTRB(6)
+       end-if
+       get $Monthvalue  from MTH_CTRB(7) Month
+       if $Monthvalue = ''
+          Put 'AUG' into MTH_CTRB(7)
+       end-if
+       get $Monthvalue  from MTH_CTRB(8) Month
+       if $Monthvalue = ''
+          Put 'SEP' into MTH_CTRB(8)
+       end-if
+       get $Monthvalue  from MTH_CTRB(9) Month
+       if $Monthvalue = ''
+          Put 'OCT' into MTH_CTRB(9)
+       end-if
+       get $Monthvalue  from MTH_CTRB(10) Month
+       if $Monthvalue = ''
+          Put 'NOV' into MTH_CTRB(10)
+       end-if
+       get $Monthvalue  from MTH_CTRB(11) Month
+       if $Monthvalue = ''
+          Put 'DEC' into MTH_CTRB(11)
+       end-if
+
+   If $MonthsFlag = 'Y'
+      ! 10.LIN
+      Let #Counter = 0
+      While #Counter <=13
+            get $MonthValue   from MTH_CTRB(#Counter) Month
+            get #OrdWages     from MTH_CTRB(#Counter) OrdWages
+            get #CpfOrdEr     from MTH_CTRB(#Counter) CpfOrdEr
+            get #CpfOrdEe     from MTH_CTRB(#Counter) CpfOrdEe
+            get #CpfOrdFundEr from MTH_CTRB(#Counter) CpfOrdFundEr
+            get #AdlWages     from MTH_CTRB(#Counter) AdlWages
+            get #CpfAdlEr     from MTH_CTRB(#Counter) CpfAdlEr
+            get #CpfAdlEe     from MTH_CTRB(#Counter) CpfAdlEe
+            get #CpfAdlFundEr from MTH_CTRB(#Counter) CpfAdlFundEr
+
+!Although we have 13 cells in the array, only generate lines where there is a month code
+      if rtrim($MonthValue,' ') <> ''
+         !Line No denoting the month
+
+         do Write-Entry-Detail(8,$MonthValue,'','','','','','','','','')       !Segment 8 - LIN
+
+         !11.MOA
+         !Month Details  - Wages
+         Evaluate $MonthValue
+         When <> 'TTL'
+
+         !Ordinary Wages
+         let $OrdWages = ltrim(edit(to_char(#OrdWages),'9999999.99'),' ')
+         do Write-Entry-Detail(11,'400',$OrdWages  ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+         !Employer CPF contribution for ordinay wages
+         let $CpfOrdEr = ltrim(edit(to_char(#CpfOrdEr),'9999999.99'),' ')
+         do Write-Entry-Detail(11,'401',$CpfOrdEr ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+         !Employee CPF contribution for ordinary wages
+         let $CpfOrdEe = ltrim(edit(to_char(#CpfOrdEe),'9999999.99'),' ')
+         do Write-Entry-Detail(11,'402',$CpfOrdEe ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+         !Additional wages
+         let $AdlWages = ltrim(edit(to_char(#AdlWages),'9999999.99'),' ')
+         do Write-Entry-Detail(11,'404',$AdlWages  ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+         !Employer CPF contribution for additional wages
+         let $CpfAdlEr = ltrim(edit(to_char(#CpfAdlEr),'9999999.99'),' ')
+         do Write-Entry-Detail(11,'405',$CpfAdlEr ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+         !Employee CPF contribution for additional wages
+         let $CpfAdlEe = ltrim(edit(to_char(#CpfAdlEe),'9999999.99'),' ')
+         do Write-Entry-Detail(11,'406',$CpfAdlEe ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+
+           Break
+                                                                Break
+       When = 'TTL'
+         !Ordinary Wages
+         Let #OrdWages = Trunc(#OrdWages, 0)
+         let $OrdWages = ltrim(edit(to_char(#OrdWages),'99999999'),' ')
+         do Write-Entry-Detail(11,'400',$OrdWages  ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+         !Employer CPF contribution for ordinay wages
+         Let #CpfOrdEr = Trunc(#CpfOrdEr, 0)
+         let $CpfOrdEr = ltrim(edit(to_char(#CpfOrdEr),'99999999'),' ')
+         do Write-Entry-Detail(11,'401',$CpfOrdEr ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+         !Employee CPF contribution for ordinary wages
+         Let #CpfOrdEe = Round(#CpfOrdEe, 0)
+         let $CpfOrdEe = ltrim(edit(to_char(#CpfOrdEe),'99999999'),' ')
+         do Write-Entry-Detail(11,'402',$CpfOrdEe ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+         !Additional wages
+         Let #AdlWages = Trunc(#AdlWages, 0)
+         let $AdlWages = ltrim(edit(to_char(#AdlWages),'99999999'),' ')
+         do Write-Entry-Detail(11,'404',$AdlWages  ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+         !Employer CPF contribution for additional wages
+         Let #CpfAdlEr = Trunc(#CpfAdlEr, 0)
+         let $CpfAdlEr = ltrim(edit(to_char(#CpfAdlEr),'99999999'),' ')
+         do Write-Entry-Detail(11,'405',$CpfAdlEr ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+         !Employee CPF contribution for additional wages
+         Let #CpfAdlEe = Round(#CpfAdlEe, 0)
+         let $CpfAdlEe = ltrim(edit(to_char(#CpfAdlEe),'99999999'),' ')
+         do Write-Entry-Detail(11,'406',$CpfAdlEe ,'','','','','','','','')
+                                                                !Segment 11 - MOA
+       Break
+      End-Evaluate
+      end-if
+      Add 1 to #Counter
+      End-While
+   end-if
+
+end-procedure
+
+!***********************************************************************
+! Procedure: process-ir8s-refund-sgp
+! process all ir8s-refund-sgp rows for this emplid, empl occr,
+! company & taxyear
+!***********************************************************************
+begin-procedure process-ir8s-refund-sgp
+   Let #AdlWages = 0
+   Let #RefundAmtEr = 0
+   Let #RefundIntEr = 0
+   Let #RefundAmtEe = 0
+   Let #RefundIntEe = 0
+   Let $RefundsFlag = 'N'
+IF $Iras_form_type = 'A'   
+
+begin-SELECT Loops=3
+RF.SEQ_NO
+RF.GPSG_ADD_WAGES
+RF.GPSG_REF_A_AMT_ER
+RF.GPSG_REF_A_INT_ER
+RF.GPSG_REF_A_AMT_EE
+RF.GPSG_REF_A_INT_EE
+RF.GPSG_ADD_FROM_DT
+RF.GPSG_ADD_TO_DT
+RF.GPSG_ADD_PAID_DT
+RF.GPSG_REF_DT_ER
+RF.GPSG_REF_DT_EE
+
+   let $RefundsFlag = 'Y'
+   Move &RF.GPSG_ADD_WAGES  to #AdlWages
+   Move &RF.GPSG_REF_A_AMT_ER to #RefundAmtEr
+   Move &RF.GPSG_REF_A_INT_ER to #RefundIntEr
+   Move &RF.GPSG_REF_A_AMT_EE to #RefundAmtEe
+   Move &RF.GPSG_REF_A_INT_EE to #RefundIntEe
+   !16.MOA
+   !Details Information - Wages and contributions
+
+   !Additional Wages
+   let $AdlWages = ltrim(edit(to_char(#AdlWages),
+                                                            '999999'),' ')
+   do Write-Entry-Detail(11,'410', $AdlWages,'','','','','','','','')
+                                                               !Segment 11 - MOA
+   !Amt of refund applicable to employer contribution
+   let $RefundAmtEr = ltrim(edit(to_char(#RefundAmtEr),
+                                                            '999999'),' ')
+   do Write-Entry-Detail(11,'411', $RefundAmtEr,'','','','','','','','')
+                                                               !Segment 11 - MOA
+
+   !Amt of refund applicable to interest on employer contribution
+   let $RefundIntEr = ltrim(edit(to_char(#RefundIntEr),
+                                                            '999999'),' ')
+   do Write-Entry-Detail(11,'412', $RefundIntEr,'','','','','','','','')
+                                                               !Segment 11 - MOA
+
+   !Amt of refund applicable to employee contribution
+   let $RefundAmtEe = ltrim(edit(to_char(#RefundAmtEe),'999999'),' ')
+   do Write-Entry-Detail(11,'413', $RefundAmtEe,'','','','','','','','')
+                                                               !Segment 11 - MOA
+   !Amt of refund applicable to interest on employee contribution
+   let $RefundIntEe = ltrim(edit(to_char(#RefundIntEe),'999999'),' ')
+   do Write-Entry-Detail(11,'414', $RefundIntEe,'','','','','','','','')
+                                                               !Segment 11 - MOA
+   !17.DTM
+   !Details Information - Payment Dates
+
+   !Payment for additional wages from date
+   if rtrim(&RF.GPSG_ADD_FROM_DT ,' ') <> ''
+
+     ! convert native date to dtu without delimiters eg. 19990101
+      Do format-Datetime(&RF.GPSG_ADD_FROM_DT,$FromDt,{DEFCMP},'','')
+   else
+      let $FromDt = ''
+   end-if
+
+   do Write-Entry-Detail(13,'502',$FromDt ,'102','','','','','','','')
+                                                               !Segment 13 - DTM
+
+   !Payment for additional wages to date
+   if rtrim(&RF.GPSG_ADD_TO_DT ,' ') <> ''
+
+      ! convert native date to dtu without delimiters eg. 19990101
+      Do format-Datetime(&RF.GPSG_ADD_TO_DT,$ToDt,{DEFCMP},'','')
+   else
+      let $ToDt = ''
+   end-if
+
+   do Write-Entry-Detail(13,'503',$ToDt ,'102','','','','','','','')
+                                                               !Segment 13 - DTM
+
+   !Payment for additional wages date
+   if rtrim(&RF.GPSG_ADD_PAID_DT ,' ') <> ''
+
+      ! convert native date to dtu without delimiters eg. 19990101
+      Do format-Datetime(&RF.GPSG_ADD_PAID_DT,$PaidDt,{DEFCMP},'','')
+   else
+      let $PaidDt = ''
+   end-if
+
+   do Write-Entry-Detail(13,'504',$PaidDt ,'102','','','','','','','')
+                                                               !Segment 13 - DTM
+
+   !Refund given to employer date
+   if rtrim(&RF.GPSG_REF_DT_ER  ,' ') <> ''
+
+      ! convert native date to dtu without delimiters eg. 19990101
+      Do format-Datetime(&RF.GPSG_REF_DT_ER ,$RefundDtEr,{DEFCMP},'','')
+   else
+      let $RefundDtEr = ''
+   end-if
+
+   do Write-Entry-Detail(13,'505',$RefundDtEr ,'102','','','','','','','')
+                                                               !Segment 13 - DTM
+
+   !Refund given to employee date
+   if rtrim(&RF.GPSG_REF_DT_ER  ,' ') <> ''
+
+      ! convert native date to dtu without delimiters eg. 19990101
+      Do format-Datetime(&RF.GPSG_REF_DT_EE ,$RefundDtEe,{DEFCMP},'','')
+   else
+      let $RefundDtEe = ''
+   end-if
+
+   do Write-Entry-Detail(13,'506',$RefundDtEe ,'102','','','','','','','')
+                                                               !Segment 13 - DTM
+
+   FROM PS_GPSG_IR8R_A_STG RF
+
+ WHERE RF.EMPLID           = $PrevEmplid
+   AND RF.GPSG_CPY_TAX_REF = &I.GPSG_CPY_TAX_REF
+   AND RF.GPSG_TAX_YEAR    = &I.GPSG_TAX_YEAR
+   AND RF.BALANCE_GRP_NUM  = $Prev_BalanceGrp
+   AND RF.PROCESS_INSTANCE = $iras_prcs_instance
+   AND RF.GPSG_IRAS_STG_FLG = $chk_flg
+ORDER BY RF.EMPLID, RF.SEQ_NO
+
+end-SELECT
+
+ELSE   
+
+begin-SELECT Loops=3
+R.SEQ_NO
+R.GPSG_ADD_WAGES
+R.GPSG_REF_AMT_ER
+R.GPSG_REF_INT_ER
+R.GPSG_REF_AMT_EE
+R.GPSG_REF_INT_EE
+R.GPSG_ADD_FROM_DT
+R.GPSG_ADD_TO_DT
+R.GPSG_ADD_PAID_DT
+R.GPSG_REF_DT_ER
+R.GPSG_REF_DT_EE
+
+   let $RefundsFlag = 'Y'
+   Move &R.GPSG_ADD_WAGES  to #AdlWages
+   Move &R.GPSG_REF_AMT_ER to #RefundAmtEr
+   Move &R.GPSG_REF_INT_ER to #RefundIntEr
+   Move &R.GPSG_REF_AMT_EE to #RefundAmtEe
+   Move &R.GPSG_REF_INT_EE to #RefundIntEe
+   !16.MOA
+   !Details Information - Wages and contributions
+
+   !Additional Wages
+   let $AdlWages = ltrim(edit(to_char(#AdlWages),
+                                                            '999999'),' ')
+   do Write-Entry-Detail(11,'410', $AdlWages,'','','','','','','','')
+                                                               !Segment 11 - MOA
+   !Amt of refund applicable to employer contribution
+   let $RefundAmtEr = ltrim(edit(to_char(#RefundAmtEr),
+                                                            '999999'),' ')
+   do Write-Entry-Detail(11,'411', $RefundAmtEr,'','','','','','','','')
+                                                               !Segment 11 - MOA
+
+   !Amt of refund applicable to interest on employer contribution
+   let $RefundIntEr = ltrim(edit(to_char(#RefundIntEr),
+                                                            '999999'),' ')
+   do Write-Entry-Detail(11,'412', $RefundIntEr,'','','','','','','','')
+                                                               !Segment 11 - MOA
+
+   !Amt of refund applicable to employee contribution
+   let $RefundAmtEe = ltrim(edit(to_char(#RefundAmtEe),'999999'),' ')
+   do Write-Entry-Detail(11,'413', $RefundAmtEe,'','','','','','','','')
+                                                               !Segment 11 - MOA
+   !Amt of refund applicable to interest on employee contribution
+   let $RefundIntEe = ltrim(edit(to_char(#RefundIntEe),'999999'),' ')
+   do Write-Entry-Detail(11,'414', $RefundIntEe,'','','','','','','','')
+                                                               !Segment 11 - MOA
+   !17.DTM
+   !Details Information - Payment Dates
+
+   !Payment for additional wages from date
+   if rtrim(&R.GPSG_ADD_FROM_DT ,' ') <> ''
+
+     ! convert native date to dtu without delimiters eg. 19990101
+      Do format-Datetime(&R.GPSG_ADD_FROM_DT,$FromDt,{DEFCMP},'','')
+   else
+      let $FromDt = ''
+   end-if
+
+   do Write-Entry-Detail(13,'502',$FromDt ,'102','','','','','','','')
+                                                               !Segment 13 - DTM
+
+   !Payment for additional wages to date
+   if rtrim(&R.GPSG_ADD_TO_DT ,' ') <> ''
+
+      ! convert native date to dtu without delimiters eg. 19990101
+      Do format-Datetime(&R.GPSG_ADD_TO_DT,$ToDt,{DEFCMP},'','')
+   else
+      let $ToDt = ''
+   end-if
+
+   do Write-Entry-Detail(13,'503',$ToDt ,'102','','','','','','','')
+                                                               !Segment 13 - DTM
+
+   !Payment for additional wages date
+   if rtrim(&R.GPSG_ADD_PAID_DT ,' ') <> ''
+
+      ! convert native date to dtu without delimiters eg. 19990101
+      Do format-Datetime(&R.GPSG_ADD_PAID_DT,$PaidDt,{DEFCMP},'','')
+   else
+      let $PaidDt = ''
+   end-if
+
+   do Write-Entry-Detail(13,'504',$PaidDt ,'102','','','','','','','')
+                                                               !Segment 13 - DTM
+
+   !Refund given to employer date
+   if rtrim(&R.GPSG_REF_DT_ER  ,' ') <> ''
+
+      ! convert native date to dtu without delimiters eg. 19990101
+      Do format-Datetime(&R.GPSG_REF_DT_ER ,$RefundDtEr,{DEFCMP},'','')
+   else
+      let $RefundDtEr = ''
+   end-if
+
+   do Write-Entry-Detail(13,'505',$RefundDtEr ,'102','','','','','','','')
+                                                               !Segment 13 - DTM
+
+   !Refund given to employee date
+   if rtrim(&R.GPSG_REF_DT_ER  ,' ') <> ''
+
+      ! convert native date to dtu without delimiters eg. 19990101
+      Do format-Datetime(&R.GPSG_REF_DT_EE ,$RefundDtEe,{DEFCMP},'','')
+   else
+      let $RefundDtEe = ''
+   end-if
+
+   do Write-Entry-Detail(13,'506',$RefundDtEe ,'102','','','','','','','')
+                                                               !Segment 13 - DTM
+
+   FROM PS_GPSG_IR8S_REFND R
+
+ WHERE R.EMPLID           = $PrevEmplid
+   AND R.GPSG_CPY_TAX_REF = &I.GPSG_CPY_TAX_REF
+   AND R.GPSG_TAX_YEAR    = &I.GPSG_TAX_YEAR
+   AND R.BALANCE_GRP_NUM  = $Prev_BalanceGrp
+
+ORDER BY R.SEQ_NO
+
+end-SELECT
+END-IF
+
+ if $RefundsFlag = 'N'
+
+   !    Create blank refunds records
+   do Write-Entry-Detail(11,'410','0','','','','','','','','')
+   do Write-Entry-Detail(11,'411','0','','','','','','','','')
+   do Write-Entry-Detail(11,'412','0','','','','','','','','')
+   do Write-Entry-Detail(11,'413','0','','','','','','','','')
+   do Write-Entry-Detail(11,'414','0','','','','','','','','')
+   do Write-Entry-Detail(13,'502','','','','','','','','','')
+   do Write-Entry-Detail(13,'503','','','','','','','','','')
+   do Write-Entry-Detail(13,'504','','','','','','','','','')
+   do Write-Entry-Detail(13,'505','','','','','','','','','')
+   do Write-Entry-Detail(13,'506','','','','','','','','','')
+
+ end-if
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure: Write-Entry-Detail                                        *
+!            Write data into CPFLine interface file depending          *
+!            on Segment#.                                              *
+!***********************************************************************
+begin-procedure Write-Entry-Detail(#Segment, $Parm1, $Parm2,
+                                             $Parm3, $Parm4,
+                                             $Parm5, $Parm6,
+                                             $Parm7, $Parm8,
+                                             $Parm9, $Parm10)
+                                             
+                                     
+  evaluate #Segment
+    when = 1
+      let $Var1 = 'UNB'
+      write 1 from $Var1:156     ! 1
+                   $Parm1:173     ! 157
+      break
+    when = 2
+      let $Var1 = 'UNH'
+      let $Var2 = '011'
+      write 1 from $Var1:19      ! 1
+                   $Parm1:6      ! 20
+                   $Var2:304     ! 26
+      break
+    when = 3
+      let $Var1 = 'BGM'
+      let $Var2 = '938'
+      write 1 from $Var1:5       ! 1
+                   $Var2:324     ! 6
+      break
+    when = 4
+      let $Var1 = 'RFF'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:321    ! 9
+      break
+    when = 5
+      let $Var1 = 'DTM'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:8      ! 9
+                   $Parm3:313    ! 17
+      break
+    when = 6
+      let $Var1 = 'NAD'
+      let $Var2 = 'SE'
+      write 1 from $Var1:5       ! 1
+                   $Var2:3       ! 6
+                   $Parm1:12     ! 9
+                   $Parm2:239    ! 21
+                   $Parm3:60     ! 260
+                   $Parm4:10     ! 320
+                   $Parm5:50     ! 330
+      break
+    when = 7
+      let $Var1 = 'COM'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:20    ! 6
+      break
+    when = 8
+      let $Var1 = 'LIN'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:324    ! 6
+      break
+    when = 10
+      let $Var1 = 'NAD'
+      let $Var2 = 'PE'
+      write 1 from $Var1:5       ! 1
+                   $Var2:3       ! 6
+                   $Parm1:12     ! 9
+                   $Parm2:204    ! 21
+                   $Parm3:80     ! 225
+      break
+    when = 11
+      let $Var1 = 'MOA'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:321    ! 9
+      break
+    when = 12
+      let $Var1 = 'QTY'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:321    ! 9
+      break
+    when = 13
+      let $Var1 = 'DTM'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:8      ! 9
+                   $Parm3:3      ! 17
+      break
+    when = 14
+      let $Var1 = 'FTX'
+      let $Var2 = 'ACB'
+      let $Var3 = ''
+      write 1 from $Var1:5       ! 1
+                   $Var2:3       ! 6
+                   $Var3:26      ! 9
+                   $Parm1:295    ! 35
+      break
+    when = 17
+      let $Var1 = 'RES'
+      let $Var2 = 'ZZ'
+      write 1 from $Var1:5       ! 1
+                   $Var2:324     ! 6
+      break
+    when-other
+      show 'Invalid $Segment_Type: ' $Segment_Type
+      break
+  end-evaluate
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure: close-file                                                *
+!            Write footer record and close file.                       *
+!***********************************************************************
+begin-procedure close-file
+
+!write 'res  zz' segment and close
+  do Write-Entry-Detail(17,'','','','','','','','','','')       !Segment 17 - RES
+
+  close 1
+
+end-procedure
+
+!
+!***********************************************************************
+! Procedure: Move-To-Var                                               *
+!            Move Field values to Variables                            *
+!***********************************************************************
+!
+Begin-procedure Move-To-Var
+    
+   Move &I.SEX                To $ISex
+   Move &I.GPSG_8A_GROSS      To #IGrsYtd
+   Move &I.GPSG_8A_NC_BONUS   To #IBonusYtd
+   Move &I.GPSG_8A_DIR_FEE    To #IDirefeeYtd
+   Move &I.GPSG_8A_COMMSN     To #IComssnYtd
+   Move &I.GPSG_8A_PENSION    To #IPensionYtd
+   Move &I.GPSG_8A_ALLOW_TOT  To #IAllowTotalYtd
+   Move &I.GPSG_8A_GRATUITY   To #IGratuityYtd
+   Move &I.GPSG_8A_RETIRE     To #IRetireYtd
+   Move &I.GPSG_8A_OS_PENSION To #IOsPensionYtd
+   Move &I.GPSG_CPF_VOL_ER    To #IVolEmplrCpfYtd
+   Move &I.GPSG_8A_SHARE_GAIN To #IShareGainsYtd
+   Let  $ITaxRefTypeSgp       =  RTrim(&I.NATIONAL_ID_TYPE, ' ')
+   Move &I.NATIONAL_ID        To $ITaxRefSgp
+   Move &I.GPSG_OS_CPF_REQD   To $IOsCpfRequired
+   Move &I.GPSG_CPF_CAP_APPLD To $ICappingRequired
+   Move &C1.CITIZENSHIP_STATUS To $Citizen_Status
+   Move &C1.PERM_STATUS_DT_SGP to $App_Dt 'YYYY.MM.DD'
+   Move &I.GPSG_CPF_CONT       to $CPF_Approval
+   Move &I.GPSG_APP_IRAS       to $IRAS_Approval
+   if RTrim(&I.GPSG_OS_FROM_DT, ' ') = ''
+      Move ' '                To $IOsCpfRequired
+   end-if
+
+   Move &I.GPSG_OS_FROM_DT    To $IOsFromDt
+   Move &I.GPSG_OS_TO_DT      To $IOsToDt
+   Move &I.GPSG_8S_CPF_VOL_ER To #IIr8sVolCpfEr
+   Move &I.GPSG_8S_CPF_VOL_EE To #IIr8sVolCpfEe
+
+   if #IIr8sVolCpfEr <> 0 or #IIr8sVolCpfEe <> 0
+      Move &I.GPSG_CPF_VOL_REQD To $IVolCpfRequired
+   else
+      Move ' '                To $IVolCpfRequired
+   end-if
+
+   Move &I.NAME               To $IName
+   let $IName = translate($IName,',',' ')
+   let $IRemarks = substr(&I.GPSG_8S_REMARKS, 1, 100)
+end-Procedure
+!
+!***********************************************************************
+! Procedure: Add-Var-Values                                            *
+!            Sum Variables for the same Emplid                         *
+!***********************************************************************
+!
+Begin-procedure Add-Var-Values
+
+   Move &I.GPSG_8A_GROSS      To #I_GPSG_8A_GROSS     
+   Move &I.GPSG_8A_NC_BONUS   To #I_GPSG_8A_NC_BONUS  
+   Move &I.GPSG_8A_DIR_FEE    To #I_GPSG_8A_DIR_FEE   
+   Move &I.GPSG_8A_COMMSN     To #I_GPSG_8A_COMMSN    
+   Move &I.GPSG_8A_PENSION    To #I_GPSG_8A_PENSION   
+   Move &I.GPSG_8A_ALLOW_TOT  To #I_GPSG_8A_ALLOW_TOT 
+   Move &I.GPSG_8A_GRATUITY   To #I_GPSG_8A_GRATUITY  
+   Move &I.GPSG_8A_RETIRE     To #I_GPSG_8A_RETIRE    
+   Move &I.GPSG_8A_OS_PENSION To #I_GPSG_8A_OS_PENSION
+   Move &I.GPSG_CPF_VOL_ER    To #I_GPSG_CPF_VOL_ER   
+   Move &I.GPSG_8A_SHARE_GAIN To #I_GPSG_8A_SHARE_GAIN
+   Move &I.GPSG_8S_CPF_VOL_ER To #I_GPSG_8S_CPF_VOL_ER
+   Move &I.GPSG_8S_CPF_VOL_EE To #I_GPSG_8S_CPF_VOL_EE
+
+   Add #I_GPSG_8A_GROSS      To #IGrsYtd
+   Add #I_GPSG_8A_NC_BONUS   To #IBonusYtd
+   Add #I_GPSG_8A_DIR_FEE    To #IDirefeeYtd
+   Add #I_GPSG_8A_COMMSN     To #IComssnYtd
+   Add #I_GPSG_8A_PENSION    To #IPensionYtd
+   Add #I_GPSG_8A_ALLOW_TOT  To #IAllowTotalYtd
+   Add #I_GPSG_8A_GRATUITY   To #IGratuityYtd
+   Add #I_GPSG_8A_RETIRE     To #IRetireYtd
+   Add #I_GPSG_8A_OS_PENSION To #IOsPensionYtd
+   Add #I_GPSG_CPF_VOL_ER    To #IVolEmplrCpfYtd
+   Add #I_GPSG_8A_SHARE_GAIN To #IShareGainsYtd
+   Add #I_GPSG_8S_CPF_VOL_ER To #IIr8sVolCpfEr
+   Add #I_GPSG_8S_CPF_VOL_EE To #IIr8sVolCpfEe
+
+   if &I.GPSG_OS_CPF_REQD = 'Y' or ($IOsCpfRequired <> 'Y' and RTrim(&I.GPSG_OS_FROM_DT, ' ') <> '')
+      Move &I.GPSG_OS_CPF_REQD   To $IOsCpfRequired
+   end-if
+
+   if &I.GPSG_CPF_CAP_APPLD = 'Y'
+      Move &I.GPSG_CPF_CAP_APPLD To $ICappingRequired
+   end-if
+
+   if &I.GPSG_CPF_VOL_REQD = 'Y'
+    or ($IVolCpfRequired <> 'Y' and (#IIr8sVolCpfEr <> 0 or #IIr8sVolCpfEe <> 0))
+      Move &I.GPSG_CPF_VOL_REQD  To $IVolCpfRequired
+   end-if
+
+   if RTrim(&I.GPSG_OS_FROM_DT, ' ') <> ''
+      Move &I.GPSG_OS_FROM_DT    To $IOsFromDt
+      Move &I.GPSG_OS_TO_DT      To $IOsToDt
+   end-if
+
+end-Procedure
+
+begin-Procedure DEL_STG_IRAS
+begin-sql
+DELETE 
+FROM PS_GPSG_IR8A_A_STG
+WHERE PROCESS_INSTANCE = [$iras_prcs_instance]
+end-sql
+begin-sql
+DELETE 
+FROM PS_GPSG_IR8S_A_STG
+WHERE PROCESS_INSTANCE = [$iras_prcs_instance]
+end-sql
+begin-sql
+DELETE 
+FROM PS_GPSG_IR8R_A_STG
+WHERE PROCESS_INSTANCE = [$iras_prcs_instance]
+end-sql
+end-procedure
+
+
+!
+!
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'datemath.sqc'  !Routines for Date Arithmetic
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Routines to Update Run Status
+#Include 'gpsgirrc.sqc'  !Select-Parameters procedure

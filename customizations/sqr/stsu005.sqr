@@ -1,0 +1,555 @@
+!************************************************************************
+!  STSU005:  Tax Information
+!************************************************************************                                                                      !
+!
+!
+!   This software and related documentation are provided under a
+!   license agreement containing restrictions on use and
+!   disclosure and are protected by intellectual property
+!   laws. Except as expressly permitted in your license agreement
+!   or allowed by law, you may not use, copy, reproduce,
+!   translate, broadcast, modify, license, transmit, distribute,
+!   exhibit, perform, publish or display any part, in any form or
+!   by any means. Reverse engineering, disassembly, or
+!   decompilation of this software, unless required by law for
+!   interoperability, is prohibited.
+!   The information contained herein is subject to change without
+!   notice and is not warranted to be error-free. If you find any
+!   errors, please report them to us in writing.
+!
+!   Copyright (C) 1988, 2017, Oracle and/or its affiliates.       
+!   All Rights Reserved.                                          
+!----------------------------------------------------------------------
+!                                                                      *
+!                                                                      *
+!***********************************************************************
+!
+!       $Release:  HR92                                       
+!           $Bug:  25919364                                   
+!
+!************************************************************************
+
+#include 'setenv.sqc'    !Set environment
+
+begin-setup
+  #include 'ptpsp125.sqc'  !Printer and page-size init
+end-setup
+
+#define  col2    13
+#define  col3    28
+#define  col4    41  !49
+#define  col5    60  !68
+#define  col6    85  !93
+#define  col7    110 !118
+
+!************************************************************************
+begin-program
+!************************************************************************
+
+  do Init-DateTime         !procedure in datetime.sqc
+  do Init-Number           !procedure in number.sqc
+  do Get-Current-DateTime  !procedure in currdttm.sqc
+  do Init-Report           !procedure in SQR
+
+  let $timebegan =DateToStr(DateNow(),'hh:mi:ss')
+
+  show 'Report Began: '  $timebegan  ' '
+
+  do Process-Main          !does all report processing in SQR
+  do Reset                 !procedure in reset.sqc
+  do Stdapi-term           !procedure in stdapi.sqc
+
+  let $timeEnded =DateToStr(DateNow(),'hh:mi:ss')
+
+  show 'Report Ended: '  $timeEnded  ' '
+
+end-program
+
+
+!************************************************************************
+begin-procedure Init-Report
+!************************************************************************
+
+  do Stdapi-Init
+
+  let     $ReportID     =   'STSU005'
+
+  do Get-Report-Language
+
+  show    'FLOW: Init-Report'
+  show    'Report Title: ' $ReportTitle
+
+end-procedure
+
+!************************************************************************
+begin-procedure Report-Translation
+!************************************************************************
+
+!----------------------------------------------------------------------!
+! Procedure: Report-Translation                                        !
+! Desc:      This procedure gets the report language and headers       !
+!----------------------------------------------------------------------!
+
+  do Init_Report_Translation ('STOCK',$language_cd)
+  do Append_Report_Translation ($ReportId)
+
+  do Get_Field_Information ('STOCK','ST_STOCK_TAX_TYPE', $StStockTaxType,   #DW)
+  do Get_Field_Information ('STOCK','EFFDT',             $EffDt,            #DW)
+
+  do Get_Field_Information ('STSU005','STSU005',           $ReportTitle,      #DW)
+  do Get_Field_Information ('STSU005','COUNTRY',           $Country,          #DW)
+  do Get_Field_Information ('STSU005','ST_TAX_LEVEL',      $StTaxLevel,       #DW)
+  do Get_Field_Information ('STSU005','TAX_CLASS',         $TaxClass,         #DW)
+  do Get_Field_Information ('STSU005','ST_DEFAULT_PERCENT',$StDefaultPercent, #DW)
+  do Get_Field_Information ('STSU005','MAX_GROSS',         $MaxGross,         #DW)
+  do Get_Field_Information ('STSU005','MAX_TAX',           $MaxTaxLbl,        #DW)
+  do Get_Field_Information ('STSU005','STATE',             $State,            #DW)
+  do Get_Field_Information ('STSU005','LOCALITY',          $Locality,         #DW)
+  do Get_Field_Information ('STSU005','DESCR',             $Descr,            #DW)
+
+end-procedure
+
+!************************************************************************
+begin-heading 6
+!************************************************************************
+
+#include 'stdhdgtr.sqc'
+
+  print $Country             (+1,1,07)
+  print $StStockTaxType      (0,+5,08)
+  print $TaxClass            (0,+7,09)
+  print $StTaxLevel          (0,+4,09)
+  print $Descr               (0,+6,05)
+
+end-heading
+
+!************************************************************************
+begin-procedure Process-Main
+!************************************************************************
+
+!----------------------------------------------------------------------!
+! Procedure:  Process-Main                                             !
+! Descr:      This is where all required data is selected              !
+!----------------------------------------------------------------------!
+
+  display 'FLOW: Process-Main'
+
+begin-Select
+
+A.COUNTRY
+A.ST_STOCK_TAX_TYPE
+A.DESCR
+A.ST_TAX_LEVEL
+A.TAX_CLASS
+
+  do Get-Descr
+  do Get-Value
+
+  move &A.TAX_CLASS         to $USTaxClass
+  do Get-US-Tax-Class-Name
+  move $USTaxClassNameAbbrv to $TaxClass
+
+  print &E.DESCRSHORT             (+2,1,10)      !Country Val returned from prompt tbl
+  print &A.ST_STOCK_TAX_TYPE      (0,{col2},05)
+  print $TaxClass                 (0,{col3},10)
+  print $Tax                      (0,{col4},10)  !ST_TAX_LEVEL
+  print &A.DESCR                  (0,+5,30)
+
+  do Get-Dtl
+
+from PS_ST_TAX_TYPE_TBL A
+
+end-Select
+
+end-procedure
+
+!**************************************************************************
+begin-procedure Get-Dtl
+!**************************************************************************
+
+ let #MaxTax = 0
+
+begin-Select                        !COUNTRY INFO
+
+B.COUNTRY
+B.ST_STOCK_TAX_TYPE            ()   ON-BREAK   PRINT=never  BEFORE=Print-CountryHeading
+B.EFFDT
+B.ST_DEFAULT_PERCENT
+B.MAX_GROSS
+
+  If &B.MAX_GROSS < 99999999
+     let #MaxTax = ((&B.ST_DEFAULT_PERCENT * &B.MAX_GROSS) / 100)
+  Else
+     let #MaxTax = &B.MAX_GROSS
+  End-If
+
+  do Print-Country-Data
+
+ from    PS_ST_COUNTRY_TAX      B
+where    B.COUNTRY              =   &A.COUNTRY
+  and    B.ST_STOCK_TAX_TYPE    =   &A.ST_STOCK_TAX_TYPE
+
+order by B.EFFDT desc
+
+end-Select
+
+
+ let #MaxTax = 0
+
+begin-Select                        !STATE INFO
+
+C.COUNTRY
+C.ST_STOCK_TAX_TYPE             ()  ON-BREAK   PRINT=never  BEFORE=Print-StateHeading
+C.STATE
+
+  do Get-Descr
+
+C.EFFDT
+C.ST_DEFAULT_PERCENT
+C.MAX_GROSS
+
+  If &C.MAX_GROSS < 99999999
+     let #MaxTax = ((&C.ST_DEFAULT_PERCENT * &C.MAX_GROSS) / 100)
+  Else
+     let #MaxTax = &C.MAX_GROSS
+  End-If
+
+  do Print-State-Data
+
+ from    PS_ST_STATE_TAX      C
+where    C.COUNTRY            =     &A.COUNTRY
+  and    C.ST_STOCK_TAX_TYPE  =     &A.ST_STOCK_TAX_TYPE
+
+order by C.EFFDT          desc
+
+end-Select
+
+
+ let #MaxTax = 0
+ let $local_tax_found = 'N'
+
+begin-Select                        !LOCAL INFO
+
+D.COUNTRY
+D.ST_STOCK_TAX_TYPE             ()  ON-BREAK   PRINT=never  BEFORE=Print-LocalHeading
+D.STATE
+D.EFFDT
+D.LOCALITY
+
+  do Get-Descr
+
+D.ST_DEFAULT_PERCENT
+D.MAX_GROSS
+
+   let $local_tax_found = 'Y'
+
+  If &D.MAX_GROSS < 99999999
+     let #MaxTax = ((&D.ST_DEFAULT_PERCENT * &D.MAX_GROSS) / 100)
+  Else
+     let #MaxTax = &D.MAX_GROSS
+  End-If
+
+  do Print-Local-Data
+
+ from    PS_ST_LOCAL_TAX      D
+where    D.COUNTRY            =     &A.COUNTRY
+  and    D.ST_STOCK_TAX_TYPE  =     &A.ST_STOCK_TAX_TYPE
+
+order by D.EFFDT          desc
+
+end-Select
+
+print   ' '                  (+1,1,1)
+
+end-procedure
+
+!************************************************************************
+begin-procedure Get-Value
+!************************************************************************
+
+!-------------------------------------------------------------------!
+! Procedure:  Get-Value                                             !
+! Descr:      This procedure gets the value of the specific field   !
+!             from the Translate Table                              !
+!-------------------------------------------------------------------!
+
+  let $FieldName = 'ST_TAX_LEVEL'
+  let $FieldValue = &A.ST_TAX_LEVEL
+
+  do Read-Translate-Table
+
+  let $Tax = RTRIM($XlatShortName,' ')
+
+end-procedure
+
+!************************************************************************
+begin-procedure Get-Descr
+!************************************************************************
+
+!-------------------------------------------------------------------!
+! Procedure:  Get-Descr                                             !
+! Descr:      This procedure gets the description of the specific   !
+!             field from the prompt tables                          !
+!-------------------------------------------------------------------!
+
+begin-Select
+
+E.DESCRSHORT                   !GET COUNTRY'S DESCRIPITON
+
+from   PS_COUNTRY_TBL E
+where  E.COUNTRY      =  &A.COUNTRY
+
+end-Select
+
+
+begin-Select
+
+F.DESCR
+
+ from   PS_STATE_NAMES_TBL  F
+where   F.COUNTRY     =   &C.COUNTRY
+  and   F.STATE       =   &C.STATE
+
+end-Select
+
+
+begin-Select
+
+G.DESCR
+
+ from   PS_STATE_NAMES_TBL  G
+where   G.COUNTRY     =   &D.COUNTRY
+  and   G.STATE       =   &D.STATE
+
+end-Select
+
+
+begin-Select                   !SEE IF PAYROLL IS INSTALLED
+
+H.INSTALLED_PAY_NA
+
+from PS_INSTALLATION H
+
+end-Select
+
+
+
+let $INSTALLED = &H.INSTALLED_PAY_NA    !Check if payroll installed
+
+if $INSTALLED  = 'Y'
+  if $local_tax_found = 'Y'
+      do get-locality
+  end-if
+end-if
+
+end-procedure
+
+
+!************************************
+begin-procedure Get-US-Tax-Class-Name
+!************************************
+
+  !Keys passed in:  $USTaxClass
+  !Values returned: $USTaxClassName, $USTaxClassNameAbbrv
+
+  move '' to $USTaxClassName
+  move '' to $USTaxClassNameAbbrv
+
+  if Rtrim($USTaxClass,' ') = ''
+    goto GetUSTxClsExit
+  end-if
+
+begin-SELECT
+TC.DESCR
+TC.DESCRSHORT
+
+  let $USTaxClassName      = Rtrim(&TC.DESCR,' ')
+  let $USTaxClassNameAbbrv = Rtrim(&TC.DESCRSHORT,' ')
+
+FROM PS_ST_TAX_CLASS TC
+WHERE TC.TAX_CLASS = $USTaxClass
+end-SELECT
+
+  do Get-US-Tax-Class-Name-Lang
+
+GetUSTxClsExit:
+
+end-procedure
+
+!*****************************************
+begin-procedure Get-US-Tax-Class-Name-Lang
+!*****************************************
+
+  !Keys passed in:  $USTaxClass
+  !Values returned: $USTaxClassName, $USTaxClassNameAbbrv
+
+  if $Curr_Language_Cd = $PSOptions_Language_Cd
+    goto GetUSTxClsLngExit
+  end-if
+
+  if Rtrim($USTaxClass,' ') = ''
+    goto GetUSTxClsLngExit
+  end-if
+
+begin-SELECT
+TCL.DESCR
+TCL.DESCRSHORT
+
+  if Rtrim(&TCL.DESCR,' ') <> ''
+    let $USTaxClassName = Rtrim(&TCL.DESCR,' ')
+  end-if
+  if Rtrim(&TCL.DESCRSHORT,' ') <> ''
+    let $USTaxClassNameAbbrv = Rtrim(&TCL.DESCRSHORT,' ')
+  end-if
+
+FROM PS_ST_TAXCLASS_LNG TCL
+WHERE TCL.TAX_CLASS = $USTaxClass
+  AND TCL.LANGUAGE_CD = $Curr_Language_Cd
+end-SELECT
+
+GetUSTxClsLngExit:
+
+end-procedure
+
+
+!************************************************************************
+begin-procedure get-locality
+!************************************************************************
+
+begin-Select
+
+I.LOCALITY_NAME
+
+from PS_LOCAL_TAX_TBL I
+where LOCALITY =      &D.LOCALITY
+and   EFFDT    =      (Select    MAX(EFFDT)
+                          from   PS_LOCAL_TAX_TBL
+                         where   LOCALITY     =  &D.LOCALITY
+                           and   EFF_STATUS   =  'A'
+                           and   EFFDT       <=  &D.EFFDT)
+
+end-Select
+
+end-procedure
+
+!************************************************************************
+begin-procedure Print-CountryHeading
+!************************************************************************
+
+    print $EffDt                    (+2,5,08)
+    print $StDefaultPercent         (0,+7,07)
+    print $MaxGross                 (0,+6,09)
+    print $MaxTaxLbl                (0,+6,07)
+    print ' '                       (+1,1,1)
+
+end-procedure
+
+!************************************************************************
+begin-procedure Print-StateHeading
+!************************************************************************
+
+    print $EffDt                    (+2,5,08)
+    print $StDefaultPercent         (0,+7,07)
+    print $MaxGross                 (0,+6,09)
+    print $MaxTaxLbl                (0,+6,07)
+    print $State                    (0,+12,05)
+    print ' '                       (+1,1,1)
+
+end-procedure
+
+!************************************************************************
+begin-procedure Print-LocalHeading
+!************************************************************************
+
+    print $EffDt                    (+2,5,08)
+    print $StDefaultPercent         (0,+7,07)
+    print $MaxGross                 (0,+6,09)
+    print $MaxTaxLbl                (0,+6,07)
+    print $State                    (0,+12,05)
+    print $Locality                 (0,+23,08)
+    print ' '                       (+1,1,1)
+
+end-procedure
+
+!************************************************************************
+begin-procedure Print-Country-Data
+!************************************************************************
+
+  do Format-DateTime(&B.EFFDT, $EFFDT1, {DEFYMD}, '', '')
+
+  print $EFFDT1                 (+1,5,10)
+
+  do Format-Number(&B.ST_DEFAULT_PERCENT, $CNTRY_DEFAULT_PERCENT, '90.0000')
+
+  print $CNTRY_DEFAULT_PERCENT  (0,20,07)
+
+  do Format-Number(&B.MAX_GROSS, $out, '99,999,999')
+  print $out                    (0,33,10)
+
+  do Format-Number(#MaxTax, $out, '99,999,999.99')
+  print $out                    (0,+5,13)
+
+end-procedure
+
+!************************************************************************
+begin-procedure Print-State-Data
+!************************************************************************
+
+  do Format-DateTime(&C.EFFDT, $EFFDT2, {DEFYMD}, '', '')
+
+  print $EFFDT2                 (+1,5,10)
+
+  do Format-Number(&C.ST_DEFAULT_PERCENT, $STATE_DEFAULT_PERCENT, '90.0000')
+
+  print $STATE_DEFAULT_PERCENT  (0,20,07)
+
+  do Format-Number(&C.MAX_GROSS, $out, '99,999,999')
+  print $out                    (0,33,10)
+
+  do Format-Number(#MaxTax, $out, '99,999,999.99')
+  print $out                    (0,+5,13)
+
+  print &F.DESCR                (0,67,30)   !State descr from prompt table
+
+end-procedure
+
+!************************************************************************
+begin-procedure Print-Local-Data
+!************************************************************************
+
+  do Format-DateTime(&D.EFFDT, $EFFDT3, {DEFYMD}, '', '')
+
+  print $EFFDT3                 (+1,5,10)
+
+  do Format-Number(&D.ST_DEFAULT_PERCENT, $DEFAULT_PERCENT, '90.0000')
+
+  print $DEFAULT_PERCENT        (0,20,07)
+
+  do Format-Number(&D.MAX_GROSS, $out, '99,999,999')
+  print $out                    (0,33,10)
+
+  do Format-Number(#MaxTax, $out, '99,999,999.99')
+  print $out                    (0,+5,13)
+
+  print &G.DESCR                (0,67,30)   !State descr from prompt table
+
+  if rtrim(&I.LOCALITY_NAME, ' ') = ''
+     print &D.LOCALITY          (0,103,10)
+  else
+     print &I.LOCALITY_NAME     (0,103,10)
+  end-if
+
+end-procedure
+
+!************************************************************************
+!  SQC Include Files
+!************************************************************************
+#include 'stdapi.sqc'
+#include 'curdttim.sqc'  !Get-Current-Date-Time
+#include 'datetime.sqc'  !Get-Date-Time
+#include 'datemath.sqc'  !Date Math Routines
+#include 'reset.sqc'     !Reset printer procedure
+#include 'number.sqc'    !Routines to format numbers
+#include 'sqrtrans.sqc'  !Translate SQR strings to given language
+#include 'getrplng.sqc'  !Get the report language
+#include 'readxlat.sqc'  !Read the Translate Table for the desired values.

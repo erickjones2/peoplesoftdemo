@@ -1,0 +1,3731 @@
+!***********************************************************
+!  PER027:  VETS-100 Report -- Federally specified format  *
+!***********************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2016, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  22180377                                            !
+!
+!                                                                      *
+!***********************************************************************
+!
+!***********************************************************************
+! Modified for Education & Government                                  *
+! HP99999       Release 8 Technical Merge                              *
+!***********************************************************************
+
+! Uncomment the following line to have debug values put into the sqr.log
+! #DEFINE DEBUGPER027
+
+#include 'setenv.sqc'   !Set environment
+
+! No printout for this process, so manually include #setupdb.sqc
+!----------------------------------------------------------------------
+Begin-Setup
+#include 'setupdb.sqc'
+End-Setup
+
+!----------------------------------------------------------------------
+!---------Program------------------------------------------------------
+!----------------------------------------------------------------------
+! This process will load the V100_TEMP_TBL with the statistics for
+! one or more Headquarter unit and its controlled establishments
+!
+! Digital files for submission or informational reports can be created
+! from the information stored in the temp table by using the related
+! processes available in the same panel group as this process.
+!
+! After a digital file is created for submission, the values from the
+! temp table are copied into a history table where they will be
+! available for reference and comparison.
+!----------------------------------------------------------------------
+Begin-Program
+
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Begin Program'
+#ENDIF
+
+
+  do Init-DateTime
+  do Init-Number
+  do Get-Current-DateTime
+  do Init-Report
+  do Init-Array
+
+  ! Set our row count variable to 0
+  !------------------------------------------------------------
+  LET #V100_Row = 0
+
+  ! If we're only running for one HQ Unit, populate the dynamic
+  ! where clause with a conditional to limit to the appropriate
+  ! establishments
+  !------------------------------------------------------------
+  !*******Begin Resolution 631970*******
+  EVALUATE $ReportChoice   
+           WHEN = '1'                       !Establishments in Company
+             LET $Where-Clause = 'AND G.COMPANY ='  || $Quote || $COMPANY || $Quote
+             LET $Row-Where-Clause = 'WHERE V100_HIRING_LOC IN (SELECT B.ESTABID FROM PS_COMPANY_TBL A, PS_ESTAB_TBL B WHERE A.COMPANY=B.COMPANY AND A.COMPANY=' || $Quote || $COMPANY || $Quote || ')' || 
+             ' AND V100_REPORT_TYPE = ' || $Quote || $V100ReportType || $Quote
+             BREAK
+      
+           WHEN = '2'                       !Single Establishment
+!Begin Of Incident 1481930001 
+             LET $Where-Clause = 'AND (F.ESTABID = ' || $Quote || $Estab || $Quote || 'OR F.ESTABID = (SELECT FF.CTL_ESTABID FROM PS_ESTAB_TBL_USA FF 
+             WHERE FF.ESTABID = ' || $Quote || $Estab || $Quote || 'AND FF.EFFDT = (SELECT MAX(EFFDT) FROM PS_ESTAB_TBL WHERE  ESTABID = FF.ESTABID AND EFFDT <=' || $Quote || $ThruDate || $Quote || ')))'
+             LET $Row-Where-Clause = 'WHERE CTL_ESTABID = (SELECT FF.CTL_ESTABID FROM PS_ESTAB_TBL_USA FF WHERE FF.ESTABID = ' || $Quote || $Estab || $Quote || 
+             'AND FF.EFFDT = (SELECT MAX(EFFDT) FROM PS_ESTAB_TBL WHERE  ESTABID = FF.ESTABID AND EFFDT <=' || $Quote || $ThruDate || $Quote || '))' || 
+             ' AND V100_REPORT_TYPE = ' || $Quote || $V100ReportType || $Quote
+!End Of Incident 1481930001
+             BREAK
+             
+           WHEN = '3'                       !Headquarter and Ctl Establishment
+
+             LET $Where-Clause = 'AND F1.CTL_ESTABID = ' || $Quote || $CtlEstabID || $Quote
+           
+             LET $Row-Where-Clause = 'WHERE CTL_ESTABID = ' || $Quote || $CtlEstabID || $Quote || ' AND V100_REPORT_TYPE = ' || $Quote || $V100ReportType || $Quote  
+             BREAK
+             
+           WHEN-OTHER                            !All Establishment
+             LET $Where-Clause = ''
+             LET $Row-Where-Clause = 'WHERE V100_REPORT_TYPE = ' || $Quote || $V100ReportType || $Quote
+             BREAK
+    
+  END-EVALUATE
+
+
+  !-------------------------------------------
+  ! We need to clear the temp tables for the
+  ! appropriate estabs
+  !-------------------------------------------
+  DO Clear-Temp-Tables
+
+
+  ! Begin the process - main SQL Select Loop
+  !------------------------------------------------------------
+  DO Process-Main
+
+
+  ! Update the Process Scheduler
+  !------------------------------------------------------------
+  DO Stdapi-Term
+
+End-Program
+
+!----------------------------------------------------------------------
+!---------Init-Report--------------------------------------------------
+!----------------------------------------------------------------------
+! We need to get the calendar year from the process instance
+!----------------------------------------------------------------------
+
+begin-procedure Init-Report
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Init-Report'
+#ENDIF
+
+  move 'PER027' to $ReportID
+
+#IFDEF DEBUGPER027
+  display 'Report ID: ' NOLINE
+  display $ReportID
+#ENDIF
+
+  do Stdapi-Init
+
+  if $prcs_process_instance = ''
+     display ''
+     display 'REPORT CAN NOT BE EXECUTED OUTSIDE OF PEOPLESOFT,PLEASE USE PROCESS SCHEDULER.'
+     display ''
+     STOP QUIET
+  else
+     do Select-Parameters
+  end-if
+  
+  EVALUATE $V100ReportType 
+  WHEN = 'A'
+     move 'VETS-100A Federal Contractors Report' to $ReportTitle
+  WHEN = 'B'
+     move 'VETS-100 Federal Contractors Report' to $ReportTitle
+  WHEN = 'C'
+     move 'VETS-4212 Federal Contractors Report' to $ReportTitle
+  END-EVALUATE
+    
+  display $ReportTitle
+
+end-procedure
+
+!----------------------------------------------------------------------
+!---------Get-Values---------------------------------------------------
+!----------------------------------------------------------------------
+! Fetch run control parameters
+!----------------------------------------------------------------------
+begin-procedure Get-Values
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Get-Values'
+#ENDIF
+
+   do Get-From-Thru-Date
+   do Get-Run-Scope
+   do Get-CTL_ESTABID
+   !*******Begin Resolution 631970*******
+   do Get-Company
+   do Get-Establishment
+   !*******End Resolution 631970*******
+   do Get-V100-Report-Type
+   
+   LET $Quote = ''''
+
+! We need to calculate $EndingPeriod in MMDDYYYY from $Thrudate
+!--------------------------------------------------------------
+LET $Year4 = '1'
+!LET $DDelimiter = ''
+LET $DDelimiter = '/'
+DO format-datetime($ThruDate, $EndingPeriod, {DEFMDY} , '', '')
+
+#IFDEF DEBUGPER027
+  SHOW '   $FromDate: ' $FromDate
+  SHOW '   $ThruDate: ' $ThruDate
+  !*******Begin Resolution 631970*******
+  SHOW '   $COMPANY: ' $COMPANY
+  SHOW '   $Estab: ' $Estab
+  !*******End Resolution 631970*******
+  SHOW '   $CtlEstabID: ' $CtlEstabID
+  SHOW '   $ReportChoice: ' $ReportChoice
+  SHOW '   $EndingPeriod: ' $EndingPeriod
+  SHOW '   $Continue: ' $Continue
+#ENDIF
+
+end-procedure Get-Values
+!----------------------------------------------------------------------
+!-----------Init-Array-------------------------------------------------
+!----------------------------------------------------------------------
+! Row zero not used to keep the numbers in synch with the translate
+! values for EEO Job Code
+!----------------------------------------------------------------------
+Begin-Procedure Init-Array
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Init-Array'
+#ENDIF
+    CREATE-ARRAY NAME=VetsArray  SIZE=12 FIELD=L:Number
+                                         FIELD=M:Number
+                                         FIELD=N:Number
+                                         FIELD=O:Number
+                                         FIELD=P:Number
+                                         FIELD=Q:Number
+                                         FIELD=R:Number
+                                         FIELD=S:Number
+                                         FIELD=T:Number
+                                         FIELD=U:Number
+                                         FIELD=A:Number    !Vets-4212
+                                         FIELD=C:Number    !Vets-4212                                         
+                                         FIELD=label:char
+End-Procedure Init-Array
+
+!----------------------------------------------------------------------
+!---------Process-Main-------------------------------------------------
+!----------------------------------------------------------------------
+! This routine will be run once - this SQL loop controls the flow of
+! the program.
+!----------------------------------------------------------------------
+begin-procedure Process-Main
+
+! Debugging stuff
+!----------------------------------------------------
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Process-Main'
+#ENDIF
+
+begin-SELECT
+F1.CTL_ESTABID ()            ON-BREAK PRINT=NEVER PROCEDURE=Reset-Row-Count
+F.COMPANY
+F.HQUNIT
+F.ESTABID
+F.DESCR
+F.ADDRESS1
+F.ADDRESS2
+F.CITY
+F.COUNTY
+F.STATE
+F.POSTAL
+H.COUNTRY
+F1.NAICS
+F1.DUN_BRADSTREET_NBR
+F1.VETS_100_UNIT_NBR
+F1.EEO_GOV_CONTRACTOR
+G.FEDERAL_EIN
+
+! We need to store information about the HQ Unit
+! so that we can use it for each subsidiary estab
+!----------------------------------------------------
+  MOVE &F.ESTABID to $EstabID
+
+  IF &F.HQUNIT = 'Y'
+
+    ! Save HQ values for use as parent company
+    !---------------------------------------------
+    LET $CTL_ESTABID = rtrim(&F1.CTL_ESTABID,' ')
+    LET $Estab_ID = $CTL_ESTABID
+    LET $HQ_City   = rtrim(&F.CITY,' ')
+    LET $HQ_County = rtrim(&F.COUNTY,' ')
+    LET $HQ_Descr = rtrim(&F.DESCR,' ')
+    LET $HQ_Address1 = rtrim(&F.ADDRESS1,' ')
+    LET $HQ_Address2 = rtrim(&F.ADDRESS2,' ')
+    LET $HQ_State = rtrim(&F.STATE,' ')
+    LET $HQ_Postal = rtrim(&F.POSTAL,' ')
+    LET $HQ_Country = rtrim(&H.COUNTRY,' ')
+    LET $HQ_NAICS = rtrim(&F1.NAICS,' ')
+    LET $HQ_DUNS = rtrim(&F1.DUN_BRADSTREET_NBR,' ')
+    LET #HQ_EIN = &G.FEDERAL_EIN
+    LET $HQ_Vets_Number = rtrim(&F1.VETS_100_UNIT_NBR,' ')
+
+    
+  END-IF    
+
+  ! We will RTrim all values so we don't have problems
+  ! on inserting into the temp table
+  !----------------------------------------------------
+  LET $Estab_ID = rtrim(&F.ESTABID,' ')
+  LET $Estab_City   = rtrim(&F.CITY,' ')
+  LET $Estab_County = rtrim(&F.COUNTY,' ')
+  LET $Estab_Descr = rtrim(&F.DESCR,' ')
+  LET $Estab_Address1 = rtrim(&F.ADDRESS1,' ')  
+  LET $Estab_Address1={ps-substr}($Estab_Address1,1,40)
+  LET $Estab_Address2 = rtrim(&F.ADDRESS2,' ')
+  LET $Estab_Address2={ps-substr}($Estab_Address2,1,40)
+  LET $Estab_State = rtrim(&F.STATE,' ')
+  LET $Estab_Postal = rtrim(&F.POSTAL,' ')
+
+
+  ! If location has no NAICS, use HQ NAICS
+  !----------------------------------------------------
+  LET $Estab_NAICS = rtrim(&F1.NAICS,' ')
+  IF IsBlank($Estab_NAICS)
+     LET $Estab_NAICS = $HQ_NAICS
+  END-IF
+
+  ! If location has no DUNS, use HQ DUNS
+  !----------------------------------------------------
+  LET $Estab_DUNS = rtrim(&F1.DUN_BRADSTREET_NBR,' ')   
+  IF IsBlank($Estab_DUNS)
+     LET $Estab_DUNS = $HQ_DUNS
+  END-IF
+
+  ! If location has no EIN, use HQ EIN
+  !----------------------------------------------------
+  LET #Estab_EIN = &G.FEDERAL_EIN
+  IF #Estab_EIN = 0
+    LET #Estab_EIN = #HQ_EIN
+  END-IF
+
+  ! If location has no VETS 100 Number, use HQ Number
+  LET $Estab_Vets_Number = rtrim(&F1.VETS_100_UNIT_NBR,' ')    
+  IF IsBlank($Estab_Vets_Number)
+     LET $Estab_Vets_Number = $HQ_Vets_Number
+  END-IF
+
+  ! If the location is in the USA and it's a government
+  ! contractor or subcontractor, or if it's a HQ unit
+  ! then we need to process the establishment, else
+  ! we ignore it.
+  !----------------------------------------------------
+
+  IF &F.HQUNIT = 'Y' OR (&H.COUNTRY = 'USA' AND &F1.EEO_GOV_CONTRACTOR != 'N')
+    
+
+     ! Reset values from last run, if any...
+     !--------------------------------------
+     CLEAR-ARRAY NAME=VetsArray
+     LET #Minimum_EEs = 0
+     LET #Maximum_EEs = 0
+     DO Determine-Form-Type
+     DO Create-Estab-Row
+
+     ! Increment our row count variable
+     !----------------------------------------------------
+     ADD 1 to #V100_Row
+
+     ! If it's a headquarter unit outside the US, we will
+     ! populate with zeros only
+     !---------------------------------------------------
+     IF &H.COUNTRY = 'USA' AND &F1.EEO_GOV_CONTRACTOR != 'N'
+     !***********End Incident 1369213004 *************    
+         DO Process-Estab-For-EEs
+         DO Process-Estab-For-Disabled-Vets
+         DO Process-Estab-For-New-Hires
+         DO Process-Estab-For-New-Hires2
+         DO Process-Estab-For-Disabled-New-Hires
+         DO Process-Estab-For-Disabled-New-Hires2
+         DO Process-Estab-For-Recently-Separated-New-Hires
+         DO Process-Estab-For-Recently-Separated-EEs
+         DO Process-Estab-For-Recently-Separated-New-Hires2
+         DO Calculate-Min-Max-EEs
+     END-IF
+     DO Update-Estab-Totals
+  END-IF
+
+FROM  PS_ESTAB_TBL F,
+      PS_ESTAB_TBL_USA F1,     !***********Incident 1369213004
+      PS_COMPANY_TBL G,
+      PS_REG_REGION_TBL H
+WHERE F.ESTABID = F1.ESTABID
+  AND F.EFFDT = F1.EFFDT
+  AND F.COMPANY    = G.COMPANY
+  AND F.REG_REGION = H.REG_REGION
+  AND F.EFFDT =
+      (SELECT MAX(F2.EFFDT)
+       FROM   PS_ESTAB_TBL F2
+       WHERE  F2.ESTABID = F.ESTABID
+         AND  F2.EFFDT  <= $ThruDate)
+  AND F.EFF_STATUS = 'A'
+  AND G.EFFDT =
+      (SELECT MAX(G2.EFFDT)
+       FROM   PS_COMPANY_TBL G2
+       WHERE  G2.COMPANY = G.COMPANY
+         AND  G2.EFFDT  <= $ThruDate)
+
+  AND F1.EEO_GOV_CONTRACTOR <> 'N'  
+
+  [$Where-Clause]
+
+! Flow is controlled by the ORDER BY clause - which
+! relies on the establishment table being set up
+! correctly.
+!----------------------------------------------------
+ORDER BY F1.CTL_ESTABID, F.HQUNIT desc, F.COMPANY, F.ESTABID
+  
+
+end-SELECT
+end-procedure
+
+!----------------------------------------------------------------------
+!---------Process-Estab-For-EEs----------------------------------------
+!----------------------------------------------------------------------
+! This routine runs once for each US or HQ estab and calculates columns
+! M, & N - which are total vet EEs
+!----------------------------------------------------------------------
+begin-procedure Process-Estab-For-EEs
+
+! Put Debug information in the log
+!----------------------------------------------------
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Process-Estab-For-EEs'
+     DISPLAY '   Establishment: ' NOLINE
+     DISPLAY &F.ESTABID
+     DISPLAY '   Controlling Estab: ' NOLINE
+     DISPLAY &F1.CTL_ESTABID  
+     DISPLAY '   Country: ' NOLINE
+     DISPLAY &H.COUNTRY
+#ENDIF
+
+!830669 Start - need previous 12 months and 36 months date calculated
+!       here so we can screen out new hires so they are included here
+!
+! We need to calculate the previous 12 months - we can't use
+! From and Thru Dates for the new hire calculation
+!-----------------------------------------------------------
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime($ThruDate, $out, {DEFYMD}, '', '')
+  do dtu-add-months($out, -12, $prev_12_mo)
+  do dtu-add-days($prev_12_mo, 1, $prev_12_mo)
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime($prev_12_mo, $prev_12_mo, {DEFYMD}, '', 'native')
+
+! We need to calculate the previous 36 months - we can't use
+! From and Thru Dates for the new hire calculation
+!-----------------------------------------------------------
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime($ThruDate, $out, {DEFYMD}, '', '')
+  do dtu-add-months($out, -36, $prev_36_mo)
+  do dtu-add-days($prev_36_mo, 1, $prev_36_mo)
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime($prev_36_mo, $prev_36_mo, {DEFYMD}, '', 'native')
+!830669 End
+
+! Calculate totals for this estab for Vietnam and
+! Other eligible Vets
+!----------------------------------------------------
+
+BEGIN-SELECT
+JC.EEO1CODE
+A.MILITARY_STATUS
+COUNT(*)          &Count
+
+ EVALUATE $V100ReportType
+   
+     WHEN  = 'C'
+ 
+   ! Set the Job Category based on the Employee's EEO-1 Job Code
+        !-------------------------------------------------------------
+       
+        EVALUATE &JC.EEO1CODE
+             WHEN = 'A'
+               MOVE 1 TO #EEO1CODE
+               BREAK
+             WHEN = 'B'
+               MOVE 2 TO #EEO1CODE
+               BREAK
+             WHEN = '2'
+               MOVE 3 TO #EEO1CODE
+               BREAK
+             WHEN = '3'
+               MOVE 4 TO #EEO1CODE
+               BREAK
+             WHEN = '4'
+               MOVE 5 TO #EEO1CODE
+               BREAK
+             WHEN = '5'
+               MOVE 6 TO #EEO1CODE
+               BREAK
+             WHEN = '6'
+               MOVE 7 TO #EEO1CODE
+               BREAK
+             WHEN = '7'
+               MOVE 8 TO #EEO1CODE
+               BREAK
+             WHEN = '8'
+               MOVE 9 TO #EEO1CODE
+               BREAK
+             WHEN = '9'
+               MOVE 10 TO #EEO1CODE
+               BREAK
+        END-EVALUATE
+        
+     
+        ! Column M - Other Protected Vets
+        !----------------------------------------------------
+        IF &A.MILITARY_STATUS = '4' OR &A.MILITARY_STATUS = 'O' OR &A.MILITARY_STATUS = 'C' OR &A.MILITARY_STATUS ='T' OR &A.MILITARY_STATUS = 'A' OR &A.MILITARY_STATUS = 'D' OR &A.MILITARY_STATUS ='S'
+           ARRAY-ADD &Count TO VetsArray(#EEO1CODE) A
+           ARRAY-ADD &COUNT TO VetsArray(11) A
+        END-IF
+   
+    
+     WHEN = 'A'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+   
+      EVALUATE &JC.EEO1CODE
+         WHEN = 'A'
+           MOVE 1 TO #EEO1CODE
+           BREAK
+         WHEN = 'B'
+           MOVE 2 TO #EEO1CODE
+           BREAK
+         WHEN = '2'
+           MOVE 3 TO #EEO1CODE
+           BREAK
+         WHEN = '3'
+           MOVE 4 TO #EEO1CODE
+           BREAK
+         WHEN = '4'
+           MOVE 5 TO #EEO1CODE
+           BREAK
+         WHEN = '5'
+           MOVE 6 TO #EEO1CODE
+           BREAK
+         WHEN = '6'
+           MOVE 7 TO #EEO1CODE
+           BREAK
+         WHEN = '7'
+           MOVE 8 TO #EEO1CODE
+           BREAK
+         WHEN = '8'
+           MOVE 9 TO #EEO1CODE
+           BREAK
+         WHEN = '9'
+           MOVE 10 TO #EEO1CODE
+           BREAK
+       END-EVALUATE
+    
+ 
+    ! Column M - Other Protected Vets
+    !            EEs who are both AFSM and Other Vets
+    !            are counted twice - this is correct
+    !            according to the VA even though the
+    !            regs and doc don't make it clear
+    !----------------------------------------------------
+    IF &A.MILITARY_STATUS = '4' OR &A.MILITARY_STATUS = 'O' OR &A.MILITARY_STATUS = 'C' OR &A.MILITARY_STATUS ='T'
+       ARRAY-ADD &Count TO VetsArray(#EEO1CODE) M
+       ARRAY-ADD &COUNT TO VetsArray(11) M
+    END-IF
+ 
+    ! Column N - Armed Forces Service Medal Vets
+    !            EEs who are both AFSM and Other Vets
+    !            are counted twice - this is correct
+    !            according to the VA even though the
+    !            regs and doc don't make it clear
+    !----------------------------------------------------
+    IF &A.MILITARY_STATUS = 'A' OR &A.MILITARY_STATUS = 'O' OR &A.MILITARY_STATUS = 'C' OR &A.MILITARY_STATUS ='S'
+       ARRAY-ADD &Count TO VetsArray(#EEO1CODE) N
+       ARRAY-ADD &COUNT TO VetsArray(11) N
+    END-IF
+ 
+ 
+   WHEN = 'B'
+  
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+  
+    IF &JC.EEO1CODE = 'A' OR &JC.EEO1CODE = 'B'
+       LET #EEO1CODE = 1
+    ELSE
+       LET #EEO1CODE = TO_NUMBER(&JC.EEO1CODE)
+    END-IF 
+ 
+    ! Column M - Vietnam Era Vets
+    !            EEs who are both Viet and Other Vets
+    !            are counted twice - this is correct
+    !            according to the VA even though the
+    !            regs and doc don't make it clear
+    !----------------------------------------------------
+    IF &A.MILITARY_STATUS = '3' OR &A.MILITARY_STATUS = '9' OR &A.MILITARY_STATUS = 'C' OR &A.MILITARY_STATUS ='T'
+       ARRAY-ADD &Count TO VetsArray(#EEO1CODE) M
+       ARRAY-ADD &COUNT TO VetsArray(10) M
+    END-IF
+ 
+    ! Column N - Other Protected Vets
+    !            EEs who are both Viet and Other Vets
+    !            are counted twice - this is correct
+    !            according to the VA even though the
+    !            regs and doc don't make it clear
+    !----------------------------------------------------
+    IF &A.MILITARY_STATUS = '4' OR &A.MILITARY_STATUS = '9' OR &A.MILITARY_STATUS = 'C' OR &A.MILITARY_STATUS ='T'
+       ARRAY-ADD &Count TO VetsArray(#EEO1CODE) N
+       ARRAY-ADD &COUNT TO VetsArray(10) N
+    END-IF
+ 
+ END-EVALUATE 
+
+FROM  PS_PERS_DATA_USA A,
+      PS_JOB J,
+      PS_JOBCODE_TBL JC,
+      PS_ESTAB_TBL E
+WHERE J.PER_ORG = 'EMP'
+  AND J.REG_TEMP   = 'R'                         ! Regular Employees only
+  !AND A.MILITARY_STATUS IN ('3','4','9','A','O') ! Vet
+  !AND A.MILITARY_STATUS IN ('3','4','9','A','O','C','S','T') ! Vet
+  AND A.MILITARY_STATUS IN ('3','4','9','A','O','C','S','T','D') ! Vet
+  AND A.EMPLID = J.EMPLID
+  AND J.JOB_INDICATOR = 'P'
+  AND A.EFFDT =
+      (SELECT MAX(A1.EFFDT)
+       FROM   PS_PERS_DATA_USA A1
+       WHERE  A1.EMPLID = A.EMPLID
+         AND  A1.EFFDT  <= $ThruDate)
+  AND J.EFFDT =
+               (SELECT MAX(J1.EFFDT)
+                FROM PS_JOB J1
+                WHERE J1.EMPLID  = J.EMPLID
+                AND J1.EMPL_RCD = J.EMPL_RCD
+                AND J1.EFFDT <= $ThruDate)
+
+  AND J.EFFSEQ =
+      (SELECT MAX(J2.EFFSEQ)
+       FROM PS_JOB J2
+       WHERE J2.EMPLID = J.EMPLID
+         AND J2.EMPL_RCD = J.EMPL_RCD
+         AND J2.EFFDT = J.EFFDT)
+  !AND NOT EXISTS (SELECT 'X' 
+  !                  FROM PS_JOB NH
+  !                  WHERE NH.EMPLID = J.EMPLID
+  !                  AND NH.EMPL_RCD = J.EMPL_RCD
+  !                  AND NH.REG_TEMP = 'R'
+  !                  AND NH.EFFDT Between $Prev_12_mo and $ThruDate
+  !                  AND NH.ACTION IN ('HIR','REH'))
+  AND (J.EMPL_STATUS IN ('A', 'L', 'S', 'P', 'W') !HP99999
+          AND J.EFFDT <= $ThruDate)         
+  AND JC.JOBCODE = J.JOBCODE
+  AND JC.SETID = J.SETID_JOBCODE
+  AND JC.EFFDT =
+      (SELECT MAX(JC1.EFFDT)
+       FROM PS_JOBCODE_TBL JC1
+       WHERE JC1.JOBCODE = JC.JOBCODE
+       AND JC1.SETID = JC.SETID
+       AND JC1.EFFDT <= $ThruDate)
+  AND J.EEO_CLASS     <> 'E'   !Exclude from counts
+  AND JC.EEO1CODE     <> 'N'   !Not counted for EEO reporting
+  AND E.ESTABID = J.ESTABID
+  AND E.ESTABID = $EstabID
+  AND E.EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM   PS_ESTAB_TBL
+       WHERE  ESTABID = E.ESTABID
+         AND  EFFDT  <= $ThruDate)
+  AND  E.EFF_STATUS = 'A'
+
+GROUP BY JC.EEO1CODE, A.MILITARY_STATUS
+
+end-SELECT
+
+! Employee Totals - Both Veteran and Non-Veterans
+!------------------------------------------------
+begin-SELECT
+JCT2.EEO1CODE
+COUNT(*)            &EE_Count22
+
+ IF $V100ReportType = 'A'  OR $V100ReportType = 'C'
+
+   ! Set the Job Category based on the Employee's EEO-1 Job Code
+   !-------------------------------------------------------------
+  
+   EVALUATE &JCT2.EEO1CODE
+        WHEN = 'A'
+          MOVE 1 TO #EEO1CODE
+          BREAK
+        WHEN = 'B'
+          MOVE 2 TO #EEO1CODE
+          BREAK
+        WHEN = '2'
+          MOVE 3 TO #EEO1CODE
+          BREAK
+        WHEN = '3'
+          MOVE 4 TO #EEO1CODE
+          BREAK
+        WHEN = '4'
+          MOVE 5 TO #EEO1CODE
+          BREAK
+        WHEN = '5'
+          MOVE 6 TO #EEO1CODE
+          BREAK
+        WHEN = '6'
+          MOVE 7 TO #EEO1CODE
+          BREAK
+        WHEN = '7'
+          MOVE 8 TO #EEO1CODE
+          BREAK
+        WHEN = '8'
+          MOVE 9 TO #EEO1CODE
+          BREAK
+        WHEN = '9'
+          MOVE 10 TO #EEO1CODE
+          BREAK
+   END-EVALUATE
+
+   ! Add to total count no matter what
+   !-----------------------------------------------------
+   ARRAY-ADD &EE_Count22 TO VetsArray(#EEO1CODE) P
+   ARRAY-ADD &EE_COUNT22 TO VetsArray(11) P
+
+ END-IF
+
+FROM  PS_PERS_DATA_EFFDT A32,
+      PS_JOB JB22,
+      PS_JOBCODE_TBL JCT2,
+      PS_ESTAB_TBL EST2
+WHERE JB22.PER_ORG = 'EMP'
+  AND JB22.REG_TEMP   = 'R'                         ! Regular Employees only
+  AND A32.EMPLID = JB22.EMPLID
+     AND A32.EFFDT =
+      (SELECT MAX(A3B2.EFFDT)
+       FROM   PS_PERS_DATA_EFFDT A3B2
+       WHERE  A3B2.EMPLID = A32.EMPLID
+         AND  A3B2.EFFDT  <= $ThruDate) 
+  AND JB22.EFFDT =
+                 (SELECT MAX(JB12.EFFDT)
+                  FROM PS_JOB JB12
+                  WHERE JB12.EMPLID  = JB22.EMPLID
+                  AND JB12.EMPL_RCD = JB22.EMPL_RCD
+                  AND JB12.EFFDT <= $ThruDate)
+  AND JB22.EFFSEQ = (SELECT MAX (JB312.EFFSEQ)
+                   FROM PS_JOB JB312
+                   WHERE JB312.EMPLID = JB22.EMPLID
+                     AND JB312.EMPL_RCD = JB22.EMPL_RCD
+                     AND JB312.EFFDT = JB22.EFFDT)
+  AND (JB22.EMPL_STATUS IN ('A', 'L', 'S', 'P', 'W') !HP99999
+          AND JB22.EFFDT <= $ThruDate)
+  AND JB22.JOB_INDICATOR = 'P'
+  AND JCT2.JOBCODE = JB22.JOBCODE
+  AND JCT2.SETID = JB22.SETID_JOBCODE
+  AND JCT2.EFFDT =
+      (SELECT MAX(JC32.EFFDT)
+       FROM PS_JOBCODE_TBL JC32
+       WHERE JC32.JOBCODE = JCT2.JOBCODE
+       AND JC32.SETID = JCT2.SETID
+       AND JC32.EFFDT <= $ThruDate)
+  AND JB22.EEO_CLASS  <> 'E'
+  AND JCT2.EEO1CODE  <> 'N'
+  AND EST2.ESTABID = JB22.ESTABID
+  AND EST2.ESTABID = $EstabID
+  AND EST2.EFFDT =
+      (SELECT MAX(EST22.EFFDT)
+       FROM   PS_ESTAB_TBL EST22
+       WHERE  EST22.ESTABID = EST2.ESTABID
+         AND  EST22.EFFDT  <= $ThruDate)
+  AND  EST2.EFF_STATUS = 'A'
+  
+  GROUP BY JCT2.EEO1CODE
+
+end-SELECT
+
+end-procedure Process-Estab-For-EEs
+
+!----------------------------------------------------------------------
+!---------Process-Estab-For-New-Hires----------------------------------
+! This routine runs once for each US or HQ estab and calculates columns
+! O, P, Q, and R - which are total & vet new hires exclusive of EEs
+! that were hired as temporary employees and were converted to regular
+!----------------------------------------------------------------------
+begin-procedure Process-Estab-For-New-Hires
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Process-Estab-For-New-Hires'
+#ENDIF
+
+! 830669 moved previous 12 months and 36 months calculations as need them earlier
+
+! This select statement pulls out all new hires
+!----------------------------------------------------
+begin-SELECT
+JC2.EEO1CODE
+A2.MILITARY_STATUS
+COUNT(*)            &EE_Count
+
+   EVALUATE $V100ReportType
+   
+    WHEN = 'C'
+ 
+   ! Set the Job Category based on the Employee's EEO-1 Job Code
+   !-------------------------------------------------------------
+ 
+    EVALUATE &JC2.EEO1CODE
+        WHEN = 'A'
+          MOVE 1 TO #EEO1CODE
+          BREAK 
+           BREAK
+         WHEN = 'B'
+           MOVE 2 TO #EEO1CODE
+           BREAK
+         WHEN = '2'
+           MOVE 3 TO #EEO1CODE
+           BREAK
+         WHEN = '3'
+           MOVE 4 TO #EEO1CODE
+           BREAK
+         WHEN = '4'
+           MOVE 5 TO #EEO1CODE
+           BREAK
+         WHEN = '5'
+           MOVE 6 TO #EEO1CODE
+           BREAK
+         WHEN = '6'
+           MOVE 7 TO #EEO1CODE
+           BREAK
+         WHEN = '7'
+           MOVE 8 TO #EEO1CODE
+           BREAK
+         WHEN = '8'
+           MOVE 9 TO #EEO1CODE
+           BREAK
+         WHEN = '9'
+           MOVE 10 TO #EEO1CODE
+           BREAK
+     END-EVALUATE
+    
+    ! Column R - Other Protected Vets
+    ! If Other Protected or Both
+    !-----------------------------------------------------
+    IF &A2.MILITARY_STATUS = '4' or &A2.MILITARY_STATUS = 'O' OR &A2.MILITARY_STATUS = 'C' OR &A2.MILITARY_STATUS ='T' OR &A2.MILITARY_STATUS = 'A' OR &A2.MILITARY_STATUS ='S' OR &A2.MILITARY_STATUS ='D'
+       ARRAY-ADD &EE_Count TO VetsArray(#EEO1CODE) C
+       ARRAY-ADD &EE_COUNT TO VetsArray(11) C
+    END-IF
+ 
+ 
+    WHEN  = 'A'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+  
+     EVALUATE &JC2.EEO1CODE
+         WHEN = 'A'
+           MOVE 1 TO #EEO1CODE
+           BREAK
+         WHEN = 'B'
+           MOVE 2 TO #EEO1CODE
+           BREAK
+         WHEN = '2'
+           MOVE 3 TO #EEO1CODE
+           BREAK
+         WHEN = '3'
+           MOVE 4 TO #EEO1CODE
+           BREAK
+         WHEN = '4'
+           MOVE 5 TO #EEO1CODE
+           BREAK
+         WHEN = '5'
+           MOVE 6 TO #EEO1CODE
+           BREAK
+         WHEN = '6'
+           MOVE 7 TO #EEO1CODE
+           BREAK
+         WHEN = '7'
+           MOVE 8 TO #EEO1CODE
+           BREAK
+         WHEN = '8'
+           MOVE 9 TO #EEO1CODE
+           BREAK
+         WHEN = '9'
+           MOVE 10 TO #EEO1CODE
+           BREAK
+     END-EVALUATE
+    
+  
+    ! Column R - Other Protected Vets
+    ! If Other Protected or Both
+    !-----------------------------------------------------
+    IF &A2.MILITARY_STATUS = '4' or &A2.MILITARY_STATUS = 'O' OR &A2.MILITARY_STATUS = 'C' OR &A2.MILITARY_STATUS ='T'
+       ARRAY-ADD &EE_Count TO VetsArray(#EEO1CODE) R
+       ARRAY-ADD &EE_COUNT TO VetsArray(11) R
+    END-IF
+ 
+    ! Column S - Armed Forces Service Medal Vets
+    ! If AFSM or Both
+    !-----------------------------------------------------
+    IF &A2.MILITARY_STATUS = 'A' or &A2.MILITARY_STATUS = 'O' OR &A2.MILITARY_STATUS = 'C' OR &A2.MILITARY_STATUS ='S'
+       ARRAY-ADD &EE_Count TO VetsArray(#EEO1CODE) S
+       ARRAY-ADD &EE_COUNT TO VetsArray(11) S
+    END-IF
+ 
+ 
+   WHEN = 'B'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+  
+    IF &JC2.EEO1CODE = 'A' OR &JC2.EEO1CODE = 'B'
+       LET #EEO1CODE = 1
+    ELSE
+       LET #EEO1CODE = TO_NUMBER(&JC2.EEO1CODE)
+    END-IF 
+ 
+    ! Column Q - Vietnam Vets
+    ! If Vietnam or Both
+    !-----------------------------------------------------
+    IF &A2.MILITARY_STATUS = '3' or &A2.MILITARY_STATUS = '9' OR &A2.MILITARY_STATUS = 'C' OR &A2.MILITARY_STATUS ='T'
+       ARRAY-ADD &EE_Count TO VetsArray(#EEO1CODE) Q
+       ARRAY-ADD &EE_COUNT TO VetsArray(10) Q
+    END-IF
+ 
+    ! Column R - Other Protected Vets 
+    ! If Other Eligible or Both
+    !-----------------------------------------------------
+    IF &A2.MILITARY_STATUS = '4' or &A2.MILITARY_STATUS = '9' OR &A2.MILITARY_STATUS = 'C' OR &A2.MILITARY_STATUS ='T'
+       ARRAY-ADD &EE_Count TO VetsArray(#EEO1CODE) R
+       ARRAY-ADD &EE_COUNT TO VetsArray(10) R
+    END-IF
+ 
+ END-EVALUATE
+
+FROM  PS_PERS_DATA_USA A2,
+      PS_JOB J2,
+      PS_JOBCODE_TBL JC2
+WHERE J2.PER_ORG = 'EMP'
+  AND A2.EMPLID = J2.EMPLID
+  AND J2.ESTABID    = $EstabID
+  AND A2.EFFDT =
+      (SELECT MAX(A2A.EFFDT)
+       FROM   PS_PERS_DATA_USA A2A
+       WHERE  A2A.EMPLID = A2.EMPLID
+         AND  A2A.EFFDT  <= $ThruDate)
+  AND J2.EFFDT = (SELECT MAX(J122.EFFDT) FROM PS_JOB J122
+                       WHERE  J122.EMPLID = J2.EMPLID
+                       AND J122.EMPL_RCD = J2.EMPL_RCD
+                     AND J122.REG_TEMP   = 'R'
+                     AND J122.ESTABID = J2.ESTABID
+                     AND J122.EFFDT BETWEEN $Prev_12_mo and $ThruDate) 
+  AND J2.EFFSEQ = (SELECT MAX(J1222.EFFSEQ) FROM PS_JOB J1222
+                   WHERE  J1222.EMPLID = J2.EMPLID
+                   AND J1222.EMPL_RCD = J2.EMPL_RCD
+                   AND J1222.EFFDT  = J2.EFFDT
+                   AND J1222.REG_TEMP = 'R'
+                   AND J1222.ESTABID = J2.ESTABID)
+  !AND J2.EMPL_STATUS IN ('A','L','P','S','W')
+  AND J2.JOB_INDICATOR = 'P'
+  AND JC2.JOBCODE = J2.JOBCODE
+  AND JC2.SETID = J2.SETID_JOBCODE
+  AND JC2.EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM PS_JOBCODE_TBL JC3
+       WHERE JC3.JOBCODE = JC2.JOBCODE
+       AND JC3.SETID = JC2.SETID
+       AND JC3.EFFDT <= J2.EFFDT)
+  AND J2.EEO_CLASS  <> 'E'
+  AND JC2.EEO1CODE  <> 'N'
+ ! AND J2.ESTABID    = $EstabID
+  AND EXISTS (SELECT  'X' 
+                   FROM PS_JOB J3
+                   WHERE J3.EMPLID = J2.EMPLID
+                     AND J3.EMPL_RCD = J2.EMPL_RCD
+                     AND J3.EFFDT  =  (SELECT MAX(J32.EFFDT) FROM PS_JOB J32
+                      WHERE J32.EMPLID = J3.EMPLID 
+                      AND J32.EMPL_RCD = J3.EMPL_RCD 
+                      AND J32.ACTION IN ('HIR','REH')
+                      AND J32.REG_TEMP   = 'R'
+                      AND J32.EFFDT  BETWEEN $Prev_12_mo and $ThruDate) 
+   AND J3.EFFSEQ = (SELECT MAX (J31.EFFSEQ)
+                    FROM PS_JOB J31
+                    WHERE J31.EMPLID = J3.EMPLID
+                      AND J31.EMPL_RCD = J3.EMPL_RCD
+                      AND J31.EFFDT = J3.EFFDT
+                     AND J31.ACTION IN ('HIR','REH')))
+
+GROUP BY JC2.EEO1CODE, A2.MILITARY_STATUS
+end-SELECT
+
+! New Hire Totals - Both Veteran and Non-Veterans
+!------------------------------------------------
+begin-SELECT
+JCT.EEO1CODE
+COUNT(*)            &EE_Count1
+
+ IF $V100ReportType = 'A' OR $V100ReportType = 'C'
+ 
+   ! Set the Job Category based on the Employee's EEO-1 Job Code
+   !-------------------------------------------------------------
+  
+   EVALUATE &JCT.EEO1CODE
+        WHEN = 'A'
+          MOVE 1 TO #EEO1CODE
+          BREAK
+        WHEN = 'B'
+          MOVE 2 TO #EEO1CODE
+          BREAK
+        WHEN = '2'
+          MOVE 3 TO #EEO1CODE
+          BREAK
+        WHEN = '3'
+          MOVE 4 TO #EEO1CODE
+          BREAK
+        WHEN = '4'
+          MOVE 5 TO #EEO1CODE
+          BREAK
+        WHEN = '5'
+          MOVE 6 TO #EEO1CODE
+          BREAK
+        WHEN = '6'
+          MOVE 7 TO #EEO1CODE
+          BREAK
+        WHEN = '7'
+          MOVE 8 TO #EEO1CODE
+          BREAK
+        WHEN = '8'
+          MOVE 9 TO #EEO1CODE
+          BREAK
+        WHEN = '9'
+          MOVE 10 TO #EEO1CODE
+          BREAK
+   END-EVALUATE 
+
+   ! Add to total count no matter what
+   !-----------------------------------------------------
+   ARRAY-ADD &EE_Count1 TO VetsArray(#EEO1CODE) U
+   ARRAY-ADD &EE_COUNT1 TO VetsArray(11) U
+
+ ELSE
+ 
+   ! Set the Job Category based on the Employee's EEO-1 Job Code
+   !-------------------------------------------------------------
+ 
+   IF &JCT.EEO1CODE = 'A' OR &JCT.EEO1CODE = 'B'
+      LET #EEO1CODE = 1
+   ELSE
+      LET #EEO1CODE = TO_NUMBER(&JCT.EEO1CODE)
+   END-IF 
+
+   ! Add to total count no matter what
+   !-----------------------------------------------------
+   ARRAY-ADD &EE_Count1 TO VetsArray(#EEO1CODE) T
+   ARRAY-ADD &EE_COUNT1 TO VetsArray(10) T
+
+ END-IF
+
+FROM  PS_PERS_DATA_EFFDT A3,
+      PS_JOB JB2,
+      PS_JOBCODE_TBL JCT
+WHERE JB2.PER_ORG = 'EMP'
+  AND A3.EMPLID = JB2.EMPLID
+  AND JB2.ESTABID    = $EstabID
+     AND A3.EFFDT =
+      (SELECT MAX(A3B.EFFDT)
+       FROM   PS_PERS_DATA_EFFDT A3B
+       WHERE  A3B.EMPLID = A3.EMPLID
+         AND  A3B.EFFDT  <= $ThruDate) 
+  AND JB2.EFFDT = (select max(JB122.EFFDT) from PS_JOB JB122
+                         WHERE  JB122.EMPLID = JB2.EMPLID
+                         AND JB122.EMPL_RCD = JB2.EMPL_RCD
+                       AND JB122.REG_TEMP   = 'R'
+                       AND  JB122.ESTABID    = JB2.ESTABID
+                     AND JB122.EFFDT Between $Prev_12_mo and $ThruDate)
+  AND JB2.EFFSEQ = (SELECT MAX (JB123.EFFSEQ)
+                      FROM PS_JOB JB123
+                      WHERE JB123.EMPLID = JB2.EMPLID
+                      AND JB123.EMPL_RCD = JB2.EMPL_RCD
+                      AND JB123.EFFDT = JB2.EFFDT
+                      AND  JB123.ESTABID    = JB2.ESTABID)
+  !AND JB2.EMPL_STATUS IN ('A','L','P','S','W')
+  AND JB2.JOB_INDICATOR = 'P'
+  AND JCT.JOBCODE = JB2.JOBCODE
+  AND JCT.SETID = JB2.SETID_JOBCODE
+  AND JCT.EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM PS_JOBCODE_TBL JC3
+       WHERE JC3.JOBCODE = JCT.JOBCODE
+       AND JC3.SETID = JCT.SETID
+       AND JC3.EFFDT <= JB2.EFFDT)
+  AND JB2.EEO_CLASS  <> 'E'
+  AND JCT.EEO1CODE  <> 'N'
+  !AND JB2.ESTABID    = $EstabID
+  AND EXISTS (SELECT  'X' 
+                    FROM PS_JOB JB33
+                    WHERE JB33.EMPLID = JB2.EMPLID
+                      AND JB33.EMPL_RCD = JB2.EMPL_RCD
+                      AND JB33.EFFDT  =  (SELECT MAX(JB322.EFFDT) FROM PS_JOB JB322
+                       WHERE JB322.EMPLID = JB33.EMPLID 
+                       AND JB322.EMPL_RCD = JB33.EMPL_RCD 
+                       AND JB322.ACTION IN ('HIR','REH')
+                       AND JB322.REG_TEMP   = 'R'
+                       AND JB322.EFFDT  BETWEEN $Prev_12_mo and $ThruDate) 
+                      AND JB33.EFFSEQ = (SELECT MAX (JB311.EFFSEQ)
+                      FROM PS_JOB JB311
+                      WHERE JB311.EMPLID = JB33.EMPLID
+                      AND JB311.EMPL_RCD = JB33.EMPL_RCD
+                      AND JB311.EFFDT = JB33.EFFDT
+                     AND JB311.ACTION IN ('HIR','REH')))
+  GROUP BY JCT.EEO1CODE
+
+end-SELECT
+
+
+end-procedure Process-Estab-For-New-Hires
+
+!----------------------------------------------------------------------
+!---------Process-Estab-For-New-Hires2----------------------------------
+! This routine runs once for each US or HQ estab and calculates columns
+! O, P, Q, and R - which are total & vet new hires.  This sums employees
+! that have moved from temporary to regular status during the reporting
+! period.
+!----------------------------------------------------------------------
+begin-procedure Process-Estab-For-New-Hires2
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Process-Estab-For-New-Hires-2'
+#ENDIF
+
+! This select statement pulls out all new hires
+!----------------------------------------------------
+begin-SELECT
+JC22.EEO1CODE
+A22.MILITARY_STATUS
+COUNT(*)            &EE_Count2
+
+  EVALUATE $V100ReportType
+  
+   WHEN = 'C'
+   
+     ! Set the Job Category based on the Employee's EEO-1 Job Code
+     !-------------------------------------------------------------
+   
+     EVALUATE &JC22.EEO1CODE
+          WHEN = 'A'
+            MOVE 1 TO #EEO1CODE
+            BREAK
+          WHEN = 'B'
+            MOVE 2 TO #EEO1CODE
+            BREAK
+          WHEN = '2'
+            MOVE 3 TO #EEO1CODE
+            BREAK
+          WHEN = '3'
+            MOVE 4 TO #EEO1CODE
+            BREAK
+          WHEN = '4'
+            MOVE 5 TO #EEO1CODE
+            BREAK
+          WHEN = '5'
+            MOVE 6 TO #EEO1CODE
+            BREAK
+          WHEN = '6'
+            MOVE 7 TO #EEO1CODE
+            BREAK
+          WHEN = '7'
+            MOVE 8 TO #EEO1CODE
+            BREAK
+          WHEN = '8'
+            MOVE 9 TO #EEO1CODE
+            BREAK
+          WHEN = '9'
+            MOVE 10 TO #EEO1CODE
+            BREAK
+      END-EVALUATE
+     
+     ! Column R - Other Protected Vets
+     ! If Other Protected or Both
+     !-----------------------------------------------------
+     IF &A22.MILITARY_STATUS = '4' or &A22.MILITARY_STATUS = 'O' OR &A22.MILITARY_STATUS = 'C' OR &A22.MILITARY_STATUS ='T' OR &A22.MILITARY_STATUS = 'A' OR &A22.MILITARY_STATUS ='S' OR &A22.MILITARY_STATUS ='D'
+        ARRAY-ADD &EE_Count2 TO VetsArray(#EEO1CODE) C
+        ARRAY-ADD &EE_COUNT2 TO VetsArray(11) C
+     END-IF
+     
+        ARRAY-ADD &EE_Count2 TO VetsArray(#EEO1CODE) U
+        ARRAY-ADD &EE_COUNT2 TO VetsArray(11) U
+ 
+    WHEN = 'A'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+   
+    EVALUATE &JC22.EEO1CODE
+         WHEN = 'A'
+           MOVE 1 TO #EEO1CODE
+           BREAK
+         WHEN = 'B'
+           MOVE 2 TO #EEO1CODE
+           BREAK
+         WHEN = '2'
+           MOVE 3 TO #EEO1CODE
+           BREAK
+         WHEN = '3'
+           MOVE 4 TO #EEO1CODE
+           BREAK
+         WHEN = '4'
+           MOVE 5 TO #EEO1CODE
+           BREAK
+         WHEN = '5'
+           MOVE 6 TO #EEO1CODE
+           BREAK
+         WHEN = '6'
+           MOVE 7 TO #EEO1CODE
+           BREAK
+         WHEN = '7'
+           MOVE 8 TO #EEO1CODE
+           BREAK
+         WHEN = '8'
+           MOVE 9 TO #EEO1CODE
+           BREAK
+         WHEN = '9'
+           MOVE 10 TO #EEO1CODE
+           BREAK
+    END-EVALUATE 
+ 
+    ! Column R - Other Protected Vets
+    ! If Other Protected or Both
+    !-----------------------------------------------------
+    IF &A22.MILITARY_STATUS = '4' or &A22.MILITARY_STATUS = 'O' OR &A22.MILITARY_STATUS = 'C' OR &A22.MILITARY_STATUS ='T'
+       ARRAY-ADD &EE_Count2 TO VetsArray(#EEO1CODE) R
+       ARRAY-ADD &EE_COUNT2 TO VetsArray(11) R
+       !ARRAY-SUBTRACT &EE_Count2 FROM VetsArray(#EEO1CODE) M
+       !ARRAY-SUBTRACT &EE_COUNT2 FROM VetsArray(11) M
+    END-IF
+ 
+    ! Column S - Armed Forces Service Medal Vets
+    ! If AFSM or Both
+    !-----------------------------------------------------
+    IF &A22.MILITARY_STATUS = 'A' or &A22.MILITARY_STATUS = 'O' OR &A22.MILITARY_STATUS = 'C' OR &A22.MILITARY_STATUS ='S'
+       ARRAY-ADD &EE_Count2 TO VetsArray(#EEO1CODE) S
+       ARRAY-ADD &EE_COUNT2 TO VetsArray(11) S
+       !ARRAY-SUBTRACT &EE_Count2 FROM VetsArray(#EEO1CODE) N
+       !ARRAY-SUBTRACT &EE_COUNT2 FROM VetsArray(11) N
+    END-IF
+ 
+    ! Add to NEW HIRE total count no matter what
+    !-----------------------------------------------------
+    ARRAY-ADD &EE_Count2 TO VetsArray(#EEO1CODE) U
+    ARRAY-ADD &EE_COUNT2 TO VetsArray(11) U
+    
+    ! Subtract from EMPLOYEE total count as they are a NEW HIRE
+    !-----------------------------------------------------   
+    !ARRAY-SUBTRACT &EE_Count2 FROM VetsArray(#EEO1CODE) P
+    !ARRAY-SUBTRACT &EE_COUNT2 FROM VetsArray(11) P
+ 
+   WHEN = 'B'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+  
+    IF &JC22.EEO1CODE = 'A' OR &JC22.EEO1CODE = 'B'
+       LET #EEO1CODE = 1
+    ELSE
+       LET #EEO1CODE = TO_NUMBER(&JC22.EEO1CODE)
+    END-IF 
+ 
+    ! Column Q - Vietnam Vets
+    ! If Vietnam or Both
+    !-----------------------------------------------------
+    IF &A22.MILITARY_STATUS = '3' or &A22.MILITARY_STATUS = '9' OR &A22.MILITARY_STATUS = 'C' OR &A22.MILITARY_STATUS ='T'
+       ARRAY-ADD &EE_Count2 TO VetsArray(#EEO1CODE) Q
+       ARRAY-ADD &EE_COUNT2 TO VetsArray(10) Q
+    END-IF
+ 
+    ! Column R - Other Protected Vets 
+    ! If Other Eligible or Both
+    !-----------------------------------------------------
+    IF &A22.MILITARY_STATUS = '4' or &A22.MILITARY_STATUS = '9' OR &A22.MILITARY_STATUS = 'C' OR &A22.MILITARY_STATUS ='T'
+       ARRAY-ADD &EE_Count2 TO VetsArray(#EEO1CODE) R
+       ARRAY-ADD &EE_COUNT2 TO VetsArray(10) R
+    END-IF
+ 
+    ! Add to total count no matter what
+    !-----------------------------------------------------
+    ARRAY-ADD &EE_Count2 TO VetsArray(#EEO1CODE) T
+    ARRAY-ADD &EE_COUNT2 TO VetsArray(10) T
+ 
+  END-EVALUATE
+
+
+FROM PS_PERS_DATA_USA A22,
+      PS_JOB J22,
+      PS_JOBCODE_TBL JC22
+WHERE J22.PER_ORG = 'EMP'
+  AND A22.EMPLID = J22.EMPLID
+  AND J22.ESTABID = $EstabID
+  AND A22.EFFDT =
+      (SELECT MAX(A22A.EFFDT)
+       FROM   PS_PERS_DATA_USA A22A
+       WHERE  A22A.EMPLID = A22.EMPLID
+         AND  A22A.EFFDT  <= $ThruDate)
+  AND J22.EFFDT = (SELECT MAX(J3.EFFDT) FROM PS_JOB J3
+                   WHERE J22.EMPLID = J3.EMPLID
+                     AND J22.EMPL_RCD = J3.EMPL_RCD
+                     AND J3.REG_TEMP = 'R'
+                     AND J3.ESTABID = J22.ESTABID
+                     AND J3.EFFDT between $Prev_12_mo and $ThruDate)
+  !AND J22.EMPL_STATUS IN ('A','L','S','P','W')
+  AND J22.EFFSEQ = (SELECT MAX(J5.EFFSEQ) FROM PS_JOB J5
+                      WHERE J5.EMPLID = J22.EMPLID
+                        AND J5.EMPL_RCD = J22.EMPL_RCD
+                        AND J5.EFFDT = J22.EFFDT
+                        AND J5.ESTABID = J22.ESTABID)
+  !AND J22.ACTION NOT IN ('HIR','REH')
+  !AND J22.EFFDT between $Prev_12_mo and $ThruDate
+  AND NOT EXISTS (SELECT 'X' 
+                        FROM PS_JOB EXJ1
+                        WHERE EXJ1.EMPLID = J22.EMPLID
+                       AND EXJ1.EMPL_RCD = J22.EMPL_RCD
+                        AND EXJ1.REG_TEMP = 'R'
+                        AND EXJ1.EFFDT Between $Prev_12_mo and $ThruDate
+                    AND EXJ1.ACTION IN ('HIR','REH'))
+  AND J22.JOB_INDICATOR = 'P'
+  AND JC22.JOBCODE = J22.JOBCODE
+  AND JC22.SETID = J22.SETID_JOBCODE
+  AND JC22.EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM PS_JOBCODE_TBL JC3
+       WHERE JC3.JOBCODE = JC22.JOBCODE
+       AND JC3.SETID = JC22.SETID
+       AND JC3.EFFDT <= J22.EFFDT)
+  AND J22.EEO_CLASS  <> 'E'
+  AND JC22.EEO1CODE  <> 'N'
+  !AND J22.ESTABID = $EstabID
+  AND exists (select 'X'from PS_JOB EXJ
+               where J22.EMPLID    = EXJ.EMPLID
+                 AND EXJ.EMPL_RCD = J22.EMPL_RCD
+                 AND EXJ.REG_TEMP = 'T' 
+                 AND EXJ.EMPL_STATUS IN ('A','L','S','P','W')
+                 AND ((EXJ.EFFDT < J22.EFFDT)
+                      OR (EXJ.EFFDT = J22.EFFDT
+                      AND (EXJ.EFFSEQ < J22.EFFSEQ)))
+  
+                 AND NOT EXISTS (SELECT 'X' FROM PS_JOB EXCJI
+                                 WHERE J22.EMPLID    = EXCJI.EMPLID
+                                   AND EXCJI.EMPL_RCD = J22.EMPL_RCD 
+                                   AND EXCJI.REG_TEMP = 'R'  
+                                   AND EXCJI.EMPL_STATUS IN ('A','L','S','P','W') 
+                                   !AND (EXCJI.EFFDT BETWEEN EXJ.EFFDT AND J22.EFFDT)
+                                   !AND (EXCJI.EFFSEQ >= EXJ.EFFSEQ)
+                                   AND  ((EXCJI.EFFDT >EXJ.EFFDT AND EXCJI.EFFDT < J22.EFFDT) OR
+                                   (((EXCJI.EFFDT = EXJ.EFFDT AND EXCJI.EFFDT <=J22.EFFDT) OR (EXCJI.EFFDT >= EXJ.EFFDT AND EXCJI.EFFDT=J22.EFFDT))
+                                   AND (EXCJI.EFFSEQ >=EXJ.EFFSEQ)))                                   
+                                   AND (EXCJI.EFFDT < $Prev_12_mo)))
+                      
+                 AND not exists (select 'X' from PS_JOB EXCJ 
+                   where J22.EMPLID    = EXCJ.EMPLID 
+                     AND EXCJ.EMPL_RCD = J22.EMPL_RCD 
+                     AND EXCJ.REG_TEMP = 'T' 
+                     AND EXCJ.EMPL_STATUS IN ('A','L','S','P','W') 
+                     AND ((EXCJ.EFFDT > J22.EFFDT) 
+                      OR ((EXCJ.EFFDT = J22.EFFDT) 
+                     AND (EXCJ.EFFSEQ > J22.EFFSEQ))))
+                   
+  AND NOT EXISTS (SELECT 'X' FROM PS_JOB EXCJT
+                   WHERE EXCJT.EMPLID = J22.EMPLID  
+                     AND EXCJT.EMPL_RCD = J22.EMPL_RCD
+                     AND EXCJT.REG_TEMP = 'T'
+                     AND EXCJT.EFFDT =(SELECT MAX(EXCJT1.EFFDT) FROM PS_JOB EXCJT1 
+                   WHERE EXCJT1.EMPLID = EXCJT.EMPLID
+                     AND EXCJT1.EMPL_RCD = EXCJT.EMPL_RCD
+                     AND EXCJT1.EFFDT <= $ThruDate)
+                     AND EXCJT.EFFSEQ = (SELECT MAX(EXCJT2.EFFSEQ) FROM PS_JOB EXCJT2
+                   WHERE EXCJT2.EMPLID = EXCJT.EMPLID
+                     AND EXCJT2.EMPL_RCD = EXCJT.EMPL_RCD
+                     AND EXCJT2.EFFDT = EXCJT.EFFDT))
+                 
+  GROUP BY JC22.EEO1CODE, A22.MILITARY_STATUS
+end-SELECT
+
+end-procedure Process-Estab-For-New-Hires2
+!----------------------------------------------------------------------
+!---------Process-Estab-For-Disabled-New-Hires-------------------------
+! This routine runs once for each US or HQ estab and calculates columns
+! O, P, Q, and R - which are total & vet new hires
+!----------------------------------------------------------------------
+begin-procedure Process-Estab-For-Disabled-New-Hires
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Process-Estab-For-Disabled-New-Hires'
+#ENDIF
+
+   IF $V100ReportType = 'C'
+       LET $Vets4212-Where-Clause = 'AND NOT EXISTS (SELECT ''X'' from PS_PERS_DATA_USA A WHERE A.MILITARY_STATUS IN (''3'',''4'',''9'',''A'',''O'',''C'',''S'',''T'',''D'')'
+       LET $Vets4212-Where-Clause = $Vets4212-Where-Clause || 'AND A.EMPLID = DJ2.EMPLID AND A.EFFDT =(SELECT MAX(A1.EFFDT) FROM   PS_PERS_DATA_USA A1 WHERE  A1.EMPLID = A.EMPLID '
+       LET $Vets4212-Where-Clause = $Vets4212-Where-Clause || 'AND  A1.EFFDT<= ' || $Quote || $ThruDate || $Quote || '))'
+   ELSE
+       LET $Vets4212-Where-Clause = ''
+   END-IF  
+
+! This select statement pulls out all special disabled new hires
+!----------------------------------------------------
+begin-SELECT
+DJC2.EEO1CODE
+COUNT(*)            &DEE_Count
+
+ EVALUATE $V100ReportType
+   
+    WHEN= 'C'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+   
+    EVALUATE &DJC2.EEO1CODE
+         WHEN = 'A'
+           MOVE 1 TO #EEO1CODE
+           BREAK
+         WHEN = 'B'
+           MOVE 2 TO #EEO1CODE
+           BREAK
+         WHEN = '2'
+           MOVE 3 TO #EEO1CODE
+           BREAK
+         WHEN = '3'
+           MOVE 4 TO #EEO1CODE
+           BREAK
+         WHEN = '4'
+           MOVE 5 TO #EEO1CODE
+           BREAK
+         WHEN = '5'
+           MOVE 6 TO #EEO1CODE
+           BREAK
+         WHEN = '6'
+           MOVE 7 TO #EEO1CODE
+           BREAK
+         WHEN = '7'
+           MOVE 8 TO #EEO1CODE
+           BREAK
+         WHEN = '8'
+           MOVE 9 TO #EEO1CODE
+           BREAK
+         WHEN = '9'
+           MOVE 10 TO #EEO1CODE
+           BREAK
+    END-EVALUATE 
+ 
+    ! Column Q - Disabled Vet New Hires
+    !-----------------------------------------------
+    ARRAY-ADD &DEE_Count TO VetsArray(#EEO1CODE) C
+    ARRAY-ADD &DEE_Count TO VetsArray(11) C  
+   
+    WHEN= 'A'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+   
+    EVALUATE &DJC2.EEO1CODE
+         WHEN = 'A'
+           MOVE 1 TO #EEO1CODE
+           BREAK
+         WHEN = 'B'
+           MOVE 2 TO #EEO1CODE
+           BREAK
+         WHEN = '2'
+           MOVE 3 TO #EEO1CODE
+           BREAK
+         WHEN = '3'
+           MOVE 4 TO #EEO1CODE
+           BREAK
+         WHEN = '4'
+           MOVE 5 TO #EEO1CODE
+           BREAK
+         WHEN = '5'
+           MOVE 6 TO #EEO1CODE
+           BREAK
+         WHEN = '6'
+           MOVE 7 TO #EEO1CODE
+           BREAK
+         WHEN = '7'
+           MOVE 8 TO #EEO1CODE
+           BREAK
+         WHEN = '8'
+           MOVE 9 TO #EEO1CODE
+           BREAK
+         WHEN = '9'
+           MOVE 10 TO #EEO1CODE
+           BREAK
+    END-EVALUATE 
+ 
+    ! Column Q - Disabled Vet New Hires
+    !-----------------------------------------------
+    ARRAY-ADD &DEE_Count TO VetsArray(#EEO1CODE) Q
+    ARRAY-ADD &DEE_Count TO VetsArray(11) Q
+ 
+    WHEN = 'B'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+  
+    IF &DJC2.EEO1CODE = 'A' OR &DJC2.EEO1CODE = 'B'
+       LET #EEO1CODE = 1
+    ELSE
+       LET #EEO1CODE = TO_NUMBER(&DJC2.EEO1CODE)
+    END-IF 
+ 
+    ! Column P - Disabled Vet New Hires
+    !-----------------------------------------------
+    ARRAY-ADD &DEE_Count TO VetsArray(#EEO1CODE) P
+    ARRAY-ADD &DEE_Count TO VetsArray(10) P
+ 
+ END-EVALUATE
+
+FROM  PS_JOB DJ2,
+      PS_JOBCODE_TBL DJC2,
+      PS_DISABILITY DDIS
+WHERE DJ2.PER_ORG = 'EMP'
+  AND DDIS.EMPLID = DJ2.EMPLID
+  AND DJ2.ESTABID    = $EstabID
+  AND DDIS.DISABLED_VET = 'Y'
+  AND DJ2.EFFDT = (SELECT MAX(DJ122.EFFDT) FROM PS_JOB DJ122
+                         WHERE  DJ122.EMPLID = DJ2.EMPLID
+                         AND DJ122.EMPL_RCD = DJ2.EMPL_RCD
+                       AND DJ122.REG_TEMP   = 'R'
+                       AND DJ122.ESTABID    = DJ2.ESTABID
+                       AND DJ122.EFFDT Between $Prev_12_mo and $ThruDate)
+  AND DJ2.EFFSEQ = (SELECT MAX(DJ123.EFFSEQ) FROM PS_JOB DJ123
+                       WHERE  DJ123.EMPLID = DJ2.EMPLID
+                         AND DJ123.EMPL_RCD = DJ2.EMPL_RCD
+                       AND DJ123.EFFDT   = DJ2.EFFDT
+                       AND DJ123.ESTABID    = DJ2.ESTABID)
+  !AND DJ2.EMPL_STATUS IN ('A','L','P','S','W')
+  AND DJ2.JOB_INDICATOR = 'P'
+  AND DJC2.JOBCODE = DJ2.JOBCODE
+  AND DJC2.SETID = DJ2.SETID_JOBCODE
+  AND DJC2.EFFDT = (SELECT MAX(EFFDT)
+                    FROM PS_JOBCODE_TBL DJC3
+                    WHERE DJC3.JOBCODE = DJC2.JOBCODE
+                      AND DJC3.SETID = DJC2.SETID
+                      AND DJC3.EFFDT <= $ThruDate)
+  AND DJ2.EEO_CLASS  <> 'E'            !"E" means exclude from counts
+  AND DJC2.EEO1CODE  <> 'N'            !"N" means not counted for reptg purposes
+  !AND DJ2.ESTABID    = $EstabID
+  AND EXISTS(SELECT  'X' 
+                    FROM PS_JOB J78
+                    WHERE J78.EMPLID = DJ2.EMPLID
+                     AND J78.EMPL_RCD = DJ2.EMPL_RCD
+                     AND J78.EFFDT  =  (SELECT MAX(J782.EFFDT) FROM PS_JOB J782
+                      WHERE J782.EMPLID = J78.EMPLID 
+                      AND J782.EMPL_RCD = J78.EMPL_RCD 
+                      AND J782.ACTION IN ('HIR','REH')
+                      AND J782.REG_TEMP   = 'R'
+                      AND J782.EFFDT  Between $Prev_12_mo and $ThruDate) 
+                      AND J78.EFFSEQ = (SELECT MAX (J781.EFFSEQ)
+                     FROM PS_JOB J781
+                     WHERE J781.EMPLID = J78.EMPLID
+                      AND J781.EMPL_RCD = J78.EMPL_RCD
+                      AND J781.EFFDT = J78.EFFDT
+                      AND J781.ACTION IN ('HIR','REH')))
+  [$Vets4212-Where-Clause]                      
+GROUP BY DJC2.EEO1CODE
+end-SELECT
+
+end-procedure Process-Estab-For-Disabled-New-Hires
+!----------------------------------------------------------------------
+!---------Process-Estab-For-Recently-Separated-New-Hires---------------
+!----------------------------------------------------------------------
+begin-procedure Process-Estab-For-Recently-Separated-New-Hires
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Process-Estab-For-Recently-Separated-New-Hires'
+#ENDIF
+
+   IF $V100ReportType = 'C'
+       LET $Vets4212-Where-Clause = 'AND NOT EXISTS (SELECT ''X'' from PS_PERS_DATA_USA A WHERE A.MILITARY_STATUS IN (''3'',''4'',''9'',''A'',''O'',''C'',''S'',''T'',''D'')'
+       LET $Vets4212-Where-Clause = $Vets4212-Where-Clause || 'AND A.EMPLID = MDJ.EMPLID AND A.EFFDT =(SELECT MAX(A1.EFFDT) FROM   PS_PERS_DATA_USA A1 WHERE  A1.EMPLID = A.EMPLID '
+       LET $Vets4212-Where-Clause = $Vets4212-Where-Clause ||'AND  A1.EFFDT<= ' || $Quote || $ThruDate || $Quote || ')) AND NOT EXISTS (SELECT ''X'' from PS_DISABILITY B WHERE B.EMPLID = MDJ.EMPLID and B.DISABLED_VET = ''Y'')'
+   ELSE
+       LET $Vets4212-Where-Clause = ''
+   END-IF
+
+! Military Discharge Date clause
+!----------------------------------------------------
+   IF $V100ReportType = 'A'
+      LET $NS-Where-Clause = 'AND MD.MIL_DISCHRG_DT_USA Between ' || $Quote || $Prev_36_mo || $Quote || ' and ' || $Quote || $ThruDate || $Quote
+   ELSE
+      LET $NS-Where-Clause = 'AND MD.MIL_DISCHRG_DT_USA Between ' || $Quote || $Prev_12_mo || $Quote || ' and ' || $Quote || $ThruDate || $Quote
+   END-IF    
+
+! This select statement pulls out all Recently-Separated new hires
+!----------------------------------------------------
+begin-SELECT
+MDJC.EEO1CODE
+MDJ.EFFDT
+MD.MIL_DISCHRG_DT_USA
+1        &NS_Count
+
+! Military Discharge Date clause
+!----------------------------------------------------
+ IF $V100ReportType = 'A' OR $V100ReportType = 'C'
+! 830669 - move this logic to here 
+! We need to calculate the previous 36 months from Military Discharge date 
+!-----------------------------------------------------------
+   move '1' to $Year4
+   move '-' to $DDelimiter
+   do Format-DateTime(&MD.MIL_DISCHRG_DT_USA, $out, {DEFYMD}, '', '')
+   do dtu-add-months($out, +36, $ns_prev_36_mo)
+   move '1' to $Year4
+   move '-' to $DDelimiter
+   do Format-DateTime($ns_prev_36_mo, $ns_prev_36_mo, {DEFYMD}, '', 'native')
+
+ ELSE            
+! We need to calculate the previous 12 months from Military Discharge date 
+!-----------------------------------------------------------
+   move '1' to $Year4
+   move '-' to $DDelimiter
+   do Format-DateTime(&MD.MIL_DISCHRG_DT_USA, $out, {DEFYMD}, '', '')
+   do dtu-add-months($out, +12, $ns_prev_12_mo)
+   move '1' to $Year4
+   move '-' to $DDelimiter
+   do Format-DateTime($ns_prev_12_mo, $ns_prev_12_mo, {DEFYMD}, '', 'native')
+ END-IF 
+
+ EVALUATE $V100ReportType 
+    
+    WHEN = 'C'
+       do Convert-To-DTU-Date($ThruDate, $ThruDate_dtu)
+         do Convert-To-DTU-Date($ns_prev_36_mo, $prev_36_mon_dtu)
+         do Convert-To-DTU-Date(&MD.MIL_DISCHRG_DT_USA, $MIL_DISCHRG_DT_USA_dtu)
+         
+       IF ($ThruDate_dtu >= $MIL_DISCHRG_DT_USA_dtu) and ($ThruDate_dtu <= $prev_36_mon_dtu)
+     
+       ! Set the Job Category based on the Employee's EEO-1 Job Code
+       !-------------------------------------------------------------
+      
+       EVALUATE &MDJC.EEO1CODE
+            WHEN = 'A'
+              MOVE 1 TO #EEO1CODE
+              BREAK
+            WHEN = 'B'
+              MOVE 2 TO #EEO1CODE
+              BREAK
+            WHEN = '2'
+              MOVE 3 TO #EEO1CODE
+              BREAK
+            WHEN = '3'
+              MOVE 4 TO #EEO1CODE
+              BREAK
+            WHEN = '4'
+              MOVE 5 TO #EEO1CODE
+              BREAK
+            WHEN = '5'
+              MOVE 6 TO #EEO1CODE
+              BREAK
+            WHEN = '6'
+              MOVE 7 TO #EEO1CODE
+              BREAK
+            WHEN = '7'
+              MOVE 8 TO #EEO1CODE
+              BREAK
+            WHEN = '8'
+              MOVE 9 TO #EEO1CODE
+              BREAK
+            WHEN = '9'
+              MOVE 10 TO #EEO1CODE
+              BREAK
+       END-EVALUATE 
+ 
+       ! Column T - Recently Separated New Hires
+       !-----------------------------------------------
+       ARRAY-ADD &NS_Count TO VetsArray(#EEO1CODE) C
+       ARRAY-ADD &NS_Count TO VetsArray(11) C
+    
+     END-IF ! 830669
+    
+    WHEN ='A'
+ 
+  
+      do Convert-To-DTU-Date($ThruDate, $ThruDate_dtu)
+      do Convert-To-DTU-Date($ns_prev_36_mo, $prev_36_mon_dtu)
+      do Convert-To-DTU-Date(&MD.MIL_DISCHRG_DT_USA, $MIL_DISCHRG_DT_USA_dtu)
+      
+    IF ($ThruDate_dtu >= $MIL_DISCHRG_DT_USA_dtu) and ($ThruDate_dtu <= $prev_36_mon_dtu)
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+   
+    EVALUATE &MDJC.EEO1CODE
+         WHEN = 'A'
+           MOVE 1 TO #EEO1CODE
+           BREAK
+         WHEN = 'B'
+           MOVE 2 TO #EEO1CODE
+           BREAK
+         WHEN = '2'
+           MOVE 3 TO #EEO1CODE
+           BREAK
+         WHEN = '3'
+           MOVE 4 TO #EEO1CODE
+           BREAK
+         WHEN = '4'
+           MOVE 5 TO #EEO1CODE
+           BREAK
+         WHEN = '5'
+           MOVE 6 TO #EEO1CODE
+           BREAK
+         WHEN = '6'
+           MOVE 7 TO #EEO1CODE
+           BREAK
+         WHEN = '7'
+           MOVE 8 TO #EEO1CODE
+           BREAK
+         WHEN = '8'
+           MOVE 9 TO #EEO1CODE
+           BREAK
+         WHEN = '9'
+           MOVE 10 TO #EEO1CODE
+           BREAK
+    END-EVALUATE 
+ 
+    ! Column T - Recently Separated New Hires
+    !-----------------------------------------------
+    ARRAY-ADD &NS_Count TO VetsArray(#EEO1CODE) T
+    ARRAY-ADD &NS_Count TO VetsArray(11) T
+ 
+    END-IF ! 830669
+ 
+ 
+    WHEN = 'B'
+ 
+       do Convert-To-DTU-Date($ThruDate, $ThruDate_dtu)
+       do Convert-To-DTU-Date($ns_prev_12_mo, $prev_12_mon_dtu)
+       do Convert-To-DTU-Date(&MD.MIL_DISCHRG_DT_USA, $MIL_DISCHRG_DT_USA_dtu)
+       
+   IF ($ThruDate_dtu >= $MIL_DISCHRG_DT_USA_dtu) and ($ThruDate <= $prev_12_mon_dtu)
+ 
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+  
+    IF &MDJC.EEO1CODE = 'A' OR &MDJC.EEO1CODE = 'B'
+       LET #EEO1CODE = 1
+    ELSE
+       LET #EEO1CODE = TO_NUMBER(&MDJC.EEO1CODE)
+    END-IF 
+ 
+    ! Column S - Recently Separated New Hires
+    !-----------------------------------------------
+    ARRAY-ADD &NS_Count TO VetsArray(#EEO1CODE) S
+    ARRAY-ADD &NS_Count TO VetsArray(10) S
+ 
+   END-IF ! 830669
+ 
+ 
+ END-EVALUATE
+
+FROM  PS_PERS_DATA_USA MDP,
+      PS_JOB MDJ,
+      PS_JOBCODE_TBL MDJC,
+      PS_PERS_MILIT_USA MD
+WHERE MDJ.PER_ORG = 'EMP'
+  AND MDP.MILITARY_STATUS NOT IN ('1', '2', '5', '6', 'X')   ! Check All Vets except those with No Military Service
+  AND MDP.EMPLID = MDJ.EMPLID
+  AND MD.EMPLID = MDJ.EMPLID
+  AND MDJ.ESTABID    = $EstabID
+  AND MDP.EFFDT =
+      (SELECT MAX(MDP1.EFFDT)
+       FROM   PS_PERS_DATA_USA MDP1
+       WHERE  MDP1.EMPLID = MDP.EMPLID
+         AND  MDP1.EFFDT  <= $ThruDate)
+  AND MDJ.EFFDT = (SELECT MAX(MDJ1.EFFDT)
+                   FROM PS_JOB MDJ1
+                   WHERE MDJ1.EMPLID = MDJ.EMPLID
+                     AND MDJ1.EMPL_RCD = MDJ.EMPL_RCD
+                     AND MDJ1.ESTABID    = MDJ.ESTABID
+                     AND MDJ1.REG_TEMP   = 'R'
+                     AND MDJ1.EFFDT Between $Prev_12_mo and $ThruDate)
+  AND MDJ.EFFSEQ = (SELECT MAX (MDJ2.EFFSEQ)
+                    FROM PS_JOB MDJ2
+                    WHERE MDJ2.EMPLID = MDJ.EMPLID
+                      AND MDJ2.EMPL_RCD = MDJ.EMPL_RCD
+                      AND MDJ2.EFFDT = MDJ.EFFDT
+                      AND MDJ2.ESTABID    = MDJ.ESTABID)
+  AND MDJ.JOB_INDICATOR = 'P'
+  AND MDJC.JOBCODE = MDJ.JOBCODE
+  AND MDJC.SETID = MDJ.SETID_JOBCODE
+  AND MDJC.EFFDT = (SELECT MAX(MDJC1.EFFDT)
+                    FROM PS_JOBCODE_TBL MDJC1
+                    WHERE MDJC1.JOBCODE = MDJC.JOBCODE
+                      AND MDJC1.SETID = MDJC.SETID                  
+                      AND MDJC1.EFFDT <= MDJ.EFFDT) 
+                  
+  AND MDJ.EEO_CLASS  <> 'E'            !"E" means exclude from counts
+  AND MDJC.EEO1CODE  <> 'N'            !"N" means not counted for reptg purposes
+  !AND MDJ.ESTABID    = $EstabID
+  AND exists ( SELECT 'X'
+       FROM PS_JOB MDJ11
+       WHERE MDJ11.EMPLID = MDJ.EMPLID
+       AND MDJ11.EMPL_RCD = MDJ.EMPL_RCD
+       !AND MDJ11.EMPL_STATUS IN ('A','L','P','S','W')
+       AND MDJ11.EFFDT = (select max(MDJ111.EFFDT) from PS_JOB MDJ111
+       WHERE  MDJ111.EMPLID = MDJ11.EMPLID
+       AND MDJ111.EMPL_RCD = MDJ11.EMPL_RCD
+       AND MDJ111.REG_TEMP   = 'R'
+       AND MDJ111.ACTION IN ('HIR','REH')
+       AND MDJ111.EFFDT between $Prev_12_mo and $ThruDate)
+       AND MDJ11.EFFSEQ = (SELECT MAX (MDJ1111.EFFSEQ)
+        FROM PS_JOB MDJ1111
+        WHERE MDJ11.EMPLID = MDJ1111.EMPLID
+         AND MDJ11.EMPL_RCD = MDJ1111.EMPL_RCD
+         AND MDJ11.EFFDT = MDJ1111.EFFDT
+          AND MDJ11.EMPL_STATUS = MDJ1111.EMPL_STATUS
+         AND MDJ1111.REG_TEMP   = 'R'
+         AND MDJ1111.ACTION IN ('HIR','REH')))
+  [$Vets4212-Where-Clause]         
+ORDER BY MDJC.EEO1CODE
+
+end-SELECT
+
+end-procedure Process-Estab-For-Recently-Separated-New-Hires
+
+!----------------------------------------------------------------------
+!---------Process-Estab-For-Recently-Separated-Employees---------------
+!----------------------------------------------------------------------
+begin-procedure Process-Estab-For-Recently-Separated-EEs
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Process-Estab-For-Recently-Separated-EEs'
+#ENDIF  
+
+   IF $V100ReportType = 'C'
+       LET $Vets4212-Where-Clause = 'AND NOT EXISTS (SELECT ''X'' from PS_PERS_DATA_USA A WHERE A.MILITARY_STATUS IN (''3'',''4'',''9'',''A'',''O'',''C'',''S'',''T'',''D'')'
+       LET $Vets4212-Where-Clause = $Vets4212-Where-Clause || 'AND A.EMPLID = MDJ2.EMPLID AND A.EFFDT =(SELECT MAX(A1.EFFDT) FROM   PS_PERS_DATA_USA A1 WHERE  A1.EMPLID = A.EMPLID '
+       LET $Vets4212-Where-Clause = $Vets4212-Where-Clause ||'AND  A1.EFFDT<= ' || $Quote || $ThruDate || $Quote || ')) AND NOT EXISTS (SELECT ''X'' from PS_DISABILITY B '
+       LET $Vets4212-Where-Clause = $Vets4212-Where-Clause ||'WHERE B.EMPLID = MDJ2.EMPLID and B.DISABLED_VET = ''Y'')'
+   ELSE
+       LET $Vets4212-Where-Clause = ''
+   END-IF 
+! This select statement pulls out all Recently-Separated Employees
+!----------------------------------------------------
+begin-SELECT
+MDJC2.EEO1CODE
+MDJ2.EFFDT
+MD2.MIL_DISCHRG_DT_USA
+1        &NS_Count2
+
+! Military Discharge Date clause
+
+  IF $V100ReportType = 'A' OR $V100ReportType = 'C'
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime(&MD2.MIL_DISCHRG_DT_USA, $out, {DEFYMD}, '', '')
+  do dtu-add-months($out, +36, $ns_prev_36_mo)
+  move '1' to $Year4
+  move '-' to $DDelimiter
+  do Format-DateTime($ns_prev_36_mo, $ns_prev_36_mo, {DEFYMD}, '', 'native')
+
+ ELSE
+   move '1' to $Year4
+   move '-' to $DDelimiter
+   do Format-DateTime(&MD2.MIL_DISCHRG_DT_USA, $out, {DEFYMD}, '', '')
+   do dtu-add-months($out, +12, $ns_prev_12_mo)
+   move '1' to $Year4
+   move '-' to $DDelimiter
+   do Format-DateTime($ns_prev_12_mo, $ns_prev_12_mo, {DEFYMD}, '', 'native')
+  
+ END-IF
+ 
+ EVALUATE $V100ReportType 
+   
+    WHEN = 'C'
+   
+       do Convert-To-DTU-Date($ThruDate, $ThruDate_dtu)
+       do Convert-To-DTU-Date($ns_prev_36_mo, $prev_36_mon_dtu)
+       do Convert-To-DTU-Date(&MD2.MIL_DISCHRG_DT_USA, $MIL_DISCHRG_DT_USA_dtu)
+   
+      IF ($ThruDate_dtu >= $MIL_DISCHRG_DT_USA_dtu) and ($ThruDate_dtu <= $prev_36_mon_dtu)
+    
+      ! Set the Job Category based on the Employee's EEO-1 Job Code
+      !-------------------------------------------------------------
+ 
+      EVALUATE &MDJC2.EEO1CODE
+           WHEN = 'A'
+             MOVE 1 TO #EEO1CODE
+             BREAK
+           WHEN = 'B'
+             MOVE 2 TO #EEO1CODE
+             BREAK
+           WHEN = '2'
+             MOVE 3 TO #EEO1CODE
+             BREAK
+           WHEN = '3'
+             MOVE 4 TO #EEO1CODE
+             BREAK
+           WHEN = '4'
+             MOVE 5 TO #EEO1CODE
+             BREAK
+           WHEN = '5'
+             MOVE 6 TO #EEO1CODE
+             BREAK
+           WHEN = '6'
+             MOVE 7 TO #EEO1CODE
+             BREAK
+           WHEN = '7'
+             MOVE 8 TO #EEO1CODE
+             BREAK
+           WHEN = '8'
+             MOVE 9 TO #EEO1CODE
+             BREAK
+           WHEN = '9'
+             MOVE 10 TO #EEO1CODE
+             BREAK
+      END-EVALUATE 
+   
+      ! Column C - Recently Separated Employees
+      !-----------------------------------------------
+      ARRAY-ADD &NS_Count2 TO VetsArray(#EEO1CODE) A
+      ARRAY-ADD &NS_Count2 TO VetsArray(11) A
+    END-IF
+ 
+ 
+    WHEN = 'A'
+ 
+     do Convert-To-DTU-Date($ThruDate, $ThruDate_dtu)
+     do Convert-To-DTU-Date($ns_prev_36_mo, $prev_36_mon_dtu)
+     do Convert-To-DTU-Date(&MD2.MIL_DISCHRG_DT_USA, $MIL_DISCHRG_DT_USA_dtu)
+      
+ 
+    IF ($ThruDate_dtu >= $MIL_DISCHRG_DT_USA_dtu) and ($ThruDate_dtu <= $prev_36_mon_dtu)
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+   
+    EVALUATE &MDJC2.EEO1CODE
+         WHEN = 'A'
+           MOVE 1 TO #EEO1CODE
+           BREAK
+         WHEN = 'B'
+           MOVE 2 TO #EEO1CODE
+           BREAK
+         WHEN = '2'
+           MOVE 3 TO #EEO1CODE
+           BREAK
+         WHEN = '3'
+           MOVE 4 TO #EEO1CODE
+           BREAK
+         WHEN = '4'
+           MOVE 5 TO #EEO1CODE
+           BREAK
+         WHEN = '5'
+           MOVE 6 TO #EEO1CODE
+           BREAK
+         WHEN = '6'
+           MOVE 7 TO #EEO1CODE
+           BREAK
+         WHEN = '7'
+           MOVE 8 TO #EEO1CODE
+           BREAK
+         WHEN = '8'
+           MOVE 9 TO #EEO1CODE
+           BREAK
+         WHEN = '9'
+           MOVE 10 TO #EEO1CODE
+           BREAK
+    END-EVALUATE 
+ 
+    ! Column O - Recently Separated Employees
+    !-----------------------------------------------
+    ARRAY-ADD &NS_Count2 TO VetsArray(#EEO1CODE) O
+    ARRAY-ADD &NS_Count2 TO VetsArray(11) O
+ 
+   END-IF ! 830669
+ 
+ 
+  WHEN = 'B'
+ 
+     do Convert-To-DTU-Date($ThruDate, $ThruDate_dtu)
+     do Convert-To-DTU-Date($ns_prev_12_mo, $prev_12_mon_dtu)
+     do Convert-To-DTU-Date(&MD2.MIL_DISCHRG_DT_USA, $MIL_DISCHRG_DT_USA_dtu)
+ 
+     IF ($ThruDate_dtu >= $MIL_DISCHRG_DT_USA_dtu) and ($ThruDate_dtu <= $prev_12_mon_dtu)
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+  
+    IF &MDJC2.EEO1CODE = 'A' OR &MDJC2.EEO1CODE = 'B'
+       LET #EEO1CODE = 1
+    ELSE
+       LET #EEO1CODE = TO_NUMBER(&MDJC2.EEO1CODE)
+    END-IF 
+ 
+    ! Column O - Recently Separated Employees
+    !-----------------------------------------------
+    ARRAY-ADD &NS_Count2 TO VetsArray(#EEO1CODE) O
+    ARRAY-ADD &NS_Count2 TO VetsArray(10) O
+ 
+   END-IF ! 830669
+ 
+ END-EVALUATE
+
+FROM  PS_PERS_DATA_USA MDP2,
+      PS_JOB MDJ2,
+      PS_JOBCODE_TBL MDJC2,
+      PS_PERS_MILIT_USA MD2
+WHERE MDJ2.PER_ORG = 'EMP'
+  AND MDP2.MILITARY_STATUS NOT IN ('1', '2', '5', '6', 'X')   ! Check All Vets except those with No Military Service
+  AND MDP2.EMPLID = MDJ2.EMPLID
+  AND MD2.EMPLID = MDJ2.EMPLID
+  AND MDP2.EFFDT =
+      (SELECT MAX(MDP12.EFFDT)
+       FROM   PS_PERS_DATA_USA MDP12
+       WHERE  MDP12.EMPLID = MDP2.EMPLID
+         AND  MDP12.EFFDT  <= $ThruDate)
+  AND MDJ2.EFFDT = (SELECT MAX(MDJ12.EFFDT)
+                   FROM PS_JOB MDJ12
+                   WHERE MDJ12.EMPLID = MDJ2.EMPLID
+                     AND MDJ12.EMPL_RCD = MDJ2.EMPL_RCD
+                     AND MDJ12.EFFDT <= $ThruDate
+                     AND MDJ12.REG_TEMP   = 'R')
+  AND MDJ2.EFFSEQ = (SELECT MAX (MDJ22.EFFSEQ)
+                    FROM PS_JOB MDJ22
+                    WHERE MDJ22.EMPLID = MDJ2.EMPLID
+                      AND MDJ22.EMPL_RCD = MDJ2.EMPL_RCD
+                      AND MDJ22.EFFDT = MDJ2.EFFDT)
+  AND MDJ2.EMPL_STATUS IN ('A','L','P','S','W')
+  !AND NOT EXISTS (SELECT 'X' 
+  !                  FROM PS_JOB NH2
+  !                  WHERE NH2.EMPLID = MDJ2.EMPLID
+  !                  AND NH2.EMPL_RCD = MDJ2.EMPL_RCD
+  !                  AND NH2.REG_TEMP = 'R'
+  !                  AND NH2.EFFDT Between $Prev_12_mo and $ThruDate
+  !                  AND NH2.ACTION IN ('HIR','REH'))  
+  AND MDJ2.JOB_INDICATOR = 'P'
+  AND MDJC2.JOBCODE = MDJ2.JOBCODE
+  AND MDJC2.SETID = MDJ2.SETID_JOBCODE
+  AND MDJC2.EFFDT = (SELECT MAX(MDJC12.EFFDT)
+                    FROM PS_JOBCODE_TBL MDJC12
+                    WHERE MDJC12.JOBCODE = MDJC2.JOBCODE
+                      AND MDJC12.SETID = MDJC2.SETID
+                      AND MDJC12.EFFDT <= MDJ2.EFFDT)                 
+  AND MDJ2.EEO_CLASS  <> 'E'            !"E" means exclude from counts
+  AND MDJC2.EEO1CODE  <> 'N'            !"N" means not counted for reptg purposes
+  AND MDJ2.ESTABID    = $EstabID
+ [$Vets4212-Where-Clause]
+ORDER BY MDJC2.EEO1CODE
+
+end-SELECT
+
+end-procedure Process-Estab-For-Recently-Separated-EEs
+
+!----------------------------------------------------------------------
+!---------Clear-Temp-Tables--------------------------------------------
+!----------------------------------------------------------------------
+! This routine will delete values from the PER027 temp tables
+!----------------------------------------------------------------------
+begin-procedure Clear-Temp-Tables
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Clear-Temp-Tables'
+#ENDIF
+
+BEGIN-SELECT
+COUNT(*) &Exists
+   LET #Exists = &Exists
+FROM PS_V100_TEMP_TBL
+[$Row-Where-Clause]
+END-SELECT
+
+IF #Exists != 0
+BEGIN-SQL
+DELETE FROM PS_V100_TEMP_TBL
+[$Row-Where-Clause]
+END-SQL
+END-IF
+
+end-procedure Clear-Temp-Tables
+
+!----------------------------------------------------------------------
+!---------Process-Estab-For-Disabled-Vets------------------------------
+!----------------------------------------------------------------------
+! This routine will check to see if an employee is a special disabled
+! veteran - had to do this in a separate statement to avoid an
+! outer join
+!----------------------------------------------------------------------
+begin-procedure Process-Estab-For-Disabled-Vets
+
+ IF $V100ReportType = 'C'
+      LET $Vets4212-Where-Clause = 'AND NOT EXISTS (SELECT ''X'' from PS_PERS_DATA_USA A WHERE A.MILITARY_STATUS IN (''3'',''4'',''9'',''A'',''O'',''C'',''S'',''T'',''D'')'
+      LET $Vets4212-Where-Clause = $Vets4212-Where-Clause ||'AND A.EMPLID = JNH.EMPLID AND A.EFFDT =(SELECT MAX(A1.EFFDT) FROM   PS_PERS_DATA_USA A1 WHERE  A1.EMPLID = A.EMPLID '
+      LET $Vets4212-Where-Clause = $Vets4212-Where-Clause ||'AND  A1.EFFDT<= ' || $Quote || $ThruDate || $Quote || '))'
+   ELSE
+      LET $Vets4212-Where-Clause = ''
+ END-IF 
+BEGIN-SELECT
+JCNH.EEO1CODE
+COUNT(*)     &NH_Count
+
+ EVALUATE $V100ReportType
+    WHEN = 'C'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+   
+    EVALUATE &JCNH.EEO1CODE
+         WHEN = 'A'
+           MOVE 1 TO #EEO1CODE
+           BREAK
+         WHEN = 'B'
+           MOVE 2 TO #EEO1CODE
+           BREAK
+         WHEN = '2'
+           MOVE 3 TO #EEO1CODE
+           BREAK
+         WHEN = '3'
+           MOVE 4 TO #EEO1CODE
+           BREAK
+         WHEN = '4'
+           MOVE 5 TO #EEO1CODE
+           BREAK
+         WHEN = '5'
+           MOVE 6 TO #EEO1CODE
+           BREAK
+         WHEN = '6'
+           MOVE 7 TO #EEO1CODE
+           BREAK
+         WHEN = '7'
+           MOVE 8 TO #EEO1CODE
+           BREAK
+         WHEN = '8'
+           MOVE 9 TO #EEO1CODE
+           BREAK
+         WHEN = '9'
+           MOVE 10 TO #EEO1CODE
+           BREAK
+    END-EVALUATE
+ 
+    ! Column L - Disabled Vets
+    !-----------------------------------------------------
+    ARRAY-ADD &NH_Count TO VetsArray(#EEO1CODE) A
+    ARRAY-ADD &NH_Count TO VetsArray(11) A
+    
+ 
+   
+    WHEN = 'A'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+   
+    EVALUATE &JCNH.EEO1CODE
+         WHEN = 'A'
+           MOVE 1 TO #EEO1CODE
+           BREAK
+         WHEN = 'B'
+           MOVE 2 TO #EEO1CODE
+           BREAK
+         WHEN = '2'
+           MOVE 3 TO #EEO1CODE
+           BREAK
+         WHEN = '3'
+           MOVE 4 TO #EEO1CODE
+           BREAK
+         WHEN = '4'
+           MOVE 5 TO #EEO1CODE
+           BREAK
+         WHEN = '5'
+           MOVE 6 TO #EEO1CODE
+           BREAK
+         WHEN = '6'
+           MOVE 7 TO #EEO1CODE
+           BREAK
+         WHEN = '7'
+           MOVE 8 TO #EEO1CODE
+           BREAK
+         WHEN = '8'
+           MOVE 9 TO #EEO1CODE
+           BREAK
+         WHEN = '9'
+           MOVE 10 TO #EEO1CODE
+           BREAK
+    END-EVALUATE
+ 
+    ! Column L - Disabled Vets
+    !-----------------------------------------------------
+    ARRAY-ADD &NH_Count TO VetsArray(#EEO1CODE) L
+    ARRAY-ADD &NH_Count TO VetsArray(11) L
+ 
+   WHEN = 'B'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+  
+    IF &JCNH.EEO1CODE = 'A' OR &JCNH.EEO1CODE = 'B'
+       LET #EEO1CODE = 1
+    ELSE
+       LET #EEO1CODE = TO_NUMBER(&JCNH.EEO1CODE)
+    END-IF 
+ 
+    ! Column L - Special Disabled Vets
+    !-----------------------------------------------------
+    ARRAY-ADD &NH_Count TO VetsArray(#EEO1CODE) L
+    ARRAY-ADD &NH_Count TO VetsArray(10) L
+    
+ END-EVALUATE
+
+
+FROM  PS_JOB JNH,
+      PS_JOBCODE_TBL JCNH,
+      PS_ESTAB_TBL ENH,
+      PS_DISABILITY DNH1
+WHERE JNH.PER_ORG = 'EMP'
+  AND JNH.REG_TEMP   = 'R'                         ! Regular Employees only
+  AND JNH.JOB_INDICATOR = 'P'
+  AND JNH.EFFDT = (SELECT MAX(J1NH.EFFDT)
+                   FROM PS_JOB J1NH
+                   WHERE J1NH.EMPLID  = JNH.EMPLID
+                     AND J1NH.EMPL_RCD = JNH.EMPL_RCD
+                     AND J1NH.EFFDT <= $ThruDate)
+  AND JNH.EFFSEQ = (SELECT MAX(J2NH.EFFSEQ)
+                    FROM PS_JOB J2NH
+                    WHERE J2NH.EMPLID = JNH.EMPLID
+                      AND J2NH.EMPL_RCD = JNH.EMPL_RCD
+                      AND J2NH.EFFDT = JNH.EFFDT)
+  AND JNH.EMPL_STATUS IN ('A','L','S','P','W') 
+  !AND NOT EXISTS (SELECT 'X' 
+  !                FROM PS_JOB NH3
+  !                WHERE NH3.EMPLID = JNH.EMPLID
+  !                  AND NH3.EMPL_RCD = JNH.EMPL_RCD
+  !                  AND NH3.REG_TEMP = 'R'
+  !                  AND NH3.EFFDT Between $Prev_12_mo and $ThruDate
+  !                  AND NH3.ACTION IN ('HIR','REH'))
+  AND ((JNH.EMPL_STATUS IN ('A','L','S','P','W') AND JNH.EFFDT <= $ThruDate)
+! get disabled vets whose status changed from active to not within the report period
+        OR (JNH.EMPL_STATUS NOT IN ('A','L','S','P','W') AND JNH.EFFDT BETWEEN $Prev_12_mo AND $ThruDate)
+        OR (JNH.EMPL_STATUS IN ('P', 'W') AND JNH.EFFDT <= $Prev_12_mo))
+  AND JCNH.JOBCODE = JNH.JOBCODE
+  AND DNH1.DISABLED_VET = 'Y'
+  AND JCNH.SETID = JNH.SETID_JOBCODE
+  AND JCNH.EFFDT =
+      (SELECT MAX(JC1NH.EFFDT)
+       FROM PS_JOBCODE_TBL JC1NH
+       WHERE JC1NH.JOBCODE = JCNH.JOBCODE
+       AND JC1NH.SETID = JCNH.SETID
+       AND JC1NH.EFFDT <= $ThruDate)
+  AND JNH.EEO_CLASS     <> 'E'   !Exclude from counts
+  AND JCNH.EEO1CODE     <> 'N'   !Not counted for EEO reporting
+  AND ENH.ESTABID       = JNH.ESTABID
+  AND ENH.ESTABID = $EstabID
+  AND ENH.EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM   PS_ESTAB_TBL
+       WHERE  ESTABID = ENH.ESTABID
+         AND  EFFDT  <= $ThruDate)
+  AND ENH.EFF_STATUS = 'A'
+  AND DNH1.EMPLID = JNH.EMPLID
+  [$Vets4212-Where-Clause]
+
+GROUP BY JCNH.EEO1CODE
+
+end-SELECT
+
+end-procedure Process-Estab-For-Disabled-Vets
+!----------------------------------------------------------------------
+!---------Process-Estab-For-Disabled-New-Hires2------------------------
+!----------------------------------------------------------------------
+! This routine runs once for each US or HQ estab and calculates columns
+! O, P, Q, and R - which are total & vet new hires - where the EE was
+! hired as a temporary employee and then converted to regular
+!----------------------------------------------------------------------
+begin-procedure Process-Estab-For-Disabled-New-Hires2
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Process-Estab-For-Disabled-New-Hires2'
+#ENDIF
+
+ IF $V100ReportType = 'C'
+      LET $Vets4212-Where-Clause = 'AND NOT EXISTS (SELECT ''X'' from PS_PERS_DATA_USA A WHERE A.MILITARY_STATUS IN (''3'',''4'',''9'',''A'',''O'',''C'',''S'',''T'',''D'')'
+      LET $Vets4212-Where-Clause = $Vets4212-Where-Clause || 'AND A.EMPLID = DJ22.EMPLID AND A.EFFDT =(SELECT MAX(A1.EFFDT) FROM   PS_PERS_DATA_USA A1 WHERE  A1.EMPLID = A.EMPLID '
+      LET $Vets4212-Where-Clause = $Vets4212-Where-Clause ||'AND  A1.EFFDT<= ' || $Quote || $ThruDate || $Quote || '))'
+   ELSE
+      LET $Vets4212-Where-Clause = ''
+ END-IF 
+
+! This select statement pulls out all special disabled new hires
+!----------------------------------------------------
+begin-SELECT
+DJC22.EEO1CODE
+COUNT(*)            &DEE_Count2
+
+ EVALUATE $V100ReportType
+    WHEN = 'C'
+   
+     ! Set the Job Category based on the Employee's EEO-1 Job Code
+     !-------------------------------------------------------------
+   
+     EVALUATE &DJC22.EEO1CODE
+          WHEN = 'A'
+            MOVE 1 TO #EEO1CODE
+            BREAK
+          WHEN = 'B'
+            MOVE 2 TO #EEO1CODE
+            BREAK
+          WHEN = '2'
+            MOVE 3 TO #EEO1CODE
+            BREAK
+          WHEN = '3'
+            MOVE 4 TO #EEO1CODE
+            BREAK
+          WHEN = '4'
+            MOVE 5 TO #EEO1CODE
+            BREAK
+          WHEN = '5'
+            MOVE 6 TO #EEO1CODE
+            BREAK
+          WHEN = '6'
+            MOVE 7 TO #EEO1CODE
+            BREAK
+          WHEN = '7'
+            MOVE 8 TO #EEO1CODE
+            BREAK
+          WHEN = '8'
+            MOVE 9 TO #EEO1CODE
+            BREAK
+          WHEN = '9'
+            MOVE 10 TO #EEO1CODE
+            BREAK
+     END-EVALUATE
+ 
+     ! Column Q Disabled Vet New Hires
+     !-----------------------------------------------
+     ARRAY-ADD &DEE_Count2 TO VetsArray(#EEO1CODE) C
+    ARRAY-ADD &DEE_Count2 TO VetsArray(11) C
+ 
+ 
+   WHEN= 'A'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+  
+    EVALUATE &DJC22.EEO1CODE
+         WHEN = 'A'
+           MOVE 1 TO #EEO1CODE
+           BREAK
+         WHEN = 'B'
+           MOVE 2 TO #EEO1CODE
+           BREAK
+         WHEN = '2'
+           MOVE 3 TO #EEO1CODE
+           BREAK
+         WHEN = '3'
+           MOVE 4 TO #EEO1CODE
+           BREAK
+         WHEN = '4'
+           MOVE 5 TO #EEO1CODE
+           BREAK
+         WHEN = '5'
+           MOVE 6 TO #EEO1CODE
+           BREAK
+         WHEN = '6'
+           MOVE 7 TO #EEO1CODE
+           BREAK
+         WHEN = '7'
+           MOVE 8 TO #EEO1CODE
+           BREAK
+         WHEN = '8'
+           MOVE 9 TO #EEO1CODE
+           BREAK
+         WHEN = '9'
+           MOVE 10 TO #EEO1CODE
+           BREAK
+    END-EVALUATE
+ 
+    ! Column Q Disabled Vet New Hires
+    !-----------------------------------------------
+    ARRAY-ADD &DEE_Count2 TO VetsArray(#EEO1CODE) Q
+    ARRAY-ADD &DEE_Count2 TO VetsArray(11) Q
+    !ARRAY-SUBTRACT &DEE_Count2 FROM VetsArray(#EEO1CODE) L
+    !ARRAY-SUBTRACT &DEE_COUNT2 FROM VetsArray(11) L
+ 
+   WHEN = 'B'
+  
+    ! Set the Job Category based on the Employee's EEO-1 Job Code
+    !-------------------------------------------------------------
+  
+    IF &DJC22.EEO1CODE = 'A' OR &DJC22.EEO1CODE = 'B'
+       LET #EEO1CODE = 1
+    ELSE
+       LET #EEO1CODE = TO_NUMBER(&DJC22.EEO1CODE)
+    END-IF
+ 
+    ! Column P Disabled Vet New Hires
+    !-----------------------------------------------
+    ARRAY-ADD &DEE_Count2 TO VetsArray(#EEO1CODE) P
+    ARRAY-ADD &DEE_Count2 TO VetsArray(10) P
+ 
+ END-EVALUATE
+
+FROM  PS_JOB DJ22,
+      PS_JOBCODE_TBL DJC22,
+      PS_DISABILITY DDIS2
+WHERE DJ22.PER_ORG = 'EMP'
+  AND DDIS2.EMPLID = DJ22.EMPLID
+  AND DDIS2.DISABLED_VET = 'Y'
+  AND DJ22.ESTABID = $EstabID
+  AND DJ22.EFFDT = (SELECT MAX(J3.EFFDT) FROM PS_JOB J3
+                    WHERE DJ22.EMPLID = J3.EMPLID
+                      AND DJ22.EMPL_RCD = J3.EMPL_RCD
+                      AND J3.REG_TEMP = 'R'
+                      AND J3.ESTABID = DJ22.ESTABID
+                      AND J3.EFFDT BETWEEN $Prev_12_mo AND $ThruDate )
+                      !AND DJ22.EMPL_STATUS IN ('A','L','S','P','W')
+  AND DJ22.EFFSEQ = (SELECT MAX(J5.EFFSEQ) FROM PS_JOB J5
+                      WHERE J5.EMPLID = DJ22.EMPLID
+                        AND J5.EMPL_RCD = DJ22.EMPL_RCD
+                        AND J5.ESTABID = DJ22.ESTABID
+                        AND J5.EFFDT = DJ22.EFFDT)
+  !AND DJ22.ACTION NOT IN ('HIR','REH') 
+  !AND DJ22.EFFDT BETWEEN $Prev_12_mo AND $ThruDate
+  AND NOT EXISTS (SELECT 'X' 
+                    FROM PS_JOB DEXJ1
+                    WHERE DEXJ1.EMPLID = DJ22.EMPLID
+                   AND DEXJ1.EMPL_RCD = DJ22.EMPL_RCD
+                    AND DEXJ1.REG_TEMP = 'R'
+                    AND DEXJ1.EFFDT Between $Prev_12_mo and $ThruDate
+                    AND DEXJ1.ACTION IN ('HIR','REH'))  
+  AND DJ22.JOB_INDICATOR = 'P'
+  AND DJC22.JOBCODE = DJ22.JOBCODE
+  AND DJC22.SETID = DJ22.SETID_JOBCODE
+  AND DJC22.EFFDT =
+      (SELECT MAX(EFFDT)
+       FROM PS_JOBCODE_TBL DJC3
+       WHERE DJC3.JOBCODE = DJC22.JOBCODE
+       AND DJC3.SETID = DJC22.SETID
+       AND DJC3.EFFDT <= DJ22.EFFDT)
+  AND DJ22.EEO_CLASS  <> 'E'            !"E" means exclude from counts
+  AND DJC22.EEO1CODE  <> 'N'            !"N" means not counted for reptg purposes
+  !AND DJ22.ESTABID = $EstabID
+! 830669 Begin - must have earlier job row where hired as 'temporary' anytime earlier    
+  AND exists (select 'X' from PS_JOB DEXJ
+              where DJ22.EMPLID    = DEXJ.EMPLID
+                 AND DEXJ.EMPL_RCD = DJ22.EMPL_RCD
+                 AND DEXJ.REG_TEMP = 'T'
+                 AND DEXJ.ACTION IN ('HIR','REH')
+                 AND DEXJ.EMPL_STATUS IN ('A','L','S','P','W')
+                 AND ((DEXJ.EFFDT < DJ22.EFFDT)
+                   OR (DEXJ.EFFDT = DJ22.EFFDT
+                       AND (DEXJ.EFFSEQ < DJ22.EFFSEQ)))
+                       
+                 AND NOT EXISTS (SELECT 'X' FROM PS_JOB DEXCJI
+                     WHERE DJ22.EMPLID    = DEXCJI.EMPLID
+                       AND DEXCJI.EMPL_RCD = DJ22.EMPL_RCD 
+                       AND DEXCJI.REG_TEMP = 'R'  
+                       AND DEXCJI.EMPL_STATUS IN ('A','L','S','P','W') 
+                       !AND (DEXCJI.EFFDT BETWEEN DEXJ.EFFDT AND DJ22.EFFDT)
+                       !AND (DEXCJI.EFFSEQ >= DEXJ.EFFSEQ)
+                       AND  ((DEXCJI.EFFDT >DEXJ.EFFDT AND DEXCJI.EFFDT < DJ22.EFFDT) OR
+                       (((DEXCJI.EFFDT = DEXJ.EFFDT AND DEXCJI.EFFDT <=DJ22.EFFDT) OR (DEXCJI.EFFDT >= DEXJ.EFFDT AND DEXCJI.EFFDT=DJ22.EFFDT))
+                       AND (DEXCJI.EFFSEQ >=DEXJ.EFFSEQ)))                       
+                       AND (DEXCJI.EFFDT < $Prev_12_mo)))                       
+  AND not exists (select 'X' from PS_JOB DEXCJ 
+                  where DJ22.EMPLID    = DEXCJ.EMPLID 
+                  AND DEXCJ.EMPL_RCD = DJ22.EMPL_RCD 
+                  AND DEXCJ.REG_TEMP = 'T' 
+                  AND DEXCJ.EMPL_STATUS IN ('A','L','S','P','W') 
+                  AND ((DEXCJ.EFFDT > DJ22.EFFDT) 
+                   OR ((DEXCJ.EFFDT = DJ22.EFFDT) 
+                  AND (DEXCJ.EFFSEQ > DJ22.EFFSEQ))))  
+  AND NOT EXISTS(SELECT 'X' FROM PS_JOB DEXCJT
+        WHERE DEXCJT.EMPLID = DJ22.EMPLID  
+        AND DEXCJT.EMPL_RCD = DJ22.EMPL_RCD
+        AND DEXCJT.REG_TEMP = 'T'
+        AND DEXCJT.EFFDT =(SELECT MAX(DEXCJT1.EFFDT) FROM PS_JOB DEXCJT1 
+        WHERE DEXCJT1.EMPLID = DEXCJT.EMPLID
+        AND DEXCJT1.EMPL_RCD = DEXCJT.EMPL_RCD
+        AND DEXCJT1.EFFDT <= $ThruDate)
+        AND DEXCJT.EFFSEQ = (SELECT MAX(DEXCJT2.EFFSEQ) FROM PS_JOB DEXCJT2
+        WHERE DEXCJT2.EMPLID = DEXCJT.EMPLID
+        AND DEXCJT2.EMPL_RCD = DEXCJT.EMPL_RCD
+        AND DEXCJT2.EFFDT = DEXCJT.EFFDT))
+  [$Vets4212-Where-Clause]
+
+GROUP BY DJC22.EEO1CODE
+end-SELECT
+
+end-procedure Process-Estab-For-Disabled-New-Hires2
+
+!----------------------------------------------------------------------
+!---------Process-Estab-For-Recently-Separated-New-Hires2---------------
+!----------------------------------------------------------------------
+begin-procedure Process-Estab-For-Recently-Separated-New-Hires2
+#IFDEF DEBUGPER027
+  DISPLAY 'FLOW: Process-Estab-For-Recently-Separated-New-Hires2'
+#ENDIF
+
+   IF $V100ReportType = 'C'
+       LET $Vets4212-Where-Clause = 'AND NOT EXISTS (SELECT ''X'' from PS_PERS_DATA_USA A WHERE A.MILITARY_STATUS IN (''3'',''4'',''9'',''A'',''O'',''C'',''S'',''T'',''D'')'
+       LET $Vets4212-Where-Clause = $Vets4212-Where-Clause || 'AND A.EMPLID = MDJ1.EMPLID AND A.EFFDT =(SELECT MAX(A1.EFFDT) FROM   PS_PERS_DATA_USA A1 WHERE  A1.EMPLID = A.EMPLID '
+       LET $Vets4212-Where-Clause = $Vets4212-Where-Clause ||'AND  A1.EFFDT<= ' || $Quote || $ThruDate || $Quote || ')) AND NOT EXISTS (SELECT ''X'' from PS_DISABILITY B WHERE B.EMPLID = MDJ1.EMPLID and B.DISABLED_VET = ''Y'')'
+   ELSE
+       LET $Vets4212-Where-Clause = ''
+   END-IF
+
+! Military Discharge Date clause
+!----------------------------------------------------
+   IF $V100ReportType = 'A'
+      LET $NS-Where-Clause = 'AND MD1.MIL_DISCHRG_DT_USA Between ' || $Quote || $Prev_36_mo || $Quote || ' and ' || $Quote || $ThruDate || $Quote
+   ELSE
+      LET $NS-Where-Clause = 'AND MD1.MIL_DISCHRG_DT_USA Between ' || $Quote || $Prev_12_mo || $Quote || ' and ' || $Quote || $ThruDate || $Quote
+   END-IF    
+
+! This select statement pulls out all Recently-Separated new hires
+!----------------------------------------------------
+begin-SELECT
+MDJC1.EEO1CODE
+MDJ1.EFFDT
+MD1.MIL_DISCHRG_DT_USA
+1        &NS_Count3
+
+! Military Discharge Date clause
+!----------------------------------------------------
+  IF $V100ReportType = 'A' OR $V100ReportType = 'C'
+   move '1' to $Year4
+   move '-' to $DDelimiter
+   do Format-DateTime(&MD1.MIL_DISCHRG_DT_USA, $out, {DEFYMD}, '', '')
+   do dtu-add-months($out, +36, $ns_prev_36_mo)  
+   move '1' to $Year4
+   move '-' to $DDelimiter
+   do Format-DateTime($ns_prev_36_mo, $ns_prev_36_mo, {DEFYMD}, '', 'native')
+
+  ELSE            
+
+   move '1' to $Year4
+   move '-' to $DDelimiter
+   do Format-DateTime(&MD1.MIL_DISCHRG_DT_USA, $out, {DEFYMD}, '', '')
+   do dtu-add-months($out, +12, $ns_prev_12_mo)
+   move '1' to $Year4
+   move '-' to $DDelimiter
+   do Format-DateTime($ns_prev_12_mo, $ns_prev_12_mo, {DEFYMD}, '', 'native')
+  END-IF 
+ 
+   EVALUATE $V100ReportType 
+   
+   WHEN = 'C'
+      do Convert-To-DTU-Date($ThruDate, $ThruDate_dtu)
+        do Convert-To-DTU-Date($ns_prev_36_mo, $prev_36_mon_dtu)
+        do Convert-To-DTU-Date(&MD1.MIL_DISCHRG_DT_USA, $MIL_DISCHRG_DT_USA_dtu)
+        
+      IF ($ThruDate_dtu >= $MIL_DISCHRG_DT_USA_dtu) and ($ThruDate_dtu <= $prev_36_mon_dtu)
+    
+      ! Set the Job Category based on the Employee's EEO-1 Job Code
+      !-------------------------------------------------------------
+     
+      EVALUATE &MDJC1.EEO1CODE
+           WHEN = 'A'
+             MOVE 1 TO #EEO1CODE
+             BREAK
+           WHEN = 'B'
+             MOVE 2 TO #EEO1CODE
+             BREAK
+           WHEN = '2'
+             MOVE 3 TO #EEO1CODE
+             BREAK
+           WHEN = '3'
+             MOVE 4 TO #EEO1CODE
+             BREAK
+           WHEN = '4'
+             MOVE 5 TO #EEO1CODE
+             BREAK
+           WHEN = '5'
+             MOVE 6 TO #EEO1CODE
+             BREAK
+           WHEN = '6'
+             MOVE 7 TO #EEO1CODE
+             BREAK
+           WHEN = '7'
+             MOVE 8 TO #EEO1CODE
+             BREAK
+           WHEN = '8'
+             MOVE 9 TO #EEO1CODE
+             BREAK
+           WHEN = '9'
+             MOVE 10 TO #EEO1CODE
+             BREAK
+      END-EVALUATE 
+
+      ! Column T - Recently Separated New Hires
+      !-----------------------------------------------
+      ARRAY-ADD &NS_Count3 TO VetsArray(#EEO1CODE) C
+      ARRAY-ADD &NS_Count3 TO VetsArray(11) C
+   
+    END-IF ! 830669
+   
+   WHEN ='A'
+
+ 
+     do Convert-To-DTU-Date($ThruDate, $ThruDate_dtu)
+     do Convert-To-DTU-Date($ns_prev_36_mo, $prev_36_mon_dtu)
+     do Convert-To-DTU-Date(&MD1.MIL_DISCHRG_DT_USA, $MIL_DISCHRG_DT_USA_dtu)
+     
+   IF ($ThruDate_dtu >= $MIL_DISCHRG_DT_USA_dtu) and ($ThruDate_dtu <= $prev_36_mon_dtu)
+ 
+   ! Set the Job Category based on the Employee's EEO-1 Job Code
+   !-------------------------------------------------------------
+  
+   EVALUATE &MDJC1.EEO1CODE
+        WHEN = 'A'
+          MOVE 1 TO #EEO1CODE
+          BREAK
+        WHEN = 'B'
+          MOVE 2 TO #EEO1CODE
+          BREAK
+        WHEN = '2'
+          MOVE 3 TO #EEO1CODE
+          BREAK
+        WHEN = '3'
+          MOVE 4 TO #EEO1CODE
+          BREAK
+        WHEN = '4'
+          MOVE 5 TO #EEO1CODE
+          BREAK
+        WHEN = '5'
+          MOVE 6 TO #EEO1CODE
+          BREAK
+        WHEN = '6'
+          MOVE 7 TO #EEO1CODE
+          BREAK
+        WHEN = '7'
+          MOVE 8 TO #EEO1CODE
+          BREAK
+        WHEN = '8'
+          MOVE 9 TO #EEO1CODE
+          BREAK
+        WHEN = '9'
+          MOVE 10 TO #EEO1CODE
+          BREAK
+   END-EVALUATE 
+
+   ! Column T - Recently Separated New Hires
+   !-----------------------------------------------
+   ARRAY-ADD &NS_Count3 TO VetsArray(#EEO1CODE) T
+   ARRAY-ADD &NS_Count3 TO VetsArray(11) T
+
+   END-IF ! 830669
+
+
+   WHEN = 'B'
+
+      do Convert-To-DTU-Date($ThruDate, $ThruDate_dtu)
+      do Convert-To-DTU-Date($ns_prev_12_mo, $prev_12_mon_dtu)
+      do Convert-To-DTU-Date(&MD1.MIL_DISCHRG_DT_USA, $MIL_DISCHRG_DT_USA_dtu)
+      
+  IF ($ThruDate_dtu >= $MIL_DISCHRG_DT_USA_dtu) and ($ThruDate <= $prev_12_mon_dtu)
+
+ 
+   ! Set the Job Category based on the Employee's EEO-1 Job Code
+   !-------------------------------------------------------------
+ 
+   IF &MDJC1.EEO1CODE = 'A' OR &MDJC1.EEO1CODE = 'B'
+      LET #EEO1CODE = 1
+   ELSE
+      LET #EEO1CODE = TO_NUMBER(&MDJC1.EEO1CODE)
+   END-IF 
+
+   ! Column S - Recently Separated New Hires
+   !-----------------------------------------------
+   ARRAY-ADD &NS_Count3 TO VetsArray(#EEO1CODE) S
+   ARRAY-ADD &NS_Count3 TO VetsArray(10) S
+
+  END-IF ! 830669
+
+
+ END-EVALUATE
+
+FROM  PS_PERS_DATA_USA MDP1,
+      PS_JOB MDJ1,
+      PS_JOBCODE_TBL MDJC1,
+      PS_PERS_MILIT_USA MD1
+WHERE MDJ1.PER_ORG = 'EMP'
+  AND MDP1.MILITARY_STATUS NOT IN ('1', '2', '5', '6', 'X')   ! Check All Vets except those with No Military Service
+  AND MDP1.EMPLID = MDJ1.EMPLID
+  AND MD1.EMPLID = MDJ1.EMPLID
+  AND MDJ1.ESTABID    = $EstabID
+  AND MDP1.EFFDT =
+      (SELECT MAX(MDP11.EFFDT)
+       FROM   PS_PERS_DATA_USA MDP11
+       WHERE  MDP11.EMPLID = MDP1.EMPLID
+         AND  MDP11.EFFDT  <= $ThruDate)
+  AND MDJ1.EFFDT = (SELECT MAX(MDJ11.EFFDT)
+                   FROM PS_JOB MDJ11
+                   WHERE MDJ11.EMPLID = MDJ1.EMPLID
+                     AND MDJ11.EMPL_RCD = MDJ1.EMPL_RCD
+                     AND MDJ11.ESTABID    = MDJ1.ESTABID
+                     AND MDJ11.REG_TEMP   = 'R'
+                     AND MDJ11.EFFDT Between $Prev_12_mo and $ThruDate)
+  AND MDJ1.EFFSEQ = (SELECT MAX (MDJ21.EFFSEQ)
+                    FROM PS_JOB MDJ21
+                    WHERE MDJ21.EMPLID = MDJ1.EMPLID
+                      AND MDJ21.EMPL_RCD = MDJ1.EMPL_RCD
+                      AND MDJ21.EFFDT = MDJ1.EFFDT
+                      AND MDJ21.ESTABID    = MDJ1.ESTABID)
+ AND NOT EXISTS (SELECT 'X' 
+                    FROM PS_JOB MEXJ1
+                    WHERE MEXJ1.EMPLID = MDJ1.EMPLID
+                   AND MEXJ1.EMPL_RCD = MDJ1.EMPL_RCD
+                    AND MEXJ1.REG_TEMP = 'R'
+                    AND MEXJ1.EFFDT Between $Prev_12_mo and $ThruDate
+                    AND MEXJ1.ACTION IN ('HIR','REH'))                       
+  AND MDJ1.JOB_INDICATOR = 'P'
+  AND MDJC1.JOBCODE = MDJ1.JOBCODE
+  AND MDJC1.SETID = MDJ1.SETID_JOBCODE
+  AND MDJC1.EFFDT = (SELECT MAX(MDJC11.EFFDT)
+                    FROM PS_JOBCODE_TBL MDJC11
+                    WHERE MDJC11.JOBCODE = MDJC1.JOBCODE
+                      AND MDJC11.SETID = MDJC1.SETID
+                      AND MDJC11.EFFDT <= MDJ1.EFFDT)
+                  
+  AND MDJ1.EEO_CLASS  <> 'E'            !"E" means exclude from counts
+  AND MDJC1.EEO1CODE  <> 'N'            !"N" means not counted for reptg purposes
+  AND exists (select 'X' from PS_JOB MEXJ
+              where MDJ1.EMPLID    = MEXJ.EMPLID
+                 AND MEXJ.EMPL_RCD = MDJ1.EMPL_RCD
+                 AND MEXJ.REG_TEMP = 'T'
+                 AND MEXJ.ACTION IN ('HIR','REH')
+                 AND MEXJ.EMPL_STATUS IN ('A','L','S','P','W')
+                 AND ((MEXJ.EFFDT < MDJ1.EFFDT)
+                   OR (MEXJ.EFFDT = MDJ1.EFFDT
+                       AND (MEXJ.EFFSEQ < MDJ1.EFFSEQ)))
+                       
+                 AND NOT EXISTS (SELECT 'X' FROM PS_JOB MEXCJI
+                     WHERE MDJ1.EMPLID    = MEXCJI.EMPLID
+                       AND MEXCJI.EMPL_RCD = MDJ1.EMPL_RCD 
+                       AND MEXCJI.REG_TEMP = 'R'  
+                       AND MEXCJI.EMPL_STATUS IN ('A','L','S','P','W') 
+                       !AND (DEXCJI.EFFDT BETWEEN DEXJ.EFFDT AND DJ22.EFFDT)
+                       !AND (DEXCJI.EFFSEQ >= DEXJ.EFFSEQ)
+                       AND  ((MEXCJI.EFFDT >MEXJ.EFFDT AND MEXCJI.EFFDT < MDJ1.EFFDT) OR
+                       (((MEXCJI.EFFDT = MEXJ.EFFDT AND MEXCJI.EFFDT <=MDJ1.EFFDT) OR (MEXCJI.EFFDT >= MEXJ.EFFDT AND MEXCJI.EFFDT=MDJ1.EFFDT))
+                       AND (MEXCJI.EFFSEQ >=MEXJ.EFFSEQ)))                       
+                       AND (MEXCJI.EFFDT < $Prev_12_mo)))                       
+
+  AND not exists (select 'X' from PS_JOB MEXCJ 
+                  where MDJ1.EMPLID    = MEXCJ.EMPLID 
+                  AND MEXCJ.EMPL_RCD = MDJ1.EMPL_RCD 
+                  AND MEXCJ.REG_TEMP = 'T' 
+                  AND MEXCJ.EMPL_STATUS IN ('A','L','S','P','W') 
+                  AND ((MEXCJ.EFFDT > MDJ1.EFFDT) 
+                   OR ((MEXCJ.EFFDT = MDJ1.EFFDT) 
+                  AND (MEXCJ.EFFSEQ > MDJ1.EFFSEQ))))  
+
+  AND NOT EXISTS(SELECT 'X' FROM PS_JOB MEXCJT
+        WHERE MEXCJT.EMPLID = MDJ1.EMPLID  
+        AND MEXCJT.EMPL_RCD = MDJ1.EMPL_RCD
+        AND MEXCJT.REG_TEMP = 'T'
+        AND MEXCJT.EFFDT =(SELECT MAX(MEXCJT1.EFFDT) FROM PS_JOB MEXCJT1 
+        WHERE MEXCJT1.EMPLID = MEXCJT.EMPLID
+        AND MEXCJT1.EMPL_RCD = MEXCJT.EMPL_RCD
+        AND MEXCJT1.EFFDT <= $ThruDate)
+        AND MEXCJT.EFFSEQ = (SELECT MAX(MEXCJT2.EFFSEQ) FROM PS_JOB MEXCJT2
+        WHERE MEXCJT2.EMPLID = MEXCJT.EMPLID
+        AND MEXCJT2.EMPL_RCD = MEXCJT.EMPL_RCD
+        AND MEXCJT2.EFFDT = MEXCJT.EFFDT))
+
+  [$Vets4212-Where-Clause]      
+ORDER BY MDJC1.EEO1CODE
+end-SELECT
+end-procedure Process-Estab-For-Recently-Separated-New-Hires2
+
+!----------------------------------------------------------------------
+!---------Create-Estab-Row--------------------------------------------
+!----------------------------------------------------------------------
+! This routine will create a row in PS_V100_TEMP_TBL with zeros in all
+! the total rows.
+!----------------------------------------------------------------------
+begin-procedure Create-Estab-Row
+#IFDEF DEBUGPER027
+   DISPLAY 'FLOW: Create-Estab-Row'
+#ENDIF
+
+DO Scrub-Insert-Values
+
+
+DISPLAY '&F1.CTL_ESTABID ' NOLINE
+     DISPLAY &F1.CTL_ESTABID
+ 
+
+DISPLAY ' &F.ESTABID ' NOLINE
+         DISPLAY &F.ESTABID
+
+DISPLAY ' $V100ReportType ' NOLINE
+     DISPLAY $V100ReportType
+
+DISPLAY ' #V100_Row ' NOLINE
+     DISPLAY #V100_Row
+
+DISPLAY ' $Estab_Vets_Number ' NOLINE
+     DISPLAY $Estab_Vets_Number
+
+DISPLAY ' $EndingPeriod ' NOLINE
+     DISPLAY $EndingPeriod
+
+DISPLAY ' &F1.EEO_GOV_CONTRACTOR ' NOLINE
+     DISPLAY &F1.EEO_GOV_CONTRACTOR
+
+
+DISPLAY ' $Form-Type ' NOLINE
+         DISPLAY $Form-Type
+
+#IFDEF DEBUGPER027
+ DISPLAY ' $HQ_Descr' NOLINE
+      DISPLAY $HQ_Descr
+
+ DISPLAY ' $HQ_Address1 ' NOLINE
+      DISPLAY $HQ_Address1
+      
+ DISPLAY ' $HQ_Address2 ' NOLINE
+      DISPLAY $HQ_Address2
+
+ DISPLAY ' $HQ_City ' NOLINE
+      DISPLAY $HQ_City
+
+ DISPLAY ' $HQ_County ' NOLINE
+      DISPLAY $HQ_County
+
+ DISPLAY ' $HQ_State ' NOLINE
+      DISPLAY $HQ_State
+
+ DISPLAY ' $HQ_Postal ' NOLINE
+      DISPLAY $HQ_Postal
+
+ DISPLAY ' &F.ESTABID ' NOLINE
+      DISPLAY &F.ESTABID
+
+ DISPLAY ' $Estab_Descr ' NOLINE
+      DISPLAY $Estab_Descr
+
+ DISPLAY ' $Estab_Address1 ' NOLINE
+      DISPLAY $Estab_Address1
+
+ DISPLAY ' $Estab_Address2 ' NOLINE
+      DISPLAY $Estab_Address2
+
+ DISPLAY ' $Estab_City ' NOLINE
+      DISPLAY $Estab_City
+
+ DISPLAY ' $Estab_County ' NOLINE
+      DISPLAY $Estab_County
+
+ DISPLAY ' $Estab_State ' NOLINE
+      DISPLAY $Estab_State
+
+ DISPLAY ' $Estab_Postal ' NOLINE
+      DISPLAY $Estab_Postal
+
+ DISPLAY ' $Estab_NAICS ' NOLINE
+      DISPLAY $Estab_NAICS
+
+ DISPLAY ' $Estab_DUNS ' NOLINE
+      DISPLAY $Estab_DUNS
+
+ DISPLAY ' $Estab_EIN' NOLINE
+      DISPLAY $Estab_EIN
+#ENDIF
+
+ if $Form-Type = 'MHQ' or $Form-Type = 'S'
+ 
+  let $Estab_Descr  = ' '  
+  let $Estab_Address1 = ' '
+  let $Estab_Address2 = ' '
+  let $Estab_City = ' '   
+  let $Estab_County = ' ' 
+  let $Estab_State  = ' ' 
+  let $Estab_Postal = ' ' 
+ 
+end-if
+
+BEGIN-SQL
+INSERT INTO PS_V100_TEMP_TBL( CTL_ESTABID
+, V100_REPORT_TYPE
+, V100_ROW
+, V100_COMPANY_NO
+, V100_ENDING_PD
+, V100_ORG_TYPE
+, V100_FORM_TYPE
+, V100_MSCNUMBER
+, V100_PARENT_CO
+, V100_STREET
+, V100_STREET2
+, V100_CITY
+, V100_COUNTY
+, V100_STATE
+, V100_ZIPCODE
+, V100_HIRING_LOC
+, V100_HL_NAME
+, V100_HL_STREET
+, V100_HL_STREET2
+, V100_HL_CITY
+, V100_HL_COUNTY
+, V100_HL_STATE
+, V100_HL_ZIP
+, V100_SIC
+, V100_NAICS
+, V100_DUNS_NUM
+, V100_EIN
+, V100_A1
+, V100_B1
+, V100_C1
+, V100_D1
+, V100_L1
+, V100_M1
+, V100_N1
+, V100_O1
+, V100_P1
+, V100_Q1
+, V100_R1
+, V100_S1
+, V100_T1
+, V100_U1
+, V100_A2
+, V100_B2
+, V100_C2
+, V100_D2
+, V100_L2
+, V100_M2
+, V100_N2
+, V100_O2
+, V100_P2
+, V100_Q2
+, V100_R2
+, V100_S2
+, V100_T2
+, V100_U2
+, V100_A3
+, V100_B3
+, V100_C3
+, V100_D3
+, V100_L3
+, V100_M3
+, V100_N3
+, V100_O3
+, V100_P3
+, V100_Q3
+, V100_R3
+, V100_S3
+, V100_T3
+, V100_U3
+, V100_A4
+, V100_B4
+, V100_C4
+, V100_D4
+, V100_L4
+, V100_M4
+, V100_N4
+, V100_O4
+, V100_P4
+, V100_Q4
+, V100_R4
+, V100_S4
+, V100_T4
+, V100_U4
+, V100_A5
+, V100_B5
+, V100_C5
+, V100_D5
+, V100_L5
+, V100_M5
+, V100_N5
+, V100_O5
+, V100_P5
+, V100_Q5
+, V100_R5
+, V100_S5
+, V100_T5
+, V100_U5
+, V100_A6
+, V100_B6
+, V100_C6
+, V100_D6
+, V100_L6
+, V100_M6
+, V100_N6
+, V100_O6
+, V100_P6
+, V100_Q6
+, V100_R6
+, V100_S6
+, V100_T6
+, V100_U6
+, V100_A7
+, V100_B7
+, V100_C7
+, V100_D7
+, V100_L7
+, V100_M7
+, V100_N7
+, V100_O7
+, V100_P7
+, V100_Q7
+, V100_R7
+, V100_S7
+, V100_T7
+, V100_U7
+, V100_A8
+, V100_B8
+, V100_C8
+, V100_D8
+, V100_L8
+, V100_M8
+, V100_N8
+, V100_O8
+, V100_P8
+, V100_Q8
+, V100_R8
+, V100_S8
+, V100_T8
+, V100_U8
+, V100_A9
+, V100_B9
+, V100_C9
+, V100_D9
+, V100_L9
+, V100_M9
+, V100_N9
+, V100_O9
+, V100_P9
+, V100_Q9
+, V100_R9
+, V100_S9
+, V100_T9
+, V100_U9
+, V100_A10
+, V100_B10
+, V100_C10
+, V100_D10
+, V100_L10
+, V100_M10
+, V100_N10
+, V100_O10
+, V100_P10
+, V100_Q10
+, V100_R10
+, V100_S10
+, V100_T10
+, V100_U10
+, V100_A11
+, V100_B11
+, V100_C11
+, V100_D11
+, V100_L11
+, V100_M11
+, V100_N11
+, V100_O11
+, V100_P11
+, V100_Q11
+, V100_R11
+, V100_S11
+, V100_T11
+, V100_U11
+, V100_MAX_NUMBER
+, V100_MIN_NUMBER)
+VALUES
+(
+&F1.CTL_ESTABID            !***********Incident 1369213004
+,$V100ReportType
+,#V100_Row
+,$Estab_Vets_Number
+,$EndingPeriod
+,&F1.EEO_GOV_CONTRACTOR    !***********Incident 1369213004
+,$Form-Type
+,0                     ! This value only needed for consolidated forms
+,$HQ_Descr             ! Parent company name
+,$HQ_Address1          ! Parent company street address
+,$HQ_Address2          ! Parent company street address2
+,$HQ_City              ! Parent company city
+,$HQ_County            ! Parent company county
+,$HQ_State             ! Parent company state
+,$HQ_Postal            ! Parent company zip
+,&F.ESTABID            ! This field is for our reference number
+,$Estab_Descr          ! Hiring location name
+,$Estab_Address1       ! Hiring location address
+,$Estab_Address2       ! Hiring location address2
+,$Estab_City           ! Hiring location city
+,$Estab_County         ! Hiring location county
+,$Estab_State          ! Hiring location state
+,$Estab_Postal         ! Hiring location zip
+,' '                   ! SIC Code no longer used for VETS reporting
+,$Estab_NAICS          ! Hiring location or HQ Std. Industry Code
+,$Estab_DUNS           ! Hiring location or HQ Dun & Bradstreet #
+,$Estab_EIN            ! Hiring location or parent EIN
+,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ! A1 - U1
+,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ! A2 - U2
+,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ! A3 - U3
+,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ! A4 - U4
+,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ! A5 - U5
+,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ! A6 - U6
+,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ! A7 - U7
+,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ! A8 - U8
+,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ! A9 - U9
+,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ! A10 - U10
+,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ! A11 - U11
+,0                     ! Maximum regular employees during period
+,0                     ! Minimum regular employees during period
+)
+END-SQL
+
+end-procedure Create-Estab-Row
+
+
+!----------------------------------------------------------------------
+!---------Determine-Form-Type------------------------------------------
+!----------------------------------------------------------------------
+! This routine will determine what the form type is for the current
+! establishment - Single Estab, Multiple Estab Headquarters, or
+! Multiple Establishment-Hiring Location. This report does not
+! generate the optional state consolidated report - with a purely
+! digital report, there is no advantage to doing so, and there is a
+! performance hit involved in treating less-than-50 establishments
+! differently.
+!----------------------------------------------------------------------
+begin-procedure Determine-Form-Type
+#IFDEF DEBUGPER027
+   DISPLAY 'FLOW: Determine-Form-Type'
+#ENDIF
+IF &F.HQUNIT = 'N'
+   LET $Form-Type = 'MHL'
+ELSE
+
+BEGIN-SELECT
+COUNT(*) &Estab_Count
+  IF &Estab_Count > 1
+     LET $Form-Type = 'MHQ'
+  ELSE
+     LET $Form-Type = 'S'
+  END-IF
+
+FROM PS_ESTAB_TBL FT,
+PS_ESTAB_TBL_USA FT1        
+WHERE FT1.CTL_ESTABID = &F.ESTABID
+  AND FT1.EFFDT =   
+      (SELECT MAX(C.EFFDT)
+       FROM   PS_ESTAB_TBL_USA C
+       WHERE  FT1.CTL_ESTABID = C.ESTABID
+         AND  C.EFFDT  <= $ThruDate)
+  AND  FT.EFF_STATUS = 'A'
+  AND FT.ESTABID=FT1.ESTABID
+  AND FT.EFFDT=FT1.EFFDT
+  
+END-SELECT
+END-IF
+end-procedure Determine-Form-Type
+
+!----------------------------------------------------------------------
+!---------Scrub-Insert-Values------------------------------------------
+!----------------------------------------------------------------------
+! This routine makes sure that all the values we are inserting into
+! the temporary Vets 100 table are valid and won't cause an
+! execution problem
+!----------------------------------------------------------------------
+begin-procedure Scrub-Insert-Values
+#IFDEF DEBUGPER027
+   DISPLAY 'FLOW: Scrub-Insert-Values'
+#ENDIF
+
+! The city and county come from 30 character fields and must be
+! truncated to 20 before insert
+!--------------------------------------------------------------
+IF length($HQ_County) >= 20
+    LET $HQ_County = substr($HQ_County, 1, 20)
+END-IF
+IF length($HQ_City) >= 20
+    LET $HQ_City = substr($HQ_City, 1, 20)
+END-IF
+
+IF length($Estab_County) >= 20
+    LET $Estab_County = substr($Estab_County, 1, 20)
+END-IF
+IF length($Estab_City) >= 20
+    LET $Estab_City = substr($Estab_City, 1, 20)
+END-IF
+if length($HQ_State) >= 3
+    LET $HQ_State= substr($HQ_State, 1, 2)
+END-IF
+
+! EIN is stored as a number, we need it as a character
+!--------------------------------------------------------------
+LET $Estab_EIN = to_char(#Estab_EIN)
+
+! PeopleSoft's Postal field allows 12 characters, we only have
+! 10 to use...
+!--------------------------------------------------------------
+IF length($HQ_Postal) >= 20
+    LET $HQ_Postal = substr($HQ_Postal, 1, 20)
+    DISPLAY '    WARNING: Headquarter Postal code truncated'
+END-IF
+IF length($Estab_Postal) >= 20
+    LET $Estab_Postal = substr($Estab_Postal, 1, 20)
+    DISPLAY '    WARNING: Establishment Postal code truncated'
+END-IF
+
+! Cannot insert null values - but don't want to crash, so
+! populate with a space and warn
+!--------------------------------------------------------------
+IF IsNull($Estab_DUNS)
+   LET $Estab_DUNS = ' '
+   DISPLAY '    WARNING: DUNS Number missing'
+END-IF
+IF IsNull($Estab_NAICS)
+   LET $Estab_NAICS = ' '
+   DISPLAY '    WARNING: NAICS Number missing'
+END-IF
+If IsNull($Estab_Vets_Number)
+   LET $Estab_Vets_Number = ' '
+   DISPLAY '    WARNING: Vets 100 Unit Number missing'
+END-IF
+IF IsNull($HQ_County)
+   Let $HQ_County = ' '
+   DISPLAY '    WARNING: Headquarter County missing'
+END-IF
+IF IsNull($Estab_County)
+   Let $Estab_County = ' '
+   DISPLAY '    WARNING: Hiring Location county missing'
+END-IF
+IF IsNull($HQ_Descr)
+   Let $HQ_Descr = ' '
+   DISPLAY '    WARNING: Headquarter Name missing'
+END-IF
+IF IsNull($HQ_Address1)
+   Let $HQ_Address1 = ' '
+   DISPLAY '    WARNING: Headquarter Address missing'
+END-IF
+IF IsNull($HQ_Address2)
+   Let $HQ_Address2 = ' '
+   DISPLAY '    WARNING: Headquarter Address2 missing'
+END-IF
+IF IsNull($HQ_City)
+   Let $HQ_City = ' '
+   DISPLAY '    WARNING: Headquarter City missing'
+END-IF
+IF IsNull($HQ_State)
+   Let $HQ_State = ' '
+   DISPLAY '    WARNING: Headquarter State missing'
+END-IF
+IF IsNull($HQ_Postal)
+   Let $HQ_Postal = ' '
+   DISPLAY '    WARNING: Headquarter Zip Code missing'
+END-IF
+IF IsNull($Estab_Address1)
+   Let $Estab_Address1 = ' '
+   DISPLAY '    WARNING: Hiring Location address missing'
+END-IF
+IF IsNull($Estab_Address2)
+   Let $Estab_Address2 = ' '
+   DISPLAY '    WARNING: Hiring Location address2 missing'
+END-IF
+IF IsNull($Estab_City)
+   Let $Estab_City = ' '
+   DISPLAY '    WARNING: Hiring Location city missing'
+END-IF
+IF IsNull($Estab_State)
+   Let $Estab_State = ' '
+   DISPLAY '    WARNING: Hiring Location state missing'
+END-IF
+IF IsNull($Estab_Postal)
+   Let $Estab_Postal = ' '
+   DISPLAY '    WARNING: Hiring Location zip code missing'
+END-IF
+IF IsNull($Estab_NAICS)
+   Let $Estab_NAICS = ' '
+   DISPLAY '    WARNING: Hiring Location NAICS code missing'
+END-IF
+IF IsNull($Estab_DUNS)
+   Let $Estab_DUNS = ' '
+   DISPLAY '    WARNING: Hiring Location DUNS Number missing'
+END-IF
+IF IsNull($Estab_EIN)
+   Let $Estab_EIN = ' '
+   DISPLAY '    WARNING: Hiring Location Federal EIN missing'
+END-IF
+
+end-procedure Scrub-Insert-Values
+
+!----------------------------------------------------------------------
+!---------Update-Estab-Totals------------------------------------------
+!----------------------------------------------------------------------
+! This routine takes the values stored in our temporary count variables
+! and transfers over to the appropriate row in the temp table
+!----------------------------------------------------------------------
+begin-procedure Update-Estab-Totals
+#IFDEF DEBUGPER027
+   DISPLAY 'FLOW: Update-Estab-Totals'
+#ENDIF
+
+! SQR doesn't allow array syntax embedded in SQL, so...
+!--------------------------------------------------------
+ Get #A1 FROM VetsArray(1) A
+ Get #A2 FROM VetsArray(2) A
+ Get #A3 FROM VetsArray(3) A
+ Get #A4 FROM VetsArray(4) A
+ Get #A5 FROM VetsArray(5) A
+ Get #A6 FROM VetsArray(6) A
+ Get #A7 FROM VetsArray(7) A
+ Get #A8 FROM VetsArray(8) A
+ Get #A9 FROM VetsArray(9) A
+ Get #A10 FROM VetsArray(10) A
+ Get #A11 FROM VetsArray(11) A
+ 
+ Get #C1 FROM VetsArray(1) C
+ Get #C2 FROM VetsArray(2) C
+ Get #C3 FROM VetsArray(3) C
+ Get #C4 FROM VetsArray(4) C
+ Get #C5 FROM VetsArray(5) C
+ Get #C6 FROM VetsArray(6) C
+ Get #C7 FROM VetsArray(7) C
+ Get #C8 FROM VetsArray(8) C
+ Get #C9 FROM VetsArray(9) C
+ Get #C10 FROM VetsArray(10) C
+ Get #C11 FROM VetsArray(11) C
+ 
+ Get #L1 FROM VetsArray(1) L
+ Get #L2 FROM VetsArray(2) L
+ Get #L3 FROM VetsArray(3) L
+ Get #L4 FROM VetsArray(4) L
+ Get #L5 FROM VetsArray(5) L
+ Get #L6 FROM VetsArray(6) L
+ Get #L7 FROM VetsArray(7) L
+ Get #L8 FROM VetsArray(8) L
+ Get #L9 FROM VetsArray(9) L
+ Get #L10 FROM VetsArray(10) L
+ Get #L11 FROM VetsArray(11) L
+
+ Get #M1 FROM VetsArray(1) M
+ Get #M2 FROM VetsArray(2) M
+ Get #M3 FROM VetsArray(3) M
+ Get #M4 FROM VetsArray(4) M
+ Get #M5 FROM VetsArray(5) M
+ Get #M6 FROM VetsArray(6) M
+ Get #M7 FROM VetsArray(7) M
+ Get #M8 FROM VetsArray(8) M
+ Get #M9 FROM VetsArray(9) M
+ Get #M10 FROM VetsArray(10) M
+ Get #M11 FROM VetsArray(11) M 
+
+ Get #N1 FROM VetsArray(1) N
+ Get #N2 FROM VetsArray(2) N
+ Get #N3 FROM VetsArray(3) N
+ Get #N4 FROM VetsArray(4) N
+ Get #N5 FROM VetsArray(5) N
+ Get #N6 FROM VetsArray(6) N
+ Get #N7 FROM VetsArray(7) N
+ Get #N8 FROM VetsArray(8) N
+ Get #N9 FROM VetsArray(9) N
+ Get #N10 FROM VetsArray(10) N
+ Get #N11 FROM VetsArray(11) N 
+
+ Get #O1 FROM VetsArray(1) O
+ Get #O2 FROM VetsArray(2) O
+ Get #O3 FROM VetsArray(3) O
+ Get #O4 FROM VetsArray(4) O
+ Get #O5 FROM VetsArray(5) O
+ Get #O6 FROM VetsArray(6) O
+ Get #O7 FROM VetsArray(7) O
+ Get #O8 FROM VetsArray(8) O
+ Get #O9 FROM VetsArray(9) O
+ Get #O10 FROM VetsArray(10) O
+ Get #O11 FROM VetsArray(11) O 
+
+ Get #P1 FROM VetsArray(1) P
+ Get #P2 FROM VetsArray(2) P
+ Get #P3 FROM VetsArray(3) P
+ Get #P4 FROM VetsArray(4) P
+ Get #P5 FROM VetsArray(5) P
+ Get #P6 FROM VetsArray(6) P
+ Get #P7 FROM VetsArray(7) P
+ Get #P8 FROM VetsArray(8) P
+ Get #P9 FROM VetsArray(9) P
+ Get #P10 FROM VetsArray(10) P
+ Get #P11 FROM VetsArray(11) P 
+
+ Get #Q1 FROM VetsArray(1) Q
+ Get #Q2 FROM VetsArray(2) Q
+ Get #Q3 FROM VetsArray(3) Q
+ Get #Q4 FROM VetsArray(4) Q
+ Get #Q5 FROM VetsArray(5) Q
+ Get #Q6 FROM VetsArray(6) Q
+ Get #Q7 FROM VetsArray(7) Q
+ Get #Q8 FROM VetsArray(8) Q
+ Get #Q9 FROM VetsArray(9) Q
+ Get #Q10 FROM VetsArray(10) Q
+ Get #Q11 FROM VetsArray(11) Q
+
+ Get #R1 FROM VetsArray(1) R
+ Get #R2 FROM VetsArray(2) R
+ Get #R3 FROM VetsArray(3) R
+ Get #R4 FROM VetsArray(4) R
+ Get #R5 FROM VetsArray(5) R
+ Get #R6 FROM VetsArray(6) R
+ Get #R7 FROM VetsArray(7) R
+ Get #R8 FROM VetsArray(8) R
+ Get #R9 FROM VetsArray(9) R
+ Get #R10 FROM VetsArray(10) R
+ Get #R11 FROM VetsArray(11) R 
+
+ Get #S1 FROM VetsArray(1) S
+ Get #S2 FROM VetsArray(2) S
+ Get #S3 FROM VetsArray(3) S
+ Get #S4 FROM VetsArray(4) S
+ Get #S5 FROM VetsArray(5) S
+ Get #S6 FROM VetsArray(6) S
+ Get #S7 FROM VetsArray(7) S
+ Get #S8 FROM VetsArray(8) S
+ Get #S9 FROM VetsArray(9) S
+ Get #S10 FROM VetsArray(10) S
+ Get #S11 FROM VetsArray(11) S 
+
+ Get #T1 FROM VetsArray(1) T
+ Get #T2 FROM VetsArray(2) T
+ Get #T3 FROM VetsArray(3) T
+ Get #T4 FROM VetsArray(4) T
+ Get #T5 FROM VetsArray(5) T
+ Get #T6 FROM VetsArray(6) T
+ Get #T7 FROM VetsArray(7) T
+ Get #T8 FROM VetsArray(8) T
+ Get #T9 FROM VetsArray(9) T
+ Get #T10 FROM VetsArray(10) T
+ Get #T11 FROM VetsArray(11) T 
+
+ Get #U1 FROM VetsArray(1) U
+ Get #U2 FROM VetsArray(2) U
+ Get #U3 FROM VetsArray(3) U
+ Get #U4 FROM VetsArray(4) U
+ Get #U5 FROM VetsArray(5) U
+ Get #U6 FROM VetsArray(6) U
+ Get #U7 FROM VetsArray(7) U
+ Get #U8 FROM VetsArray(8) U
+ Get #U9 FROM VetsArray(9) U
+ Get #U10 FROM VetsArray(10) U
+ Get #U11 FROM VetsArray(11) U  
+
+LET #PriorRow = #V100_Row - 1
+! Insert the values into the temp table
+!------------------------------------------------
+BEGIN-SQL
+UPDATE PS_V100_TEMP_TBL
+SET V100_A1 = #A1,
+V100_A2 = #A2,
+V100_A3 = #A3,
+V100_A4 = #A4,
+V100_A5 = #A5,
+V100_A6 = #A6,
+V100_A7 = #A7,
+V100_A8 = #A8,
+V100_A9 = #A9,
+V100_A10 = #A10,
+V100_A11 = #A11,
+V100_B1 = #P1,
+V100_B2 = #P2,
+V100_B3 = #P3,
+V100_B4 = #P4,
+V100_B5 = #P5,
+V100_B6 = #P6,
+V100_B7 = #P7,
+V100_B8 = #P8,
+V100_B9 = #P9,
+V100_B10 = #P10,
+V100_B11 = #P11,
+V100_C1 = #C1,
+V100_C2 = #C2,
+V100_C3 = #C3,
+V100_C4 = #C4,
+V100_C5 = #C5,
+V100_C6 = #C6,
+V100_C7 = #C7,
+V100_C8 = #C8,
+V100_C9 = #C9,
+V100_C10 = #C10,
+V100_C11 = #C11,
+V100_D1 = #U1,
+V100_D2 = #U2,
+V100_D3 = #U3,
+V100_D4 = #U4,
+V100_D5 = #U5,
+V100_D6 = #U6,
+V100_D7 = #U7,
+V100_D8 = #U8,
+V100_D9 = #U9,
+V100_D10 = #U10,
+V100_D11 = #U11,
+V100_L1 = #L1,
+V100_L2 = #L2,
+V100_L3 = #L3,
+V100_L4 = #L4,
+V100_L5 = #L5,
+V100_L6 = #L6,
+V100_L7 = #L7,
+V100_L8 = #L8,
+V100_L9 = #L9,
+V100_L10 = #L10,
+V100_L11 = #L11,
+V100_M1 = #M1,
+V100_M2 = #M2,
+V100_M3 = #M3,
+V100_M4 = #M4,
+V100_M5 = #M5,
+V100_M6 = #M6,
+V100_M7 = #M7,
+V100_M8 = #M8,
+V100_M9 = #M9,
+V100_M10 = #M10,
+V100_M11 = #M11,
+V100_N1 = #N1,
+V100_N2 = #N2,
+V100_N3 = #N3,
+V100_N4 = #N4,
+V100_N5 = #N5,
+V100_N6 = #N6,
+V100_N7 = #N7,
+V100_N8 = #N8,
+V100_N9 = #N9,
+V100_N10 = #N10,
+V100_N11 = #N11,
+V100_O1 = #O1,
+V100_O2 = #O2,
+V100_O3 = #O3,
+V100_O4 = #O4,
+V100_O5 = #O5,
+V100_O6 = #O6,
+V100_O7 = #O7,
+V100_O8 = #O8,
+V100_O9 = #O9,
+V100_O10 = #O10,
+V100_O11 = #O11,
+V100_P1 = #P1,
+V100_P2 = #P2,
+V100_P3 = #P3,
+V100_P4 = #P4,
+V100_P5 = #P5,
+V100_P6 = #P6,
+V100_P7 = #P7,
+V100_P8 = #P8,
+V100_P9 = #P9,
+V100_P10 = #P10,
+V100_P11 = #P11,
+V100_Q1 = #Q1,
+V100_Q2 = #Q2,
+V100_Q3 = #Q3,
+V100_Q4 = #Q4,
+V100_Q5 = #Q5,
+V100_Q6 = #Q6,
+V100_Q7 = #Q7,
+V100_Q8 = #Q8,
+V100_Q9 = #Q9,
+V100_Q10 = #Q10,
+V100_Q11 = #Q11,
+V100_R1 = #R1,
+V100_R2 = #R2,
+V100_R3 = #R3,
+V100_R4 = #R4,
+V100_R5 = #R5,
+V100_R6 = #R6,
+V100_R7 = #R7,
+V100_R8 = #R8,
+V100_R9 = #R9,
+V100_R10 = #R10,
+V100_R11 = #R11,
+V100_S1 = #S1,
+V100_S2 = #S2,
+V100_S3 = #S3,
+V100_S4 = #S4,
+V100_S5 = #S5,
+V100_S6 = #S6,
+V100_S7 = #S7,
+V100_S8 = #S8,
+V100_S9 = #S9,
+V100_S10 = #S10,
+V100_S11 = #S11,
+V100_T1 = #T1,
+V100_T2 = #T2,
+V100_T3 = #T3,
+V100_T4 = #T4,
+V100_T5 = #T5,
+V100_T6 = #T6,
+V100_T7 = #T7,
+V100_T8 = #T8,
+V100_T9 = #T9,
+V100_T10 = #T10,
+V100_T11 = #T11,
+V100_U1 = #U1,
+V100_U2 = #U2,
+V100_U3 = #U3,
+V100_U4 = #U4,
+V100_U5 = #U5,
+V100_U6 = #U6,
+V100_U7 = #U7,
+V100_U8 = #U8,
+V100_U9 = #U9,
+V100_U10 = #U10,
+V100_U11 = #U11,
+V100_MAX_NUMBER = #Maximum_EEs,
+V100_MIN_NUMBER = #Minimum_EEs
+WHERE CTL_ESTABID = $CTL_ESTABID    
+  AND V100_REPORT_TYPE = $V100ReportType
+  AND V100_ROW = #PriorRow
+END-SQL
+end-procedure Update-Estab-Totals
+
+
+!----------------------------------------------------------------------
+!---------Calculate-Min-Max-EEs----------------------------------------
+!----------------------------------------------------------------------
+! This routine will calcualte the maximum and minimum number of
+! employees in the given period
+!----------------------------------------------------------------------
+begin-procedure Calculate-Min-Max-EEs
+#IFDEF DEBUGPER027
+   DISPLAY 'FLOW: Calculate-Min-Max-EEs'
+#ENDIF
+!------------------------------------------------------------
+! The VA has given no guidance as to how to calculate this.
+!
+! This routine uses the least processor-intensive method that
+! is recommended by the EEAC based upon the assumptions that
+! we can make about a system.
+!
+! If your payroll or other system calculates and stores
+! minimum or maximum employees calculated with a greater
+! degree of accuracy then is done here, for example, as part
+! of running payroll. If this information is pre-calculated
+! for you, you may wish to customize this routine and
+! "piggyback" by grabbing the results whence they are stored.
+!
+! Please note that the routine used here is generally believed
+! to be sufficient for compliance, but there are no actual
+! guidelines or published decisions that addresses this.
+! In light of how long this report can take to run, it seemed
+! prudent to use the least taxing method of calculation.
+!
+! We take the number of employees on the first and last days
+! of the covered period ($FromDate & $ThruDate) and use
+! the higher as the max, and the lower as the minimum.
+!------------------------------------------------------------
+
+! First, we'll grab the number of employees on the first
+! day of the covered Period
+!---------------------------------------------------------
+BEGIN-SELECT
+COUNT(*)  &THE_COUNT
+
+      LET #COUNT_ONE = &THE_COUNT
+
+ FROM PS_JOB ZZ
+WHERE ZZ.EMPL_STATUS IN ('A','L','S','P','W')
+  AND ZZ.EFFDT = (SELECT MAX(ZZ1.EFFDT)
+                  FROM PS_JOB ZZ1
+                  WHERE ZZ1.EMPLID = ZZ.EMPLID
+                    AND ZZ1.EMPL_RCD = ZZ.EMPL_RCD
+                    AND ZZ1.EFFDT <=  $Prev_12_mo)
+  AND ZZ.EFFSEQ = (SELECT MAX(ZZ2.EFFSEQ)
+                   FROM PS_JOB ZZ2
+                   WHERE ZZ2.EMPLID = ZZ.EMPLID
+                     AND ZZ2.EMPL_RCD = ZZ.EMPL_RCD
+                     AND ZZ2.EFFDT = ZZ.EFFDT)
+  AND ZZ.JOB_INDICATOR = 'P'
+  AND ZZ.REG_TEMP = 'R'
+  AND ZZ.PER_ORG='EMP'
+  AND ZZ.ESTABID = $Estab_ID
+
+END-SELECT
+
+! Next, we'll grab the number of employees on the last
+! day of the covered Period
+!---------------------------------------------------------
+BEGIN-SELECT
+COUNT(*)  &THE_COUNT2
+
+      LET #COUNT_TWO = &THE_COUNT2
+
+ FROM PS_JOB ZZZ
+WHERE ZZZ.EMPL_STATUS IN ('A','L','S','P','W')
+  AND ZZZ.EFFDT = (SELECT MAX(ZZZ1.EFFDT)
+                  FROM PS_JOB ZZZ1
+                  WHERE ZZZ1.EMPLID = ZZZ.EMPLID
+                    AND ZZZ1.EMPL_RCD = ZZZ.EMPL_RCD
+                    AND ZZZ1.EFFDT <= $ThruDate)
+  AND ZZZ.EFFSEQ = (SELECT MAX(ZZZ2.EFFSEQ)
+                   FROM PS_JOB ZZZ2
+                   WHERE ZZZ2.EMPLID = ZZZ.EMPLID
+                     AND ZZZ2.EMPL_RCD = ZZZ.EMPL_RCD
+                     AND ZZZ2.EFFDT = ZZZ.EFFDT)
+  AND ZZZ.JOB_INDICATOR = 'P'
+  AND ZZZ.REG_TEMP = 'R'
+   AND ZZZ.PER_ORG='EMP'
+  AND ZZZ.ESTABID = $Estab_ID
+
+END-SELECT
+
+! The higher becomes the max, the lower becomes min
+!-------------------------------------------------------
+IF #COUNT_TWO > #COUNT_ONE
+    LET #Minimum_EEs = #COUNT_ONE
+    LET #Maximum_EEs = #COUNT_TWO
+ELSE
+    LET #Minimum_EEs = #COUNT_TWO
+    LET #Maximum_EEs = #COUNT_ONE
+END-IF
+
+end-procedure Calculate-Min-Max-EEs
+
+!----------------------------------------------------------------------
+!---------Reset-Row-Count----------------------------------------------
+!----------------------------------------------------------------------
+! We use as a separate row count for each CTL_ESTABID so that the
+! report can be run by HQ Unit or for all without duplicating any
+! effort.
+!----------------------------------------------------------------------
+begin-procedure Reset-Row-Count
+#IFDEF DEBUGPER027
+   DISPLAY 'FLOW: Reset-Row-Count'
+#ENDIF
+LET #V100_Row = 0
+end-procedure Reset-Row-Count
+!----------------------------------------------------------------------
+!---------SQCs---------------------------------------------------------
+!----------------------------------------------------------------------
+#include 'stdapi.sqc'      !Routine to update run status
+#include 'rgrnctl1.sqc'    !Get run control parameter values
+#include 'rggetval.sqc'    !Get values mask routines
+#include 'askcalyr.sqc'    !Ask Calendar Year input
+#Include 'curdttim.sqc'    !Get-Current-DateTime procedure
+#Include 'datetime.sqc'    !Routines for date and time formatting
+#Include 'datemath.sqc'    !Routines for date and time calculations
+#Include 'number.sqc'      !Routines to format numbers

@@ -1,0 +1,1517 @@
+!***********************************************************************
+! GPJPPP01 : Prints out Pay Slip                                       *
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2019, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  29170065                                            !
+!                                                                      *
+!***********************************************************************
+!                                                                      *
+!***********************************************************************
+! This SQR retrieves data from GPJP_PP_DATA and prints out pay slips.  *
+! It also populates tables for the online payslip functionalities.      *
+!***********************************************************************
+Begin-setup
+#include 'setenv.sqc'      !Set environment
+#include 'gpjpset1.sqc'   ! Init printer and page sizeLandscape
+end-setup
+
+begin-Report
+    do Initialize
+    do Report
+
+    do GP-ePay-Control ! if ePay installed have a control row inserted.
+              
+        
+    do Delete-Run-Control
+    do Terminate
+    do Successful-EOJ
+end-Report
+
+begin-procedure Initialize
+    let #SeqNum5 = 0
+    let #SeqNum_acm = 0
+    let #SeqNum = 0
+    do Init-DateTime
+    do Init-Number
+    do Define-Prcs-Vars
+    do Get-Run-Control-Parms
+    do Get-PrcsRqst-Info
+    do GP-ePay-Init ! Initialize ePay variables
+    do Get-Run-Cntl-Parms2
+    do Get-Current-DateTime
+    do Get-strings
+    let $_TableAlias = 'A'
+    do Security-Param
+end-procedure
+
+begin-procedure Terminate
+
+    begin-SQL ON-ERROR=SQL-Error
+    Delete from PS_GPJP_PP_DATA
+    Where JOBINSTANCE = #prcs_job_instance;
+    end-SQL
+
+    begin-SQL ON-ERROR=SQL-Error
+    Delete from PS_GPJP_PP_DATA2
+    Where JOBINSTANCE = #prcs_job_instance
+    end-SQL
+
+    if #prcs_process_instance > 0
+       do Update-Prcs-Run-Status
+    end-if
+    do Reset
+
+end-procedure
+
+
+
+!*************************************************************************!
+! Get-Run-Cntl-Parms2 : grab report title and all employee comments
+!*************************************************************************!
+begin-procedure Get-Run-Cntl-Parms2
+
+  let $All_Emp_Remarks =''
+  let $Rpt_Title =''
+
+begin-SELECT
+
+RN.DESCRLONG
+RN.GPJP_RPT_TITLE
+
+  let $all_emp_wk      = rtrim(&RN.DESCRLONG,' ')
+! let $All_Emp_Remarks = Substrp($all_emp_wk,1,130)
+  let $All_Emp_Remarks = Substr($all_emp_wk,1,130)
+  let $Rpt_Title       = rtrim(&RN.GPJP_RPT_TITLE,' ')
+
+
+FROM
+PS_GPJP_RC_PP01 RN
+
+WHERE
+RN.OPRID       = $prcs_oprid  AND
+RN.RUN_CNTL_ID = $prcs_run_cntl_id
+
+end-SELECT
+
+end-procedure Get-Run-Cntl-Parms2
+!*************************************************************************!
+! Get-strings     : Strings Table retrievals
+!*************************************************************************!
+begin-procedure Get-strings
+
+  do Init_Report_Translation ('GPJPPP01', $curr_language_cd)
+  do Append_Report_Translation ('GPJPPP01')
+
+
+  do Get_Field_Information ('GPJPPP01' ,'EMPLID_LABEL'    ,$Empl_id_lbl        ,#DW)
+  do Get_Field_Information ('GPJPPP01' ,'EMPL_RCD'        ,$Empl_rcd_lbl       ,#DW)
+  do Get_Field_Information ('GPJPPP01' ,'EMPLNAME_LABEL'  ,$Empl_Name_lbl      ,#DW)
+  do Get_Field_Information ('GPJPPP01' ,'DEPTID_LABEL'    ,$Dept_id_lbl        ,#DW)
+  do Get_Field_Information ('GPJPPP01' ,'ORGANIZATION_LABEL',$Organization_lbl,#DW)
+
+
+
+end-procedure Get-strings
+
+!***********************************************************************
+!                                                                      *
+! Get-Sort-Order                                                       *
+!                                                                      *
+!                                                                      *
+! Called By: Process-Main                                              *
+!                                                                      *
+! Description:  Determines Sort order string                           *
+!                                                                      *
+!***********************************************************************
+
+begin-procedure Get-Sort-Order
+begin-SELECT
+P.GPJP_BU_SORT,
+P.GPJP_LOC_SORT,
+P.GPJP_DEPT_SORT,
+P.GPJP_SUPV_SORT,
+P.GPJP_INCL_BU_LOC,
+P.CAL_RUN_ID   &RC.CAL_RUN_ID
+
+     let $Order_By     = ' '
+
+     If &P.GPJP_BU_SORT = 'Y'
+       Let $Order_By = 'Order by A.BUSINESS_UNIT'
+     end-if
+
+     If &P.GPJP_LOC_SORT = 'Y'
+       If $Order_By = ' '
+          Let $Order_By = 'Order by A.LOCATION '
+       else
+         Let $Order_By = $Order_By || ', A.LOCATION '
+       end-if
+     end-if
+
+     If &P.GPJP_DEPT_SORT = 'Y'
+       If $Order_By = ' '
+          Let $Order_By = 'Order by A.DEPTID'
+       else
+         Let $Order_By = $Order_By || ', A.DEPTID'
+       end-if
+     end-if
+
+     If &P.GPJP_SUPV_SORT = 'Y'
+       If $Order_By = ' '
+          Let $Order_By = 'Order by A.SUPV_LVL_ID'
+       else
+         Let $Order_By = $Order_By || ', A.SUPV_LVL_ID'
+       end-if
+     end-if
+
+     If $Order_By = ' '
+         Let $Order_By = 'Order by A.EMPLID'
+       else
+         Let $Order_By = $Order_By || ', A.EMPLID'
+     end-if
+
+FROM PS_GPJP_RC_PP01 P
+
+WHERE P.OPRID = $prcs_oprid  AND
+P.RUN_CNTL_ID = $prcs_run_cntl_id
+
+
+end-SELECT
+
+end-procedure Get-Sort-Order
+!**************************************************************************
+! Procedure: Get-GP-Paygroup
+!            Get the GP Paygroup if none of the lists has been chosen.
+!**************************************************************************
+Begin-procedure Get-GP-Paygroup
+
+ 
+Let $GP_Pygrp2 = ''
+
+Begin-SELECT
+DTL.GP_PAYGROUP
+
+ 
+  Let $GP_Pygrp2   = &DTL.GP_PAYGROUP
+
+FROM PS_GP_CAL_RUN_DTL DTL
+WHERE DTL.CAL_RUN_ID = &RC.CAL_RUN_ID
+AND DTL.CAL_ID =$Cal_ID
+AND DTL.CALC_TYPE = 'P'
+END-SELECT
+End-procedure
+
+
+
+!*************************************************************************!
+! Report           : Main report processing
+!*************************************************************************!
+begin-procedure Report
+ 
+
+do Get-Sort-Order
+
+do Get-Calendar-Information
+
+
+!Mobile Payslip - Start
+
+let $Cal_Run_ID = &RC.CAL_RUN_ID
+    do check-mob-custom-enabled
+    if( $custEnabled = 'Y')
+      do init-mpslp($Cal_Run_ID)
+        
+      LET $GPwhere_clause = ' '
+            
+      do clean_mpslp_records ($Cal_Run_ID, $GPwhere_clause)
+    End-If
+            
+        
+  !Mobile Payslip -  End
+
+begin-SELECT
+
+A.BUSINESS_UNIT,
+A.LOCATION,
+A.DEPTID,
+A.SUPV_LVL_ID,
+A.EMPLID,
+A.EMPL_RCD,
+B.NAME,
+A.COMPANY,
+A.CAL_ID,
+A.GPJP_PAYSLIP_ID
+
+  let $BU           = rtrim(&A.BUSINESS_UNIT,' ')
+  let $Location     = rtrim(&A.LOCATION,' ')
+  let $Empl_id      = rtrim(&A.EMPLID,' ')
+! let $Empl_rcd     = to_char(&A.EMPL_RCD)
+  let #Empl_rcd     = &A.EMPL_RCD
+  let $empl_name_wk = rtrim(&B.NAME,' ')
+! let $Empl_Name    = Substrp($empl_name_wk,1,20)
+  let $Empl_Name    = Substr($empl_name_wk,1,20)
+  let $DeptID       = rtrim(&A.DEPTID,' ')
+  let $Company      = rtrim(&A.COMPANY,' ')
+  let $Supv_lvl_id  = rtrim(&A.SUPV_LVL_ID,' ')
+  let $Cal_ID       = &A.CAL_ID
+  let $Payslip_id   = &A.GPJP_PAYSLIP_ID
+
+   
+  let #SeqNum5 = 0
+    let #SeqNum_acm = 0
+    LET #SeqNum = 0
+  If &P.GPJP_INCL_BU_LOC = 'Y'
+
+     do Get-Business-Unit-Name
+
+     let $Recname = 'SUPVSR_LVL_TBL'
+     do  Get-Setid ($BU, $Recname, $Setid)
+     let $Setid_dept = $Setid
+     let $SUPV_LVL_ID = &A.SUPV_LVL_ID
+     do Get-Supvlvl-Name
+
+     let $Recname = 'LOCATION_TBL'
+     do  Get-Setid ($BU, $Recname, $Setid)
+     do Get-Location-Name
+
+     do Get-Department-Name
+
+     print $Dept_id_lbl      (2,8)
+     print $Empl_id_lbl      (2,19)
+     print $Empl_rcd_lbl     (2,30)
+     print $Empl_Name_lbl    (2,37)
+     print $Organization_lbl (2,58)
+
+     print $DeptID           (3,8)
+     print $Empl_id          (3,19)
+     print #Empl_rcd         (3,30) edit 99
+     print $Empl_Name        (3,37)
+
+     print $SupvlvlName      (4,8)
+
+     print $BU_DESCR         (3,66)
+     print $LocationName     (4,66)
+     print $DeptName         (5,66)
+
+  else
+
+     print $Dept_id_lbl      (2,8)
+     print $Empl_id_lbl      (2,19)
+     print $Empl_rcd_lbl     (2,30)
+     print $Empl_Name_lbl    (2,37)
+
+     print $DeptID           (3,8)
+     print $Empl_id          (3,19)
+     print #Empl_rcd         (3,30) edit 99
+     print $Empl_Name        (3,37)
+
+  end-if
+
+  print $Rpt_Title        (2,95)
+  print $All_Emp_Remarks  (6,7)
+ 
+   
+   IF $offcycleFlag ='Y'
+   let $GP_Pygrp =$GP_Pygrp1
+   Else
+   do Get-GP-Paygroup
+   let $GP_Pygrp =$GP_Pygrp2
+   End-if
+
+  do Get-Net-Pay
+  do Get-Gross-Pay
+  do Get-Payslip-Data
+
+  do Get-Company-Data
+  
+  print $CompanyName       (27,63)
+  
+  
+
+  do GP-ePay-Guide  ! if ePay installed write Guide data for each payslip
+
+
+
+  new-page
+
+FROM
+PS_GPJP_PP_DATA2 A,
+PS_NAMES B
+
+WHERE
+A.EMPLID = B.EMPLID
+AND B.EFFDT =
+        (SELECT MAX(B_ED.EFFDT) FROM PS_NAMES B_ED
+          WHERE B.EMPLID = B_ED.EMPLID
+          AND B.NAME_TYPE = B_ED.NAME_TYPE)
+AND A.JOBINSTANCE = #prcs_job_instance
+[$SecurityClausewithERN]
+[$Order_By]
+
+
+end-SELECT
+    
+end-procedure Report
+
+
+
+
+!*************************************************************************!
+! Get-Payslip-Data   : Grab section 1-3 data
+!*************************************************************************!
+begin-procedure Get-Payslip-Data
+
+begin-SELECT
+
+C.EMPLID,
+C.EMPL_RCD
+C.GPJP_POSITION,
+C.PIN_NUM
+C.GPJP_HEADING,
+C.FLD_FMT,
+C.CHR_PIN_VAL,
+C.CALC_RSLT_VAL,
+C.DATE_PIN_VAL
+
+  let #PIN_NUM       = &C.PIN_NUM
+  let $Position      = &C.GPJP_POSITION
+  let $Element_head  = &C.GPJP_HEADING
+  let #FLD_FMT       = &C.FLD_FMT
+
+  
+
+  evaluate #FLD_FMT
+    when = 1      !Character
+        let $Element_val = &C.CHR_PIN_VAL
+        break
+    when = 2      !Date
+        let $Element_val  = edit(&C.DATE_PIN_VAL,'YYYY/MM/DD')
+        break
+    when-other      !Numeric
+        let #Calc_rslt_val = &C.CALC_RSLT_VAL
+        let $Element_val = to_char(#Calc_rslt_val)
+        break
+  end-evaluate
+
+
+
+  do Get-Coordinates
+
+  
+  if (#x > 0) and (#y1 > 0)
+    Print $Element_head (#y1,#x)
+    Print $Element_val (#y2,#x)
+  end-if
+
+    if( $custEnabled = 'Y')
+        do get-element-group
+        if ($pin_matches = 'Y')
+        do Get-ErnDed-Results
+        do MOBILE_PAYSLIP_ERN_DED  
+        END-IF 
+ 
+        Do Get-Acum-Pin
+        if ($Acum_pin_matches ='Y')
+        DO get_Accum_Data
+        do MOBILE_PAYSLIP_ACM
+        End-If
+     
+    ENd-IF   
+      
+      
+
+From PS_GPJP_PP_DATA C
+Where C.EMPLID = $Empl_id
+AND C.EMPL_RCD = #Empl_rcd
+AND C.JOBINSTANCE = #prcs_job_instance
+Order by C.EMPLID,C.EMPL_RCD, C.GPJP_POSITION
+end-SELECT
+
+   
+
+
+end-procedure Get-Payslip-Data
+!*************************************************************************!
+! Get-Coordinates   : To look up the fixed coordinates
+!*************************************************************************!
+begin-procedure Get-Coordinates
+
+let #x  = 0
+let #y1 = 0
+let #y2 = 0
+
+let $Vertical=Substr($Position,1,4)
+let $Horizontal=Substr($Position,5,2)
+
+Evaluate $Vertical
+  When = '0101'
+    Let #y1 =  7
+    Let #y2 =  8
+    break
+  When = '0102'
+    Let #y1 = 9
+    Let #y2 = 10
+    break
+  When = '0103'
+    Let #y1 = 11
+    Let #y2 = 12
+    break
+  When = '0201'
+    Let #y1 = 14
+    Let #y2 = 15
+    break
+  When = '0202'
+    Let #y1 = 16
+    Let #y2 = 17
+    break
+  When = '0203'
+    Let #y1 = 18
+    Let #y2 = 19
+    break
+  When = '0301'
+    Let #y1 = 21
+    Let #y2 = 22
+    break
+  When = '0302'
+    Let #y1 = 23
+    Let #y2 = 24
+    break
+  When = '0303'
+    Let #y1 = 25
+    Let #y2 = 26
+    break
+  when-other
+end-evaluate
+
+Evaluate $Horizontal
+  When = '01'
+    let #x = 7
+    break
+  When = '02'
+    let #x = 24
+    break
+  When = '03'
+    let #x = 41
+    break
+  When = '04'
+    let #x = 59
+    break
+  When = '05'
+    let #x = 77
+    break
+  When = '06'
+    let #x = 94
+    break
+  When = '07'
+    let #x = 111
+    break
+  When = '08'
+    let #x = 129
+    break
+  When = '09'
+    let #x = 146
+    break
+  When-other
+end-evaluate
+
+End-Procedure !Get-Coordinates
+
+
+
+!*************************************************************************!
+! Delete-Run-Control : Delete run control
+!*************************************************************************!
+begin-procedure Delete-Run-Control
+
+begin-SQL ON-ERROR=SQL-Error
+DELETE FROM PS_GPJP_RC_PP01
+WHERE OPRID = $prcs_oprid  AND
+RUN_CNTL_ID = $prcs_run_cntl_id
+end-SQL
+
+begin-SQL ON-ERROR=SQL-Error
+DELETE FROM PS_GPJP_PP_PYE
+WHERE OPRID = $prcs_oprid  AND
+RUN_CNTL_ID = $prcs_run_cntl_id
+end-SQL
+
+end-procedure Delete-Run-Control
+
+
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Init                                             *
+! Initialize variables that we’ll use for ePay processing              *
+!***********************************************************************
+begin-procedure GP-ePay-Init
+   let $sql-statement = 'GPJPPP01.sqr, GP-ePay-Init '
+
+   Do Check-ePay-installed ($ePay_Installed)
+
+   If $ePay_Installed = 'Y'
+      Move 'GPJPPP01' to $ReportID
+
+      let #eV4 =  To_number($prcs_process_instance)
+
+      !* have the Output Working Directory from the Process parameters table
+      do Get-Output-Wrk-Directory(#eV4, $PRCSOUTPUTDIR, $PRCSNAME)
+      !* have the URL id from the Payslip option table
+      do Get-ePay-URLid ('JPN', $eV18)
+
+      !* Global ePay variable settings used in GP-ePay procedures in this SQR
+      let $eV1 = $prcs_oprid
+      let $eV2 = $prcs_run_cntl_id
+      let $eV3 = $ReportID          !used for proc name instaed of prcsname from output wrk dir
+
+      ! when we do not pass a control file
+      Let $GUIDEFILE = ' '
+      Let $FILELAYOUT = ' '
+
+    End-If
+
+end-procedure !GP-ePay-Init
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Guide                                            *
+! Insert one row per payslip into the temporary guide table for ePay   *
+!***********************************************************************
+
+begin-procedure GP-ePay-Guide
+
+let $sql-statement = ' GPJPPP01.sqr,GP-ePay-Guide'
+
+
+
+  If $ePay_Installed = 'Y'
+
+   let $eV5  = rtrim($Empl_id, ' ')
+   let $eV5  = ltrim($eV5, ' ')
+   let $eV6 = rtrim(&RC.CAL_RUN_ID,' ')
+   let $eV6 = ltrim($eV6,' ')
+   let $eV7  = 'GPJPN'
+   let $eV8  = rtrim(to_char(#Empl_rcd), ' ')           ! gp epay payslip id
+   if $OffCycleFlag = 'N'
+    let $eV9  = &A1.pymt_dt
+    let $eV10  = &A1.PRD_END_DT
+    let $eV11 = &A1.PRD_BGN_DT
+    let $eV14 = rtrim(&A1.RUN_TYPE, ' ')
+    if  $eV14 = ''
+     let $eV14 = 'No Info.'
+    end-if
+   else
+    let $eV9  = &A2.pymt_dt
+    let $eV10  = &A2.PRD_END_DT
+    let $eV11 = &A2.PRD_BGN_DT
+    let $eV14 = rtrim(&A2.RUN_TYPE, ' ')
+    if  $eV14 = ''
+      let $eV14 = 'No Info.'
+    end-if
+   end-if
+   let #eV12 = edit(&Net_Pay, '99999999.99')
+   let $eV13 = $RUN_TYPE                               ! payslip description
+    if $eV13 = ''
+     let $eV13 = 'No DESCRIPTION'
+    end-if
+
+   let $eV15 = 'ORIG'               ! payslip status ORIGINAL
+   let $eV16 = $eV5 || '_' || $eV6 || '_' ||$eV7 || '_' ||$eV8 || '.pdf'   ! sysfilename of the payslip pdf
+   let $eV17 = $eV16                                                       !userfilename  - what the payee sees filename as
+   let #eV19 = #page-count                                                 !begin page number of payslip in output report
+   let #eV20 = #page-count                                                 !end page number of payslip in output report
+
+
+   !Input:OPRID, RUN_CNTL_ID, PROCNAME, DATAINST, EMPLID, CAL_RUN_ID, SRCPRODUCT,
+   !GP_PSLP_ID,PYMT_DT,PRD_END_DT,PRD_BGN_DT,#NET_PAY,Payslip DESCR,RUN_TYPE,
+   !PSLP_STATUS,ATTACHSYSFILENAME, ATTACHUSERFILE,FILEURLID, BGNPGNBR,ENDPGNBR
+
+   do Insert-ePay-Guide-Data($eV1,$eV2,$eV3,#eV4,$eV5,$eV6,$eV7,$eV8,$eV9,$eV10,$eV11,#eV12,$eV13,$eV14,$eV15,$eV16,$eV17,$eV18,#eV19,#eV20)
+
+!   do Write-ePay-Guide- Data($eV1,$eV2,$eV3,#eV4,$eV5,$eV6,$eV7,$eV8,$eV9,$eV10,$eV11,#eV12,$eV13,$eV14,$eV15,$eV16,$eV17,$eV18,#eV19,#eV20)
+
+ End-If
+
+
+
+
+
+!Mobile Payslip -  Start : Insert Header Data
+    if( $custEnabled = 'Y')
+        LET $ERcd = TO_CHAR(#Empl_Rcd)
+        LET MPSLP_HDR.EMPLID(0) = $Empl_id
+        LET MPSLP_HDR.CAL_RUN_ID(0) = &RC.CAL_RUN_ID
+        LET MPSLP_HDR.EMPL_RCD(0) = #Empl_rcd
+        LET MPSLP_HDR.GP_PAYGROUP(0) = $GP_Pygrp
+        LET MPSLP_HDR.CAL_ID(0) = $Cal_ID
+        LET MPSLP_HDR.ORIG_CAL_RUN_ID(0) = &RC.CAL_RUN_ID
+        LET MPSLP_HDR.RSLT_SEG_NUM(0) = 1
+        LET MPSLP_HDR.GP_PSLP_SRCPRODUCT(0) = 'GPJPN'
+        LET MPSLP_HDR.GP_PSLP_ID(0) = $ERcd
+
+        if $OffCycleFlag = 'N'
+        LET MPSLP_HDR.PYMT_DT(0) =    &A1.pymt_dt
+        LET MPSLP_HDR.SEG_BGN_DT(0) = &A1.PRD_BGN_DT
+        LET MPSLP_HDR.SEG_END_DT(0) = &A1.PRD_END_DT
+        LET MPSLP_HDR.PRD_BGN_DT(0) = &A1.PRD_BGN_DT
+        LET MPSLP_HDR.PRD_END_DT(0) = &A1.PRD_END_DT
+        LET MPSLP_HDR.RUN_TYPE(0) = &A1.RUN_TYPE
+        Else
+        LET MPSLP_HDR.PYMT_DT(0) =    &A2.pymt_dt
+        LET MPSLP_HDR.SEG_BGN_DT(0) = &A2.PRD_BGN_DT
+        LET MPSLP_HDR.SEG_END_DT(0) = &A2.PRD_END_DT
+        LET MPSLP_HDR.PRD_BGN_DT(0) = &A2.PRD_BGN_DT
+        LET MPSLP_HDR.PRD_END_DT(0) = &A2.PRD_END_DT
+        LET MPSLP_HDR.RUN_TYPE(0) = &A2.RUN_TYPE
+        End-IF
+  
+        LET MPSLP_HDR.GP_MPSLP_GROSS(0) = &Gross_Pay
+        LET MPSLP_HDR.GP_MPSLP_NET(0) = &Net_Pay
+        LET MPSLP_HDR.GP_COMPANY(0) = $Company
+        
+        
+        !LET MPSLP_HDR.GP_MPSLP_HDR1(0) = $Acum_Lbl1
+        !LET MPSLP_HDR.GP_MPSLP_HDR2(0) = $Acum_Lbl2
+        !LET MPSLP_HDR.GP_MPSLP_HDR3(0) = $Acum_Lbl3
+        !LET MPSLP_HDR.GP_MPSLP_HDR4(0) = $Acum_Lbl4
+        !LET MPSLP_HDR.GP_MPSLP_HDR5(0) = $Acum_Lbl5
+        !LET MPSLP_HDR.GP_MPSLP_HDR6(0) = $Acum_Lbl6
+        
+        DO insert_mpslp_hdr_row
+    End-If  
+    !Mobile Payslip - End
+
+
+
+end-procedure ! GP-ePay-Guide
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : GP-ePay-Control                                          *
+! Insert one row per report into the epay run control table            *
+!***********************************************************************
+begin-procedure GP-ePay-Control
+ 
+let $sql-statement = 'GPJPPP01.sqr,GP-ePay-Control '
+
+
+ If $ePay_Installed = 'Y'
+   let $rptid = lower($ReportID)
+   let $eCV7  = $rptid || '_' || $prcs_process_instance || '.PDF'
+   let $eCV8  = rtrim($PRCSOUTPUTDIR, ' ')
+
+   ! Input:OPRID,RUN_CNTL_ID,PROCNAME,SPLIT_IND,ATCH_IND,GUIDEFILE,SOURCEFILE,
+   ! SOURCELOC,WORKINGLOC,FILELAYOUT,DATAINST,FILEURLID,CLEANUP
+
+   do Insert-ePay-RunControl($eV1,$eV2,$eV3,'Y', 'Y', $GUIDEFILE, $eCV7,$eCV8,' ',$FILELAYOUT,#eV4,$eV18,'Y')
+
+ End-If
+ 
+end-procedure !GP-ePay-Control
+
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : Get-Calendar-Information                                 *
+! Fetch Calendar Information depending whether it is a OffCycle        *
+! Calendar or Normal Calendar.                                         *
+!***********************************************************************
+
+Begin-procedure Get-Calendar-Information
+
+BEGIN-SELECT
+K.OFF_CYCLE
+
+ let $OffCycleFlag = &K.OFF_CYCLE
+
+from PS_GP_CAL_RUN K
+where K.CAL_RUN_ID = &RC.CAL_RUN_ID
+END-SELECT
+
+if $OffCycleFlag = 'Y'
+  do Get-OffCycle-Cal-Information
+else
+  do Get-Normal-Cal-Information
+End-if
+
+End-procedure !Get-Calendar-Information
+
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : Get-Normal-Cal-Information                               *
+! Fetch Normal Calendar Information                                    *
+!***********************************************************************
+Begin-Procedure Get-Normal-Cal-Information
+
+BEGIN-Select
+A.PYMT_DT  &A1.PYMT_DT
+A.PRD_END_DT &A1.PRD_END_DT
+A.PRD_BGN_DT &A1.PRD_BGN_DT
+A.RUN_TYPE &A1.RUN_TYPE
+
+  Do Get-RunType
+
+From PS_GP_CAL_RUN_DTL A
+Where A.CAL_RUN_ID = &RC.CAL_RUN_ID
+And A.CAL_SEQ_NUM = (Select max(CAL_SEQ_NUM)
+From PS_GP_CAL_RUN_DTL
+Where CAL_RUN_ID = A.CAL_RUN_ID
+And CALC_TYPE = 'P')
+END-SELECT
+
+End-procedure !Get-Normal-Cal-Information
+
+!***********************************************************************
+! For ePay Purposes: Online Payslip                                    *
+! Procedure : Get-OffCycle-Cal-Information                             *
+! Fetch OffCycle Calendar Information                                  *
+!***********************************************************************
+
+Begin-Procedure Get-OffCycle-Cal-Information
+Let $GP_Pygrp1 = ''
+BEGIN-Select
+A.PYMT_DT  &A2.PYMT_DT
+A.PRD_END_DT &A2.PRD_END_DT
+A.PRD_BGN_DT &A2.PRD_BGN_DT
+A.RUN_TYPE &A2.RUN_TYPE
+A.GP_PAYGROUP &A2.GP_PAYGROUP
+
+
+   let $GP_Pygrp1 = &A2.GP_PAYGROUP
+
+  Do Get-RunType
+
+From PS_GP_OFFCYCL_U_VW A
+Where A.CAL_RUN_ID = &RC.CAL_RUN_ID
+And A.SEQNO = (Select max(SEQNO)
+From PS_GP_OFFCYCL_U_VW
+Where CAL_RUN_ID = A.CAL_RUN_ID)
+END-SELECT
+
+End-procedure !Get-OffCycle-Cal-Information
+ 
+!************************************************************
+Begin-procedure Get-Net-Pay
+
+begin-SELECT
+Sum(B.PIN_NET_VAL) &Net_Pay
+from PS_GP_PYE_SEG_STAT B
+Where B.ORIG_CAL_RUN_ID = &RC.CAL_RUN_ID
+and B.EMPLID = $Empl_id
+and B.EMPL_RCD = #Empl_rcd
+and B.GP_PAYGROUP = $GP_Pygrp
+and B.CAL_RUN_ID = &RC.CAL_RUN_ID
+AND B.CAL_ID =$Cal_ID
+end-SELECT
+
+End-Procedure !Get-Net-Pay
+
+Begin-Procedure Get-RunType
+
+if $Curr_Language_Cd = $PSOptions_Language_Cd
+if $OffCycleFlag = 'N'
+begin-SELECT
+R.DESCR
+
+    let $RUN_TYPE = &R.DESCR
+
+From PS_GP_RUN_TYPE R
+Where R.RUN_TYPE = &A1.RUN_TYPE
+end-SELECT
+else
+begin-SELECT
+R1.DESCR
+
+    let $RUN_TYPE = &R1.DESCR
+
+From PS_GP_RUN_TYPE R1
+Where R1.RUN_TYPE = &A2.RUN_TYPE
+end-SELECT
+end-if
+Else
+if $OffCycleFlag = 'N'
+begin-SELECT
+R2.DESCR
+
+    let $RUN_TYPE = &R2.DESCR
+
+From PS_GP_RUN_TYP_LANG R2
+Where R2.RUN_TYPE = &A1.RUN_TYPE
+And R2.LANGUAGE_CD = $Curr_Language_Cd
+end-SELECT
+Else
+begin-SELECT
+R3.DESCR
+
+    let $RUN_TYPE = &R3.DESCR
+
+From PS_GP_RUN_TYP_LANG R3
+Where R3.RUN_TYPE = &A2.RUN_TYPE
+And R3.LANGUAGE_CD = $Curr_Language_Cd
+end-SELECT
+End-if
+End-if
+
+End-Procedure !Get-RunType
+
+
+!**********************************************************
+begin-procedure check-mob-custom-enabled
+
+begin-select
+GP_SS_MPSLP_DATA    &MbPslpOpt
+
+FROM PS_GP_SS_PSLP_OPT
+WHERE COUNTRY = 'JPN'
+AND GP_PSLP_HDCPYOPTN = 'Y'
+AND GP_SS_MPSLP_ENABLE = 'Y'
+end-select
+
+   if &MbPslpOpt = 'CUST'
+     let $custEnabled = 'Y'
+     #debug6 show '** GPJPPP01 : Custom mode enabled for Mobile Payslip'
+   else
+     let $custEnabled = 'N'
+   end-if
+
+end-procedure !check-mob-custom-enabled
+!Mobile Payslip - End
+!********************************************
+Begin-procedure Get-Gross-Pay
+
+begin-SELECT
+Sum(B.PIN_GROSS_VAL)   &Gross_Pay
+from PS_GP_PYE_SEG_STAT B 
+WHERE B.ORIG_CAL_RUN_ID = &RC.CAL_RUN_ID
+and B.EMPLID = $Empl_id
+and B.EMPL_RCD = #Empl_rcd
+and B.GP_PAYGROUP = $GP_Pygrp
+and B.CAL_RUN_ID = &RC.CAL_RUN_ID
+AND B.CAL_ID =$Cal_ID
+end-SELECT
+
+End-procedure !Get-Gross-Pay
+!****************************************************************************
+Begin-Procedure  MOBILE_PAYSLIP_ERN_DED
+!Mobile Payslip -  Start
+    if( $custEnabled = 'Y')
+        LET $ERcd = TO_CHAR(#Empl_Rcd)
+        let #SeqNum5 = #SeqNum5 + 1
+        LET MPSLP_ED.EMPLID(0) = $Empl_id
+        LET MPSLP_ED.CAL_RUN_ID(0) = &RC.CAL_RUN_ID
+        LET MPSLP_ED.EMPL_RCD(0) =    #Empl_Rcd                
+        LET MPSLP_ED.GP_PAYGROUP(0) =    $GP_Pygrp             
+        LET MPSLP_ED.CAL_ID(0) =          $Cal_ID    
+        LET MPSLP_ED.ORIG_CAL_RUN_ID(0) =  &RC.CAL_RUN_ID
+        LET MPSLP_ED.RSLT_SEG_NUM(0) =    1 ! we are not using segmentation      
+        LET MPSLP_ED.GP_PSLP_SRCPRODUCT(0) =   'GPJPN'
+                
+        LET MPSLP_ED.GP_PSLP_ID(0) =    $ERcd   
+        LET MPSLP_ED.INSTANCE(0) =     #PinCounter           
+        LET MPSLP_ED.PIN_NUM(0) =        #PARENT_PIN         
+        LET MPSLP_ED.PIN_ELEM_GRP_NUM(0) =   0       
+        LET MPSLP_ED.ED_ASSIGN_INSTANCE(0) = 0           
+        LET MPSLP_ED.PI_INSTANCE(0) =   0
+        LET MPSLP_ED.SLICE_BGN_DT(0) = &SliceBgnDt_ED
+        LET MPSLP_ED.SLICE_END_DT(0) = &SliceEndDt_ED
+          
+        if $OffCycleFlag = 'N'
+            LET MPSLP_ED.SEG_BGN_DT(0) = &A1.PRD_BGN_DT
+            LET MPSLP_ED.SEG_END_DT(0) = &A1.PRD_END_DT
+            LET MPSLP_ED.PRD_BGN_DT(0) = &A1.PRD_BGN_DT
+            LET MPSLP_ED.PRD_END_DT(0) = &A1.PRD_END_DT
+            LET MPSLP_ED.PYMT_DT(0) =    &A1.pymt_dt
+            LET MPSLP_ED.RUN_TYPE(0) = &A1.RUN_TYPE
+        Else
+            LET MPSLP_ED.PYMT_DT(0) =    &A2.pymt_dt
+            LET MPSLP_ED.SEG_BGN_DT(0) = &A2.PRD_BGN_DT
+            LET MPSLP_ED.SEG_END_DT(0) = &A2.PRD_END_DT
+            LET MPSLP_ED.PRD_BGN_DT(0) = &A2.PRD_BGN_DT
+            LET MPSLP_ED.PRD_END_DT(0) = &A2.PRD_END_DT
+            LET MPSLP_ED.RUN_TYPE(0) = &A2.RUN_TYPE
+        End-IF
+        
+        LET MPSLP_ED.CALC_RSLT_VAL(0) =    #EDCalc_Rslt_Val              
+        LET MPSLP_ED.CALC_ADJ_VAL(0) =    #Calc_Adj_Val         
+        !LET MPSLP_ED.CALC_DELTA_VAL(0) =             
+        LET MPSLP_ED.BASE_RSLT_VAL(0) =     #Base_Rslt_Val      
+        LET MPSLP_ED.BASE_ADJ_VAL(0) =     #Base_Adj_Val       
+        LET MPSLP_ED.RATE_RSLT_VAL(0) =     #Rate_Rslt_Val        
+        LET MPSLP_ED.UNIT_RSLT_VAL(0) =     #Unit_Rslt_Val       
+        LET MPSLP_ED.UNIT_ADJ_VAL(0) =      #Unit_Adj_Val
+        LET MPSLP_ED.PCT_RSLT_VAL(0) =    #Pct_Rslt_Val  
+        
+        LET #null = isnull($eeMemberID) 
+        If (#null = 0)
+            LET MPSLP_ED.RECIPIENT_ID(0) =      $eeMemberID
+        else
+            LET MPSLP_ED.RECIPIENT_ID(0) =      ' '
+        End-If
+        !$eeMemRecID     
+        LET MPSLP_ED.RECIPIENT_TAG(0) =    #ED_RecipientTag         
+        !LET MPSLP_ED.USER_FLD1(0) =            
+        !LET MPSLP_ED.USER_FLD2(0) =                
+        !ET MPSLP_ED.USER_FLD3(0) =                
+        !LET MPSLP_ED.USER_FLD4(0) =                
+        !LET MPSLP_ED.USER_FLD5(0) =                
+        !LET MPSLP_ED.USER_FLD6(0) =                
+        LET MPSLP_ED.GP_MPSLP_SECTION(0) =     $PinSec          
+        LET MPSLP_ED.GP_MPSLP_SPRNT_ORD(0) =   $PinSec        
+        LET MPSLP_ED.GP_MPSLP_SUBSECTN(0) =    $Element_head 
+        LET MPSLP_ED.GP_MPSLP_PRNT_ORD(0) =    #SeqNum5
+        LET MPSLP_ED.GP_MPSLP_PIN_DESCR(0) =   ' '
+        LET MPSLP_ED.GP_MPSLP_DISP_ZERO(0) = 'Y'
+        LET MPSLP_ED.GP_MPSLP_RET_ADJ(0) = 'Y'
+        LET MPSLP_ED.GP_MPSLP_SUM_INST(0) = 'N'
+        LET MPSLP_ED.GP_MPSLP_ADD_TOTAL(0) = 'Y'
+        LET MPSLP_ED.GP_MPSLP_DISP_PYSL(0) = 'Y'
+        
+        DO insert_mpslp_ernded_row
+               
+    END-if
+    
+End-Procedure MOBILE_PAYSLIP_ERN_DED   
+       
+        
+Begin-Procedure  MOBILE_PAYSLIP_ACM 
+!Mobile Payslip ACM -  Start
+    if( $custEnabled = 'Y')
+            LET #SeqNum_acm = #SeqNum_acm + 1 
+            LET $ERcd = TO_CHAR(#Empl_Rcd)
+            LET MPSLP_ACUM.EMPLID(0) = $Empl_id
+            LET MPSLP_ACUM.CAL_RUN_ID(0) = &RC.CAL_RUN_ID
+            LET MPSLP_ACUM.EMPL_RCD(0) =    #Empl_Rcd                
+            LET MPSLP_ACUM.GP_PAYGROUP(0) =    $GP_Pygrp             
+            LET MPSLP_ACUM.CAL_ID(0) =          $Cal_ID    
+            LET MPSLP_ACUM.ORIG_CAL_RUN_ID(0) =  &RC.CAL_RUN_ID
+            LET MPSLP_ACUM.GP_PSLP_SRCPRODUCT(0) =   'GPJPN'         
+            LET MPSLP_ACUM.GP_PSLP_ID(0) =    $ERcd  
+              
+            LET MPSLP_ACUM.RSLT_SEG_NUM(0) =    1      
+            LET MPSLP_ACUM.PIN_NUM(0) =        #ACC_PIN         
+            LET MPSLP_ACUM.EMPL_RCD_ACUM(0) = &EmpRcdAc
+            LET MPSLP_ACUM.ACM_FROM_DT(0) =  &AcmFromDt
+            LET MPSLP_ACUM.ACM_THRU_DT(0) = &AcmToDt
+            LET MPSLP_ACUM.SEQ_NUM8(0) = &SeqNo8
+            LET MPSLP_ACUM.PIN_ELEM_GRP_NUM(0) = 0
+            LET MPSLP_ACUM.SLICE_BGN_DT(0) = &SliceBgnDt
+            LET MPSLP_ACUM.SLICE_END_DT(0) = &SliceEndDt
+            
+        if $OffCycleFlag = 'N'
+            LET MPSLP_ACUM.PYMT_DT(0) =    &A1.pymt_dt
+            LET MPSLP_ACUM.SEG_BGN_DT(0) = &A1.PRD_BGN_DT
+            LET MPSLP_ACUM.SEG_END_DT(0) = &A1.PRD_END_DT
+            LET MPSLP_ACUM.PRD_BGN_DT(0) = &A1.PRD_BGN_DT
+            LET MPSLP_ACUM.PRD_END_DT(0) = &A1.PRD_END_DT
+            LET MPSLP_ACUM.RUN_TYPE(0) = &A1.RUN_TYPE
+            Else
+            LET MPSLP_ACUM.PYMT_DT(0) =    &A2.pymt_dt
+            LET MPSLP_ACUM.SEG_BGN_DT(0) = &A2.PRD_BGN_DT
+            LET MPSLP_ACUM.SEG_END_DT(0) = &A2.PRD_END_DT
+            LET MPSLP_ACUM.PRD_BGN_DT(0) = &A2.PRD_BGN_DT
+            LET MPSLP_ACUM.PRD_END_DT(0) = &A2.PRD_END_DT
+            LET MPSLP_ACUM.RUN_TYPE(0) = &A2.RUN_TYPE
+            End-IF
+                                   
+            LET MPSLP_ACUM.USER_KEY1(0) = &UsrKey1
+            LET MPSLP_ACUM.USER_KEY2(0) = &UsrKey2
+            LET MPSLP_ACUM.USER_KEY3(0) = &UsrKey3
+            LET MPSLP_ACUM.USER_KEY4(0) = &UsrKey4
+            LET MPSLP_ACUM.USER_KEY5(0) = &UsrKey5
+            LET MPSLP_ACUM.USER_KEY6(0) = &UsrKey6
+            LET MPSLP_ACUM.COUNTRY(0) = 'JPN'
+            LET MPSLP_ACUM.CALC_RSLT_VAL(0) = &CalcResultVal
+            LET MPSLP_ACUM.CALC_DELTA_VAL(0) = 0
+            LET MPSLP_ACUM.CALC_VAL(0) = &CalcVal
+           
+            
+            LET MPSLP_ACUM.GP_MPSLP_SECTION(0) =    '40'          
+            LET MPSLP_ACUM.GP_MPSLP_SPRNT_ORD(0) =  '40'
+            LET MPSLP_ACUM.GP_MPSLP_SUBSECTN(0) =   ' ' 
+            LET MPSLP_ACUM.GP_MPSLP_PRNT_ORD(0) =  #SeqNum_acm
+            LET MPSLP_ACUM.GP_MPSLP_PIN_DESCR(0) =  ' '
+            LET MPSLP_ACUM.GP_MPSLP_DISP_ZERO(0) = 'N'
+            LET MPSLP_ACUM.GP_MPSLP_RET_ADJ(0) = 'Y'
+            LET MPSLP_ACUM.GP_MPSLP_SUM_INST(0) = 'N'
+            LET MPSLP_ACUM.GP_MPSLP_ADD_TOTAL(0) = 'Y'
+            LET MPSLP_ACUM.GP_MPSLP_DISP_PYSL(0) = 'Y'
+
+            do insert_mpslp_acum_row
+            
+            let $check_acc = 'Y'
+                    do Check-segAccmulator
+                    
+        WHILE $check_acc = 'Y'
+                                 
+                  Do CHECK_NEW_TABLE 
+                                  
+                   if $Acm_pin_found = 'Y'
+                                   
+                                   let $check_acc = 'Y'
+                                                                         
+                                    let #ACC_PIN =  #ACEX1.Pin_num_member 
+                                    do Check-segAccmulator
+                                     
+                                    do Delete_membr
+                                    Else 
+                                    
+                        let $check_acc = 'N'
+                    
+                    END-If
+              End-While 
+                              
+                
+            do Get_Accumulator_Elements  
+           do Delete_tmp_table       
+                       
+                    
+    END-if 
+    
+End-Procedure MOBILE_PAYSLIP_ACM 
+
+!********************************************
+Begin-Procedure Delete_membr
+
+begin-SQL
+DELETE FROM PS_GPJP_ACCM_PSLP 
+WHERE PIN_MBR_NUM = #ACEX1.Pin_num_member
+AND JOBINSTANCE = #prcs_job_instance
+AND EMPLID = $Empl_id
+        
+end-SQL
+end-procedure
+
+
+!********************************************
+Begin-Procedure Delete_tmp_table
+begin-SQL
+DELETE FROM PS_GPJP_ACCM_PSLP
+Where JOBINSTANCE = #prcs_job_instance  
+
+        
+end-SQL
+end-procedure
+
+!*****************************************************
+Begin-Procedure  Insert_Temp_Value 
+ 
+ 
+begin-sql 
+insert into PS_GPJP_ACCM_PSLP 
+(JOBINSTANCE,
+EMPLID,
+SEQNO,
+PIN_NUM, 
+PIN_MBR_NUM,
+ENTRY_TYPE_ELEM
+) Values
+(#prcs_job_instance,
+$Empl_id,
+#SeqNum,
+#ACEX_PIn_NUM,
+#ACEX_Pin_num_member,
+$ACEX_ENTRY_TYPE )
+End-SQl
+END-Procedure
+
+!******************************************************************
+!***    fetching element group
+!******************************************************************
+begin-procedure get-element-group
+
+let $pin_matches = 'N'
+
+begin-SELECT 
+A.PIN_NUM   &PIN_NM
+A.ENTRY_TYPE_ELEM   &PinType
+
+   LET #PARENT_PIN = &PIN_NM
+   let $pin_matches = 'Y'
+
+
+        Let $PinSec = '00'
+        evaluate &PinType 
+            when = 'ER0'
+                Let $PinSec = '10'
+                
+            when = 'DD0'
+                Let $PinSec = '20'
+                
+        end-evaluate
+
+FROM PS_GPJP_PP_DTL A,
+PS_GP_RSLT_ERN_DED B, 
+PS_GPJP_PP_DATA2 E 
+WHERE B.EMPLID = E.EMPLID 
+AND E.EMPLID = $Empl_id
+AND B.EMPL_RCD = E.EMPL_RCD 
+AND E.EMPL_RCD = #Empl_rcd
+AND E.JOBINSTANCE = #prcs_job_instance
+AND A.PIN_NUM = B.PIN_NUM 
+AND A.PIN_NUM = #PIN_NUM
+AND B.CAL_RUN_ID =  &RC.CAL_RUN_ID
+AND B.CAL_ID = E.CAL_ID
+AND B.CAL_ID = $Cal_ID  
+AND E.GPJP_PAYSLIP_ID = A.GPJP_PAYSLIP_ID 
+AND A.ENTRY_TYPE_ELEM IN ('ER0','DD0') 
+AND A.EFFDT = (SELECT MAX(EFFDT) 
+FROM PS_GPJP_PP_DTL B 
+WHERE B.GPJP_PAYSLIP_ID = A.GPJP_PAYSLIP_ID 
+AND EFFDT <= E.PRD_END_DT)
+
+end-select
+end-procedure
+
+!**************************************************************************
+! Procedure   : Get-Acum-Pin
+! Description : Read some data into RSLT_ACUM_ARRAY
+!**************************************************************************
+Begin-Procedure Get-Acum-Pin
+
+   let $Acum_pin_matches = 'N'
+   
+Begin-SELECT
+A.PIN_NUM    &PIN_NUM_ACCM
+
+  LET #ACC_PIN = &PIN_NUM_ACCM
+  let $Acum_pin_matches = 'Y'
+
+  FROM PS_GPJP_PP_DTL A 
+  , PS_GP_RSLT_ACUM B 
+  , PS_GPJP_PP_DATA2 E 
+ WHERE B.EMPLID = E.EMPLID 
+   AND B.EMPL_RCD = E.EMPL_RCD 
+    AND E.EMPLID = $Empl_id
+    AND E.EMPL_RCD =  #Empl_Rcd
+   AND E.JOBINSTANCE =  #prcs_job_instance
+   AND B.ACM_PRD_OPTN = '1' 
+   AND A.PIN_NUM = B.PIN_NUM 
+   AND A.PIN_NUM = #PIN_NUM
+   AND B.CAL_RUN_ID = &RC.CAL_RUN_ID
+   AND B.CAL_ID = E.CAL_ID 
+   AND B.CAL_ID = $Cal_ID
+   AND E.GPJP_PAYSLIP_ID = A.GPJP_PAYSLIP_ID 
+   AND A.ENTRY_TYPE_ELEM = 'AC0' 
+   AND A.EFFDT = ( 
+ SELECT MAX(EFFDT) 
+  FROM PS_GPJP_PP_DTL W
+ WHERE W.GPJP_PAYSLIP_ID = A.GPJP_PAYSLIP_ID 
+   AND W.EFFDT <= E.PRD_END_DT) 
+End-SELECT
+
+  
+End-Procedure    
+     
+    
+!*************************************************************************
+begin-Procedure get_Accum_Data
+
+begin-SELECT 
+AC.EMPL_RCD_ACUM     &EmpRcdAc
+AC.ACM_FROM_DT       &AcmFromDt
+AC.ACM_THRU_DT       &AcmToDt
+AC.SLICE_BGN_DT      &SliceBgnDt
+AC.SLICE_END_DT      &SliceEndDt
+AC.SEQ_NUM8          &SeqNo8
+AC.USER_KEY1         &UsrKey1
+AC.USER_KEY2         &UsrKey2
+AC.USER_KEY3         &UsrKey3
+AC.USER_KEY4         &UsrKey4
+AC.USER_KEY5         &UsrKey5
+AC.USER_KEY6         &UsrKey6
+AC.CALC_RSLT_VAL     &CalcResultVal
+AC.CALC_VAL          &CalcVal
+
+FROM PS_GP_RSLT_ACUM AC
+
+WHERE  AC.EMPLID = $Empl_id
+AND AC.CAL_RUN_ID = &RC.CAL_RUN_ID
+and AC.EMPL_RCD = #Empl_Rcd
+!AND AC.GP_PAYGROUP = $GP_Pygrp 
+AND AC.CAL_ID =   $Cal_ID  
+AND AC.ORIG_CAL_RUN_ID = &RC.CAL_RUN_ID
+!AND AC.RSLT_SEG_NUM = &RSLT_SEG_NUM
+AND AC.PIN_NUM = #ACC_PIN 
+!AND AC.SLICE_END_DT = &SEG_END_DT
+
+end-SELECT
+
+end-procedure  !get_Accum_Data
+
+!**************************************************************************
+! Procedure: Get-ErnDed-Results
+! Description: Get and print the earnings and deduction details for the payee.
+!**************************************************************************
+begin-procedure Get-ErnDed-Results
+
+
+    Let $TenCharVar      = '1234567890'
+    Let #ErnDedRowFound  = 0
+    Let #PinCounter      = 0
+
+    let #EDCalc_Rslt_Val = 0
+    let #Unit_Rslt_Val   = 0
+    let #Rate_Rslt_Val   = 0
+    let #Base_Rslt_Val   = 0
+    let #Pct_Rslt_Val    = 0
+    let #Rslt_Paybk      = 0
+    let #Calc_Adj_Val    = 0
+    let #Base_Adj_Val    = 0
+    let #Unit_Adj_Val    = 0
+    Let #descrPrinted    = 1
+    Let #ED_PinNo = #ED_PinNum
+begin-SELECT on-error=SQL-Error
+RSLT.BASE_RSLT_VAL
+SUM(RSLT.BASE_RSLT_VAL)   &baseRsltVal ! Current Base
+RSLT.PCT_RSLT_VAL         &pctRsltVal  ! Current PCT
+RSLT.RATE_RSLT_VAL        &rateRsltVal ! Current Value
+RSLT.RSLT_PAYBK           &rsltPaybk   ! Payback Amount
+SUM(RSLT.CALC_RSLT_VAL)   &calcRsltVal ! Current Value Unit
+SUM(RSLT.UNIT_RSLT_VAL)   &unitRsltVal ! Current Value Amount
+SUM(RSLT.CALC_ADJ_VAL)    &calcAdjVal  ! Adjustment Amount
+SUM(RSLT.BASE_ADJ_VAL)    &baseAdjVal  ! Adjustment Base
+SUM(RSLT.UNIT_ADJ_VAL)    &unitAdjVal  ! Adjustment Unit
+RSLT.SLICE_BGN_DT          &SliceBgnDt_ED
+RSLT.SLICE_END_DT          &SliceEndDt_ED
+
+   Let #ErnDedRowFound = 1
+
+   let #EDCalc_Rslt_Val = &calcRsltVal
+   let #Unit_Rslt_Val   = &unitRsltVal
+   let #Rate_Rslt_Val   = &rateRsltVal
+   let #Base_Rslt_Val   = &baseRsltVal
+   let #Pct_Rslt_Val    = &pctRsltVal
+   let #Rslt_Paybk      = &rsltPaybk
+   let #Calc_Adj_Val    = &calcAdjVal
+   let #Base_Adj_Val    = &baseAdjVal
+   let #Unit_Adj_Val    = &unitAdjVal
+
+   let #total_curr_amt  = #total_curr_amt  + #EDCalc_Rslt_Val
+   let #total_pybck_amt = #total_pybck_amt + #Rslt_Paybk
+   let #total_adj_amt   = #total_adj_amt   + #Calc_Adj_Val
+
+   
+
+   Let #PinCounter = #PinCounter + 1 ! increment the counter after printing the values for the 1st time.
+
+FROM PS_GP_RSLT_ERN_DED RSLT
+   , PS_GP_PYE_PRC_STAT PRC
+WHERE PRC.EMPLID         = $Empl_id
+  AND PRC.EMPL_RCD       = #Empl_Rcd
+  AND RSLT.EMPLID        = PRC.EMPLID
+  AND RSLT.EMPL_RCD      = PRC.EMPL_RCD
+  AND RSLT.CAL_RUN_ID    = PRC.CAL_RUN_ID
+  AND RSLT.ORIG_CAL_RUN_ID = PRC.ORIG_CAL_RUN_ID
+  AND RSLT.GP_PAYGROUP   = PRC.GP_PAYGROUP
+  AND RSLT.CAL_ID        = PRC.CAL_ID
+  AND PRC.CAL_RUN_ID     = &RC.CAL_RUN_ID
+  AND PRC.CAL_ID         = $Cal_ID
+  !AND PRC.GP_PAYGROUP    = $GP_Pygrp 
+ ! AND RSLT.RSLT_SEG_NUM  = #Rslt_Seg_num   ! we are combining all segmentation into 1
+    AND RSLT.PIN_NUM       = #PARENT_PIN
+  !AND RSLT.INSTANCE      = #ED_PinInstance ! we are combining all segmentation into 1
+    GROUP BY RSLT.BASE_RSLT_VAL, RSLT.PCT_RSLT_VAL, RSLT.RATE_RSLT_VAL,RSLT.RSLT_PAYBK ,RSLT.SLICE_BGN_DT, RSLT.SLICE_END_DT    
+end-select
+end-procedure
+
+
+!***********************************************
+
+Begin-Procedure Get_Accumulator_Elements
+     
+BEGIN-SELECT DISTINCT
+ACE.PIN_MBR_NUM       &ACE.PIN_MBR_NUM
+ACE.ENTRY_TYPE_ELEM   &ENTRY_TYPE_EL
+
+    let #Pin_num_member =  &ACE.PIN_MBR_NUM 
+    
+    let $gp_elem_typ = &ENTRY_TYPE_EL
+    evaluate $gp_elem_typ
+     when = 'ER0'
+         Let $PinSec = '10'
+         do Check_Accumulator_Elements
+         do Check_Accumulator_Elements2
+         IF ($Unique_element_pin ='Y' and $Unique_element_pin2 ='Y')
+                 Let #PARENT_PIN =  #Pin_num_member
+                 do Get-ErnDed-Results
+                    if #ErnDedRowFound = 1
+                    do MOBILE_PAYSLIP_ERN_DED 
+                    END-IF
+         END-IF
+     BREAK
+     when  ='DD0'
+         Let $PinSec = '20'
+         
+         do Check_Accumulator_Elements
+         do Check_Accumulator_Elements2
+         IF ($Unique_element_pin ='Y' and $Unique_element_pin2 ='Y')
+                 Let #PARENT_PIN =  #Pin_num_member
+                 do Get-ErnDed-Results
+                    if #ErnDedRowFound = 1
+                    do MOBILE_PAYSLIP_ERN_DED 
+                    END-IF
+         END-IF
+      BREAK
+    end-evaluate
+
+
+FROM PS_GPJP_ACCM_PSLP ACE
+where ACE.JOBINSTANCE = #prcs_job_instance
+AND ACE.EMPLID = $Empl_id
+AND ACE.ENTRY_TYPE_ELEM IN('ER0','DD0')
+AND ACE.PIN_MBR_NUM NOT IN(
+SELECT C.PIN_NUM 
+FROM  PS_GPJP_PP_DATA C 
+WHERE C.EMPLID = $Empl_id
+AND C.EMPL_RCD  = #Empl_Rcd
+AND C.JOBINSTANCE = #prcs_job_instance)
+END-Select
+END-PROCEDURE
+
+
+
+!*********************************************
+BEgin-PRocedure Check_NEW_TABLE
+
+         let $Acm_pin_found ='N'     
+BEGIN-SELECT  loops = 1
+ACEX1.PIN_NUM           
+ACEX1.PIN_MBR_NUM       
+ACEX1.ENTRY_TYPE_ELEM   
+
+         let #ACEX1.Pin_num_member =  &ACEX1.PIN_MBR_NUM 
+     let #ACEX1.PIn_NUM  = &ACEX1.PIN_NUM
+     let $ACEX1.ENTRY_TYPE = &ACEX1.ENTRY_TYPE_ELEM 
+     let $Acm_pin_found ='Y'
+     
+    
+    
+FROM PS_GPJP_ACCM_PSLP ACEX1
+WHERE ACEX1.JOBINSTANCE = #prcs_job_instance
+AND ACEX1.EMPLID = $Empl_id
+AND ACEX1.ENTRY_TYPE_ELEM  ='AC4'
+END-Select
+END-PROCEDURE
+!**************************************************************
+BEgin-PRocedure Check-segAccmulator 
+
+      let $SegAcm_PINfound ='N'     
+BEGIN-SELECT
+
+ACEX.PIN_NUM                 
+ACEX.PIN_MBR_NUM              
+ACEX.ENTRY_TYPE_ELEM          
+
+     let #ACEX_Pin_num_member =  &ACEX.PIN_MBR_NUM 
+     let #ACEX_PIn_NUM  = &ACEX.PIN_NUM
+     let $ACEX_ENTRY_TYPE = &ACEX.ENTRY_TYPE_ELEM 
+     let $SegAcm_PINfound ='Y'
+     
+    If $SegAcm_PINfound ='Y'
+        Do Insert_Temp_Value
+        let #SeqNum = #SeqNum + 1
+    END-if 
+    
+FROM PS_GP_ACM_MBR ACEX
+Where ACEX.PIN_NUM = #ACC_PIN
+AND ACEX.PIN_MBR_NUM NOT IN (
+SELECT C.PIN_NUM 
+FROM  PS_GPJP_PP_DATA C 
+WHERE C.EMPLID = $Empl_id
+AND C.EMPL_RCD  = #Empl_Rcd
+AND C.JOBINSTANCE = #prcs_job_instance)
+ORDER BY ACEX.PIN_MBR_NUM
+END-Select
+END-PROCEDURE
+
+!**************************************************************
+
+Begin-Procedure Check_Accumulator_Elements
+
+      let $Unique_element_pin ='Y'
+     
+BEGIN-SELECT
+C1.PIN_NUM
+
+     
+     
+       let #C1_PIN = &C1.PIN_NUM
+       let $Unique_element_pin ='N'
+
+
+
+FROM  PS_GPJP_PP_DATA C1 
+WHERE C1.EMPLID = $Empl_id
+AND C1.EMPL_RCD  = #Empl_Rcd
+AND C1.JOBINSTANCE = #prcs_job_instance
+AND C1.PIN_NUM = #Pin_num_member
+END-Select
+ENd-Procedure
+
+!********************************************************
+Begin-Procedure Check_Accumulator_Elements2
+
+      let $Unique_element_pin2 ='Y'
+     
+BEGIN-SELECT
+D.PIN_NUM
+    
+       let #D_PIN = &D.PIN_NUM
+       let $Unique_element_pin2 ='N'
+
+FROM PS_GP_MPSLP_STGED D 
+WHERE D.PIN_NUM = #Pin_num_member
+AND D.GP_PSLP_SRCPRODUCT ='GPJPN'
+AND D.EMPLID = $Empl_id
+AND D.EMPL_RCD  = #Empl_Rcd
+AND D.CAL_RUN_ID     = &RC.CAL_RUN_ID
+AND D.CAL_ID         = $Cal_ID
+AND D.GP_PAYGROUP    = $GP_Pygrp
+END-Select
+END-PROCEDURE
+
+
+!*************************************************************************!
+! SQC Files for called procedures
+!*************************************************************************!
+#include 'prcsdef.sqc'       !Update Process Request variable declare
+#include 'prcsapi.sqc'       !Update Process Request API
+#include 'hrsecty.sqc'       !Get SQR Security parameters
+#include 'eoj.sqc'           !End of Job procedure
+#include 'readxlat.sqc'      !Read Translate Table
+#include 'reset.sqc'         !End of Program
+#include 'curdttim.sqc'      !Get-Current-DateTime procedure
+#include 'datetime.sqc'      !Routines for date and time formatting
+#include 'number.sqc'        !Routines to format numbers
+#include 'sqrtrans.sqc'      !Translate SQR strings to given language
+#include 'getcodta.sqc'      !Read Company Data
+#Include 'getsetid.sqc'      ! Get Set Id from the Tableset Record Detail
+#include 'getsupjp.sqc'      ! Get Supervisor Level Name
+#Include 'getlocnm.sqc'      ! Get Location description
+#Include 'getbunam.sqc'      ! Get Business unit description
+#Include 'getdptnm.sqc'      ! Get Department description
+#Include 'gpsspslp.sqc'      ! ePay SQC with ePay procedures
+

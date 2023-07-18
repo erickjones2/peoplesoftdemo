@@ -1,0 +1,2225 @@
+!***********************************************************************
+!  GPSGIR07:  Appendix 8A - Value of Benefits-in-Kind for the Tax Year *
+!             Generate IRAS Interface file                             *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2017, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  25339323                                            !
+!***********************************************************************
+! Modification History                                                 *
+! Dated      Author  ICE       Changes                                 *
+! 28/11/02   KWH    549701000  Include setubdb in setup section        *
+!                                                                      *
+! 28/11/02   KWH    548377000  Create a blank '601' line when          *
+!                              Occupation To date is blank             *
+! 12/0/07   Deepak  1538443000 Change in the format of Appendix 8A     *
+!17/7/2007  Shilpa 1674199000 SQR modified so that the report prints   *
+!                              employer name of 70 characters long     *
+!06/03/2008 1742054000        The sqr has been modified such that the  *
+!                             Employer name is printed in IR8A flat    *
+!                             file                                     *
+!25/11/2014                   Changes made to cater to IRAS PAT Changes*
+!                             for YA2015. A new SQC gpsgir07.sqc is now*
+!                             introduced to handle the same.           *
+!***********************************************************************
+
+#Include 'setenv.sqc'  !Set environment
+
+begin-setup
+
+#Include 'setupdb.sqc'
+
+end-setup
+
+begin-report
+  do Init-DateTime
+  do Init-Number
+  do Stdapi-Init
+  Let $ReportID    = 'Report Name : GPSGIR07'
+  Let $ReportTitle = 'Appendix 8A Electronic File'
+  show $ReportID
+  show $ReportTitle
+
+  do Select-Parameters
+  Let $WrkTaxYear    = edit(#Tax_Year,'9999')
+  Let $YrEndSrch_Dt = $WrkTaxYear || '1231'
+  do Format-DateTime ($YrEndSrch_Dt, $YrEndSrch_Dt, {DEFCMP}, '', 'native')
+
+  Let $InDate1 = $WrkTaxyear || '0101'
+  Let $InDate2 = $WrkTaxyear || '1231'
+  Do Count-LeapDays ($indate1,$indate2,#Leapdays)
+  if #Leapdays = 0
+     Let #DivYear = 365
+  else
+     Let #DivYear = 366
+  end-if
+
+  do Load-Bnft-Code-Rate
+
+  do Build-Process
+  do reset
+  do Stdapi-Term
+end-report
+
+!***********************************************************************
+!  Procedure: Build-Process                                            *
+!             The main driving procedure                               *
+!***********************************************************************
+begin-Procedure Build-Process
+    do Get-Company-Details
+    do Process-Empls
+end-procedure
+
+!***********************************************************************
+! Procedure: Get-Company-Details                                       *
+!            Gets the Company Details that are printed on the form.    *
+!***********************************************************************
+begin-procedure Get-Company-Details
+begin-SELECT
+CO.GPSG_REGISTERED_NM
+CO.GPSG_CPY_DESCR
+CO.GPSG_TAX_CONT_ID
+CO.PHONE
+CO.GPSG_CPY_TYPE
+CO.GPSG_ROB_ROC_NO
+CO.GPSG_ROB_ROC_TYPE
+CO.GPSG_OHQ_STATUS
+CO.EMAIL_ADDR
+
+  FROM PS_GPSG_IRAS_CPY CO
+ WHERE CO.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+   AND CO.EFFDT = (SELECT MAX(EFFDT)
+                     FROM PS_GPSG_IRAS_CPY
+                    WHERE GPSG_CPY_TAX_REF = CO.GPSG_CPY_TAX_REF
+                      AND EFFDT <= $AsofToday)
+end-SELECT
+
+
+  let $Co_Tax_Contact_Id = rtrim(&CO.GPSG_TAX_CONT_ID, ' ')
+  let $Co_Name = rtrim(&CO.GPSG_REGISTERED_NM, ' ')
+  Let $Email_Company = rtrim(&CO.EMAIL_ADDR, ' ')
+  if $Co_Name = ''
+     let $Co_Name = rtrim(&CO.GPSG_CPY_DESCR, ' ')
+  end-if
+
+!get Name of Tax Contact
+
+begin-SELECT
+A.NAME
+  FROM PS_PERSON_NAME A
+ WHERE A.EMPLID = $Co_Tax_Contact_Id
+end-SELECT
+
+ let $Co_Tax_Contact_Name = rtrim(&A.NAME, ' ')
+
+!get Designation of Authorised Person
+
+begin-SELECT
+JC.DESCR
+  FROM PS_JOBCODE_TBL JC
+     , PS_JOB J
+ WHERE JC.JOBCODE = J.JOBCODE
+   AND JC.SETID   = J.SETID_JOBCODE
+   AND J.EMPLID   = $Co_Tax_Contact_Id
+   AND J.EMPL_RCD = 0
+   AND J.EFFDT    = (SELECT MAX(EFFDT)
+                         FROM PS_JOB
+                         WHERE EMPLID = $Co_Tax_Contact_Id
+                           AND EMPL_RCD = 0
+                           AND EFFDT <= $AsofToday)
+   AND J.EFFSEQ   = (SELECT MAX(EFFSEQ)
+                       FROM PS_JOB
+                      WHERE EMPLID = $Co_Tax_Contact_Id
+                        AND EMPL_RCD = 0
+                        AND EFFDT <= J.EFFDT)
+   AND JC.EFFDT    = (SELECT MAX(EFFDT)
+                        FROM PS_JOBCODE_TBL
+                       WHERE JOBCODE = JC.JOBCODE
+                         AND SETID = JC.SETID
+                         AND EFFDT <= $AsofToday)
+
+end-SELECT
+
+  let $AuthPersDesig  = rtrim(&JC.DESCR, ' ')
+begin-SELECT
+I8A.GPSG_DIVISION
+
+      MOVE &I8A.GPSG_DIVISION to $Division
+
+FROM PS_GPSG_IR8A_FORM I8A
+WHERE I8A.EMPLID = $Co_Tax_Contact_Id
+end-SELECT
+
+end-procedure
+
+
+!***************************************************************************************
+! Procedure: Process Employees
+!***************************************************************************************
+begin-Procedure Process-Empls
+!
+let $NewFile = 'Y'
+!
+begin-SELECT
+A8.EMPLID
+A8.BALANCE_GRP_NUM
+A8.GPSG_ADDRESS1
+A8.GPSG_ADDRESS2
+A8.GPSG_ADDRESS3
+A8.GPSG_CPY_TAX_REF
+A8.GPSG_TAX_YEAR
+A8.GPSG_AP8A_RES_VAL
+A8.GPSG_AP8A_RES_SHR
+A8.GPSG_AP8A_RES_FR
+A8.GPSG_AP8A_RES_TO
+A8.GPSG_AP8A_ER_RENT
+A8.GPSG_AP8A_EE_RENT
+A8.GPSG_AP8A_FURNIT
+A8.GPSG_AP8A_FRIDGE
+A8.GPSG_AP8A_VCR
+A8.GPSG_AP8A_WASHER
+A8.GPSG_AP8A_DRYER
+A8.GPSG_AP8A_DWASHER
+A8.GPSG_AP8A_AC_UNIT
+A8.GPSG_AP8A_AC_CENTR
+A8.GPSG_AP8A_AC_SITTG
+A8.GPSG_AP8A_AC_ADDNL
+A8.GPSG_AP8A_TV
+A8.GPSG_AP8A_RADIO
+A8.GPSG_AP8A_SVS
+A8.GPSG_AP8A_STEREO
+A8.GPSG_AP8A_GUITAR
+A8.GPSG_AP8A_COMPUTER
+A8.GPSG_AP8A_ORGAN
+A8.GPSG_AP8A_POOL
+A8.GPSG_AP8A_PUB_UT
+A8.GPSG_AP8A_PHONE
+A8.GPSG_AP8A_PAGER
+A8.GPSG_AP8A_SUITCASE
+A8.GPSG_AP8A_GOLF_BAG
+A8.GPSG_AP8A_CAMERA
+A8.GPSG_AP8A_SERVANT
+A8.GPSG_AP8A_DRIVER
+A8.GPSG_AP8A_GARDENER
+A8.GPSG_AP8A_OTH_FURN
+A8.GPSG_AP8A_HTL_SLFN
+A8.GPSG_AP8A_HTL_SLFD
+A8.GPSG_AP8A_HTL_SPSN
+A8.GPSG_AP8A_HTL_SPSD
+A8.GPSG_AP8A_HTL_C20N
+A8.GPSG_AP8A_HTL_C20D
+A8.GPSG_AP8A_HTL_CH8N
+A8.GPSG_AP8A_HTL_CH8D
+A8.GPSG_AP8A_HTL_CH3N
+A8.GPSG_AP8A_HTL_CH3D
+A8.GPSG_AP8A_HTL_CH0N
+A8.GPSG_AP8A_HTL_CH0D
+A8.GPSG_AP8A_HOME_LVE
+A8.GPSG_AP8A_HL_SELF
+A8.GPSG_AP8A_HL_WIFE
+A8.GPSG_AP8A_HL_CHILD
+A8.GPSG_AP8A_ER_INT
+A8.GPSG_AP8A_LIFE_INS
+A8.GPSG_AP8A_HOLIDAY
+A8.GPSG_AP8A_EDUC
+A8.GPSG_AP8A_LS_AWARD
+A8.GPSG_AP8A_FEES
+A8.GPSG_AP8A_GAINS
+A8.GPSG_AP8A_VEHICLE
+A8.GPSG_AP8A_CAR
+A8.GPSG_AP8A_OTHER
+A8.GPSG_8A_STATUS
+A8.GPSG_CREATE_DATE
+I.GPSG_8A_GROSS
+I.GPSG_8A_NC_BONUS
+I.GPSG_8A_CNT_BONUS
+I.GPSG_8A_DIR_FEE
+I.GPSG_8A_COMMSN
+I.GPSG_8A_PENSION
+I.GPSG_8A_ALLOW_TOT
+I.GPSG_8A_GRATUITY
+I.GPSG_8A_RETIRE
+I.GPSG_8A_OS_PENSION
+I.GPSG_CPF_VOL_ER
+I.GPSG_8A_SHARE_GAIN
+I.NATIONAL_ID_TYPE
+I.NATIONAL_ID
+I.NAME
+I.GPSG_ADDRESS1
+I.GPSG_ADDRESS2
+I.GPSG_ADDRESS3
+I.GPSG_DIVISION
+A8.GPSG_AP8A_FAN
+A8.GPSG_AP8A_TOASTER
+A8.GPSG_AP8A_IRON
+A8.GPSG_AP8A_COOLER
+A8.GPSG_AP8A_LIGHT
+A8.GPSG_AP8A_VACUUM
+A8.GPSG_AP8A_COOKER
+A8.GPSG_AP8A_WATER_HT
+A8.GPSG_AP8A_OVEN
+A8.GPSG_AP8A_JUICER
+A8.GPSG_AP8A_BLENDER
+A8.GPSG_AP8A_KETTLE
+A8.GPSG_AP8A_FLOOR_PL
+A8.GPSG_AP8A_MOWER
+A8.GPSG_AP8A_FAX
+NM.EMPLID
+NM.LAST_NAME
+NM.MIDDLE_NAME
+NM.FIRST_NAME
+A8.GPSG_FURNISHED       &A8.GPSG_FURNISHED
+A8.GPSG_AP8A_EL_GADG    &A8.GPSG_AP8A_EL_GADG
+A8.GPSG_AP8A_ER_HTL     &A8.GPSG_AP8A_ER_HTL
+A8.GPSG_AP8A_EE_HTL     &A8.GPSG_AP8A_EE_HTL
+
+
+   Let #Annual_Value =  &A8.GPSG_AP8A_RES_VAL
+   Let $Furnished =  &A8.GPSG_FURNISHED
+   Let $Elect_Gadgets = &A8.GPSG_AP8A_EL_GADG
+   Let #Er_Hotel = &A8.GPSG_AP8A_ER_HTL
+   Let #Ee_Hotel = &A8.GPSG_AP8A_EE_HTL
+
+    If $Furnished = 'S' 
+      Let $Furnished_Type = 'P'
+    End-if
+   If $Furnished = 'F'
+    Let $Furnished_Type = 'F'
+   End-If
+
+
+   Move &A8.EMPLID to $Emplid
+   Move &A8.BALANCE_GRP_NUM to $Balance_Grp_Num
+   Move &I.NATIONAL_ID to $TaxRefNo
+    Do Get-County-Name-format
+
+   Let $PayeeFName = &NM.FIRST_NAME
+   Let $PayeeLName = &NM.LAST_NAME
+   Let $PayeeMName = &NM.MIDDLE_NAME
+   Let $PayeeName  = rtrim($PayeeFName, ' ') || ' ' ||rtrim($PayeeLName, ' ') || ' ' ||rtrim($PayeeMName, ' ')
+
+      If $COUNTRY_NM_FORMAT = 'CHN'
+     Let $PayeeName  = rtrim($PayeeLName, ' ') || ' ' ||rtrim($PayeeFName, ' ') || ' ' ||rtrim($PayeeMName, ' ')
+   End-If
+
+   if &A8.GPSG_AP8A_RES_SHR <> 0
+      Let #NoSharing = &A8.GPSG_AP8A_RES_SHR
+   else
+      Let #NoSharing = 1
+   end-if
+
+
+   Let #DiffDays = 0
+   Let $OccupDT = &A8.GPSG_AP8A_RES_FR
+
+   if rtrim(&A8.GPSG_AP8A_RES_FR,' ') <> ''
+      Do Convert-To-DTU-Date(&A8.GPSG_AP8A_RES_FR, $OccupFrom)
+   end-if
+
+   if rtrim(&A8.GPSG_AP8A_RES_TO,' ') <> ''
+      Let $OccupDT = &A8.GPSG_AP8A_RES_TO
+
+      Do Convert-To-DTU-Date(&A8.GPSG_AP8A_RES_TO, $OccupTo)
+
+      Do Dtu-Diff-Days($OccupFrom, $OccupTo,#DiffDays)
+      iF #DiffDays > 0
+         Add 1 to #DiffDays
+      end-if
+
+      if #DiffDays > 366
+         let #DiffDays = 366
+      end-if
+   end-if
+
+      do Check-Mult-Balgrp 
+  If $Emplid <> $Empl_Mult_Balgrp  
+
+  If #Annual_Value = 0
+    Let $Furnished_Type = ''
+  End-if
+
+   Move &A8.GPSG_AP8A_GARDENER to #TotalGardener
+   if(#TotalGardener >= 35)
+        Let #TotalGardener = 35
+   End-If
+
+   Let #TotalRem        = &I.GPSG_8A_NC_BONUS + &I.GPSG_8A_CNT_BONUS + &I.GPSG_8A_DIR_FEE + &I.GPSG_8A_COMMSN + &I.GPSG_8A_PENSION
+                        + &I.GPSG_8A_ALLOW_TOT + &I.GPSG_8A_GRATUITY + &I.GPSG_8A_RETIRE + &I.GPSG_8A_GROSS
+                        + &I.GPSG_8A_OS_PENSION + &I.GPSG_CPF_VOL_ER + &I.GPSG_8A_SHARE_GAIN
+
+
+   Let $Adr1 = ' '
+   Let $Adr2 = ' '
+   Let $Adr3 = ' '
+
+   Let $Adr1 = &A8.GPSG_ADDRESS1
+   Let $Adr2 = &A8.GPSG_ADDRESS2
+   let $Adr3 = &A8.GPSG_ADDRESS3
+
+   Let #TotalFurniture = round(&A8.GPSG_AP8A_FURNIT   * #Furniture    * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalRefrig    = round(&A8.GPSG_AP8A_FRIDGE   * #Refrigerator * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalVCR       = round(&A8.GPSG_AP8A_VCR      * #VCR          * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalWashMach  = round(&A8.GPSG_AP8A_WASHER   * #Washmach     * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalDryer     = round(&A8.GPSG_AP8A_DRYER    * #Dryer        * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalDishWash  = round(&A8.GPSG_AP8A_DWASHER  * #DishWasher   * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalACUnit    = round(&A8.GPSG_AP8A_AC_UNIT  * #ACUnit       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalACCentral = round(&A8.GPSG_AP8A_AC_CENTR * #ACCentral    * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalACSitting = round(&A8.GPSG_AP8A_AC_SITTG * #ACSitting    * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalACAddl    = round(&A8.GPSG_AP8A_AC_ADDNL * #ACAddl       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalTV        = round(&A8.GPSG_AP8A_TV       * #TV           * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalRadio     = round(&A8.GPSG_AP8A_RADIO    * #Radio        * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalSvs       = round(&A8.GPSG_AP8A_SVS      * #Svs          * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalHiFi      = round(&A8.GPSG_AP8A_STEREO   * #HiFi         * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalGuitar    = round(&A8.GPSG_AP8A_GUITAR   * #Guitar       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalComputer  = round(&A8.GPSG_AP8A_COMPUTER * #Computer     * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalOrgan     = round(&A8.GPSG_AP8A_ORGAN    * #Organ        * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalPool      = round(&A8.GPSG_AP8A_POOL     * #Pool         * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+
+   Let #TotalOthers    = round(&A8.GPSG_AP8A_FAN      * #Fan          * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_TOASTER  * #Toaster      * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_IRON     * #Iron         * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_COOLER   * #AirCooler    * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_LIGHT    * #Light        * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_VACUUM   * #Vacuum       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_COOKER   * #Cooker       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_WATER_HT * #WaterHeater  * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_OVEN     * #Oven         * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_JUICER   * #Juicer       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_BLENDER  * #Blender      * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_KETTLE   * #Kettle       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_FLOOR_PL * #FloorPolishr * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&A8.GPSG_AP8A_MOWER    * #Mower        * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + &A8.GPSG_AP8A_FAX
+                       + &A8.GPSG_AP8A_OTH_FURN
+
+   Let #TotalBVar = #TotalRefrig + #TotalVCR
+   Let #TotalCVar = #TotalWashMach + #TotalDryer + #TotalDishWash
+   Let #TotalDVar = #TotalACUnit + #TotalACCentral + #TotalACSitting + #TotalACAddl
+   Let #TotalEVar = #TotalTV + #TotalRadio + #TotalSvs + #TotalHiFi + #TotalGuitar
+   Let #TotalFVar = #TotalComputer + #TotalOrgan
+
+   Let #TotalHVar    = &A8.GPSG_AP8A_PUB_UT   + &A8.GPSG_AP8A_PHONE + &A8.GPSG_AP8A_PAGER +
+                       &A8.GPSG_AP8A_SUITCASE + &A8.GPSG_AP8A_GOLF_BAG  + &A8.GPSG_AP8A_CAMERA +
+                       &A8.GPSG_AP8A_SERVANT
+   Let #TotalDriver    = &A8.GPSG_AP8A_DRIVER
+   !Let #TotalGardener  = &A8.GPSG_AP8A_GARDENER
+
+   Let #Total2Block = #TotalFurniture + #TotalBVar + #TotalCVar + #TotalDVar   + #TotalEVar
+                    + #TotalFVar      + #TotalPool + #TotalHVar + #TotalDriver + #TotalGardener
+                    + #TotalOthers
+
+   Let #TotalRem = #TotalRem  + #TotalFurniture + #TotalBVar + #TotalCVar + #TotalDVar
+                 + #TotalEVar + #TotalFVar + #TotalPool + #TotalHVar + #TotalDriver
+                 + #TotalGardener + #TotalOthers +
+                 + &A8.GPSG_AP8A_HOME_LVE
+                 + &A8.GPSG_AP8A_ER_INT
+                 + &A8.GPSG_AP8A_LIFE_INS
+                 + &A8.GPSG_AP8A_HOLIDAY
+                 + &A8.GPSG_AP8A_EDUC
+                 + &A8.GPSG_AP8A_LS_AWARD
+                 + &A8.GPSG_AP8A_FEES
+                 + &A8.GPSG_AP8A_GAINS
+                 + &A8.GPSG_AP8A_VEHICLE
+                 + &A8.GPSG_AP8A_CAR
+                 + &A8.GPSG_AP8A_OTHER
+
+   Let #TotalTenPercRem = round(#TotalRem * .10, 2)
+   if &A8.GPSG_AP8A_ER_RENT < #TotalTenPercRem
+      Let #TotalResidValue = &A8.GPSG_AP8A_ER_RENT
+   else
+      Let #TotalResidValue = #TotalTenPercRem
+   end-if
+
+   let #TotalResidValue = #TotalResidValue - &A8.GPSG_AP8A_EE_RENT
+
+   if #TotalResidValue  <  0
+       let #TotalResidValue  =  0
+   end-if
+
+   Let #HotelLine1 = 0
+   Let #HotelLine2 = 0
+   Let #HotelLine3 = 0
+   Let #HotelLine4 = 0
+
+   if (&A8.GPSG_AP8A_HTL_SLFN <> 0 and &A8.GPSG_AP8A_HTL_SLFD <> 0) OR (&A8.GPSG_AP8A_HTL_SPSN <> 0 and &A8.GPSG_AP8A_HTL_SPSD <> 0) OR ( &A8.GPSG_AP8A_HTL_C20N <> 0 AND &A8.GPSG_AP8A_HTL_C20D <> 0)  
+
+      Let #HotelLine1 = round(((&A8.GPSG_AP8A_HTL_SLFN * #Abv20Yrs * 12 * &A8.GPSG_AP8A_HTL_SLFD / #DivYear) 
+                        + (&A8.GPSG_AP8A_HTL_SPSN * #Abv20Yrs * 12 * &A8.GPSG_AP8A_HTL_SPSD / #DivYear) 
+                        + (&A8.GPSG_AP8A_HTL_C20N * #Abv20Yrs * 12 * &A8.GPSG_AP8A_HTL_C20D / #DivYear)), 2)
+
+! to cater for resultant less than 1 which will be rounded down to zero (invalid condition)
+
+      if #HotelLine1 > 0 and #HotelLine1 < 1
+        let #HotelLine1 = 1
+      end-if
+   end-if
+
+   if &A8.GPSG_AP8A_HTL_CH8N <> 0 and &A8.GPSG_AP8A_HTL_CH8D <> 0
+      Let #HotelLine2 = round(&A8.GPSG_AP8A_HTL_CH8N * #Bet8_20Yrs * 12 * &A8.GPSG_AP8A_HTL_CH8D / #DivYear, 2)
+
+! to cater for resultant less than 1 which will be rounded down to zero (invalid condition)
+
+      if #HotelLine2 > 0 and #HotelLine2 < 1
+        let #HotelLine2 = 1
+      end-if
+   end-if
+   if &A8.GPSG_AP8A_HTL_CH3N <> 0  and &A8.GPSG_AP8A_HTL_CH3D <> 0
+      Let #HotelLine3 = round(&A8.GPSG_AP8A_HTL_CH3N * #Bet3_7Yrs * 12 * &A8.GPSG_AP8A_HTL_CH3D / #DivYear, 2)
+
+! to cater for resultant less than 1 which will be rounded down to zero (invalid condition)
+
+      if #HotelLine3 > 0 and #HotelLine3 < 1
+        let #HotelLine3 = 1
+      end-if
+   end-if
+   if &A8.GPSG_AP8A_HTL_CH0N <> 0 and &A8.GPSG_AP8A_HTL_CH0D <> 0
+      Let #HotelLine4 = round(&A8.GPSG_AP8A_HTL_CH0N * #Less3Yrs * 12 * &A8.GPSG_AP8A_HTL_CH0D / #DivYear, 2)
+
+! to cater for resultant less than 1 which will be rounded down to zero (invalid condition)
+
+      if #HotelLine4 > 0 and #HotelLine4 < 1
+        let #HotelLine4 = 1
+      end-if
+   end-if
+
+   Let #Total3Block = #HotelLine1 + #HotelLine2 + #HotelLine3 + #HotelLine4
+
+!2% of Basic salary
+   if #Total3Block > 0
+      Let #TwoPercentBasicSalary = round(0.02 * &I.GPSG_8A_GROSS * &A8.GPSG_AP8A_HTL_SLFD / #DivYear, 2)
+      Let #Total3Block = #Total3Block + #TwoPercentBasicSalary
+   else
+      Let #TwoPercentBasicSalary = 0
+   end-if
+
+   Let #Total4Block = &A8.GPSG_AP8A_HOME_LVE + &A8.GPSG_AP8A_ER_INT + &A8.GPSG_AP8A_LIFE_INS
+                    + &A8.GPSG_AP8A_HOLIDAY  + &A8.GPSG_AP8A_EDUC   + &A8.GPSG_AP8A_LS_AWARD
+                    + &A8.GPSG_AP8A_FEES     + &A8.GPSG_AP8A_GAINS  + &A8.GPSG_AP8A_VEHICLE
+                    + &A8.GPSG_AP8A_CAR      + &A8.GPSG_AP8A_OTHER
+
+   Let #TotalAppendix = #TotalResidValue + #Total2Block + #Total3Block + #Total4Block
+
+   Let #Sum_of_Values = 0
+   Add #TotalRem        to #Sum_of_Values
+   Add #TotalFurniture  to #Sum_of_Values
+   Add #TotalRefrig     to #Sum_of_Values
+   Add #TotalVCR        to #Sum_of_Values
+   Add #TotalWashMach   to #Sum_of_Values
+   Add #TotalDryer      to #Sum_of_Values
+   Add #TotalDishWash   to #Sum_of_Values
+   Add #TotalACUnit     to #Sum_of_Values
+   Add #TotalACCentral  to #Sum_of_Values
+   Add #TotalACSitting  to #Sum_of_Values
+   Add #TotalACAddl     to #Sum_of_Values
+   Add #TotalTV         to #Sum_of_Values
+   Add #TotalRadio      to #Sum_of_Values
+   Add #TotalAmp        to #Sum_of_Values
+   Add #TotalHiFi       to #Sum_of_Values
+   Add #TotalGuitar     to #Sum_of_Values
+   Add #TotalComputer   to #Sum_of_Values
+   Add #TotalOrgan      to #Sum_of_Values
+   Add #TotalPool       to #Sum_of_Values
+   Add #TotalOthers     to #Sum_of_Values
+   Add #TotalHVar       to #Sum_of_Values
+   Add #TotalDriver     to #Sum_of_Values
+   Add #TotalGardener   to #Sum_of_Values
+   Add #TotalResidValue to #Sum_of_Values
+   Add #Total3Block     to #Sum_of_Values
+   Add #Total4Block     to #Sum_of_Values
+
+   If #Sum_of_Values = 0
+    Let #TempVar1 = 0
+   Else
+    Let #TempVar1 = 1
+   End-If
+
+   Do Create-File
+
+   End-if 
+ If  $Emplid = $Empl_Mult_Balgrp and $Emplid <> $Emplid_Processed  ! If empl has multiple bal gro, then get into this procedure
+    Do Process-Empl_Mult-Balgrp
+
+ End-If
+
+   FROM PS_GPSG_APP_8A A8,
+        PS_GPSG_IR8A_FORM I,
+        PS_NAMES_VW NM
+
+ WHERE A8.GPSG_TAX_YEAR    = #Tax_Year
+   AND A8.GPSG_TAX_YEAR    = I.GPSG_TAX_YEAR
+   AND A8.EMPLID           = I.EMPLID
+   AND A8.BALANCE_GRP_NUM  = I.BALANCE_GRP_NUM
+   AND A8.GPSG_CPY_TAX_REF = I.GPSG_CPY_TAX_REF
+   AND A8.GPSG_8A_STATUS = 'Y'
+   AND NM.EMPLID = I.EMPLID
+   AND NM.NAME_TYPE = 'PRI'
+   AND A8.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+   AND A8.GPSG_CREATE_DATE <= $AsofToday
+   order by A8.EMPLID  
+end-SELECT
+
+  if $FileOpen ='Y'
+    do Close-File
+
+  else
+    if $NewFile = 'Y'
+      move 'N' to $NewFile
+
+      do Start-New-File
+
+      do Close-File
+    end-if
+  end-if
+
+end-procedure
+!**************************************************************************
+! Procedure: Get-Country-Name
+!            Get Country name
+!**************************************************************************
+begin-procedure Get-Country-Name
+
+  move '' to $CountryName
+  move '' to $CountryShortNm
+
+begin-SELECT
+CT.DESCR,
+CT.DESCRSHORT
+   FROM  PS_COUNTRY_TBL CT
+  WHERE CT.COUNTRY = $CountryCode
+
+end-SELECT
+
+  let $CountryName    = rtrim(&CT.Descr,' ')
+  let $CountryShortNm = rtrim(&CT.DescrShort,' ')
+
+end-procedure
+!
+!**************************************************************************
+! Procedure: Create-File                                                  *
+!**************************************************************************
+begin-procedure Create-File
+
+  if $NewFile = 'Y'
+     do Start-New-File
+     move 'N' to $NewFile
+     let #EmplOcc = 0
+  end-if
+  If #TempVar1 = 1
+      If #Tax_Year < 2014
+        do Process-Employee
+      End-If
+
+     If #Tax_Year >=2014
+       do Process-Employee-New-Format
+     End-if
+End-if
+
+End-Procedure
+
+
+!**************************************************************************
+! Procedure: Start-New-File                                               *
+!            Initialises variables and writes header information for a new*
+!            file.                                                        *
+!**************************************************************************
+begin-procedure Start-New-File
+
+  do Open-File
+
+!Message Title
+  do Write-Entry-Detail(1,'','','','','','','','','','','')            !Segment 1 - UNB
+
+!Message Header
+  do Write-Entry-Detail(2,'','','','','','','','','','','')            !Segment 2 - UNH
+
+!Beginning of Message
+  do Write-Entry-Detail(3,'','','','','','','','','','','')            !Segment 3 - BGM
+
+!Header Information - Indicators  (four Occurences)
+  do Write-Entry-Detail(4,'AWJ','0','','','','','','','','','')        !Segment 4 - RFF
+
+  let $Source = &CO.GPSG_CPY_TYPE
+  do Write-Entry-Detail(4,'AWK',$Source,'','','','','','','','','')    !Segment 4 - RFF
+
+  evaluate &CO.GPSG_ROB_ROC_TYPE
+    when = '7' !UEN - Business(ROB)
+      let $PayerIdType = '7'
+    when = '8' !UEN - Local Company(ROC)
+      let $PayerIdType = '8'
+    When = 'U' !UEN - Others
+      Let $PayerIdType = 'U'
+    !when = 'X'
+    !  let $PayerIdType = 'C'
+    when = 'A'
+      let $PayerIdType = 'A'
+    when = 'I'
+      let $PayerIdType = 'I'
+    !when = 'M'
+    !  let $PayerIdType = 'M'
+    !when = 'G'
+    !  let $PayerIdType = 'G'
+    when-other
+      let $PayerIdType = '0'
+  end-evaluate
+
+  do Write-Entry-Detail(4,'AWM',$PayerIdType,'','','','','','','','','')
+                                                           !Segment 4 - RFF
+
+!Rec Indicator
+  do Write-Entry-Detail(4,'AWZ','O','','','','','','','','','')        !Segment 4 - RFF
+
+
+!Header Information - Dates (Two Occurences)
+  move &A8.GPSG_TAX_YEAR  to #TaxYear
+  do Format-Number(#TaxYear, $TaxYear, '0009')
+  do Write-Entry-Detail(5,'441',$TaxYear,'602','','','','','','','','')!Segment 5 - DTM
+
+! convert native date to dtu without delimiters eg. 19990101
+  do format-Datetime(&A8.GPSG_CREATE_DATE,$GPSG_CREATE_DATE_Out,{DEFCMP},'','')
+
+  do Write-Entry-Detail(5,'416',$GPSG_CREATE_DATE_Out,'102','','','','','','','','')
+                                                           !Segment 5 - DTM
+!Employer's Information
+
+
+  if $PayerIdType = '7' or $PayerIdType = '8' or $PayerIdType = 'U' or $PayerIdType = 'A' or $PayerIdType = 'I' or $PayerIdType = 'C' or $PayerIdType = 'M' or $PayerIdType = 'G'
+     let $PayerIdNo     = &CO.GPSG_ROB_ROC_NO
+  else
+     let $PayerIdNo     = $Company_Tax_Ref
+  end-if
+
+begin-SELECT
+E.EMAIL_ADDR
+FROM PS_EMAIL_ADDRESSES E
+WHERE E.EMPLID = $Co_Tax_Contact_Id
+AND E.PREF_EMAIL_FLAG = 'Y'
+end-SELECT
+
+  let $email_add = &E.EMAIL_ADDR
+     If $Email_Company = ''
+    Let $email_add_file = $email_add
+  else
+    Let $email_add_file = $Email_Company
+  End-if
+
+  do Write-Entry-Detail(6,$PayerIdNo,'',
+                          $Co_Name,'',
+ !                         $email_add,
+                          $email_add_file,
+                          $Division,'','','','','' )                              !Segment 6 - NAD
+!Employer's Contact No
+  let $TelNum = rtrim(&CO.PHONE, ' ')
+  do Write-Entry-Detail(7,$TelNum,'','','','','','','','','','')       !Segment 7 - COM
+
+end-procedure
+!
+!*******************************
+! Procedure: Process-Employee  *
+!*******************************
+!
+begin-procedure Process-Employee
+
+! 8.LIN
+!Line No denoting the occurence of employee
+
+  let #EmplOcc = #EmplOcc + 1
+  let $EmplOcc = ltrim(edit(to_char(#EmplOcc),'9999'),' ')
+
+  do Write-Entry-Detail(8,$EmplOcc,'','','','','','','','','','')       !Segment 8 - LIN
+
+
+! 9.RFF
+!Details Information - Indicators (Three Occurences)
+
+!Rec Type
+  do Write-Entry-Detail(4,'AWJ','1','','','','','','','','','')        !Segment 4 - RFF
+
+!Payee's ID Type
+
+  let $IDType = RTrim(&I.NATIONAL_ID_TYPE, ' ')
+
+  evaluate $IDType
+    when = 'IC'   ! Nat. Registration ID Card
+    when = 'PR'   ! Permanent Residency Number
+
+       let $PayeeIdType = '1'  ! NRIC
+
+    when = 'EP'   ! Employment Pass
+    when = 'FI'   ! FIN Number
+
+       let $PayeeIdType = '2'  ! FIN
+
+    When = 'IF'
+       let $PayeeIdType = '3'
+
+    when = 'WP'   ! Work Permit
+       let $PayeeIdType = '4'
+
+    when = 'MI1'   ! Malaysian NRIC
+    When = 'MI2'
+    When = 'MI3'
+       let $PayeeIdType = '5'
+
+    when = 'PP'   ! Passport
+       let $PayeeIdType = '6'
+
+    when = 'CI'   ! Certificate Of Identity
+    when = 'VP'   ! Work Pass
+
+       let $PayeeIdType = '0'  ! Others
+
+    when-other
+
+       let $PayeeIdType = '0'  ! Others
+
+  end-evaluate
+
+  do Write-Entry-Detail(4,'AWM',$PayeeIdType,'','','','','','','','','')
+                                                           !Segment 4 - RFF
+!OHQ Status
+!**************************************************************************
+!* The value is made available from the company table
+!**************************************************************************
+!
+  let $OHQStatus = rtrim(&CO.GPSG_OHQ_STATUS,' ')
+  if $OHQStatus = 'B' or (&A8.GPSG_AP8A_HOME_LVE = 0 And &A8.GPSG_AP8A_HL_SELF = 0 And &A8.GPSG_AP8A_HL_WIFE = 0 And &A8.GPSG_AP8A_HL_CHILD = 0)
+     Let $OHQStatus = ' '
+  end-if
+  do Write-Entry-Detail(4,'AYA',$OHQStatus,'','','','','','','','','')
+                                                           !Segment 4 - RFF
+
+!10.NAD
+!Employee's Information
+
+
+  let $PayeeIdNo        = rtrim(&I.NATIONAL_ID, ' ')
+
+
+  do Write-Entry-Detail(10,$PayeeIdNo,'',
+                           $Adr1,'',
+                           $Adr2,'',
+                           $Adr3,'',
+                           $PayeeName,'','') !Segment 10 - NAD
+
+!11.MOA
+!Details Information - Value
+
+!Value Of Place Of Residence #TotalResidValue
+  let $TotalResidValue = ltrim(edit(to_char(#TotalResidValue),'9999999.99'),' ')
+  do Write-Entry-Detail(11,'500',$TotalResidValue ,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Annual Rent/Rent paid by employer
+ If  $Emplid = $Empl_Mult_Balgrp
+   Let $EmployerPdRent = ltrim(edit(to_char(&AP8.GPSG_AP8A_ER_RENT),'9999999.99'),' ')
+  else
+
+  let $EmployerPdRent = ltrim(edit(to_char(&A8.GPSG_AP8A_ER_RENT),'9999999.99'),' ')
+   end-if
+
+  do Write-Entry-Detail(11,'501',$EmployerPdRent ,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Rent paid by employee (no negative allowed)
+If  $Emplid = $Empl_Mult_Balgrp
+  let $EmployeePdRent = ltrim(edit(to_char(&AP8.GPSG_AP8A_EE_RENT),'9999999.99'),' ')
+ else
+  let $EmployeePdRent = ltrim(edit(to_char(&A8.GPSG_AP8A_EE_RENT),'9999999.99'),' ')
+    end-if
+
+  do Write-Entry-Detail(11,'502',$EmployeePdRent ,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Total value  of furniture
+  let $TotalFurniture = ltrim(edit(to_char(#Total2Block),
+                                                         '9999999.99'),' ')
+  do Write-Entry-Detail(11,'503', $TotalFurniture,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Total value  of hotel accomodation
+  let $Total3Block = ltrim(edit(to_char(#Total3Block),'9999999.99'),' ')
+  do Write-Entry-Detail(11,'504', $Total3Block,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Home Leave Passage
+  If  $Emplid = $Empl_Mult_Balgrp
+  let $HomeLeavePassage = ltrim(edit(to_char(&AP8.GPSG_AP8A_HOME_LVE),'9999999.99'),' ')
+else
+  let $HomeLeavePassage = ltrim(edit(to_char(&A8.GPSG_AP8A_HOME_LVE),'9999999.99'),' ')
+ end-if
+  do Write-Entry-Detail(11,'505',$HomeLeavePassage  ,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Interest payment made by employer
+  If  $Emplid = $Empl_Mult_Balgrp
+  let $EmplrIntPaid = ltrim(edit(to_char(&AP8.GPSG_AP8A_ER_INT),'9999999.99'),' ')
+ else
+  let $EmplrIntPaid = ltrim(edit(to_char(&A8.GPSG_AP8A_ER_INT), '9999999.99'),' ')
+  end-if
+
+  do Write-Entry-Detail(11,'506',$EmplrIntPaid ,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Life Insurance premium paid by employer
+  If  $Emplid = $Empl_Mult_Balgrp
+  let $EmplrPidLifeIns = ltrim(edit(to_char(&AP8.GPSG_AP8A_LIFE_INS),'9999999.99'),' ')
+  Else
+  let $EmplrPidLifeIns = ltrim(edit(to_char(&A8.GPSG_AP8A_LIFE_INS), '9999999.99'),' ')
+   End-if   
+
+  do Write-Entry-Detail(11,'507', $EmplrPidLifeIns,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Free or subsidised holidays
+
+If  $Emplid = $Empl_Mult_Balgrp
+  let $HolidayFaresAmt = ltrim(edit(to_char(&AP8.GPSG_AP8A_HOLIDAY),'9999999.99'),' ')
+  else
+  let $HolidayFaresAmt = ltrim(edit(to_char(&A8.GPSG_AP8A_HOLIDAY), '9999999.99'),' ')
+  End-if
+
+  do Write-Entry-Detail(11,'508', $HolidayFaresAmt,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Educational expenses including tutor
+if $Emplid = $Empl_Mult_Balgrp
+  let $EducatnExpenses = ltrim(edit(to_char(&AP8.GPSG_AP8A_EDUC), '9999999.99'),' ')
+  else
+  let $EducatnExpenses = ltrim(edit(to_char(&A8.GPSG_AP8A_EDUC), '9999999.99'),' ')
+  End-if
+  
+  do Write-Entry-Detail(11,'509', $EducatnExpenses,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Reward for long service
+
+  if $Emplid = $Empl_Mult_Balgrp
+  let $NonMonetaryAwd = ltrim(edit(to_char(&AP8.GPSG_AP8A_LS_AWARD), '9999999.99'),' ')
+  else
+  let $NonMonetaryAwd = ltrim(edit(to_char(&A8.GPSG_AP8A_LS_AWARD), '9999999.99'),' ')
+  end-if
+
+  do Write-Entry-Detail(11,'510', $NonMonetaryAwd,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Entrance/transfer fee for club
+
+  if $Emplid = $Empl_Mult_Balgrp
+  let $FeesPaidAmt = ltrim(edit(to_char(&AP8.GPSG_AP8A_FEES), '9999999.99'),' ')
+  else
+  let $FeesPaidAmt = ltrim(edit(to_char(&A8.GPSG_AP8A_FEES), '9999999.99'),' ')
+  end-if
+
+  do Write-Entry-Detail(11,'511', $FeesPaidAmt,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Gain from asset
+
+ if $Emplid = $Empl_Mult_Balgrp
+  let $AssetSaleGains = ltrim(edit(to_char(&AP8.GPSG_AP8A_GAINS), '9999999.99'),' ')
+  else
+  let $AssetSaleGains = ltrim(edit(to_char(&A8.GPSG_AP8A_GAINS), '9999999.99'),' ')
+  end-if
+
+  do Write-Entry-Detail(11,'512', $AssetSaleGains,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Full cost of vehicle
+
+  if $Emplid = $Empl_Mult_Balgrp
+  let $VehicleCost = ltrim(edit(to_char(&AP8.GPSG_AP8A_VEHICLE),'9999999.99'),' ')
+  else
+  let $VehicleCost = ltrim(edit(to_char(&A8.GPSG_AP8A_VEHICLE),'9999999.99'),' ')
+  end-if
+
+  do Write-Entry-Detail(11,'513', $VehicleCost,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Car benefit
+
+if $Emplid = $Empl_Mult_Balgrp
+  let $CarResidualValue = ltrim(edit(to_char(&AP8.GPSG_AP8A_CAR), '9999999.99'),' ')
+  else
+  let $CarResidualValue = ltrim(edit(to_char(&A8.GPSG_AP8A_CAR), '9999999.99'),' ')
+  end-if
+  
+  do Write-Entry-Detail(11,'514', $CarResidualValue,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Total value of benfits in kind
+let $TotalAppendix  = ltrim(edit(to_char(#TotalAppendix), '9999999.99'),' ')
+
+do Write-Entry-Detail(11,'515', $TotalAppendix,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Other benefits
+
+   if $Emplid = $Empl_Mult_Balgrp
+  let $OtherBenefitAmt = ltrim(edit(to_char(&AP8.GPSG_AP8A_OTHER), '9999999.99'),' ')
+  else
+  let $OtherBenefitAmt = ltrim(edit(to_char(&A8.GPSG_AP8A_OTHER), '9999999.99'),' ')
+  end-if
+
+  do Write-Entry-Detail(11,'516', $OtherBenefitAmt,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+  if #Total3Block <> 0
+     let $TwoPercentBasicSalary = ltrim(edit(to_char(#TwoPercentBasicSalary ),
+                                                          '9999999.99'),' ')
+     do Write-Entry-Detail(11,'539', $TwoPercentBasicSalary,'','','','','','','','','')
+                                                            !Segment 11 - MOA
+  else
+     do Write-Entry-Detail(11,'539', '0','','','','','','','','','')
+                                                            !Segment 11 - MOA
+  end-if
+
+!12.QTY
+!Details Information - Home Leave
+!No of Days (of occupation)
+
+  let $NoOfDays = ltrim(edit(to_char(#DiffDays),'999'),' ')
+  do Write-Entry-Detail(12,'300',$NoOfDays ,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+!Home Leave For self
+
+if $Emplid = $Empl_Mult_Balgrp
+  let $HomeLveSelf = ltrim(edit(to_char(&AP8.GPSG_AP8A_HL_SELF ),'99'),' ')
+  else
+  let $HomeLveSelf = ltrim(edit(to_char(&A8.GPSG_AP8A_HL_SELF ),'99'),' ')
+  end-if
+  do Write-Entry-Detail(12,'301',$HomeLveSelf  ,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+!Home leave for wife
+ if $Emplid = $Empl_Mult_Balgrp
+  let $HomeLveWife = ltrim(edit(to_char(&AP8.GPSG_AP8A_HL_WIFE ),'99'),' ')
+  else
+  let $HomeLveWife = ltrim(edit(to_char(&A8.GPSG_AP8A_HL_WIFE ),'99'),' ')
+  end-if
+  do Write-Entry-Detail(12,'302',$HomeLveWife ,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+!Home leave for children
+if $Emplid = $Empl_Mult_Balgrp
+  let $HomeLveChild = ltrim(edit(to_char(&AP8.GPSG_AP8A_HL_CHILD ),'99'),' ')
+  else
+  let $HomeLveChild = ltrim(edit(to_char(&A8.GPSG_AP8A_HL_CHILD ),'99'),' ')
+  end-if
+  do Write-Entry-Detail(12,'303',$HomeLveChild ,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No. of Employees sharing the Quarter
+  let $NoSharing = ltrim(edit(to_char(#NoSharing),'99'),' ')
+  do Write-Entry-Detail(12,'329',$NoSharing ,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+
+!13.DTM
+!Details Information - Occupation Dates
+
+!Occupation from and to dates
+  if rtrim(&A8.GPSG_AP8A_RES_FR,' ') <> '' and
+     rtrim(&A8.GPSG_AP8A_RES_TO,' ')   <> ''
+
+     ! convert native date to dtu without delimiters eg. 19990101
+           if $Emplid = $Empl_Mult_Balgrp
+     Do format-Datetime(&AP8.GPSG_AP8A_RES_FR,$OccupFrom,{DEFCMP},'','')
+     ELSE
+     Do format-Datetime(&A8.GPSG_AP8A_RES_FR,$OccupFrom,{DEFCMP},'','')
+     end-if
+     do Write-Entry-Detail(13,'600',$OccupFrom ,'102','','','','','','','','')
+                                                          !Segment 13 - DTM
+
+      if $Emplid = $Empl_Mult_Balgrp
+     Do format-Datetime(&AP8.GPSG_AP8A_RES_TO,$OccupTo,{DEFCMP},'','')
+     else
+     Do format-Datetime(&A8.GPSG_AP8A_RES_TO,$OccupTo,{DEFCMP},'','')
+     end-if
+     do Write-Entry-Detail(13,'601',$OccupTo ,'102','','','','','','','','')
+                                                          !Segment 13 - DTM
+  else
+     do Write-Entry-Detail(13,'600','' ,'','','','','','','','','')
+     do Write-Entry-Detail(13,'601','' ,'','','','','','','','','')
+                                                          !Segment 13 - DTM
+  end-if
+
+!15.MOA
+!Details Information - Amount
+
+!Value of hard/soft furniture
+  let $TotalFurniture = ltrim(edit(to_char(#TotalFurniture),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'517', $TotalFurniture,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Value of refrigerator
+  let $TotalRefrig = ltrim(edit(to_char(#TotalRefrig),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'518', $TotalRefrig,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Value of video recorder
+  let $TotalVCR = ltrim(edit(to_char(#TotalVCR),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'519', $TotalVCR,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Value of washing machine/dryer/dish washer
+  let $TotalCVar = ltrim(edit(to_char(#TotalCVar),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'520', $TotalCVar,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Value of air conditioners (
+  let $TotalDVar = ltrim(edit(to_char(#TotalDVar),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'521', $TotalDVar,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Value of TV, radio, Survillance system, hi-fi, electric guitar
+  let $TotalEVar = ltrim(edit(to_char(#TotalEVar),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'522', $TotalEVar,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Value of computer and organ
+  let $TotalFVar = ltrim(edit(to_char(#TotalFVar),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'523', $TotalFVar,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Value of TotalPool
+  let $TotalPool = ltrim(edit(to_char(#TotalPool),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'524', $TotalPool,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Actual amount paid for public utilities
+if $Emplid = $Empl_Mult_Balgrp
+  let $TotalPUUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_PUB_UT), '99999.99'),' ')
+  else
+  let $TotalPUUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_PUB_UT), '99999.99'),' ')
+  end-if
+  do Write-Entry-Detail(11,'525', $TotalPUUnits,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Actual amount paid for telephone
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalPhoneUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_PHONE), '99999.99'),' ')
+  else
+  let $TotalPhoneUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_PHONE), '99999.99'),' ')
+  end-if
+  do Write-Entry-Detail(11,'526', $TotalPhoneUnits,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Actual amount paid for pager
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalPagerUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_PAGER), '99999.99'),' ')
+  else
+  let $TotalPagerUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_PAGER), '99999.99'),' ')
+  end-if
+  do Write-Entry-Detail(11,'527', $TotalPagerUnits,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Full cost of suitcase
+if $Emplid = $Empl_Mult_Balgrp
+  let $TotalSuitcaseUnit = ltrim(edit(to_char(&AP8.GPSG_AP8A_SUITCASE), '99999.99'),' ')
+  else
+  let $TotalSuitcaseUnit = ltrim(edit(to_char(&A8.GPSG_AP8A_SUITCASE), '99999.99'),' ')
+  end-if
+
+  do Write-Entry-Detail(11,'528', $TotalSuitcaseUnit,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Full cost of golf bag & accessories
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalGolfUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_GOLF_BAG), '99999.99'),' ')
+  else
+  let $TotalGolfUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_GOLF_BAG), '99999.99'),' ')
+  end-if
+  do Write-Entry-Detail(11,'529', $TotalGolfUnits,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Full cost of camera
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalCameraUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_CAMERA), '99999.99'),' ')
+  else
+  let $TotalCameraUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_CAMERA), '99999.99'),' ')
+  end-if
+  do Write-Entry-Detail(11,'530', $TotalCameraUnits,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Actual amount paid for servant
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalServantUnit = ltrim(edit(to_char(&AP8.GPSG_AP8A_SERVANT), '99999.99'),' ')
+  else
+  let $TotalServantUnit = ltrim(edit(to_char(&A8.GPSG_AP8A_SERVANT), '99999.99'),' ')
+  end-if
+  do Write-Entry-Detail(11,'531', $TotalServantUnit,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Driver wages
+  let $TotalDriver = ltrim(edit(to_char(#TotalDriver),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'532', $TotalDriver,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Gardener wages
+  let $TotalGardener = ltrim(edit(to_char(#TotalGardener),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'533', $TotalGardener,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!Value other benefits-in-kind
+  let $TotalOthers = ltrim(edit(to_char(#TotalOthers),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'534', $TotalOthers,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!
+!Value (of hotel accomodation) for Self / Wife/Child >20
+  let $HotelLine1 = ltrim(edit(to_char(#HotelLine1),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'535', $HotelLine1,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!
+!Value (of hotel accomodation) for Child ages : 8-20  years
+  let $HotelLine2 = ltrim(edit(to_char(#HotelLine2),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'536', $HotelLine2,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!
+!Value (of hotel accomodation) for Child ages : 3-7   years
+  let $HotelLine3 = ltrim(edit(to_char(#HotelLine3),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'537', $HotelLine3,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+!
+!Value (of hotel accomodation) for Child ages : <3     years
+  let $HotelLine4 = ltrim(edit(to_char(#HotelLine4),
+                                                         '99999.99'),' ')
+  do Write-Entry-Detail(11,'538', $HotelLine4,'','','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!16.QTY
+!Details Information - Units
+
+!No of Refrigerators
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalRefrigerator = ltrim(edit(to_char(&Ap8.GPSG_AP8A_FRIDGE), '9'),' ')
+ else
+  let $TotalRefrigerator = ltrim(edit(to_char(&A8.GPSG_AP8A_FRIDGE), '9'),' ')
+end-if
+  do Write-Entry-Detail(12,'304', $TotalRefrigerator,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+!No of Video recorders
+if $Emplid = $Empl_Mult_Balgrp
+  let $TotalVcrUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_VCR), '9'),' ')
+  else
+  let $TotalVcrUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_VCR), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'305', $TotalVcrUnits,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+!No of Washing Machines
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalWashMcUnit = ltrim(edit(to_char(&AP8.GPSG_AP8A_WASHER), '9'),' ')
+  else
+  let $TotalWashMcUnit = ltrim(edit(to_char(&A8.GPSG_AP8A_WASHER), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'306', $TotalWashMcUnit,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+!No of Dryers
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalDryerUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_DRYER), '9'),' ')
+  else
+  let $TotalDryerUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_DRYER), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'307', $TotalDryerUnits,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+!No of Dish Washers
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalDWashUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_DWASHER), '9'),' ')
+  else
+  let $TotalDWashUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_DWASHER), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'308', $TotalDWashUnits,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+!No of Air Conditioners - Central
+if $Emplid = $Empl_Mult_Balgrp
+  let $TotalAcUnit = ltrim(edit(to_char(&AP8.GPSG_AP8A_AC_UNIT), '9'),' ')
+  else
+  let $TotalAcUnit = ltrim(edit(to_char(&A8.GPSG_AP8A_AC_UNIT), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'309', $TotalAcUnit,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of Air Conditioners - Dining Room
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalAcCntrDine = ltrim(edit(to_char(&AP8.GPSG_AP8A_AC_CENTR), '9'),' ')
+  else
+  let $TotalAcCntrDine = ltrim(edit(to_char(&A8.GPSG_AP8A_AC_CENTR), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'310', $TotalAcCntrDine,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of Air Conditioners - Sitting Room
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalAcSitting = ltrim(edit(to_char(&AP8.GPSG_AP8A_AC_SITTG), '9'),' ')
+  else
+  let $TotalAcSitting = ltrim(edit(to_char(&A8.GPSG_AP8A_AC_SITTG), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'311', $TotalAcSitting,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of Air Conditioners - Additional Room
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalAcAddition = ltrim(edit(to_char(&AP8.GPSG_AP8A_AC_ADDNL), '9'),' ')
+else
+  let $TotalAcAddition = ltrim(edit(to_char(&A8.GPSG_AP8A_AC_ADDNL), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'312', $TotalAcAddition,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of TVs
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalTVUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_TV), '9'),' ')
+  else
+  let $TotalTVUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_TV), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'313', $TotalTVUnits,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+!No of Radios
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalRadioUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_RADIO),'9'),' ')
+  else
+  let $TotalRadioUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_RADIO),'9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'314', $TotalRadioUnits,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of Surveillance System
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalSvsUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_SVS), '9'),' ')
+  else
+  let $TotalSvsUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_SVS), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'315', $TotalSvsUnits,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of Hi-Fis
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalStereoUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_STEREO),'9'),' ')
+  else
+  let $TotalStereoUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_STEREO),'9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'316', $TotalStereoUnits,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+!No of Electric Guitars
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalGuitarUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_GUITAR), '9'),' ')
+  else
+  let $TotalGuitarUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_GUITAR), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'317', $TotalGuitarUnits,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of Computers
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalCompUnits = ltrim(edit(to_char(&Ap8.GPSG_AP8A_COMPUTER), '9'),' ')
+  ELSE
+  let $TotalCompUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_COMPUTER), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'318', $TotalCompUnits,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of Organs
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalOrganUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_ORGAN), '9'),' ')
+  else
+  let $TotalOrganUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_ORGAN), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'319', $TotalOrganUnits,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of Swimming Pools
+ if $Emplid = $Empl_Mult_Balgrp
+  let $TotalSwimUnits = ltrim(edit(to_char(&AP8.GPSG_AP8A_POOL), '9'),' ')
+  else
+  let $TotalSwimUnits = ltrim(edit(to_char(&A8.GPSG_AP8A_POOL), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'320', $TotalSwimUnits,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+
+!No of persons (self/wife/child > 20)
+ if $Emplid = $Empl_Mult_Balgrp
+  let $Above20Nos = ltrim(edit(to_char(&AP8.GPSG_AP8A_HTL_SLFN + &AP8.GPSG_AP8A_HTL_SPSN + &AP8.GPSG_AP8A_HTL_C20N), '9'),' ')
+  else
+  let $Above20Nos = ltrim(edit(to_char(&A8.GPSG_AP8A_HTL_SLFN + &A8.GPSG_AP8A_HTL_SPSN + &A8.GPSG_AP8A_HTL_C20N), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'321', $Above20Nos,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of days (self/wife/child > 20)
+ if $Emplid = $Empl_Mult_Balgrp
+  Let #Abv20PrvdedDays = &AP8.GPSG_AP8A_HTL_SLFD
+  else
+  Let #Abv20PrvdedDays = &A8.GPSG_AP8A_HTL_SLFD
+   end-if
+
+  If #Abv20PrvdedDays > 366
+    Let #Abv20PrvdedDays = 366
+  End-If
+  let $Abv20PrvdedDays = ltrim(edit(to_char(#Abv20PrvdedDays),
+                                                         '9999'),' ')
+  do Write-Entry-Detail(12,'322', $Abv20PrvdedDays,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of persons (child 8-20)
+ if $Emplid = $Empl_Mult_Balgrp
+  let $Person820Years = ltrim(edit(to_char(&AP8.GPSG_AP8A_HTL_CH8N), '9'),' ')
+  else
+  let $Person820Years = ltrim(edit(to_char(&A8.GPSG_AP8A_HTL_CH8N), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'323', $Person820Years,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of days (child 8-20)
+ if $Emplid = $Empl_Mult_Balgrp
+  Let #R820PrvdedDays = &AP8.GPSG_AP8A_HTL_CH8D
+  else
+  Let #R820PrvdedDays = &A8.GPSG_AP8A_HTL_CH8D
+  end-if
+
+  If #R820PrvdedDays > 366
+    Let #R820PrvdedDays = 366
+  End-If
+  let $R820PrvdedDays = ltrim(edit(to_char(#R820PrvdedDays),
+                                                         '9999'),' ')
+  do Write-Entry-Detail(12,'324', $R820PrvdedDays,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of persons (child 3-7)
+ if $Emplid = $Empl_Mult_Balgrp
+  let $Person37Years = ltrim(edit(to_char(&AP8.GPSG_AP8A_HTL_CH3N), '9'),' ')
+  else
+  let $Person37Years = ltrim(edit(to_char(&A8.GPSG_AP8A_HTL_CH3N), '9'),' ')
+  end-if
+  do Write-Entry-Detail(12,'325', $Person37Years,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of days (child 3-7)
+ if $Emplid = $Empl_Mult_Balgrp
+  Let #R37PrvdedDays = &AP8.GPSG_AP8A_HTL_CH3D
+  else
+  Let #R37PrvdedDays = &A8.GPSG_AP8A_HTL_CH3D
+  end-if
+
+  If #R37PrvdedDays > 366
+    Let #R37PrvdedDays = 366
+  End-If
+  let $R37PrvdedDays = ltrim(edit(to_char(#R37PrvdedDays),
+                                                         '9999'),' ')
+  do Write-Entry-Detail(12,'326', $R37PrvdedDays,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of persons (child <3)
+ if $Emplid = $Empl_Mult_Balgrp
+  let $PersonLess3Year = ltrim(edit(to_char(&AP8.GPSG_AP8A_HTL_CH0N), '9'),' ')
+  else
+  let $PersonLess3Year = ltrim(edit(to_char(&A8.GPSG_AP8A_HTL_CH0N), '9'),' ')
+  end-if
+
+  do Write-Entry-Detail(12,'327', $PersonLess3Year,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+
+!No of days (child 3-7)
+ if $Emplid = $Empl_Mult_Balgrp
+  Let #Less3PrvdedDays = &AP8.GPSG_AP8A_HTL_CH0D
+  else
+  Let #Less3PrvdedDays = &A8.GPSG_AP8A_HTL_CH0D
+  end-if
+
+  If #Less3PrvdedDays > 366
+    Let #Less3PrvdedDays = 366
+  End-If
+  let $Less3PrvdedDays = ltrim(edit(to_char(#Less3PrvdedDays),
+                                                         '9999'),' ')
+  do Write-Entry-Detail(12,'328', $Less3PrvdedDays,'','','','','','','','','')
+                                                          !Segment 12 - QTY
+end-procedure
+
+
+!***********************************************************************
+! Procedure: Open-File                                                 *
+!            This procedure opens the CPFLine file.                    *
+!***********************************************************************
+begin-procedure Open-File
+
+  let #filenum = #filenum + 1
+  do Format-Number(#filenum, $filenum, '009')
+  let $File1 = 'A8A' || $Company_Tax_Ref || $FileNum ||'.txt'
+  let $File1 = '{FILEPREFIX}' || $File1 || '{FILESUFFIX}'
+  show 'CPFLine FileName = ' $File1
+  open $File1 as 1 for-writing record=425:fixed  ! CPFLine File
+
+  let $FileOpen = 'Y'
+end-procedure
+
+!***********************************************************************
+! Procedure: Write-Entry-Detail                                        *
+!            Write data into CPFLine interface file depending          *
+!            on Segment#.                                              *
+!***********************************************************************
+begin-procedure Write-Entry-Detail(#Segment, $Parm1, $Parm2,
+                                             $Parm3, $Parm4,
+                                             $Parm5, $Parm6,
+                                             $Parm7, $Parm8,
+                                             $Parm9, $Parm10,
+                                             $Parm11)
+  evaluate #Segment
+    when = 1
+      let $Var1 = 'UNB'
+      let $Var2 = 'IRA8A'
+      write 1 from $Var1:156     ! 1
+                   $Var2:173     ! 157
+      break
+    when = 2
+      let $Var1 = 'UNH'
+      let $Var2 = 'IRVBIK'
+      let $Var3 = '011'
+      write 1 from $Var1:19      ! 1
+                   $Var2:6       ! 20
+                   $Var3:304     ! 26
+      break
+    when = 3
+      let $Var1 = 'BGM'
+      let $Var2 = '938'
+      write 1 from $Var1:5       ! 1
+                   $Var2:324     ! 6
+      break
+    when = 4
+      let $Var1 = 'RFF'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:321    ! 9
+      break
+    when = 5
+      let $Var1 = 'DTM'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:8      ! 9
+                   $Parm3:313    ! 17
+      break
+    when = 6
+      let $Var1 = 'NAD'
+      let $Var2 = 'SE'
+      write 1 from $Var1:5       ! 1
+                   $Var2:3       ! 6
+                   $Parm1:12     ! 9
+                   $Parm2:239    ! 21
+                   $Parm3:60     ! 260
+                   $Parm4:10     ! 320
+                   $Parm5:50     ! 330
+                   $Parm6:30     ! 380
+      break
+    when = 7
+      let $Var1 = 'COM'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:20     ! 6
+      break
+    when = 8
+      let $Var1 = 'LIN'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:324    ! 6
+      break
+    when = 10
+      let $Var1 = 'NAD'
+      let $Var2 = 'PE'
+      write 1 from $Var1:5       ! 1
+                   $Var2:3       ! 6
+                   $Parm1:12     ! 9
+                   $Parm2:29     ! 21
+                   $Parm3:30     ! 50
+                   $Parm4:5      ! 80
+                   $Parm5:30     ! 85
+                   $Parm6:5      ! 115
+                   $Parm7:30     ! 120
+                   $Parm8:75     ! 150
+                   $Parm9:80     ! 225
+      break
+    when = 11
+      let $Var1 = 'MOA'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:321    ! 9
+      break
+    when = 12
+      let $Var1 = 'QTY'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:321    ! 9
+      break
+    when = 13
+      let $Var1 = 'DTM'
+      write 1 from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:8      ! 9
+                   $Parm3:313    ! 17
+      break
+    when = 14
+      let $Var1 = 'FTX'
+      let $Var2 = 'ACB'
+      write 1 from $Var1:5       ! 1
+                   $Var2:3       ! 6
+                   $Parm1:321    ! 9
+      break
+    when = 17
+      let $Var1 = 'RES'
+      let $Var2 = 'ZZ'
+      write 1 from $Var1:5       ! 1
+                   $Var2:324     ! 6
+      break
+    when-other
+      show 'Invalid $Segment_Type: ' $Segment_Type
+      break
+  end-evaluate
+end-procedure
+
+
+!***********************************************************************
+! Procedure: close-file                                                  *
+!            Write footer record and close file.                       *
+!***********************************************************************
+begin-procedure close-file
+
+!write 'res  zz' segment and close
+  do Write-Entry-Detail(17,'','','','','','','','','','','')       !Segment 17 - RES
+
+  close 1
+end-procedure
+!
+!***********************************************************************
+!  Procedure: Load-Bnft-Code-Rate                                      *
+!             Load the Benefit Code and Rates into Variables           *
+!***********************************************************************
+begin-Procedure Load-Bnft-Code-Rate
+
+begin-SELECT
+PAR.GPSG_BEN_TYP_U
+PAR.GPSG_BEN_RATE &BnftRate
+
+    Evaluate &PAR.GPSG_BEN_TYP_U
+       when = '001'
+              Let #Furniture    = &BnftRate
+       when = '002'
+              Let #Refrigerator = &BnftRate
+        when = '003'
+              Let #VCR          = &BnftRate
+       when = '004'
+              Let #WashMach     = &BnftRate
+       when = '005'
+              Let #Dryer        = &BnftRate
+       when = '006'
+              Let #DishWasher   = &BnftRate
+       when = '007'
+              Let #ACUnit       = &BnftRate
+       when = '008'
+              Let #ACCentral    = &BnftRate
+       when = '009'
+              Let #ACSitting    = &BnftRate
+       when = '010'
+              Let #ACAddl       = &BnftRate
+       when = '012'
+              Let #TV           = &BnftRate
+       when = '013'
+              Let #Radio        = &BnftRate
+!       when = '014'
+!              Let #Amp          = &BnftRate
+       when = '015'
+              Let #HiFi         = &BnftRate
+       when = '016'
+              Let #Guitar       = &BnftRate
+       when = '017'
+              Let #Computer     = &BnftRate
+       when = '018'
+              Let #Organ        = &BnftRate
+       when = '019'
+              Let #Pool         = &BnftRate
+       when = '030'
+              Let #Fan          = &BnftRate
+       when = '031'
+              Let #AirCooler    = &BnftRate
+       when = '032'
+              Let #Iron         = &BnftRate
+       when = '033'
+              Let #Toaster      = &BnftRate
+       when = '035'
+              Let #Vacuum       = &BnftRate
+       when = '036'
+              Let #Juicer       = &BnftRate
+       when = '037'
+              Let #Blender      = &BnftRate
+       when = '038'
+              Let #Kettle       = &BnftRate
+       when = '039'
+              Let #Cooker       = &BnftRate
+       when = '040'
+              Let #WaterHeater  = &BnftRate
+       when = '041'
+              Let #Oven         = &BnftRate
+       when = '042'
+              Let #Light        = &BnftRate
+       when = '043'
+              Let #FloorPolishr = &BnftRate
+       when = '044'
+              Let #Mower        = &BnftRate
+       when = '056'
+              Let #Abv20Yrs     = &BnftRate
+       when = '057'
+              Let #Bet8_20Yrs   = &BnftRate
+       when = '058'
+              Let #Bet3_7Yrs    = &BnftRate
+       when = '059'
+              Let #Less3Yrs     = &BnftRate
+       when = '061'
+              Let #Svs          = &BnftRate
+    End-Evaluate
+
+  FROM PS_GPSG_APP_RATE PAR
+ WHERE PAR.EFFDT = (SELECT MAX(PAR1.EFFDT)
+                      FROM PS_GPSG_APP_RATE PAR1
+                     WHERE PAR1.GPSG_BEN_TYP_U = PAR.GPSG_BEN_TYP_U
+                       AND PAR1.EFFDT         <= $YrEndSrch_Dt)
+end-SELECT
+
+end-Procedure
+
+!******************************************************************!
+! Procedure to check which employees have multiple balance groups**!
+!******************************************************************!
+
+Begin-Procedure Check-Mult-Balgrp
+
+Begin-Select
+distinct APP8.EMPLID  &APP8.EMPLID
+
+  Let $Empl_Mult_Balgrp = &APP8.EMPLID
+FROM PS_GPSG_APP_8A APP8,
+        PS_GPSG_IR8A_FORM IR8
+         WHERE APP8.GPSG_TAX_YEAR    = #Tax_Year
+AND APP8.GPSG_TAX_YEAR    = IR8.GPSG_TAX_YEAR
+AND APP8.EMPLID           = $Emplid   !  IR8.EMPLID
+AND APP8.EMPLID = IR8.EMPLID
+AND APP8.BALANCE_GRP_NUM  = IR8.BALANCE_GRP_NUM
+AND APP8.GPSG_CPY_TAX_REF = IR8.GPSG_CPY_TAX_REF
+AND APP8.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+AND APP8.GPSG_CREATE_DATE <= $AsofToday
+GROUP BY APP8.EMPLID
+HAVING COUNT(APP8.BALANCE_GRP_NUM) >1
+
+End-Select
+
+End-Procedure
+
+!******************************************************************!
+! Procedure to process employees having multiple balance groups**!
+!******************************************************************!
+
+Begin-Procedure Process-Empl_Mult-Balgrp
+
+begin-SELECT
+SUM(AP8.GPSG_AP8A_ER_RENT)      &AP8.GPSG_AP8A_ER_RENT
+SUM(AP8.GPSG_AP8A_EE_RENT)      &AP8.GPSG_AP8A_EE_RENT
+SUM(AP8.GPSG_AP8A_FURNIT)     &AP8.GPSG_AP8A_FURNIT
+SUM(AP8.GPSG_AP8A_FRIDGE) &AP8.GPSG_AP8A_FRIDGE
+SUM(AP8.GPSG_AP8A_VCR) &AP8.GPSG_AP8A_VCR
+SUM(AP8.GPSG_AP8A_WASHER) &AP8.GPSG_AP8A_WASHER
+SUM(AP8.GPSG_AP8A_DRYER) &AP8.GPSG_AP8A_DRYER
+SUM(AP8.GPSG_AP8A_DWASHER) &AP8.GPSG_AP8A_DWASHER
+SUM(AP8.GPSG_AP8A_AC_UNIT) &AP8.GPSG_AP8A_AC_UNIT
+SUM(AP8.GPSG_AP8A_AC_CENTR) &AP8.GPSG_AP8A_AC_CENTR
+SUM(AP8.GPSG_AP8A_AC_SITTG) &AP8.GPSG_AP8A_AC_SITTG
+SUM(AP8.GPSG_AP8A_AC_ADDNL) &AP8.GPSG_AP8A_AC_ADDNL
+SUM(AP8.GPSG_AP8A_TV) &AP8.GPSG_AP8A_TV
+SUM(AP8.GPSG_AP8A_RADIO) &AP8.GPSG_AP8A_RADIO
+SUM(AP8.GPSG_AP8A_SVS) &AP8.GPSG_AP8A_SVS
+SUM(AP8.GPSG_AP8A_STEREO) &AP8.GPSG_AP8A_STEREO
+SUM(AP8.GPSG_AP8A_GUITAR) &AP8.GPSG_AP8A_GUITAR
+SUM(AP8.GPSG_AP8A_COMPUTER) &AP8.GPSG_AP8A_COMPUTER
+SUM(AP8.GPSG_AP8A_ORGAN) &AP8.GPSG_AP8A_ORGAN
+SUM(AP8.GPSG_AP8A_POOL) &AP8.GPSG_AP8A_POOL
+SUM(AP8.GPSG_AP8A_PUB_UT) &AP8.GPSG_AP8A_PUB_UT
+SUM(AP8.GPSG_AP8A_PHONE) &AP8.GPSG_AP8A_PHONE
+SUM(AP8.GPSG_AP8A_PAGER) &AP8.GPSG_AP8A_PAGER
+SUM(AP8.GPSG_AP8A_SUITCASE) &AP8.GPSG_AP8A_SUITCASE
+SUM(AP8.GPSG_AP8A_GOLF_BAG) &AP8.GPSG_AP8A_GOLF_BAG
+SUM(AP8.GPSG_AP8A_CAMERA) &AP8.GPSG_AP8A_CAMERA
+SUM(AP8.GPSG_AP8A_EL_GADG)    &AP8.GPSG_AP8A_EL_GADG
+SUM(AP8.GPSG_AP8A_SERVANT) &AP8.GPSG_AP8A_SERVANT
+SUM(AP8.GPSG_AP8A_DRIVER) &AP8.GPSG_AP8A_DRIVER
+SUM(AP8.GPSG_AP8A_GARDENER) &AP8.GPSG_AP8A_GARDENER
+SUM(AP8.GPSG_AP8A_OTH_FURN) &AP8.GPSG_AP8A_OTH_FURN
+SUM(AP8.GPSG_AP8A_HTL_SLFN) &AP8.GPSG_AP8A_HTL_SLFN
+SUM(AP8.GPSG_AP8A_HTL_SLFD) &AP8.GPSG_AP8A_HTL_SLFD
+SUM(AP8.GPSG_AP8A_HTL_SPSN) &AP8.GPSG_AP8A_HTL_SPSN
+SUM(AP8.GPSG_AP8A_HTL_SPSD) &AP8.GPSG_AP8A_HTL_SPSD
+SUM(AP8.GPSG_AP8A_HTL_C20N) &AP8.GPSG_AP8A_HTL_C20N
+SUM(AP8.GPSG_AP8A_HTL_C20D) &AP8.GPSG_AP8A_HTL_C20D
+SUM(AP8.GPSG_AP8A_HTL_CH8N) &AP8.GPSG_AP8A_HTL_CH8N
+SUM(AP8.GPSG_AP8A_HTL_CH8D) &AP8.GPSG_AP8A_HTL_CH8D
+SUM(AP8.GPSG_AP8A_HTL_CH3N) &AP8.GPSG_AP8A_HTL_CH3N
+SUM(AP8.GPSG_AP8A_HTL_CH3D) &AP8.GPSG_AP8A_HTL_CH3D
+SUM(AP8.GPSG_AP8A_HTL_CH0N) &AP8.GPSG_AP8A_HTL_CH0N
+SUM(AP8.GPSG_AP8A_HTL_CH0D) &AP8.GPSG_AP8A_HTL_CH0D
+SUM(AP8.GPSG_AP8A_HOME_LVE) &AP8.GPSG_AP8A_HOME_LVE
+SUM(AP8.GPSG_AP8A_HL_SELF) &AP8.GPSG_AP8A_HL_SELF
+SUM(AP8.GPSG_AP8A_HL_WIFE) &AP8.GPSG_AP8A_HL_WIFE
+SUM(AP8.GPSG_AP8A_HL_CHILD) &AP8.GPSG_AP8A_HL_CHILD
+SUM(AP8.GPSG_AP8A_ER_INT) &AP8.GPSG_AP8A_ER_INT
+SUM(AP8.GPSG_AP8A_LIFE_INS) &AP8.GPSG_AP8A_LIFE_INS
+SUM(AP8.GPSG_AP8A_HOLIDAY) &AP8.GPSG_AP8A_HOLIDAY
+SUM(AP8.GPSG_AP8A_EDUC) &AP8.GPSG_AP8A_EDUC
+SUM(AP8.GPSG_AP8A_LS_AWARD) &AP8.GPSG_AP8A_LS_AWARD
+SUM(AP8.GPSG_AP8A_FEES) &AP8.GPSG_AP8A_FEES
+SUM(AP8.GPSG_AP8A_GAINS) &AP8.GPSG_AP8A_GAINS
+SUM(AP8.GPSG_AP8A_VEHICLE) &AP8.GPSG_AP8A_VEHICLE
+SUM(AP8.GPSG_AP8A_CAR) &AP8.GPSG_AP8A_CAR
+SUM(AP8.GPSG_AP8A_OTHER) &AP8.GPSG_AP8A_OTHER
+SUM(I8.GPSG_8A_GROSS) &I8.GPSG_8A_GROSS
+SUM(I8.GPSG_8A_NC_BONUS) &I8.GPSG_8A_NC_BONUS
+SUM(I8.GPSG_8A_CNT_BONUS) &I8.GPSG_8A_CNT_BONUS
+SUM(I8.GPSG_8A_DIR_FEE) &I8.GPSG_8A_DIR_FEE
+SUM(I8.GPSG_8A_COMMSN) &I8.GPSG_8A_COMMSN
+SUM(I8.GPSG_8A_PENSION) &I8.GPSG_8A_PENSION
+SUM(I8.GPSG_8A_ALLOW_TOT) &I8.GPSG_8A_ALLOW_TOT
+SUM(I8.GPSG_8A_GRATUITY) &I8.GPSG_8A_GRATUITY
+SUM(I8.GPSG_8A_RETIRE) &I8.GPSG_8A_RETIRE
+SUM(I8.GPSG_8A_OS_PENSION) &I8.GPSG_8A_OS_PENSION
+SUM(I8.GPSG_CPF_VOL_ER) &I8.GPSG_CPF_VOL_ER
+SUM(I8.GPSG_8A_SHARE_GAIN) &I8.GPSG_8A_SHARE_GAIN
+SUM(AP8.GPSG_AP8A_FAN) &AP8.GPSG_AP8A_FAN
+SUM(AP8.GPSG_AP8A_TOASTER) &AP8.GPSG_AP8A_TOASTER
+SUM(AP8.GPSG_AP8A_IRON) &AP8.GPSG_AP8A_IRON
+SUM(AP8.GPSG_AP8A_COOLER) &AP8.GPSG_AP8A_COOLER
+SUM(AP8.GPSG_AP8A_LIGHT) &AP8.GPSG_AP8A_LIGHT
+SUM(AP8.GPSG_AP8A_VACUUM) &AP8.GPSG_AP8A_VACUUM
+SUM(AP8.GPSG_AP8A_COOKER) &AP8.GPSG_AP8A_COOKER
+SUM(AP8.GPSG_AP8A_WATER_HT) &AP8.GPSG_AP8A_WATER_HT
+SUM(AP8.GPSG_AP8A_OVEN) &AP8.GPSG_AP8A_OVEN
+SUM(AP8.GPSG_AP8A_JUICER) &AP8.GPSG_AP8A_JUICER
+SUM(AP8.GPSG_AP8A_BLENDER) &AP8.GPSG_AP8A_BLENDER
+SUM(AP8.GPSG_AP8A_KETTLE) &AP8.GPSG_AP8A_KETTLE
+SUM(AP8.GPSG_AP8A_FLOOR_PL) &AP8.GPSG_AP8A_FLOOR_PL
+SUM(AP8.GPSG_AP8A_MOWER) &AP8.GPSG_AP8A_MOWER
+SUM(AP8.GPSG_AP8A_FAX) &AP8.GPSG_AP8A_FAX
+MAX(AP8.GPSG_AP8A_RES_FR) &AP8.GPSG_AP8A_RES_FR
+MAX(AP8.GPSG_AP8A_RES_TO) &AP8.GPSG_AP8A_RES_TO
+SUM(AP8.GPSG_AP8A_RES_SHR) &AP8.GPSG_AP8A_RES_SHR
+SUM(AP8.GPSG_AP8A_ER_HTL)   &AP8.GPSG_AP8A_ER_HTL
+SUM(AP8.GPSG_AP8A_EE_HTL)      &AP8.GPSG_AP8A_EE_HTL
+AP8.EMPLID
+AP8.GPSG_CPY_TAX_REF
+AP8.GPSG_TAX_YEAR
+AP8.GPSG_8A_STATUS
+I8.NATIONAL_ID_TYPE
+I8.NATIONAL_ID
+I8.NAME
+I8.GPSG_DIVISION
+NM1.LAST_NAME
+NM1.MIDDLE_NAME
+NM1.FIRST_NAME
+
+!   Move &AP8.EMPLID to $Emplid 
+   Move &I8.NATIONAL_ID to $TaxRefNo
+   Let $PayeeFName = &NM1.FIRST_NAME
+   Let $PayeeLName = &NM1.LAST_NAME
+   Let $PayeeMName = &NM1.MIDDLE_NAME
+   Let $PayeeName  = rtrim($PayeeFName, ' ') || ' ' ||rtrim($PayeeLName, ' ') || ' ' ||rtrim($PayeeMName, ' ')
+
+   If $COUNTRY_NM_FORMAT = 'CHN'
+     Let $PayeeName  = rtrim($PayeeLName, ' ') || ' ' ||rtrim($PayeeFName, ' ') || ' ' ||rtrim($PayeeMName, ' ')
+   End-If
+
+   Move &AP8.GPSG_AP8A_GARDENER to #TotalGardener
+   if(#TotalGardener >= 35)
+        Let #TotalGardener = 35
+   End-If
+
+
+   if &AP8.GPSG_AP8A_RES_SHR <> 0
+      Let #NoSharing = &AP8.GPSG_AP8A_RES_SHR
+   else
+      Let #NoSharing = 1
+   end-if
+   Let #TotalRem        = &I8.GPSG_8A_NC_BONUS + &I8.GPSG_8A_CNT_BONUS + &I8.GPSG_8A_DIR_FEE + &I8.GPSG_8A_COMMSN + &I8.GPSG_8A_PENSION
+                        + &I8.GPSG_8A_ALLOW_TOT + &I8.GPSG_8A_GRATUITY + &I8.GPSG_8A_RETIRE + &I8.GPSG_8A_GROSS
+                        + &I8.GPSG_8A_OS_PENSION + &I8.GPSG_CPF_VOL_ER + &I8.GPSG_8A_SHARE_GAIN
+
+
+
+   Let #DiffDays = 0
+   Let $OccupDT = &AP8.GPSG_AP8A_RES_FR
+
+   if rtrim(&AP8.GPSG_AP8A_RES_FR,' ') <> ''
+      Do Convert-To-DTU-Date(&AP8.GPSG_AP8A_RES_FR, $OccupFrom)
+   end-if
+
+   if rtrim(&AP8.GPSG_AP8A_RES_TO,' ') <> ''
+      Let $OccupDT = &AP8.GPSG_AP8A_RES_TO
+
+      Do Convert-To-DTU-Date(&AP8.GPSG_AP8A_RES_TO, $OccupTo)
+
+      Do Dtu-Diff-Days($OccupFrom, $OccupTo,#DiffDays)
+      iF #DiffDays > 0
+         Add 1 to #DiffDays
+      end-if
+
+      if #DiffDays > 366
+         let #DiffDays = 366
+      end-if
+   end-if
+
+      Do Get-Empl-Address-Mult-Balgrp
+        If #Tax_Year >=2014
+         Do Get-Taxable-Value-YA2015
+       End-If
+
+
+   Let $Adr1 = &AP8.GPSG_ADDRESS1
+   Let $Adr2 = &AP8.GPSG_ADDRESS2
+   let $Adr3 = &AP8.GPSG_ADDRESS3
+
+   Let #TotalFurniture = round(&AP8.GPSG_AP8A_FURNIT   * #Furniture    * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalRefrig    = round(&AP8.GPSG_AP8A_FRIDGE   * #Refrigerator * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalVCR       = round(&AP8.GPSG_AP8A_VCR      * #VCR          * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalWashMach  = round(&AP8.GPSG_AP8A_WASHER   * #Washmach     * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalDryer     = round(&AP8.GPSG_AP8A_DRYER    * #Dryer        * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalDishWash  = round(&AP8.GPSG_AP8A_DWASHER  * #DishWasher   * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalACUnit    = round(&AP8.GPSG_AP8A_AC_UNIT  * #ACUnit       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalACCentral = round(&AP8.GPSG_AP8A_AC_CENTR * #ACCentral    * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalACSitting = round(&AP8.GPSG_AP8A_AC_SITTG * #ACSitting    * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalACAddl    = round(&AP8.GPSG_AP8A_AC_ADDNL * #ACAddl       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalTV        = round(&AP8.GPSG_AP8A_TV       * #TV           * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalRadio     = round(&AP8.GPSG_AP8A_RADIO    * #Radio        * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalSvs       = round(&AP8.GPSG_AP8A_SVS      * #Svs          * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalHiFi      = round(&AP8.GPSG_AP8A_STEREO   * #HiFi         * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalGuitar    = round(&AP8.GPSG_AP8A_GUITAR   * #Guitar       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalComputer  = round(&AP8.GPSG_AP8A_COMPUTER * #Computer     * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalOrgan     = round(&AP8.GPSG_AP8A_ORGAN    * #Organ        * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalPool      = round(&AP8.GPSG_AP8A_POOL     * #Pool         * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+   Let #TotalOthers    = round(&AP8.GPSG_AP8A_FAN      * #Fan          * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_TOASTER  * #Toaster      * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_IRON     * #Iron         * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_COOLER   * #AirCooler    * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_LIGHT    * #Light        * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_VACUUM   * #Vacuum       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_COOKER   * #Cooker       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_WATER_HT * #WaterHeater  * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_OVEN     * #Oven         * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_JUICER   * #Juicer       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_BLENDER  * #Blender      * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_KETTLE   * #Kettle       * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_FLOOR_PL * #FloorPolishr * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + round(&AP8.GPSG_AP8A_MOWER    * #Mower        * 12 * #DiffDays / #DivYear / #NoSharing, 2)
+                       + &AP8.GPSG_AP8A_FAX
+                       + &AP8.GPSG_AP8A_OTH_FURN
+
+
+   Let #TotalBVar = #TotalRefrig + #TotalVCR
+   Let #TotalCVar = #TotalWashMach + #TotalDryer + #TotalDishWash
+   Let #TotalDVar = #TotalACUnit + #TotalACCentral + #TotalACSitting + #TotalACAddl
+   Let #TotalEVar = #TotalTV + #TotalRadio + #TotalSvs + #TotalHiFi + #TotalGuitar
+   Let #TotalFVar = #TotalComputer + #TotalOrgan
+
+   Let #TotalHVar    = &AP8.GPSG_AP8A_PUB_UT   + &AP8.GPSG_AP8A_PHONE + &AP8.GPSG_AP8A_PAGER +
+                       &AP8.GPSG_AP8A_SUITCASE + &AP8.GPSG_AP8A_GOLF_BAG  + &AP8.GPSG_AP8A_CAMERA +
+                       &AP8.GPSG_AP8A_SERVANT
+   Let #TotalDriver    = &AP8.GPSG_AP8A_DRIVER
+   !Let #TotalGardener  = &AP8.GPSG_AP8A_GARDENER
+
+   Let #Total2Block = #TotalFurniture + #TotalBVar + #TotalCVar + #TotalDVar   + #TotalEVar
+                    + #TotalFVar      + #TotalPool + #TotalHVar + #TotalDriver + #TotalGardener
+                    + #TotalOthers
+
+   Let #TotalRem = #TotalRem  + #TotalFurniture + #TotalBVar + #TotalCVar + #TotalDVar
+                 + #TotalEVar + #TotalFVar + #TotalPool + #TotalHVar + #TotalDriver
+                 + #TotalGardener + #TotalOthers +
+                 + &AP8.GPSG_AP8A_HOME_LVE
+                 + &AP8.GPSG_AP8A_ER_INT
+                 + &AP8.GPSG_AP8A_LIFE_INS
+                 + &AP8.GPSG_AP8A_HOLIDAY
+                 + &AP8.GPSG_AP8A_EDUC
+                 + &AP8.GPSG_AP8A_LS_AWARD
+                 + &AP8.GPSG_AP8A_FEES
+                 + &AP8.GPSG_AP8A_GAINS
+                 + &AP8.GPSG_AP8A_VEHICLE
+                 + &AP8.GPSG_AP8A_CAR
+                 + &AP8.GPSG_AP8A_OTHER
+
+   Let #TotalTenPercRem = round(#TotalRem * .10, 2)
+   if &AP8.GPSG_AP8A_ER_RENT < #TotalTenPercRem
+      Let #TotalResidValue = &AP8.GPSG_AP8A_ER_RENT
+   else
+      Let #TotalResidValue = #TotalTenPercRem
+   end-if
+
+   let #TotalResidValue = #TotalResidValue - &AP8.GPSG_AP8A_EE_RENT
+
+   if #TotalResidValue  <  0
+       let #TotalResidValue  =  0
+   end-if
+
+   Let #HotelLine1 = 0
+   Let #HotelLine2 = 0
+   Let #HotelLine3 = 0
+   Let #HotelLine4 = 0
+
+   if (&AP8.GPSG_AP8A_HTL_SLFN <> 0 and &AP8.GPSG_AP8A_HTL_SLFD <> 0) OR (&AP8.GPSG_AP8A_HTL_SPSN <> 0 and &AP8.GPSG_AP8A_HTL_SPSD <> 0) OR ( &AP8.GPSG_AP8A_HTL_C20N <> 0 AND &AP8.GPSG_AP8A_HTL_C20D <> 0)  
+
+      Let #HotelLine1 = round(((&AP8.GPSG_AP8A_HTL_SLFN * #Abv20Yrs * 12 * &AP8.GPSG_AP8A_HTL_SLFD / #DivYear) 
+                        + (&AP8.GPSG_AP8A_HTL_SPSN * #Abv20Yrs * 12 * &AP8.GPSG_AP8A_HTL_SPSD / #DivYear) 
+                        +(&AP8.GPSG_AP8A_HTL_C20N * #Abv20Yrs * 12 * &AP8.GPSG_AP8A_HTL_C20D / #DivYear)), 2)
+
+! to cater for resultant less than 1 which will be rounded down to zero (invalid condition) 
+
+      if #HotelLine1 > 0 and #HotelLine1 < 1
+        let #HotelLine1 = 1
+      end-if
+   end-if
+   if &AP8.GPSG_AP8A_HTL_CH8N <> 0 and &AP8.GPSG_AP8A_HTL_CH8D <> 0
+      Let #HotelLine2 = round(&AP8.GPSG_AP8A_HTL_CH8N * #Bet8_20Yrs * 12 * &AP8.GPSG_AP8A_HTL_CH8D / #DivYear, 2)
+! to cater for resultant less than 1 which will be rounded down to zero (invalid condition)
+
+      if #HotelLine2 > 0 and #HotelLine2 < 1
+        let #HotelLine2 = 1
+      end-if
+   end-if
+   if &AP8.GPSG_AP8A_HTL_CH3N <> 0  and &AP8.GPSG_AP8A_HTL_CH3D <> 0
+      Let #HotelLine3 = round(&AP8.GPSG_AP8A_HTL_CH3N * #Bet3_7Yrs * 12 * &AP8.GPSG_AP8A_HTL_CH3D / #DivYear, 2)
+
+! to cater for resultant less than 1 which will be rounded down to zero (invalid condition)
+
+      if #HotelLine3 > 0 and #HotelLine3 < 1
+        let #HotelLine3 = 1
+      end-if
+   end-if
+   if &AP8.GPSG_AP8A_HTL_CH0N <> 0 and &AP8.GPSG_AP8A_HTL_CH0D <> 0
+      Let #HotelLine4 = round(&AP8.GPSG_AP8A_HTL_CH0N * #Less3Yrs * 12 * &AP8.GPSG_AP8A_HTL_CH0D / #DivYear, 2)
+
+! to cater for resultant less than 1 which will be rounded down to zero (invalid condition)
+
+      if #HotelLine4 > 0 and #HotelLine4 < 1
+        let #HotelLine4 = 1
+      end-if
+   end-if
+
+   Let #Total3Block = #HotelLine1 + #HotelLine2 + #HotelLine3 + #HotelLine4
+
+!2% of Basic salary
+   if #Total3Block > 0
+      Let #TwoPercentBasicSalary = round(0.02 * &I8.GPSG_8A_GROSS * &AP8.GPSG_AP8A_HTL_SLFD / #DivYear, 2)
+      Let #Total3Block = #Total3Block + #TwoPercentBasicSalary
+   else
+      Let #TwoPercentBasicSalary = 0
+   end-if
+
+   Let #Total4Block = &AP8.GPSG_AP8A_HOME_LVE + &AP8.GPSG_AP8A_ER_INT + &AP8.GPSG_AP8A_LIFE_INS
+                    + &AP8.GPSG_AP8A_HOLIDAY  + &AP8.GPSG_AP8A_EDUC   + &AP8.GPSG_AP8A_LS_AWARD
+                    + &AP8.GPSG_AP8A_FEES     + &AP8.GPSG_AP8A_GAINS  + &AP8.GPSG_AP8A_VEHICLE
+                    + &AP8.GPSG_AP8A_CAR      + &AP8.GPSG_AP8A_OTHER
+
+   Let #TotalAppendix = #TotalResidValue + #Total2Block + #Total3Block + #Total4Block
+
+   Let #Sum_of_Values = 0
+   Add #TotalRem        to #Sum_of_Values
+   Add #TotalFurniture  to #Sum_of_Values
+   Add #TotalRefrig     to #Sum_of_Values
+   Add #TotalVCR        to #Sum_of_Values
+   Add #TotalWashMach   to #Sum_of_Values
+   Add #TotalDryer      to #Sum_of_Values
+   Add #TotalDishWash   to #Sum_of_Values
+   Add #TotalACUnit     to #Sum_of_Values
+   Add #TotalACCentral  to #Sum_of_Values
+   Add #TotalACSitting  to #Sum_of_Values
+   Add #TotalACAddl     to #Sum_of_Values
+   Add #TotalTV         to #Sum_of_Values
+   Add #TotalRadio      to #Sum_of_Values
+   Add #TotalAmp        to #Sum_of_Values
+   Add #TotalHiFi       to #Sum_of_Values
+   Add #TotalGuitar     to #Sum_of_Values
+   Add #TotalComputer   to #Sum_of_Values
+   Add #TotalOrgan      to #Sum_of_Values
+   Add #TotalPool       to #Sum_of_Values
+   Add #TotalOthers     to #Sum_of_Values
+   Add #TotalHVar       to #Sum_of_Values
+   Add #TotalDriver     to #Sum_of_Values
+   Add #TotalGardener   to #Sum_of_Values
+   Add #TotalResidValue to #Sum_of_Values
+   Add #Total3Block     to #Sum_of_Values
+   Add #Total4Block     to #Sum_of_Values
+
+   If #Sum_of_Values = 0
+    Let #TempVar1 = 0
+   Else
+    Let #TempVar1 = 1
+   End-If
+
+     Do Create-File
+     Let $Emplid_Processed =  $Emplid  
+  FROM PS_GPSG_APP_8A AP8,PS_GPSG_IR8A_FORM I8,PS_NAMES_VW NM1
+WHERE AP8.GPSG_TAX_YEAR    = #Tax_Year
+AND AP8.GPSG_TAX_YEAR    = I8.GPSG_TAX_YEAR
+AND AP8.EMPLID           = I8.EMPLID
+and AP8.EMPLID = $Emplid
+AND AP8.BALANCE_GRP_NUM  = I8.BALANCE_GRP_NUM
+AND AP8.GPSG_CPY_TAX_REF = I8.GPSG_CPY_TAX_REF
+AND NM1.EMPLID = I8.EMPLID
+AND NM1.NAME_TYPE = 'PRI'
+AND AP8.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+AND AP8.GPSG_CREATE_DATE <= $AsofToday
+group by AP8.EMPLID , AP8.GPSG_CPY_TAX_REF, AP8.GPSG_TAX_YEAR, 
+AP8.GPSG_8A_STATUS, I8.NATIONAL_ID_TYPE, I8.NATIONAL_ID, I8.NAME,
+I8.GPSG_DIVISION, NM1.LAST_NAME, NM1.MIDDLE_NAME, NM1.FIRST_NAME
+
+end-SELECT
+
+End-Procedure
+
+!**************Get-Empl-Address-Mult-Balgrp******************************!
+!To get latest address incase there are 2 addresses for 2 balance groups!
+!************************************************************************!
+
+Begin-Procedure Get-Empl-Address-Mult-Balgrp
+Begin-Select
+
+AP8.GPSG_ADDRESS1  &AP8.GPSG_ADDRESS1
+AP8.GPSG_ADDRESS2  &AP8.GPSG_ADDRESS2
+AP8.GPSG_ADDRESS3  &AP8.GPSG_ADDRESS3
+AP8.GPSG_FURNISHED  &AP8.GPSG_FURNISHED 
+
+  Let $Furnished_Type = &AP8.GPSG_FURNISHED 
+
+FROM PS_GPSG_APP_8A AP8
+WHERE AP8.GPSG_TAX_YEAR    = #Tax_Year
+AND AP8.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+AND AP8.GPSG_AP8A_RES_TO = $OccupDT
+
+End-Select
+
+End-Procedure
+
+!**************Get-County-Name-format***********************************!
+!To get country name format and then show the name accordingly on the file!
+!************************************************************************!
+
+
+Begin-Procedure Get-County-Name-format
+
+begin-Select
+
+PN.COUNTRY_NM_FORMAT
+
+  LET $COUNTRY_NM_FORMAT = &PN.COUNTRY_NM_FORMAT
+
+FROM PS_PERSON_NAME PN
+WHERE PN.EMPLID = $Emplid
+
+End-Select
+End-Procedure
+
+
+!**************Get-Taxable-Value-YA2015**********************************!
+!To get taxable value incase employee has multiple balance groups********!
+!************************************************************************!
+
+Begin-Procedure Get-Taxable-Value-YA2015
+  Let #Annual_Value_prcsd = 0
+  Let #Furni_Fittngs_Value_prcsd = 0
+  Let #Taxbl_Val_Plc_Res_prcsd = 0
+  Let #Taxbl_Val_Plc_Res_ER_Rent = 0
+
+begin-Select
+P8.EMPLID
+P8.GPSG_FURNISHED    
+P8.BALANCE_GRP_NUM
+P8.GPSG_AP8A_RES_SHR
+P8.GPSG_AP8A_RES_VAL 
+P8.GPSG_AP8A_RES_FR 
+P8.GPSG_AP8A_RES_TO 
+P8.GPSG_AP8A_EE_RENT
+P8.GPSG_AP8A_ER_RENT
+P8.GPSG_AP8A_EE_HTL
+P8.GPSG_AP8A_ER_HTL
+
+   Let $P8.BALANCE_GRP_NUM = &P8.BALANCE_GRP_NUM 
+   Let $P8.GPSG_FURNISHED = &P8.GPSG_FURNISHED
+   Let #P8.GPSG_AP8A_RES_SHR = &P8.GPSG_AP8A_RES_SHR
+   Let #P8.GPSG_AP8A_RES_VAL = &P8.GPSG_AP8A_RES_VAL
+   Let $P8.GPSG_AP8A_RES_FR = &P8.GPSG_AP8A_RES_FR 
+   Let $P8.GPSG_AP8A_RES_TO = &P8.GPSG_AP8A_RES_TO 
+   Let #P8.GPSG_AP8A_EE_RENT = &P8.GPSG_AP8A_EE_RENT
+   Let #P8.GPSG_AP8A_ER_RENT = &P8.GPSG_AP8A_ER_RENT
+   Let #P8.GPSG_AP8A_EE_HTL = &P8.GPSG_AP8A_EE_HTL
+   Let #P8.GPSG_AP8A_ER_HTL  = &P8.GPSG_AP8A_ER_HTL 
+
+         Do Convert-To-DTU-Date(&P8.GPSG_AP8A_RES_FR, $P8.GPSG_AP8A_RES_FR)
+
+         Do Convert-To-DTU-Date(&P8.GPSG_AP8A_RES_TO, $P8.GPSG_AP8A_RES_TO)
+
+      Do Dtu-Diff-Days($P8.GPSG_AP8A_RES_FR, $P8.GPSG_AP8A_RES_TO,#DiffDays_1)
+      iF #DiffDays_1 > 0
+         Add 1 to #DiffDays_1
+      end-if
+
+      If #P8.GPSG_AP8A_RES_SHR = 0
+        Let #P8.GPSG_AP8A_RES_SHR = 1
+      End-if
+
+    If #P8.GPSG_AP8A_ER_RENT > 0
+       Let #Taxbl_Val_Plc_Res_ER_Rent = #P8.GPSG_AP8A_ER_RENT /#P8.GPSG_AP8A_RES_SHR
+    End-if
+
+    Let #Taxbl_Val_Plc_Res_ER_Rent_502 = #Taxbl_Val_Plc_Res_ER_Rent + #Taxbl_Val_Plc_Res_ER_Rent_Mult
+
+    Let #Ann_Value = (#P8.GPSG_AP8A_RES_VAL / #P8.GPSG_AP8A_RES_SHR ) * (#DiffDays_1 / #DivYear)
+    If $P8.GPSG_FURNISHED = 'S'
+      Let #Furni_Fittings =  #Ann_Value * 0.4
+     else
+      Let #Furni_Fittings =  #Ann_Value * 0.5
+    End-if
+   Let #Taxbl_Val_Plc_Res =  #Ann_Value + #Furni_Fittings + #Taxbl_Val_Plc_Res_ER_Rent
+  
+    If  $Emplid = $Empl_Mult_Balgrp ! and $Emplid <> $Emplid_Prnt 
+   Let #Ann_Value = #Ann_Value + #Annual_Value_prcsd
+   Let #Furni_Fittings = #Furni_Fittings + #Furni_Fittngs_Value_prcsd
+   Let #Taxbl_Val_Plc_Res =  #Taxbl_Val_Plc_Res + #Taxbl_Val_Plc_Res_prcsd
+   End-If
+       Let #Annual_Value_prcsd = #Ann_Value
+       Let #Furni_Fittngs_Value_prcsd = #Furni_Fittings
+       Let #Taxbl_Val_Plc_Res_prcsd = #Taxbl_Val_Plc_Res
+       Let #Taxbl_Val_Plc_Res_ER_Rent_Mult = #Taxbl_Val_Plc_Res_ER_Rent
+       Let #Taxbl_Val_Plc_Res_ER_Rent = 0
+
+
+
+FROM PS_GPSG_APP_8A P8
+WHERE P8.GPSG_TAX_YEAR    = #Tax_Year
+AND P8.EMPLID = $Empl_Mult_Balgrp
+AND P8.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+
+End-Select
+
+End-Procedure
+
+
+!
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'datemath.sqc'  !Routines for Date Arithmetic
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Routines to Update Run Status
+#Include 'gpsgirrc.sqc'  !Select-Parameters procedure
+#Include 'gpsgir07.sqc'  !SQC For new format changes of App 8A released for YA2015

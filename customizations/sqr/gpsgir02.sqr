@@ -1,0 +1,2739 @@
+!***********************************************************************
+!  GPSGIR02:    IR8A - Electronic File for IR8A                        *
+!               Generate IRAS Interface files                          *
+!***********************************************************************
+!***********************************************************************
+!                                                                      *
+!                                                                      *
+!                                                                      *
+! This software and related documentation are provided under a         *
+! license agreement containing restrictions on use and                 *
+! disclosure and are protected by intellectual property                *
+! laws. Except as expressly permitted in your license agreement        *
+! or allowed by law, you may not use, copy, reproduce,                 *
+! translate, broadcast, modify, license, transmit, distribute,         *
+! exhibit, perform, publish or display any part, in any form or        *
+! by any means. Reverse engineering, disassembly, or                   *
+! decompilation of this software, unless required by law for           *
+! interoperability, is prohibited.                                     *
+! The information contained herein is subject to change without        *
+! notice and is not warranted to be error-free. If you find any        *
+! errors, please report them to us in writing.                         *
+!                                                                      *
+!                                                                      *
+! Copyright (C) 1988, 2018, Oracle and/or its affiliates.              *
+! All Rights Reserved.                                                 *
+!***********************************************************************
+!                                                                      *
+!       $Release:  HR92                                                !
+!           $Bug:  27496822                                            !
+!***********************************************************************
+! Modification History                                                 *
+! Dated      Author  Changes                                           *
+! 16/02/04   689761000 Remove duplicate Postal code from the report    *
+!                                                                      *
+! 26/02/04   678932000 Modified get-citizenship-country to display     *
+!                      proper passport information for foreign         *
+!                      employees                                       *
+! 02/05/04   691769000 Address format for Singapore is changed to      *
+!                      country before postal code e.g. Singapore XXXXXX*
+!                      instead of country code.                        *
+! 12/01/07  1538443000 Change in the format of IR8S                    *
+! 22/02/07  1606500000 Modified the SQR to print values of 1, 2, 3 or 4*
+!                      corresponding to the bank names mapped with     *
+!                      the employees                                   *
+! 12/03/07  1627173000 Modified  the SQR such that the amounts are not *
+!                      printed when employees have multiple address    *
+!                      types having same effective date.               *
+! 27/03/07  1615737000 Modified the SQR such that the earnings         *
+!                      amounts are not getting generated               *
+!                      with cents.                                     *
+! 22/05/07  1641841000 Modified the SQR such that IR8A flat file is    *
+!                      generated for all employees who has addresses   *
+!                      of type other than HOME or DORM.                *
+!27/6/2007 1641818000  Modified the SQR so that the employees with     *
+!                      missing National ID appear in the IR8A file     *
+!11/12/2007 1715373000 Modified SQR to cater to the changes in the file*
+!                      specifications effective 01-Jan-2008            *
+! 01/02/08  1734209000 The sqr has been modified such that payroll date*
+!                      is printed against DTM 164 for both active and  *
+!                      terminated employees.                           *
+!26/02/2008 1742054000 The sqr has been modified such that the Employer*
+!                      name is printed in IR8A flat file               *
+!03/07/2008 1770304000 Modified the sqr so that the correct payroll    *
+!                      date gets printed                               *
+!***********************************************************************
+#Include 'setenv.sqc'  !Set environment
+
+
+#DEFINE CRITERIA_NUM 9999 !Maximum rows in one data file
+
+begin-setup
+#Include 'setupdb.sqc'
+end-setup
+
+#Include 'gpsgamnd.sqc'  !Set environment
+
+
+begin-report
+  Let $Char13 = chr(13)
+  Let $Char10 = chr(10)
+
+  do Init-DateTime
+  do Init-Number
+  do Stdapi-Init
+  do Select-Parameters
+  move &GRPCT.GPSG_Tax_Year  to #TaxYear
+  do iras_form_where_clause
+ 
+  IF $Iras_form_type = 'A'
+  do fill_staging_data_amnd
+  end-if
+  
+  do Format-Number(#TaxYear, $TaxYear, '0009')
+ do Build-Process
+  do reset
+  IF $Iras_form_type = 'A'
+  DO DEL_STG_IRAS
+  end-if
+ do Stdapi-Term
+
+end-report
+!
+!***********************************************************************
+!  Procedure: Build-Process                                            *
+!             The main driving procedure                               *
+!***********************************************************************
+begin-Procedure Build-Process
+    do Get-Company-Details
+    do Get-Tax-Year-End
+    do Process-Empls
+end-procedure
+
+!***********************************************************************
+! Procedure: Get-Company-Details                                       *
+!            Gets the Company Details that are printed on the form.    *
+!***********************************************************************
+begin-procedure Get-Company-Details
+begin-SELECT
+CO.GPSG_REGISTERED_NM
+CO.GPSG_CPY_DESCR
+CO.GPSG_TAX_CONT_ID
+CO.PHONE
+CO.GPSG_CPY_TYPE
+CO.GPSG_ROB_ROC_NO
+CO.GPSG_ROB_ROC_TYPE
+CO.EMAIL_ADDR
+
+ FROM PS_GPSG_IRAS_CPY CO
+WHERE CO.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+  AND CO.EFFDT = (SELECT MAX(EFFDT)
+                    FROM PS_GPSG_IRAS_CPY
+                   WHERE GPSG_CPY_TAX_REF = CO.GPSG_CPY_TAX_REF
+                     AND EFFDT <= $AsofToday)
+end-SELECT
+  let $Co_Tax_Contact_Id = rtrim(&CO.GPSG_TAX_CONT_ID, ' ')
+  let $Co_Name = rtrim(&CO.GPSG_REGISTERED_NM, ' ')
+  Let $Email_Company = rtrim(&CO.EMAIL_ADDR, ' ')
+  if $Co_Name = ''
+     let $Co_Name = rtrim(&CO.GPSG_CPY_DESCR, ' ')
+  end-if
+
+!get Name of Tax Contact
+
+begin-SELECT
+A.NAME
+FROM PS_PERSON_NAME A
+WHERE A.EMPLID = $Co_Tax_Contact_Id
+end-SELECT
+
+ let $Co_Tax_Contact_Name = rtrim(&A.NAME, ' ')
+
+!Get Email Addresses
+begin-SELECT
+E.EMAIL_ADDR
+FROM PS_EMAIL_ADDRESSES E
+WHERE E.EMPLID = $Co_Tax_Contact_Id
+AND E.PREF_EMAIL_FLAG = 'Y'
+end-SELECT
+
+  let $email_add = &E.EMAIL_ADDR
+  
+    If $Email_Company = ''
+    Let $email_add_file = $email_add
+  else
+    Let $email_add_file = $Email_Company
+  End-if
+
+
+
+
+!get Designation of Authorised Person
+
+begin-SELECT
+JC.DESCR
+ FROM PS_JOBCODE_TBL JC, PS_JOB J
+WHERE JC.JOBCODE = J.JOBCODE
+  AND JC.SETID   = J.SETID_JOBCODE
+  AND J.EMPLID   = $Co_Tax_Contact_Id
+  AND J.EFFDT    = (SELECT MAX(EFFDT)
+                      FROM PS_JOB
+                     WHERE EMPLID = $Co_Tax_Contact_Id
+                       AND EMPL_RCD = 0
+                       AND EFFDT <= $AsofToday )
+  AND JC.EFFDT   = (SELECT MAX(EFFDT)
+                      FROM PS_JOBCODE_TBL
+                     WHERE JOBCODE = JC.JOBCODE
+                       AND SETID = JC.SETID
+                       AND EFFDT <= $AsofToday )
+end-SELECT
+
+begin-SELECT
+JOB.EMPLID,
+JOB.EMPL_STATUS,
+JOB.EFFDT
+FROM PS_JOB JOB
+WHERE JOB.EFFDT = (SELECT MAX(X.EFFDT) FROM PS_JOB X
+        WHERE X.EMPLID = JOB.EMPLID
+        AND X.EMPL_RCD = JOB.EMPL_RCD
+        AND X.EFFSEQ = JOB.EFFSEQ)
+AND JOB.EMPLID = $Co_Tax_Contact_Id
+end-SELECT
+
+ let $AuthPersDesig  = rtrim(&JC.DESCR, ' ')
+
+! Get division/branch of the Authorized person
+
+  let $irasAlias = 'I8A'
+    do iras_form_where_clause
+begin-SELECT
+I8A.GPSG_DIVISION
+FROM [$iras_form_where] I8A
+WHERE I8A.EMPLID = $Co_Tax_Contact_Id
+[$prcs_inst]
+end-SELECT
+  MOVE &I8A.GPSG_DIVISION to $Division
+
+end-procedure
+
+!***********************************************************************
+! Procedure: Get-Tax-Year-End                                          *
+!***********************************************************************
+Begin-Procedure Get-Tax-Year-End
+
+        Move #Tax_Year to $Tax_Year '9999'
+        Let $Year_End = $Tax_Year ||'12'||'31'
+        Do  Format-DateTime($Year_End, $Year_End, {DEFCMP},'','native')
+
+    
+End-Procedure
+
+!***********************************************************************
+! Procedure: Generate - Log                                            *
+!***********************************************************************
+begin-Procedure Generate_Log(#count1,$empl_id)
+   
+   
+   do Select_From_MsgCat (17231, 373,$msg1, $LongDescr)
+   do Select_From_MsgCat (17231, 374,$msg2, $LongDescr)
+   do Select_From_MsgCat (17231, 375,$user_id, $LongDescr)
+   do Select_From_MsgCat (17231, 376,$run_id, $LongDescr)
+   do Select_From_MsgCat (17231, 377,$prcs_inst, $LongDescr)
+   do Select_From_MsgCat (17231, 378,$tax_ref, $LongDescr)
+   do Select_From_MsgCat (17231, 379,$dt_created, $LongDescr)
+   do Select_From_MsgCat (17231, 380,$tax_year, $LongDescr)
+
+   Let $msg1='IR8A - ' || $msg1
+   Let $msg2=$msg2 || ':'
+   Let $user_id=$user_id || ':'
+   Let $run_id= $run_id || ':'
+   Let $prcs_inst= $prcs_inst || ':'
+   Let $tax_ref= $tax_ref || ':'
+   Let $dt_created= $dt_created || ':'
+   let $tax_year= $tax_year || ':'
+   let $process_instance = $_prcs_process_instance
+   LET $log_file = 'IR8A_MessageLog_' || $process_instance || '.txt'
+   do Format-Number(#_Tax_Year, $Tax, '0009') 
+   if #count1 = 0
+     LET $Log_File='{FILEPREFIX}' || $log_file || '{FILESUFFIX}'
+     OPEN $Log_File as 256 For-Writing Record=500 
+     
+     write 256 from 
+         $msg1:100
+     write 256 from 
+         
+     write 256 from 
+        
+     write 256 from $user_id:9             
+                  $_Prcs_OprID:20         
+                  
+     write 256 from $run_id:16 
+                  $_Prcs_Run_Cntl_ID:20
+                  
+     write 256 from $prcs_inst:18
+                  $_prcs_process_instance:10
+                  
+     write 256 from $tax_year:10
+                  $Tax:4
+                  
+     write 256 from $tax_ref:33
+                  $_Company_Tax_Ref:30
+                  
+     write 256 from $dt_created:14
+                  $_Date_Created:30 
+                   
+     write 256 from 
+     
+     write 256 from 
+     
+     write 256 from $msg2:100
+       
+     write 256 from 
+   end-if
+   
+   write 256 from $empl_id:11
+       
+end-procedure
+
+
+
+!***********************************************************************
+! Procedure: Process-Empls                                             *
+!***********************************************************************
+begin-Procedure Process-Empls
+   let $NewFile = 'Y'        ! Flag for the requirement to open a data file (Y:Need to open a new file, N:No need)
+   Let $PrevEmplid = ''      ! Previous employee ID. This is required because this procedure processes the previous EMPLID retrieved from the SQL.
+!   Let #counter = 1
+   Let #count1 = 0           ! Flag for birth date error
+   let $FileOpen = 'N'       ! Status flag for data file file (Y:Open, N:Closed)
+   Let #file_open = 0        ! Status flag for error log file (1:Open, 0:Closed)
+   let #TempVar1 = 0         ! Amount validation result (1:The payee has at least one valid amount, 0:No valid amount)
+   let $irasAlias = 'I'
+    do iras_form_where_clause
+    
+    
+begin-SELECT DISTINCT
+I.EMPLID
+I.BALANCE_GRP_NUM
+PN.NATIONAL_ID
+I.NATIONAL_ID   &IRAS_NATIONAL_ID
+PD.BIRTHDATE
+!PA.ADDRESS_TYPE
+!PA.ADDRESS1,
+!PA.ADDRESS2,
+!PA.ADDRESS3,
+!PA.ADDRESS4,
+!PA.CITY,
+!PA.COUNTY,
+!PA.EFFDT,
+!PA.STATE,
+!PA.POSTAL,
+!PA.COUNTRY
+!I.GPSG_ADDRESS1
+!I.GPSG_ADDRESS2
+!I.GPSG_ADDRESS3
+I.GPSG_8A_ALLOW_ENT
+I.GPSG_8A_ALLOW_OTH
+I.GPSG_8A_ALLOW_TOT
+I.GPSG_8A_ALLOW_TRAN
+I.GPSG_8A_BIK
+I.GPSG_BONUS_DT
+I.GPSG_8A_NC_BONUS
+I.GPSG_8A_CNT_BONUS
+I.GPSG_CPY_TAX_REF
+I.GPSG_COMMSN_FROM
+I.GPSG_COMMSN_REG
+I.GPSG_COMMSN_TO
+I.GPSG_8A_COMMSN
+I.GPSG_CPF_COMP_EE
+I.GPSG_CPF_VOL_REAS
+I.GPSG_CPF_VOL_EE
+I.GPSG_CPF_VOL_ER
+I.GPSG_DIR_FEE_DT
+I.GPSG_8A_DIR_FEE
+I.GPSG_8A_DONATIONS
+I.GPSG_ER_PAYS_TAX
+I.GPSG_GRAT_DESCR
+I.GPSG_8A_GRATUITY
+I.GPSG_8A_EXGRATIA
+I.GPSG_8A_GROSS
+I.GPSG_8A_INSURANCE
+I.GPSG_JOB_DESCR1
+I.GPSG_JOB_DESCR2
+I.NAME
+I.GPSG_COMMSN_1TM
+I.GPSG_8A_OS_PENSION
+I.GPSG_PENS_FUND
+I.GPSG_8A_PENSION
+I.GPSG_RETIRE_FUND
+I.GPSG_8A_RET_POST
+I.GPSG_8A_RET_PRE93
+I.GPSG_8A_RETIRE
+I.GPSG_SECTION45_IND
+I.SEX
+I.GPSG_8A_SHARE_GAIN
+I.GPSG_SHR_OPT_DESCR
+I.GPSG_8S_REMARKS
+I.NATIONAL_ID
+I.NATIONAL_ID_TYPE
+I.GPSG_TAX_YEAR
+I.GPSG_8A_LOSS_OFFIC
+I.GPSG_8A_NOTICE
+I.GPSG_8A_INSUR_ADJ
+I.TERMINATION_DT
+I.HIRE_DT
+I.GPSG_APP_IRAS
+I.GPSG_APP_IRAS_DT
+I.GPSG_INCOM_TAX_REM
+I.GPSG_INCOM_TAX_ER
+I.GPSG_INCOM_TAX_EE
+I.GPSG_8A_GAIN_BFR
+I.GPSG_BANK_ID
+I.GPSG_EXM_IND
+!CO.DESCR
+I.GPSG_TOTAL_MBMF
+I.GPSG_8A_GRAT_OTH
+I.GPSG_8A_INCOME_TOT
+I.GPSG_8S_CPF_VOL_ER
+I.GPSG_8S_CPF_VOL_EE
+PR.PYMT_DT
+RC.GPSG_CREATE_DATE
+
+   Move &I.EMPLID to $Emplid
+   Move &I.BALANCE_GRP_NUM to $Balance_Grp_Num
+
+   Move &I.GPSG_TAX_YEAR to $Current_Tax_Year
+
+! *******************************************************************************************
+! We have to generate a single line entry for each employee. Therefore we add all values
+! into variables and use them for creating values in the file. When we reach end of file and
+! the select routines exits the end-select, we need to check if any employee was processed.
+! if yes, then the last row would not have been written to the electronic file, we will
+! therefore call the Create-File routine once again.
+! *******************************************************************************************
+    let $iras_NATIONAL_ID = &IRAS_NATIONAL_ID
+         Do get-payroll-date
+         Do get-creation-date
+  
+    If $PrevEmplid <> ''
+    let $EmplChanged = 'Y'
+    end-if
+    if $PrevEmplid = $Emplid and $PrevBalance_Grp_Num = $Balance_Grp_Num
+    Do Add-Var-Values
+    let $EmplChanged = 'N'
+    end-if
+          Let $PrevEmplid = $Emplid
+          Let $PrevBalance_Grp_Num = $Balance_Grp_Num
+          
+          Do Move-To-Var
+          
+         if &PD.BIRTHDATE=''
+            Let #file_open=1
+            Do Generate_Log(#count1,$Emplid)
+            let #count1 = 1
+         end-if
+     
+         Do Cal-Empl-MBF
+         Do Process-Empls-Values
+         Do Create-File
+      
+  
+         
+
+           if #EmplOcc = {CRITERIA_NUM}
+               do Close-File
+               let $NewFile = 'Y'
+           end-if
+
+      
+
+   FROM [$iras_form_where] I,
+        PS_PERSON PD,
+!        PS_ADDRESSES PA,
+        PS_PERS_NID PN,
+!        PS_COUNTRY_TBL CO,
+       ! PS_GP_CALENDAR CA,
+        PS_GP_PYE_PRC_STAT PR,
+        PS_GPSG_RC_IRAS RC
+
+ WHERE I.GPSG_TAX_YEAR    = #Tax_Year
+   AND I.EMPLID           = PD.EMPLID
+   AND I.EMPLID           = PR.EMPLID
+   !AND CA.GP_PAYGROUP = I.GP_PAYGROUP
+   !AND CA.CAL_ID = PR.CAL_ID
+   AND PR.PYMT_DT = (Select max(PR1.PYMT_DT) from PS_GP_PYE_PRC_STAT PR1, PS_GP_CAL_RUN CR
+                     where PR1.EMPLID = I.EMPLID
+                     AND PR1.CAL_RUN_ID = CR.CAL_RUN_ID
+                     AND CR.RUN_FINALIZED_IND = 'Y'
+                     AND PR1.PRD_END_DT <= $Year_End)
+   AND PR.PRD_END_DT <= $Year_End
+   AND I.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+   AND I.GPSG_8A_STATUS = 'Y'
+!   AND PA.EMPLID          = I.EMPLID
+   AND PN.EMPLID          = I.EMPLID
+!  AND PN.COUNTRY         = 'SGP'
+   AND PN.PRIMARY_NID     = 'Y'
+!  AND PN.NATIONAL_ID     <> ' '
+!   AND CO.COUNTRY         = PA.COUNTRY
+   AND RC.OPRID          = $Prcs_OprID
+   AND RC.RUN_CNTL_ID    = $Prcs_Run_Cntl_ID
+   AND RC.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+   AND RC.GPSG_CREATE_DATE <= $AsofToday
+[$prcs_inst]
+!   AND ( (PA.ADDRESS_TYPE = 'HOME' AND   PA.EFFDT = ( Select Max(PA1.EFFDT)
+!                                                    FROM PS_ADDRESSES PA1
+!                                                    WHERE PA1.ADDRESS_TYPE = 'HOME'
+!                                                    AND PA1.EMPLID = I.EMPLID  ))
+!
+!            OR    ( PA.ADDRESS_TYPE <> 'HOME' AND PA.ADDRESS_TYPE = 'DORM'
+!                                              AND  PA.EFFDT = ( Select Max(PA1.EFFDT)
+!                                                    FROM PS_ADDRESSES PA1
+!                                                    WHERE PA1.ADDRESS_TYPE = 'DORM'
+!                                                    AND PA1.EMPLID = I.EMPLID
+!                                                    AND PA1.ADDRESS1 = I.GPSG_ADDRESS1) )
+!            OR
+!          (PA.ADDRESS_TYPE not in ('HOME','DORM')
+!                                     AND (PA.EFFDT = (Select max(PA1.EFFDT) from PS_ADDRESSES PA1
+!                                                            where PA1.EMPLID = I.EMPLID
+!                                                            AND PA1.ADDRESS1 = I.GPSG_ADDRESS1))))
+
+!ORDER BY I.EMPLID, I.BALANCE_GRP_NUM, PA.ADDRESS_TYPE DESC,PY.BANK_CD
+ORDER BY I.EMPLID, I.BALANCE_GRP_NUM
+
+end-SELECT
+
+
+
+   if $FileOpen ='Y'
+      do Close-File
+   end-if
+   if #file_open=1 
+      Close 256
+   End-if
+  
+end-procedure
+
+
+
+!**************************************************************************
+! Procedure: Create-File                                                  *
+!                                                                         *
+!                                                                         *
+!**************************************************************************
+begin-procedure Create-File
+  if $NewFile = 'Y'
+    do Start-New-File
+    move 'N' to $NewFile
+    let #EmplOcc = 0
+  end-if
+  If #TempVar1 = 1
+    do Process-Employee
+  End-If
+End-Procedure
+
+!****************************************************************************
+!Procedure: Process-Empls-Values
+!
+!****************************************************************************
+begin-Procedure Process-Empls-Values
+    let $irasAlias = 'I3'
+    do iras_form_where_clause
+
+
+begin-SELECT DISTINCT
+I3.EMPLID
+I3.BALANCE_GRP_NUM
+I3.GPSG_8A_ALLOW_ENT
+I3.GPSG_8A_ALLOW_OTH
+I3.GPSG_8A_ALLOW_TOT
+I3.GPSG_8A_ALLOW_TRAN
+I3.GPSG_8A_BIK
+!I3.GPSG_BONUS_DT
+I3.GPSG_8A_NC_BONUS
+I3.GPSG_8A_CNT_BONUS
+!I3.GPSG_CPY_TAX_REF
+!I3.GPSG_COMMSN_FROM
+!I3.GPSG_COMMSN_REG
+!I3.GPSG_COMMSN_TO
+I3.GPSG_8A_COMMSN
+I3.GPSG_CPF_COMP_EE
+!I3.GPSG_CPF_VOL_REAS
+I3.GPSG_CPF_VOL_EE
+I3.GPSG_CPF_VOL_ER
+!I3.GPSG_DIR_FEE_DT
+I3.GPSG_8A_DIR_FEE
+I3.GPSG_8A_DONATIONS
+!I3.GPSG_ER_PAYS_TAX
+!I3.GPSG_GRAT_DESCR
+I3.GPSG_8A_GRATUITY
+I3.GPSG_8A_EXGRATIA
+I3.GPSG_8A_GROSS
+I3.GPSG_8A_INSURANCE
+!I3.GPSG_JOB_DESCR1
+!I3.GPSG_JOB_DESCR2
+!I3.NAME
+!I3.GPSG_COMMSN_1TM
+I3.GPSG_8A_OS_PENSION
+!I3.GPSG_PENS_FUND
+I3.GPSG_8A_PENSION
+!I3.GPSG_RETIRE_FUND
+I3.GPSG_8A_RET_POST
+I3.GPSG_8A_RET_PRE93
+I3.GPSG_8A_RETIRE
+!I3.GPSG_SECTION45_IND
+!I3.SEX
+I3.GPSG_8A_SHARE_GAIN
+!I3.GPSG_SHR_OPT_DESCR
+!I3.GPSG_8S_REMARKS
+!I3.NATIONAL_ID
+!I3.NATIONAL_ID_TYPE
+I3.GPSG_TAX_YEAR
+I3.GPSG_8A_LOSS_OFFIC
+I3.GPSG_8A_NOTICE
+I3.GPSG_8A_INSUR_ADJ
+!I3.TERMINATION_DT
+!I3.HIRE_DT
+!I3.GPSG_APP_IRAS
+!I3.GPSG_APP_IRAS_DT
+I3.GPSG_INCOM_TAX_REM
+I3.GPSG_INCOM_TAX_ER
+I3.GPSG_INCOM_TAX_EE
+I3.GPSG_8A_GAIN_BFR
+!I3.GPSG_EXM_IND
+I3.GPSG_TOTAL_MBMF
+I3.GPSG_8A_GRAT_OTH
+I3.GPSG_8A_INCOME_TOT
+I3.GPSG_8S_CPF_VOL_ER
+I3.GPSG_8S_CPF_VOL_EE
+
+        Let #Sum_of_Amounts = 0
+        move &I3.GPSG_8A_ALLOW_ENT to #I3GPSG_8A_ALLOW_ENT 
+        move &I3.GPSG_8A_ALLOW_OTH to #I3GPSG_8A_ALLOW_OTH 
+        move &I3.GPSG_8A_ALLOW_TOT to #I3GPSG_8A_ALLOW_TOT 
+        move &I3.GPSG_8A_ALLOW_TRAN to #I3GPSG_8A_ALLOW_TRAN
+        move &I3.GPSG_8A_BIK to #I3GPSG_8A_BIK       
+        move &I3.GPSG_8A_NC_BONUS to #I3GPSG_8A_NC_BONUS  
+        move &I3.GPSG_8A_CNT_BONUS to #I3GPSG_8A_CNT_BONUS 
+        move &I3.GPSG_8A_COMMSN to #I3GPSG_8A_COMMSN    
+        move &I3.GPSG_CPF_COMP_EE to #I3GPSG_CPF_COMP_EE  
+        move &I3.GPSG_CPF_VOL_EE to #I3GPSG_CPF_VOL_EE   
+        move &I3.GPSG_CPF_VOL_ER to #I3GPSG_CPF_VOL_ER   
+        move &I3.GPSG_8A_DIR_FEE to #I3GPSG_8A_DIR_FEE   
+        move &I3.GPSG_8A_DONATIONS to #I3GPSG_8A_DONATIONS 
+        move &I3.GPSG_8A_GRATUITY to #I3GPSG_8A_GRATUITY  
+        move &I3.GPSG_8A_EXGRATIA to #I3GPSG_8A_EXGRATIA  
+        move &I3.GPSG_8A_GROSS to #I3GPSG_8A_GROSS     
+        move &I3.GPSG_8A_INSURANCE to #I3GPSG_8A_INSURANCE 
+        move &I3.GPSG_8A_OS_PENSION to #I3GPSG_8A_OS_PENSION
+        move &I3.GPSG_8A_PENSION to #I3GPSG_8A_PENSION   
+        move &I3.GPSG_8A_RET_POST to #I3GPSG_8A_RET_POST  
+        move &I3.GPSG_8A_RET_PRE93 to #I3GPSG_8A_RET_PRE93 
+        move &I3.GPSG_8A_RETIRE to #I3GPSG_8A_RETIRE    
+        move &I3.GPSG_8A_SHARE_GAIN to #I3GPSG_8A_SHARE_GAIN
+        move &I3.GPSG_8A_LOSS_OFFIC to #I3GPSG_8A_LOSS_OFFIC
+        move &I3.GPSG_8A_NOTICE to #I3GPSG_8A_NOTICE    
+        move &I3.GPSG_8A_INSUR_ADJ to #I3GPSG_8A_INSUR_ADJ 
+        move &I3.GPSG_INCOM_TAX_REM to #I3GPSG_INCOM_TAX_REM
+        move &I3.GPSG_INCOM_TAX_ER to #I3GPSG_INCOM_TAX_ER 
+        move &I3.GPSG_INCOM_TAX_EE to #I3GPSG_INCOM_TAX_EE 
+        move &I3.GPSG_8A_GAIN_BFR to #I3GPSG_8A_GAIN_BFR  
+        move &I3.GPSG_TOTAL_MBMF to #I3GPSG_TOTAL_MBMF   
+        move &I3.GPSG_8A_GRAT_OTH to #I3GPSG_8A_GRAT_OTH  
+        move &I3.GPSG_8A_INCOME_TOT to #I3GPSG_8A_INCOME_TOT
+        move &I3.GPSG_8S_CPF_VOL_ER to #I3GPSG_8S_CPF_VOL_ER
+        move &I3.GPSG_8S_CPF_VOL_EE to #I3GPSG_8S_CPF_VOL_EE
+        
+        Add #I3GPSG_8A_ALLOW_ENT   to #Sum_of_Amounts
+        Add #I3GPSG_8A_ALLOW_OTH   to #Sum_of_Amounts
+        Add #I3GPSG_8A_ALLOW_TOT   to #Sum_of_Amounts
+        Add #I3GPSG_8A_ALLOW_TRAN  to #Sum_of_Amounts
+        Add #I3GPSG_8A_BIK         to #Sum_of_Amounts
+        Add #I3GPSG_8A_NC_BONUS    to #Sum_of_Amounts
+        Add #I3GPSG_8A_CNT_BONUS   to #Sum_of_Amounts
+        Add #I3GPSG_8A_COMMSN      to #Sum_of_Amounts
+        Add #I3GPSG_CPF_COMP_EE    to #Sum_of_Amounts
+        Add #I3GPSG_CPF_VOL_EE     to #Sum_of_Amounts
+        Add #I3GPSG_CPF_VOL_ER     to #Sum_of_Amounts
+        Add #I3GPSG_8A_DIR_FEE     to #Sum_of_Amounts
+        Add #I3GPSG_8A_DONATIONS   to #Sum_of_Amounts
+        Add #I3GPSG_8A_GRATUITY    to #Sum_of_Amounts
+        Add #I3GPSG_8A_EXGRATIA    to #Sum_of_Amounts
+        Add #I3GPSG_8A_GROSS       to #Sum_of_Amounts
+        Add #I3GPSG_8A_INSURANCE   to #Sum_of_Amounts
+        Add #I3GPSG_8A_OS_PENSION  to #Sum_of_Amounts
+        Add #I3GPSG_8A_PENSION     to #Sum_of_Amounts
+        Add #I3GPSG_8A_RET_POST    to #Sum_of_Amounts
+        Add #I3GPSG_8A_RET_PRE93   to #Sum_of_Amounts
+        Add #I3GPSG_8A_RETIRE      to #Sum_of_Amounts
+        Add #I3GPSG_8A_SHARE_GAIN  to #Sum_of_Amounts
+        Add #I3GPSG_8A_LOSS_OFFIC  to #Sum_of_Amounts
+        Add #I3GPSG_8A_NOTICE      to #Sum_of_Amounts
+        Add #I3GPSG_8A_INSUR_ADJ   to #Sum_of_Amounts
+        Add #I3GPSG_INCOM_TAX_REM  to #Sum_of_Amounts
+        Add #I3GPSG_INCOM_TAX_ER   to #Sum_of_Amounts
+        Add #I3GPSG_INCOM_TAX_EE   to #Sum_of_Amounts
+        Add #I3GPSG_8A_GAIN_BFR    to #Sum_of_Amounts
+        Add #I3GPSG_TOTAL_MBMF     to #Sum_of_Amounts
+        Add #I3GPSG_8A_GRAT_OTH    to #Sum_of_Amounts
+        Add #I3GPSG_8A_INCOME_TOT  to #Sum_of_Amounts
+        Add #I3GPSG_8S_CPF_VOL_ER  to #Sum_of_Amounts
+        Add #I3GPSG_8S_CPF_VOL_EE  to #Sum_of_Amounts
+
+   If #Sum_of_Amounts = 0
+        Let #TempVar1 = 0
+   Else
+        Let #TempVar1 = 1
+   End-If
+
+FROM [$iras_form_where] I3
+ WHERE I3.GPSG_TAX_YEAR    = #Tax_Year
+   AND I3.EMPLID           = $PrevEmplid
+   AND I3.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+   AND I3.NATIONAL_ID = $iras_NATIONAL_ID
+   [$prcs_inst]
+End-SELECT
+
+End-Procedure
+
+!**************************************************************************
+! Procedure: Cal-Empl-MBF                                                 *
+!            This sums the total of all employee contributions for        *
+!            the company file.                                            *
+! Called by: Process-Empls                                                *
+!**************************************************************************
+begin-procedure Cal-Empl-MBF
+
+let $Empl_Tot_Mbf = ltrim(edit(to_char(#Empl_Tot_Mbf),'999999'),' ')
+let #Empl_Tot_Mbf = $Empl_Tot_Mbf
+
+Let #Total_Mbf =  #Total_Mbf +  #Empl_Tot_Mbf
+Let #TotalExemptIncome = #TotalExemptIncome + #ExemptIncome
+Let #TotalIncome_Empr = #TotalIncome_Empr + #Income_Empr
+Let #TotalIncome_Employee = #TotalIncome_Employee +#Income_Employee
+
+End-Procedure
+
+!**************************************************************************
+! Procedure: Start-New-File                                               *
+!            Initialises variables and writes header information for a new*
+!            file.                                                        *
+!**************************************************************************
+begin-procedure Start-New-File
+
+  do Open-File
+
+!IR8A
+
+!Message Title
+  do Write-Entry-Detail(1,'IR8A','','','','','','','','','')        !Segment 1 - UNB
+!Message Header
+  do Write-Entry-Detail(2,'IREERN','','','','','','','','','')      !Segment 2 - UNH
+!Beginning of Message
+  do Write-Entry-Detail(3,'','','','','','','','','','')            !Segment 3 - BGM
+
+!Header Information - Indicators  (Four Occurences)
+  do Write-Entry-Detail(4,'AWJ','0','','','','','','','','')        !Segment 4 - RFF
+
+  let $Source = &CO.GPSG_CPY_TYPE
+  do Write-Entry-Detail(4,'AWK',$Source,'','','','','','','','')    !Segment 4 - RFF
+
+!Type Of Payment - Salaried Data
+  do Write-Entry-Detail(4,'AWL','08','','','','','','','','')
+
+  evaluate &CO.GPSG_ROB_ROC_TYPE
+    when = '8' !ROC
+      let $PayerIdType = '8'
+    when = '7' !ROB
+      let $PayerIdType = '7'
+    !when = 'X'
+    !  let $PayerIdType = 'C'
+    when = 'A'
+      let $PayerIdType = 'A'
+    when = 'I'
+      let $PayerIdType = 'I'
+    !when = 'M'
+    !  let $PayerIdType = 'M'
+    !when = 'G'
+    !  let $PayerIdType = 'G'
+    when = 'U'
+      let $PayerIdType = 'U'
+    when-other
+      let $PayerIdType = '0'
+  end-evaluate
+
+
+
+  do Write-Entry-Detail(4,'AWM',$PayerIdType,'','','','','','','','')
+                                                           !Segment 4 - RFF
+
+  !Rec Indicator
+  if $Iras_form_type = 'A'
+  do Write-Entry-Detail(4,'AWZ','A','','','','','','','','')        !Segment 4 - RFF
+  else
+  do Write-Entry-Detail(4,'AWZ','O','','','','','','','','')        !Segment 4 - RFF
+  end-if
+!Header Information - Dates (Two Occurences)
+  move &GRPCT.GPSG_Tax_Year  to #TaxYear
+  do Format-Number(#TaxYear, $TaxYear, '0009')
+  do Write-Entry-Detail(5,'441',$TaxYear,'602','','','','','','','')!Segment 5 - DTM
+
+  do Write-Entry-Detail(5,'416',$Date_Created_Out,'102','','','','','','','')
+                                                           !Segment 5 - DTM
+!Employer's Information
+
+    if $PayerIdType = '7'
+    or $PayerIdType = '8'
+    or $PayerIdType = 'A'
+    or $PayerIdType = 'I'
+    or $PayerIdType = 'C'
+    or $PayerIdType = 'M'
+    or $PayerIdType = 'G'
+    or $PayerIdType = 'U'
+     let $PayerIdNo     = &CO.GPSG_ROB_ROC_NO
+  else
+     let $PayerIdNo     = $Company_Tax_Ref
+  end-if
+
+
+  do Write-Entry-Detail(6,$PayerIdNo,'',
+                          $Co_Name,'',
+ !                         $email_add,'',
+                          $email_add_file,'',
+                          '','','',
+                          $Division)                              !Segment 6 - NAD
+!Employer's Contact No
+  let $TelNum = rtrim(&CO.PHONE, ' ')
+  do Write-Entry-Detail(7,$TelNum,'','','','','','','','','')       !Segment 7 - COM
+
+end-procedure
+!
+!*******************************
+! Procedure : Process-Employee *
+!*******************************
+!
+begin-procedure Process-Employee
+  show ' in process-empl'
+! 8.LIN
+!Line No denoting the occurence of employee
+
+  let #EmplOcc = #EmplOcc + 1
+  let $EmplOcc = ltrim(edit(to_char(#EmplOcc),'9999'),' ')
+
+  do Write-Entry-Detail(8,$EmplOcc,'','','','','','','','','')       !Segment 8 - LIN
+
+
+! 9.RFF
+!Details Information - Indicators (13 Occurences)
+
+!Rec Type
+  do Write-Entry-Detail(9,'AWJ','1','','','','','','','','')        !Segment 9 - RFF
+
+
+!Payee's ID Type
+
+  evaluate $ITaxRefTypeSgp
+
+    when = 'IC'   ! Nat. Registration ID Card
+
+      let $PayeeIdType     = '1'  ! NRIC
+      let $NationalityCode = '301'! Singapore Citizen
+
+    when = 'PR'   ! Permanent Residency Number
+
+      let $PayeeIdType     = '1'  ! NRIC
+         do get-citizenship-country
+
+    when = 'EP'   ! Employment Pass
+    when = 'FI'   ! Foreigner Id Number
+
+      let $PayeeIdType = '2'  ! FIN
+      do get-citizenship-country
+
+    when = 'CI'   ! Certificate Of Identity
+    !when = 'WP'   ! Work Permit
+    !when = 'PP'   ! Passport
+    when = 'VP'   ! Work Pass
+      let $PayeeIdType     = '0'  ! Others
+      do get-citizenship-country
+
+    when = 'MI1'   ! Malaysian NRIC
+    When = 'MI2'
+    When = 'MI3'
+      let $PayeeIdType     = '5'  ! Others
+         do get-citizenship-country
+
+    when = 'PP'   ! Passport
+      let $PayeeIdType     = '6'
+      do get-citizenship-country
+
+    when = 'IF'    ! Immigration File Ref. No.
+      let $PayeeIDType = '3'
+      do get-citizenship-country
+
+    when = 'WP'   ! Work Permit
+       let $PayeeIDType = '4'
+       do get-citizenship-country
+
+    when-other
+      let $PayeeIdType = '0'  ! Others
+      do get-citizenship-country
+  end-evaluate
+
+  do Write-Entry-Detail(9,'AWM',$PayeeIdType,'','','','','','','','')
+                                                           !Segment 9 - RFF
+!Nationality Code
+  do Write-Entry-Detail(9,'AWO',$NationalityCode,'','','','','','','','')
+                                                           !Segment 9 - RFF
+!Sex
+
+  do Write-Entry-Detail(9,'AWP',$ISex,'','','','','','','','')
+                                                           !Segment 9 - RFF
+!Benefits-in-kind indicator
+
+  let $BenefitsInd = ' ' !  'N'  
+
+  if #IBikYtd <> 0
+    let $BenefitsInd = 'Y'
+  end-if
+  do Write-Entry-Detail(9,'AWQ',$BenefitsInd,'','','','','','','','')
+                                                           !Segment 9 - RFF
+
+!Section 45 Applicable Indicator
+
+
+  if $ISection45Ind <> 'Y'
+      let $Section45Ind = ' ' !  'N'  
+      If ( #Tax_Year >= 2017 and ( $PayeeIdType <> '1' or ($PayeeIdType = '1' and $NationalityCode <> '301' ) or $PayeeIdType = '2' or $PayeeIdType = '5' or $PayeeIdType = '6') 
+           and ( (instr(upper($IJobDescr1), 'DIRECTOR', 1) > 0) or (instr(upper($IJobDescr2), 'DIRECTOR', 1) > 0)))
+        let $Section45Ind = 'N'
+      end-if
+  else
+    let $Section45Ind = $ISection45Ind
+  end-if
+  do Write-Entry-Detail(9,'AWR',$Section45Ind,'','','','','','','','')
+                                                           !Segment 9 - RFF
+
+!Employee income tax borne by employer indicator
+
+!Evaluate &I.GPSG_ER_PAYS_TAX
+Evaluate $IEmplrBearsTax
+
+ When = 'Y'
+   let $EmplrBearsTax = 'F'
+ When = 'N'
+   let $EmplrBearsTax = 'H'
+ When = 'M'
+   let $EmplrBearsTax = ' ' !  'N'  
+ When = 'P'
+   let $EmplrBearsTax = 'P'
+ When-Other
+   let $EmplrBearsTax = ' ' !  'N'  
+
+End-Evaluate
+
+  do Write-Entry-Detail(9,'AWS',$EmplrBearsTax,'','','','','','','','')
+                                                           !Segment 9 - RFF
+
+!Gratuity/payment in lieu of notice/ex-gratia indicator
+
+  if #IGratuityYtd > 0
+    let $ExGratiaInd = 'Y'
+  else
+    let $ExGratiaInd =' ' !  'N' 
+  end-if
+  do Write-Entry-Detail(9,'AWT',$ExGratiaInd,'','','','','','','','')
+                                                           !Segment 9 - RFF
+
+!Compensation/Retrenchment benefits indicator
+
+  if (#ILossOfficeYtd > 0 and ($Approval = 'Y' or $Approval ='N'))
+     let $CompBenPaidInd = 'Y'
+  else
+     let $CompBenPaidInd = ' ' !  'N'  
+  end-if
+
+  do Write-Entry-Detail(9,'AWU',$CompBenPaidInd,'','','','','','','','')
+                                                           !Segment 9 - RFF
+!Cessation Provisions indicator
+!If  Commencement Date is prior 1st Jan 1969
+!and Cessation Date is within Basis Year, then this should be Y
+!
+! retrieve dates in format dtu without delimiters eg. 19990101
+
+  if rtrim($EmplStartDate,' ') <> '' and ($EmplStartDate < '19690101' and substr($CessationDate,1,4) = $TaxYear)
+     let $CessProvApplInd = 'Y'
+  else
+     let $CessProvApplInd = ' ' !  'N'  
+  end-if
+  do Write-Entry-Detail(9,'AWV',$CessProvApplInd,'','','','','','','','')
+                                                           !Segment 9 - RFF
+
+! IR8S Applicable Ind
+!
+  let $IR8SApplInd = ' ' !  'N'  
+
+  if #IVolEmplrCpfYtd > 0
+     let $IR8SApplInd = 'Y'
+  end-if
+
+  do Write-Entry-Detail(9,'AWW',$IR8SApplInd,'','','','','','','','')
+                                                           !Segment 9 - RFF
+
+!Gross Commission indicator
+  if $IComssnRegular = 'Y' and $IOnetimePayment = 'Y'
+
+    let $GrossCommissionInd = 'B'     !Both
+  else
+    if $IComssnRegular = 'Y'
+       let $GrossCommissionInd = 'M'     !Monthly
+    else
+       if $IOneTimePayment = 'Y'
+          let $GrossCommissionInd = 'O'     !Other than monthly
+       else
+          let $GrossCommissionInd = ' '     !neither
+       end-if
+    end-if
+  end-if
+
+  do Write-Entry-Detail(9,'AWX',$GrossCommissionInd,'','','','','','','','')
+                                                           !Segment 9 - RFF
+
+  do Write-Entry-Detail(9,'AWB','','','','','','','','','')
+                                                           !Segment 9 - RFF     
+
+
+  If $Exmpt_Indicator = 'N' 
+    Let $Exmpt_Indicator = ' '
+  End-if
+
+  do Write-Entry-Detail(9,'AWC',$Exmpt_Indicator ,'','','','','','','','')
+                                                          !Segment 9 - RFF
+
+  do Write-Entry-Detail(9,'AWD',$Approval,'','','','','','','','')
+                                                           !Segment 9 - RFF
+
+  Let #Count_Runtype = 0 
+  Let $BANK_CD = ' '
+  Let $Bank = ' ' 
+
+  do get-Run-Type-SGP
+  do Write-Entry-Detail(9,'AWE',$Bank,'','','','','','','','')
+                                                           !Segment 9 - RFF
+
+
+!10.NAD
+!Employee's Information
+
+
+  let $PayeeIdNo        = rtrim($ITaxRefSgp, ' ')
+
+  let $JobDescr         = rtrim($IJobDescr1,' ') || ' ' ||
+                          rtrim($IJobDescr2,' ')
+
+  let $EmployeeDesignation = substr($JobDescr,1,30)
+
+! electronic file requires postcode which is not available in the ir8a_form_sgp table alone
+! so get address data from personal data instead of ir8a_form_sgp
+If ltrim(rtrim($PDZip,' '),' ') = '' or $PDZip = ''
+    let $PostCode = '999999'
+  else
+    let #PDZip_num=to_number($PDZip)
+    Move #PDZip_num to $PostCode 099999
+  end-if
+  let $UnformattedAddr  = rtrim($PDAddress1,' ') || ' '  ||
+                          rtrim($PDAddress2,' ') || ' '  ||
+                          rtrim($PDAddress3,' ') || ' '  ||
+                          rtrim($PDAddress4,' ') || ' '  ||
+                          rtrim($PDCity,' ') || ' '  ||
+                          rtrim($PDState,' ') || ' '  ||
+                          rtrim($PDCountry,' ')  || ' '  ||
+                          rtrim($PostCode,' ')
+
+
+  let $UnformattedAddr1 = substr($UnformattedAddr,1,30)
+  let $UnformattedAddr2 = substr($UnformattedAddr,31,30)
+  let $UnformattedAddr3 = substr($UnformattedAddr,61,30)
+
+!Fetch Country name format
+
+begin-Select
+
+PN.COUNTRY_NM_FORMAT
+
+  LET $COUNTRY_NM_FORMAT = &PN.COUNTRY_NM_FORMAT
+
+FROM PS_PERSON_NAME PN
+WHERE PN.EMPLID = $PrevEmplid
+
+End-Select
+
+
+begin-SELECT
+NM.EMPLID,
+NM.LAST_NAME,
+NM.MIDDLE_NAME,
+NM.FIRST_NAME,
+NM.NAME
+
+   Let $PayeeFName = &NM.FIRST_NAME
+   Let $PayeeLName = &NM.LAST_NAME
+   Let $PayeeMName = &NM.MIDDLE_NAME
+   Let $PayeeDName = &NM.NAME
+   Let $PayeeName = rtrim($PayeeDName,' ') || ' ' || rtrim($PayeeMName,' ')
+
+       If $COUNTRY_NM_FORMAT = 'CHN'
+        Let $PayeeName  = rtrim($PayeeLName, ' ') || ' ' ||rtrim($PayeeFName, ' ') || ' ' ||rtrim($PayeeMName, ' ')
+       End-if
+
+
+     from PS_NAMES_VW NM
+     where NM.EMPLID = $PrevEmplid
+       and NM.NAME_TYPE = 'PRI'
+       and NM.EFFDT <= $Asoftoday
+end-SELECT
+
+ let $PDZip1 = rtrim($PDZip,' ')
+If $PDZip1 = ' ' or $PDZip1 = ''
+    let $PostCode = 'N/A'
+  else
+    let $PDZip1 = lpad($PDZip1,6,'0')
+    let $PostCode = $PDZip1
+  end-if
+
+  let $Country_zip = rtrim($PDCountry,' ') || ' ' || $PostCode
+
+ Let $PDAddress1  = ' '
+ Let $PDAddress2  = ' '
+ Let $Country_zip = ' '
+ Let $PostCode    = ' '
+
+
+  do Write-Employee-NAD-Seg($PayeeIdNo,'',
+                            $EmployeeDesignation,'',
+                            $PDAddress1,'',
+                            $PDAddress2,'',
+                            $Country_zip,'',
+                            $PayeeName,
+                            '','','','','','','','','','','','',
+                            $PostCode)
+
+
+                                                          !Segment 10 - NAD
+
+!11.MOA
+!Monetary Amounts
+
+  let #DonationYtd      = round(#IDonationYtd,0)
+  let #CpfCompYtd       = round(#ICpfCompYtd,0)
+  let #InsuranceYtd     = round(#IInsuranceYtd,0)
+  let #RetirePre93Accr  = round(#IRetirePre93Accr,2)
+  let #CpfVolYtd        = round(#ICpfVolYtd,0)
+
+!Others
+
+  let #ComssnYtd        = round(#IComssnYtd,2)
+  let #PensionYtd       = round(#IPensionYtd,2)
+  let #AllowTransYtd    = round(#IAllowTransYtd,2)
+  let #AllowEntYtd      = round(#IAllowEntYtd,2)
+  let #AllowOtherYtd    = round(#IAllowOtherYtd,2)
+  let #GratuityYtd      = round(#IGratuityYtd,2)
+  Let #RetireYtd        = round(#IRetireYtd,2)
+  let #OsPensionYtd     = round(#IOsPensionYtd,2)
+  let #VolEmplrCpfYtd   = round(#IVolEmplrCpfYtd,2)
+  let #ShareGainsYtd    = round(#IShareGainsYtd,2)
+  let #GainBfrYtd       = round(#IGainBfrYtd,0)
+  let #BikYtd           = round(#IBikYtd,2)
+
+  let #Others           =  #ComssnYtd
+                        +  #PensionYtd
+                        +  #AllowTransYtd
+                        +  #AllowEntYtd
+                        +  #AllowOtherYtd
+                        +  #GratuityYtd
+                        +  #RetireYtd
+                        +  #OsPensionYtd
+                        +  #VolEmplrCpfYtd
+                        +  #ShareGainsYtd
+                        +  #BikYtd
+
+  Let #Others = Trunc(#others,0)
+  let #GrsYtd           = floor(#IGrsYtd)
+  let #BonusYtd         = floor(#IBonusYtd) + floor(#IContrctBonusYtd)
+
+  let #DirfeeYtd        = floor(#IDirfeeYtd)
+
+!Total Amount
+  let #TotalAmount      =  #GrsYtd
+                        +  #BonusYtd
+                        +  #DirfeeYtd
+                        +  #Others
+
+  Let #TotalAmount = Trunc(#TotalAmount,2)
+  Let #TotalAmount = floor(#TotalAmount)
+  let $TotalAmount = ltrim(edit(to_char(#TotalAmount),'9999999999'),' ')
+  do Write-Entry-Detail(11,'128',$TotalAmount ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+  let #TotTotalAmount = #TotTotalAmount + #TotalAmount
+
+!Donation
+  let $Donation = ltrim(edit(to_char(#DonationYtd),'999999'),' ')
+  do Write-Entry-Detail(11,'367',$Donation ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+  let #TotDonation = #TotDonation + #DonationYtd
+
+!CPF/Designated pension/fund
+  let $CPFDesig = ltrim(edit(to_char(#CpfCompYtd),'99999999'),' ')
+  do Write-Entry-Detail(11,'368',$CPFDesig ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+  let #TotCPFDesig = #TotCPFDesig + #CpfCompYtd
+
+!Insurance
+  let $Insurance = ltrim(edit(to_char(#InsuranceYtd),'999999'),' ')
+  do Write-Entry-Detail(11,'67',$Insurance ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+  let #TotInsurance = #TotInsurance + #InsuranceYtd
+
+!Salary
+  let #GrsYtd = floor(#GrsYtd)
+  let $Salary = ltrim(edit(to_char(#GrsYtd),'9999999999'),' ')
+  do Write-Entry-Detail(11,'776',$Salary ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+  let #TotSalary = #TotSalary + #GrsYtd
+!Bonus
+  let #BonusYtd = floor(#BonusYtd)
+  let $Bonus = ltrim(edit(to_char(#BonusYtd),'9999999999'),' ')
+  do Write-Entry-Detail(11,'369',$Bonus ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+  let #TotBonus = #TotBonus + #BonusYtd
+
+!Director's fee
+  let #DirfeeYtd = floor(#DirfeeYtd)
+  let $DirFee = ltrim(edit(to_char(#DirfeeYtd),'9999999999'),' ')
+  do Write-Entry-Detail(11,'340',$DirFee ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+  let #TotDirFee = #TotDirFee + #DirfeeYtd
+
+!Others
+  Let #Others = Trunc(#Others , 0)
+  let $Others = ltrim(edit(to_char(#Others),'9999999999'),' ')
+  do Write-Entry-Detail(11,'275',$Others ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+  Let #TotOthers = #TotOthers + #Others
+
+!Gross commission
+  let $GrossComm = ltrim(edit(to_char(#ComssnYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'265',$GrossComm  ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Pension
+  let $Pension = ltrim(edit(to_char(#PensionYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'341',$Pension  ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Transport allowance
+  let $AllowTrans = ltrim(edit(to_char(#AllowTransYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'342',$AllowTrans ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Entertainment allowance
+  let $AllowEnt = ltrim(edit(to_char(#AllowEntYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'343',$AllowEnt ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Other allowance
+  let $AllowOther = ltrim(edit(to_char(#AllowOtherYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'344',$AllowOther ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Gratuity/compensation
+  let $Gratuity = ltrim(edit(to_char(#GratuityYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'345',$Gratuity ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Retirement benefit till 31/12/92
+  let $RetirePre93 = ltrim(edit(to_char(#RetirePre93Accr),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'346',$RetirePre93 ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Retirement benefit from 1993
+  let $RetirePost93 = ltrim(edit(to_char(#RetireYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'347',$RetirePost93 ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Contribution made by employer to pension/fund
+  let $ErPenContrib = ltrim(edit(to_char(#OsPensionYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'348',$ErPenContrib ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Excess/voluntary contribution to CPF by employer
+  let $ErXSContrib = ltrim(edit(to_char(#VolEmplrCpfYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'349',$ErXSContrib ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Gain/profit from share option
+  let $ShareGains = ltrim(edit(to_char(#ShareGainsYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'350',$ShareGains ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+!Value of benefits-in-kind
+  let $Bik = ltrim(edit(to_char(#BikYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'351',$Bik,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!Employee voluntary contribution
+  if $ICpfVolContType = 'P'  !Overseas Posting
+    let $EeVolContribOs  = ltrim(edit(to_char(#CpfVolYtd),'99999999'),' ')
+  else                           !Other
+    let $EeVolContribOs  = '0'
+  end-if
+  let $EeVolContribOs = '0'
+
+!Employee voluntary contribution (overseas posting)
+  do Write-Entry-Detail(11,'352',$EeVolContribOs,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!366 Contribution for mosque building fund
+  do Write-Entry-Detail(11,'366',$Empl_Tot_Mbf,'','','','','','','','')
+  let #ExemptIncome = floor(#ExemptIncome)
+  let $ExemptIncome = ltrim(edit(to_char(#ExemptIncome),'9999999999'),' ')
+
+!370 Exempt Income subject to tax remission
+
+ If $Exmpt_Indicator <> ' '
+   If $Exmpt_Indicator = '6' 
+    do Write-Entry-Detail(11,'370',$ExemptIncome,'','','','','','','','')      !Segment 11 - MOA
+   Else  
+     if $Exmpt_Indicator <> '6' and #ExemptIncome > 0 
+      do Write-Entry-Detail(11,'370',$ExemptIncome,'','','','','','','','')      !Segment 11 - MOA
+     End-If
+   End-if 
+ Else
+  do Write-Entry-Detail(11,'370',$ExemptIncome,'','','','','','','','')      !Segment 11 - MOA
+ end-if
+  let #Income_Empr = floor(#Income_Empr)
+  let $Income_Empr = ltrim(edit(to_char(#Income_Empr),'9999999999'),' ')
+ let $incm_indcator = &I.GPSG_ER_PAYS_TAX 
+ If $incm_indcator = 'Y'
+ let $Income_Empr = ' '
+ end-if
+!371 Amt of employment income for which tax is borne by employer.
+  do Write-Entry-Detail(11,'371',$Income_Empr,'','','','','','','','')      !Segment 11 - MOA
+
+  let #Income_Employee = floor(#Income_Employee)
+  let $Income_Employee = ltrim(edit(to_char(#Income_Employee),'9999999999'),' ')
+ If $incm_indcator = 'Y' or $incm_indcator = 'P'
+ let $Income_Employee = ' '
+ end-if
+!372 Fixed Amt of Income Tax liability for which tax is borne by employee
+  do Write-Entry-Detail(11,'372',$Income_Employee,'','','','','','','','')      !Segment 11 - MOA
+
+!373 Compensation/Retrenchment
+  let $Compensation = ltrim(edit(to_char(#ILossOfficeYtd),'9999999999.99'),' ')
+  do Write-Entry-Detail(11,'373',$Compensation ,'','','','','','','','')      !Segment 11 - MOA
+
+
+  !Gains & Profits from Share Options for S10(1)(g)
+   let #IGainBfrYtd = floor(#IGainBfrYtd)
+   let $ShareGainsBefore = ltrim(edit(to_char(#IGainBfrYtd),'9999999999'),' ')
+ do Write-Entry-Detail(11,'374',$ShareGainsBefore,'','','','','','','','')
+                                                          !Segment 11 - MOA
+
+!12.DTM
+!Details Information - Dates
+
+!Date Of Birth
+! convert native date to dtu without delimiters eg. 19990101
+   Do format-Datetime($PDBirthdate,$BirthDate,{DEFCMP},'','')
+
+  do Write-Entry-Detail(5,'329',$BirthDate,'102','','','','','','','')
+                                                          !Segment 12 - DTM
+!Payment From Date
+
+  if substr($EmplStartDate,1,4) = $TaxYear
+     let $PaymentFromDate =  $Emplstartdate
+  else
+     let $PaymentFromDate = $TaxYear || '0101' ! ie.01-Jan of the basis year
+  end-if
+
+  if rtrim($PaymentFromDate,' ') <> ''
+     do Write-Entry-Detail(5,'155',$PaymentFromDate,'102','','','','','','','')
+                                                             !Segment 12 - DTM
+  else
+     do Write-Entry-Detail(5,'155',$PaymentFromDate,'','','','','','','','')
+                                                             !Segment 12 - DTM
+  end-if
+
+
+!Payment To Date
+  if $CessationDate = ' '
+
+     let $PaymentToDate = $TaxYear || '1231'  ! Will be defaulted by IRAS to 31-Dec of basis year
+
+  else
+
+    if  substr($CessationDate,1,4) = $TaxYear
+      let $PaymentToDate = $CessationDate
+
+    else
+     let $PaymentToDate = $TaxYear || '1231'  ! Will be defaulted by IRAS to 31-Dec of basis year
+
+    end-if
+  end-if
+  if rtrim($PaymentToDate,' ') <> ''
+     do Write-Entry-Detail(5,'156',$PaymentToDate,'102','','','','','','','')
+                                                             !Segment 12 - DTM
+  else
+     do Write-Entry-Detail(5,'156',$PaymentToDate,'','','','','','','','')
+                                                             !Segment 12 - DTM
+  end-if
+
+
+!Date Of Commencement
+! If Employee has joined prior to 01/01/1969 and terminated in the current tax year.
+! we will have set the Cessation indicator to Yes and therefore must print the hire and termination date.
+  if $CessProvApplInd = 'Y'
+     if rtrim($EmplStartDate,' ') <> ''
+        do Write-Entry-Detail(5,'157',$EmplStartDate,'102','','','','','','','')
+                                                                !Segment 12 - DTM
+     else
+        do Write-Entry-Detail(5,'157',$EmplStartDate,'','','','','','','','')
+                                                                !Segment 12 - DTM
+     end-if
+  else
+     if rtrim($JobCommenceDate,' ') <> ''
+        do Write-Entry-Detail(5,'157',$JobCommenceDate,'102','','','','','','','')
+                                                                !Segment 12 - DTM
+     else
+        do Write-Entry-Detail(5,'157',$JobCommenceDate,'','','','','','','','')
+                                                                !Segment 12 - DTM
+     end-if
+  end-if
+
+
+!Date Of Cessation
+
+  if  substr($CessationDate,1,4) = $TaxYear
+     if rtrim($CessationDate,' ') <> '' and $CessationDate >= $JobCommenceDate
+       do Write-Entry-Detail(5,'158',$CessationDate,'102','','','','','','','')
+                                                             !Segment 12 - DTM
+     else
+       do Write-Entry-Detail(5,'158',$CessationDate,'','','','','','','','')
+                                                         !Segment 12 - DTM
+    end-if
+  else
+     let $CessationDate = ''
+     do Write-Entry-Detail(5,'158',$CessationDate,'','','','','','','','')
+  end-if
+
+
+
+!Gross Commission Payment From Date
+! convert native date to dtu without delimiters eg. 19990101
+  Do format-Datetime($IComssnFromDt,$ComssnFromDt,{DEFCMP},'','')
+  if rtrim($ComssnFromDt,' ') <> ''
+     do Write-Entry-Detail(5,'159',$ComssnFromDt,'102','','','','','','','')
+                                                          !Segment 12 - DTM
+  else
+     do Write-Entry-Detail(5,'159',$ComssnFromDt,'','','','','','','','')
+                                                          !Segment 12 - DTM
+  end-if
+!Gross Commission Payment To Date
+! convert native date to dtu without delimiters eg. 19990101
+  Do format-Datetime($IComssnToDt,$ComssnToDt,{DEFCMP},'','')
+  if rtrim($ComssnToDt,' ') <> ''
+     do Write-Entry-Detail(5,'160',$ComssnToDt,'102','','','','','','','')
+                                                             !Segment 12 - DTM
+  else
+     do Write-Entry-Detail(5,'160',$ComssnToDt,'','','','','','','','')
+                                                             !Segment 12 - DTM
+  end-if
+!Date of declaration of bonus
+! convert native date to dtu without delimiters eg. 19990101
+  Do format-Datetime($IBonusDeclaredDt,$BonusDeclaredDt,{DEFCMP},'','')
+  if rtrim($BonusDeclaredDt,' ') <> ''
+     do Write-Entry-Detail(5,'161',$BonusDeclaredDt,'102','','','','','','','')
+                                                          !Segment 12 - DTM
+  else
+     do Write-Entry-Detail(5,'161',$BonusDeclaredDt,'','','','','','','','')
+                                                          !Segment 12 - DTM
+  end-if
+!Date of approval of director's fee
+! convert native date to dtu without delimiters eg. 19990101
+  Do format-Datetime($IDirfeeAprvdDt,$DirfeeAprvdDt,{DEFCMP},'','')
+  if rtrim($DirfeeAprvdDt,' ') <> ''
+     do Write-Entry-Detail(5,'162',$DirfeeAprvdDt,'102','','','','','','','')
+
+  else
+     do Write-Entry-Detail(5,'162',$DirfeeAprvdDt,'','','','','','','','')
+  end-if
+
+! Date of Approval
+
+  if ($Approval = 'Y')
+     do Write-Entry-Detail(5,'163',$App_Dt,'102','','','','','','','')
+  else
+     do Write-Entry-Detail(5,'163','','','','','','','','','')
+  end-if
+
+
+!Date of Payroll
+  do Write-Entry-Detail(5,'164',$Payroll_Dt,'','','','','','','','')
+
+!Name of fund for retirement
+  do Write-Entry-Detail(14,'AEV',$IRetireFund,'','','','','','','','')
+                                                          !Segment 14 - FTX
+!Name of designated pension for which employee made contribution
+  do Write-Entry-Detail(14,'AEW',$IPensionFundName,'','','','','','','','')
+                                                          !Segment 14 - FTX
+!Remarks
+  !do Write-Entry-Detail(14,'AEX',$IRemarksText,'','','','','','','','')
+                                                          !Segment 14 - FTX
+end-procedure
+
+!***********************************************************************
+! Procedure: Open-File                                                 *
+!            This procedure opens the CPFLine file.                    *
+!***********************************************************************
+begin-procedure Open-File
+
+  let #filenum = #filenum + 1
+  do Format-Number(#filenum, $filenum, '009')
+  let $File1 = 'IR8A' || $Company_Tax_Ref || $FileNum || '.TXT'
+  let $File1 = '{FILEPREFIX}' || $File1 || '{FILESUFFIX}'
+  show 'CPFLine FileName = ' $File1
+  open $File1 as #filenum for-writing record=700:fixed  ! CPFLine File
+
+  let $FileOpen = 'Y'
+end-procedure
+
+!***********************************************************************
+! Procedure: Write-Entry-Detail                                        *
+!            Write data into CPFLine interface file depending          *
+!            on Segment#.                                              *
+!***********************************************************************
+begin-procedure Write-Entry-Detail(#Segment, $Parm1, $Parm2,
+                                             $Parm3, $Parm4,
+                                             $Parm5, $Parm6,
+                                             $Parm7,$Parm8, $Parm9, $Parm10)
+  evaluate #Segment
+    when = 1
+      let $Var1 = 'UNB'
+      write #_filenum from $Var1:156     ! 1
+                   $Parm1:173     ! 157
+      break
+    when = 2
+      let $Var1 = 'UNH'
+      let $Var2 = '011'
+      write #_filenum from $Var1:19      ! 1
+                   $Parm1:6      ! 20
+                   $Var2:304     ! 26
+      break
+    when = 3
+      let $Var1 = 'BGM'
+      let $Var2 = '938'
+      write #_filenum from $Var1:5       ! 1
+                   $Var2:324     ! 6
+      break
+    when = 4
+      let $Var1 = 'RFF'
+      write #_filenum from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:321    ! 9
+      break
+    when = 5
+      let $Var1 = 'DTM'
+      write #_filenum from $Var1:5       ! 1
+
+                   $Parm1:3      ! 6
+                   $Parm2:8      ! 9
+                   $Parm3:313    ! 17
+      break
+    when = 6
+      let $Var1 = 'NAD'
+      let $Var2 = 'SE'
+      write #_filenum from $Var1:5       ! 1
+                   $Var2:3       ! 6
+                   $Parm1:12     ! 9
+                   $Parm2:239    ! 21
+                   $Parm3:60     ! 260
+                   $Parm4:10     ! 320
+                   $Parm5:50     ! 330
+      break
+    when = 7
+      let $Var1 = 'COM'
+      write #_filenum from $Var1:5       ! 1
+                   $Parm1:20     ! 6
+      break
+    when = 8
+      let $Var1 = 'LIN'
+      write #_filenum from $Var1:5       ! 1
+                   $Parm1:324    ! 6
+      break
+    when = 9
+      let $Var1 = 'RFF'
+      write #_filenum from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:321    ! 9
+      break
+
+    when = 11
+      let $Var1 = 'MOA'
+      write #_filenum from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:321    ! 9
+      break
+    when = 12
+      let $Var1 = 'QTY'
+      write #_filenum from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:321    ! 9
+      break
+    when = 13
+      let $Var1 = 'DTM'
+      write #_filenum from $Var1:5       ! 1
+                   $Parm1:3      ! 6
+                   $Parm2:8      ! 9
+                   $Parm3:313    ! 17
+      break
+    when = 14
+      let $Var1 = 'FTX'
+      write #_filenum from $Var1:5       ! 1
+                   $Parm1:29     ! 6
+                   $Parm2:200    ! 35
+      break
+    when = 17
+      let $Var1 = 'RES'
+      let $Var2 = 'ZZ'
+      write #_filenum from $Var1:5       ! 1
+                   $Var2:324     ! 6
+      break
+    when-other
+      show 'Invalid $Segment_Type: ' $Segment_Type
+      break
+  end-evaluate
+end-procedure
+
+!***********************************************************************
+! Procedure: Write-Employee-NAD-Seg                                    *
+!            Write data into CPFLine interface file depending          *
+!            for employee NAD segment type                             *
+!***********************************************************************
+begin-procedure Write-Employee-NAD-Seg( $Parm1, $Parm2, $Parm3, $Parm4,
+                                        $Parm5, $Parm6, $Parm7, $Parm8,
+                                        $Parm9, $Parm10,$Parm11,$Parm12,
+                                        $Parm13,$Parm14,$Parm15,$Parm16,
+                                        $Parm17,$Parm18,$Parm19,$Parm20,
+                                        $Parm21,$Parm22,$Parm23,$Parm24)
+
+  let $Var1 = 'NAD'
+  let $Var2 = 'PE'
+  write #_filenum from $Var1:5       ! 1
+               $Var2:3       ! 6
+               $Parm1:12     ! 9
+               $Parm2:29     ! 21
+               $Parm3:30     ! 50
+               $Parm4:40     ! 80
+               $Parm5:30     ! 120
+               $Parm6:5      ! 150
+               $Parm7:30     ! 155
+               $Parm8:5      ! 185
+               $Parm9:30     ! 190
+               $Parm10:5     ! 220
+               $Parm11:80    ! 225
+               $Parm12:99    ! 305
+               $Parm13:10    ! 403
+               $Parm14:25    ! 413
+               $Parm15:32    ! 438
+               $Parm16:38    ! 470
+               $Parm17:3     ! 508
+               $Parm18:32    ! 511
+               $Parm19:5     ! 543
+               $Parm20:38    ! 548
+               $Parm21:6     ! 587
+               $Parm22:3     ! 593
+               $Parm23:6     ! 632
+               $Parm24:3     ! 638
+end-procedure
+
+
+!***********************************************************************
+! Procedure: get-citizenship-country                                   !
+!            select citizenship country for emplid and translate
+!            to nationality code
+!***********************************************************************
+begin-procedure get-citizenship-country
+!
+
+  let $Cntry = ''
+
+  begin-SELECT
+CZN.CITIZENSHIP_STATUS
+     if &CZN.CITIZENSHIP_STATUS = '1' or &CZN.CITIZENSHIP_STATUS = '2' or &CZN.CITIZENSHIP_STATUS = '5'
+        let $Cntry = 'SGP'
+     else
+        if &CZN.CITIZENSHIP_STATUS = '7'
+           let $Cntry = ''
+        end-if
+     end-if
+
+   FROM PS_CITIZENSHIP CZN
+  WHERE CZN.EMPLID = $PrevEmplid
+    AND CZN.DEPENDENT_ID = ' '
+    AND CZN.COUNTRY = 'SGP'
+  end-SELECT
+
+  if $Cntry = ''
+     begin-SELECT
+CZN1.COUNTRY
+        let $Cntry = &CZN1.COUNTRY
+
+      FROM PS_CITIZENSHIP CZN1
+     WHERE CZN1.EMPLID       = $PrevEmplid
+       AND CZN1.DEPENDENT_ID = ' '
+       AND CZN1.COUNTRY     <> 'SGP'
+     end-SELECT
+  end-if
+
+  if $Cntry = ''
+     begin-SELECT
+CZP.COUNTRY_PASSPORT
+CZP.DT_ISSUED
+        let $Cntry = &CZP.COUNTRY_PASSPORT
+
+  FROM PS_CITIZEN_PSSPRT CZP
+ WHERE CZP.EMPLID = $PrevEmplid
+   AND CZP.DEPENDENT_ID = ' '
+ ORDER BY CZP.DT_ISSUED
+     end-SELECT
+  end-if
+
+  evaluate $Cntry
+     when = 'SGP' ! Singapore
+        let $NationalityCode    = '301'
+     when = 'IDN' ! Indonesia
+        let $NationalityCode    = '303'
+     when = 'MYS' ! Malaysia
+        let $NationalityCode    = '304'
+     when = 'PHL' ! Phillipines
+        let $NationalityCode    = '305'
+     when = 'THA' ! Thailand
+        let $NationalityCode    = '306'
+     when = 'JPN' ! Japan
+        let $NationalityCode    = '331'
+     when = 'TWN' ! Taiwan
+        let $NationalityCode    = '334'
+     when = 'CHN' ! China
+        let $NationalityCode    = '336'
+     when = 'HKG' ! Hong Kong
+        let $NationalityCode    = '336'
+     when = 'GBR' ! UK
+        let $NationalityCode    = '110'
+     when = 'USA' ! USA
+        let $NationalityCode    = '503'
+     when = 'AUS' ! Australia
+        let $NationalityCode    = '701'
+     when = 'NZL' ! New Zealand
+        let $NationalityCode    = '705'
+     when = 'BEL' ! Belgium
+        let $NationalityCode    = '101'
+     when = 'DNK' ! Denmark
+        let $NationalityCode    = '102'
+     when = 'FRA' ! France
+        let $NationalityCode    = '103'
+     when = 'DEU' ! Germany
+        let $NationalityCode    = '104'
+     when = 'GRC' ! Greece
+        let $NationalityCode    = '105'
+     when = 'IRL' ! Ireland
+        let $NationalityCode    = '106'
+     when = 'ITA' ! Italy
+        let $NationalityCode    = '107'
+     when = 'LUX' ! Luxembourg
+        let $NationalityCode    = '108'
+     when = 'NLD' ! Netherlands
+        let $NationalityCode    = '109'
+     when = 'PRT' ! Portugal
+        let $NationalityCode    = '111'
+     when = 'ESP' ! spain
+        let $NationalityCode    = '112'
+     when = 'AUT' ! Austria
+        let $NationalityCode    = '131'
+     when = 'FIN' ! finland
+        let $NationalityCode    = '132'
+     when = 'ISL' ! Iceland
+        let $NationalityCode    = '133'
+     when = 'NOR' ! Norway
+        let $NationalityCode    = '134'
+     when = 'SJM' ! Svalbard
+        let $NationalityCode    = '135'
+     when = 'SWE' ! Sweden
+        let $NationalityCode    = '136'
+     when = 'CHE' ! Switzerland
+        let $NationalityCode    = '137'
+     when = 'LIE' ! Liechstenstein
+        let $NationalityCode    = '138'
+     when = 'BVT' ! Bouvet
+        let $NationalityCode    = '139'
+     when = 'FRO' ! faeroe
+        let $NationalityCode    = '141'
+     when = 'GRL' ! Greenland
+        let $NationalityCode    = '142'
+     when = 'MCO' ! Monaco
+        let $NationalityCode    = '143'
+     when = 'SMR' ! San Marino
+        let $NationalityCode    = '144'
+     when = 'VAT' ! Vatican
+        let $NationalityCode    = '145'
+     when = 'TUR' ! Turkey
+        let $NationalityCode    = '152'
+     when = 'AND' ! Andorra
+        let $NationalityCode    = '153'
+     when = 'GIB' ! Gibraltar
+        let $NationalityCode    = '154'
+     when = 'MLT' ! Malta
+        let $NationalityCode    = '155'
+     when = 'ALB' ! Albania
+        let $NationalityCode    = '201'
+     when = 'BGR' ! Bulgaria
+        let $NationalityCode    = '202'
+     when = 'CZE' ! Czech Republic
+        let $NationalityCode    = '234'
+     when = 'HUN' ! Hungary
+        let $NationalityCode    = '205'
+     when = 'POL' ! Poland
+        let $NationalityCode    = '206'
+     when = 'ROU' ! Romania
+        let $NationalityCode    = '207'
+     when = 'YUG' ! Yugoslavia
+        let $NationalityCode    = '209'
+     when = 'UKR' ! Ukrainia
+        let $NationalityCode    = '212'
+     when = 'EST' ! Estonia
+        let $NationalityCode    = '213'
+     when = 'LVA' ! Latvia
+        let $NationalityCode    = '214'
+     when = 'LTU' ! Lithuania
+        let $NationalityCode    = '215'
+     when = 'GEO' ! Georgia
+        let $NationalityCode    = '216'
+     when = 'ARM' ! Armenia
+        let $NationalityCode    = '217'
+     when = 'AZE' ! Azerbaijan
+        let $NationalityCode    = '218'
+     when = 'KGZ' ! Kyrgyzstan
+        let $NationalityCode    = '219'
+     when = 'KAZ' ! Kazakhstan
+        let $NationalityCode    = '221'
+     when = 'MDA' ! Moldova
+        let $NationalityCode    = '222'
+     when = 'RUS' ! Russia
+        let $NationalityCode    = '223'
+     when = 'TJK' ! Tajikistan
+        let $NationalityCode    = '224'
+     when = 'TKM' ! Turkmenistan
+        let $NationalityCode    = '225'
+     when = 'UZB' ! Uzbekistan
+        let $NationalityCode    = '226'
+     when = 'HRV' ! Croatia
+        let $NationalityCode    = '232'
+     when = 'SVN' ! Slovenia
+        let $NationalityCode    = '233'
+     when = 'SVK' ! Slovakia
+        let $NationalityCode    = '235'
+     when = 'IDN' ! Indonesia
+        let $NationalityCode    = '303'
+     when = 'BRN' ! Brunei
+        let $NationalityCode    = '302'
+     when = 'TLS' ! East Timor
+        let $NationalityCode    = '307'
+     when = 'MMR' ! Myanmar
+        let $NationalityCode    = '311'
+     when = 'LAO' ! Lao People's Democratic Rep
+        let $NationalityCode    = '313'
+     when = 'VNM' ! Viet Nam
+        let $NationalityCode    = '314'
+     when = 'HKG' ! Hong Kong
+        let $NationalityCode    = '332'
+     when = 'KOR' ! Korea, Republic of
+        let $NationalityCode    = '333'
+     when = 'MAC' ! Macao
+        let $NationalityCode    = '335'
+     when = 'PRK' ! North Korea
+        let $NationalityCode    = '337'
+     when = 'MNG' ! Mongolia
+        let $NationalityCode    = '338'
+     when = 'AFG' ! Afghanistan
+        let $NationalityCode    = '351'
+     when = 'BGD' ! Bangladesh
+        let $NationalityCode    = '352'
+     when = 'BTN' ! Bhutan
+        let $NationalityCode    = '353'
+     when = 'IND' ! India
+        let $NationalityCode    = '354'
+     when = 'MDV' ! Maldives
+        let $NationalityCode    = '355'
+     when = 'NPL' ! Nepal
+        let $NationalityCode    = '356'
+     when = 'PAK' ! Pakistan
+        let $NationalityCode    = '357'
+     when = 'LKA' ! Sri Lanka
+        let $NationalityCode    = '358'
+     when = 'BHR' ! Bahrain
+        let $NationalityCode    = '371'
+     when = 'CYP' ! Cyprus
+        let $NationalityCode    = '372'
+     when = 'IRN' ! Iran
+        let $NationalityCode    = '373'
+     when = 'IRQ' ! Iraq
+        let $NationalityCode    = '374'
+     when = 'ISR' ! Israel
+        let $NationalityCode    = '375'
+     when = 'JOR' ! jordan
+        let $NationalityCode    = '376'
+     when = 'KWT' ! Kuwait
+        let $NationalityCode    = '377'
+     when = 'LBN' ! Lebanon
+        let $NationalityCode    = '378'
+     when = 'OMN' ! Oman
+        let $NationalityCode    = '379'
+     when = 'QAT' ! Qatar
+        let $NationalityCode    = '380'
+     when = 'SAU' ! Saudi Arabia
+        let $NationalityCode    = '381'
+     when = 'SYR' ! Syrian
+        let $NationalityCode    = '382'
+     when = 'ARE' ! UAE
+        let $NationalityCode    = '383'
+     when = 'YEM' ! Rep of Yemen
+        let $NationalityCode    = '385'
+     when = 'PSE' ! Palestine
+        let $NationalityCode    = '386'
+     when = 'DZA' ! Algeria
+        let $NationalityCode    = '401'
+     when = 'EGY' ! Egypt
+        let $NationalityCode    = '402'
+     when = 'LBY' ! Libya
+        let $NationalityCode    = '403'
+     when = 'MAR' ! Morocco
+        let $NationalityCode    = '404'
+     when = 'SDN' ! Sudan
+        let $NationalityCode    = '405'
+     when = 'TUN' ! Tunisia
+        let $NationalityCode    = '406'
+     when = 'DJI' ! Djibouti
+        let $NationalityCode    = '407'
+     when = 'ETH' ! Ethiopia
+        let $NationalityCode    = '408'
+     when = 'SOM' ! Somalia
+        let $NationalityCode    = '409'
+     when = 'ERI' ! Eritrea
+        let $NationalityCode    = '410'
+     when = 'GHA' ! Ghana
+        let $NationalityCode    = '421'
+     when = 'CIV' ! Cote D'ivoire
+        let $NationalityCode    = '422'
+     when = 'KEN' ! Kenya
+        let $NationalityCode    = '423'
+     when = 'LBR' ! Liberia
+        let $NationalityCode    = '424'
+     when = 'MDG' ! Madagascar
+        let $NationalityCode    = '425'
+     when = 'MUS' ! Mauritius
+        let $NationalityCode    = '426'
+     when = 'MOZ' ! Mozambique
+        let $NationalityCode    = '427'
+     when = 'NGA' ! Nigeria
+        let $NationalityCode    = '428'
+     when = 'REU' ! Reunion
+        let $NationalityCode    = '429'
+     when = 'TZA' ! Tanzania
+        let $NationalityCode    = '430'
+     when = 'UGA' ! Uganda
+        let $NationalityCode    = '431'
+     when = 'ZMB' ! Zambia
+        let $NationalityCode    = '432'
+     when = 'AGO' ! Angola
+        let $NationalityCode    = '451'
+     when = 'BEN' ! Benin
+        let $NationalityCode    = '452'
+     when = 'BWA' ! Botswana
+        let $NationalityCode    = '453'
+     when = 'BFA' ! Burnika Faso
+        let $NationalityCode    = '454'
+     when = 'BDI' ! Burundi
+        let $NationalityCode    = '455'
+     when = 'CMR' ! Cameroon
+        let $NationalityCode    = '456'
+     when = 'CPV' ! Cape Verde
+        let $NationalityCode    = '457'
+     when = 'CAF' ! Central African Rep
+        let $NationalityCode    = '458'
+     when = 'TCD' ! Chad
+        let $NationalityCode    = '459'
+     when = 'COM' ! Comoros
+        let $NationalityCode    = '460'
+     when = 'COG' ! Congo
+        let $NationalityCode    = '461'
+     when = 'GNQ' ! Equatorial Guinea
+        let $NationalityCode    = '462'
+     when = 'GAB' ! Gabon
+        let $NationalityCode    = '463'
+     when = 'GMB' ! Gambia
+        let $NationalityCode    = '464'
+     when = 'GIN' ! Rep of Guinea
+        let $NationalityCode    = '465'
+     when = 'GNB' ! Rep of Guinea-Bissau
+        let $NationalityCode    = '466'
+     when = 'LSO' ! Kingdom of Lesotho
+        let $NationalityCode    = '467'
+     when = 'MWI' ! Malawi
+        let $NationalityCode    = '468'
+     when = 'MLI' ! Mali
+        let $NationalityCode    = '469'
+     when = 'MRT' ! Mauritania
+        let $NationalityCode    = '470'
+     when = 'NAM' ! Namibia
+        let $NationalityCode    = '471'
+     when = 'NER' ! Niger
+        let $NationalityCode    = '472'
+     when = 'RWA' ! Rwanda
+        let $NationalityCode    = '473'
+     when = 'STP' ! Sao Tome and Principe
+        let $NationalityCode    = '474'
+     when = 'SEN' ! Senegal
+        let $NationalityCode    = '475'
+     when = 'SYC' ! Seychelles
+        let $NationalityCode    = '476'
+     when = 'SLE' ! Sierra Leone
+        let $NationalityCode    = '477'
+     when = 'ZAF' ! South Africa
+        let $NationalityCode    = '478'
+     when = 'ESH' ! Western Sahara
+        let $NationalityCode    = '479'
+     when = 'SWZ' ! Swaziland
+        let $NationalityCode    = '480'
+     when = 'TGO' ! Togo
+        let $NationalityCode    = '481'
+     when = 'ZWE' ! Zimbabwe
+        let $NationalityCode    = '483'
+     when = 'SHN' ! St. Helena
+        let $NationalityCode    = '484'
+     when = 'CAN' ! Canada
+        let $NationalityCode    = '501'
+     when = 'PRI' ! Puerto Rico
+        let $NationalityCode    = '502'
+     when = 'UMI' ! US Minor Outlaying Islands
+        let $NationalityCode    = '504'
+     when = 'SPM' ! St. Pierre
+        let $NationalityCode    = '505'
+     when = 'ARG' ! Argentina
+        let $NationalityCode    = '601'
+     when = 'BRA' ! Brazil
+        let $NationalityCode    = '602'
+     when = 'CHL' ! Chile
+        let $NationalityCode    = '603'
+     when = 'COL' ! Colombia
+        let $NationalityCode    = '604'
+     when = 'ECU' ! Ecuador
+        let $NationalityCode    = '605'
+     when = 'MEX' ! Mexico
+        let $NationalityCode    = '606'
+     when = 'PRY' ! Paraguay
+        let $NationalityCode    = '607'
+     when = 'PER' ! Peru
+        let $NationalityCode    = '608'
+     when = 'URY' ! Uruguay
+        let $NationalityCode    = '609'
+     when = 'VEN' ! Venezuela
+        let $NationalityCode    = '610'
+     when = 'CUB' ! Cuba
+        let $NationalityCode    = '621'
+     when = 'DOM' ! Dominican Republic
+        let $NationalityCode    = '622'
+     when = 'ANT' ! Netherlands Antilles
+        let $NationalityCode    = '623'
+     when = 'PAN' ! Panama
+        let $NationalityCode    = '624'
+     when = 'ABW' ! Aruba
+        let $NationalityCode    = '625'
+     when = 'BHS' ! Bahamas Island
+        let $NationalityCode    = '641'
+     when = 'BRB' ! Barbados
+        let $NationalityCode    = '642'
+     when = 'BLZ' ! Belize
+        let $NationalityCode    = '643'
+     when = 'BMU' ! Bermuda
+        let $NationalityCode    = '645'
+     when = 'BOL' ! Bolivia
+        let $NationalityCode    = '646'
+     when = 'CYM' ! Cayman Islands
+        let $NationalityCode    = '647'
+     when = 'CRI' ! Costa Rica
+        let $NationalityCode    = '648'
+     when = 'DMA' ! Dominica
+        let $NationalityCode    = '649'
+     when = 'SLV' ! El Salvador
+        let $NationalityCode    = '650'
+     when = 'FLK' ! Falkland Island
+        let $NationalityCode    = '651'
+     when = 'GUF' ! French Guiana
+        let $NationalityCode    = '652'
+     when = 'GLP' ! Guadeloupe
+        let $NationalityCode    = '654'
+     when = 'GTM' ! Guatemala
+        let $NationalityCode    = '655'
+     when = 'GUY' ! Guyana
+        let $NationalityCode    = '656'
+     when = 'HTI' ! Haiti
+        let $NationalityCode    = '657'
+     when = 'HND' ! Honduras
+        let $NationalityCode    = '658'
+     when = 'JAM' ! Jamaica
+        let $NationalityCode    = '659'
+     when = 'NIC' ! Nicaragua
+        let $NationalityCode    = '660'
+     when = 'MTQ' ! Martinique
+        let $NationalityCode    = '661'
+     when = 'MSR' ! Montserrat
+        let $NationalityCode    = '662'
+     when = 'KNA' ! St Kitts Nevis
+        let $NationalityCode    = '663'
+     when = 'LCA' ! St. Lucia
+        let $NationalityCode    = '664'
+     when = 'SUR' ! Surinam
+        let $NationalityCode    = '666'
+     when = 'TTO' ! Trinidad and Tobago
+        let $NationalityCode    = '667'
+     when = 'TCA' ! Turks and Caicos Islands
+        let $NationalityCode    = '668'
+     when = 'VIR' ! Virgin Islands US
+        let $NationalityCode    = '669'
+     when = 'AIA' ! Anguilla
+        let $NationalityCode    = '670'
+     when = 'VGB' ! British Virgin Islands
+        let $NationalityCode    = '671'
+     when = 'FJI' ! Fiji
+        let $NationalityCode    = '702'
+     when = 'URU' ! Nauru
+        let $NationalityCode    = '703'
+     when = 'NCL' ! New Caledonia
+        let $NationalityCode    = '704'
+     when = 'PNG' ! Papua New Guinea
+        let $NationalityCode    = '706'
+     when = 'WSM' ! Western Samoa
+        let $NationalityCode    = '707'
+     when = 'IOT' ! British Indian Ocean Territory
+        let $NationalityCode    = '708'
+     when = 'CXR' ! Christmas Island
+        let $NationalityCode    = '709'
+     when = 'CCK' ! Cocos Island
+        let $NationalityCode    = '710'
+     when = 'ATF' ! French Southern Territory
+        let $NationalityCode    = '711'
+     when = 'HMD' ! Heard and McDonald Island
+        let $NationalityCode    = '712'
+     when = 'NFK' ! Norfolk island
+        let $NationalityCode    = '713'
+     when = 'ASM' ! American Samoa
+        let $NationalityCode    = '721'
+     when = 'COK' ! Cook Island
+        let $NationalityCode    = '722'
+     when = 'PYF' ! French Polynesia
+        let $NationalityCode    = '723'
+     when = 'GUM' ! Guam
+        let $NationalityCode    = '724'
+     when = 'KIR' ! Kiribati
+        let $NationalityCode    = '725'
+     when = 'NIU' ! Niue
+        let $NationalityCode    = '726'
+     when = 'PCN' ! Pitcairn
+        let $NationalityCode    = '727'
+     when = 'SLB' ! Solomon Islands
+        let $NationalityCode    = '728'
+     when = 'TKL' ! Tokelau
+        let $NationalityCode    = '729'
+     when = 'TON' ! Tonga
+        let $NationalityCode    = '730'
+     when = 'TUV' ! Tuvalu
+        let $NationalityCode    = '731'
+     when = 'VUT' ! Vanuatu
+        let $NationalityCode    = '732'
+     when = 'WLF' ! Wallis and Futuna
+        let $NationalityCode    = '733'
+     when = 'MNP' ! North Mariana Islands
+        let $NationalityCode    = '734'
+     when = 'MHL' ! Marshall Islands
+        let $NationalityCode    = '735'
+     when = 'FSM' ! Micronesia
+        let $NationalityCode    = '736'
+     when = 'PLW' ! Palau
+        let $NationalityCode    = '737'
+     when-other
+        let $NationalityCode    = '999'
+  end-evaluate
+
+
+end-procedure
+
+!***********************************************************************
+! Procedure: get-Run-Type-SGP                                           !
+!            Fetch the SGP run type. Check the number of SGP run types  !
+!            that are tagged to the employee.
+!***********************************************************************
+
+begin-procedure get-Run-Type-SGP
+   Let #Count_Runtype = 0
+BEGIN-SELECT
+
+COUNT(DISTINCT L.RUN_TYPE)   &L.RUN_TYPE   
+
+  Let #Count_Runtype =  &L.RUN_TYPE
+
+  If #Count_Runtype <= 1
+    Do get-Bank-Acct
+  End-if
+
+  If #Count_Runtype >= 2
+   Do get-Bank-Acct-Mult_Runtype
+  End-if
+
+FROM PS_GP_NET_DIST_DTL L  WHERE L.EMPLID = $PrevEmplid AND L.CURRENCY_CD = 'SGD'
+
+END-SELECT
+
+End-procedure
+
+!***********************************************************************
+! Procedure: get-Bank-Acct                                               !
+!            Fetch the bank account to which salary is credited. Ideally !
+!            it is the primary bank account 
+!***********************************************************************
+
+begin-procedure get-Bank-Acct
+   Let $BANK_CD = ' '
+BEGIN-SELECT
+BD.BANK_CD    &BANK_CD
+
+   LET $BANK_CD = &BANK_CD
+   DO GET-BANK-INDICATOR
+
+FROM PS_PYE_BANKACCT BD  
+WHERE BD.EMPLID = $PrevEmplid  AND BD.CURRENCY_CD = 'SGD'   
+AND BD.ACCOUNT_ID = (SELECT DISTINCT GY.ACCOUNT_ID FROM PS_GP_NET_DIST_DTL GY WHERE GY.CURRENCY_CD = 'SGD' AND GY.EMPLID = $PrevEmplid
+AND GY.EMPL_RCD = (SELECT  DISTINCT JJY.EMPL_RCD FROM PS_JOB JJY WHERE JJY.EMPLID = GY.EMPLID AND JJY.JOB_INDICATOR = 'P' AND JJY.EFFDT =  (SELECT MAX(J1Y.EFFDT)
+                    FROM PS_JOB J1Y
+                   WHERE J1Y.EMPLID = JJY.EMPLID
+                     AND J1Y.JOB_INDICATOR = 'P'
+                     AND J1Y.EFFDT <= $Year_End))  
+AND GY.PAYMENT_MTHD = 'T'
+AND GY.PRIMARY_ACCT_IND = 'Y' 
+AND GY.EFFDT = (SELECT MAX (NY.EFFDT) FROM PS_GP_NET_DIST_DTL NY WHERE GY.EMPLID = NY.EMPLID AND GY.EMPL_RCD = NY.EMPL_RCD AND NY.CURRENCY_CD = 'SGD' AND NY.PAYMENT_MTHD = 'T' 
+AND NY.EFFDT <=$Year_End))
+END-SELECT
+
+End-procedure
+
+!***********************************************************************
+! Procedure: get-Bank-Acct-Mult_Runtype                                               !
+!            Case when there are multiple SGP run types tagged to emplid!
+!            Fetch the bank account to which salary is credited. Ideally !
+!            it is the primary bank account 
+!***********************************************************************
+
+
+begin-procedure get-Bank-Acct-Mult_Runtype
+   Let $BANK_CD = ' '
+BEGIN-SELECT
+B1.BANK_CD    &BANK_CD1
+
+   LET $BANK_CD = &BANK_CD1
+ 
+  DO GET-BANK-INDICATOR
+
+FROM PS_PYE_BANKACCT B1  
+WHERE B1.EMPLID = $PrevEmplid AND B1.CURRENCY_CD = 'SGD' 
+AND B1.ACCOUNT_ID = (SELECT DISTINCT G1.ACCOUNT_ID FROM PS_GP_NET_DIST_DTL G1 , PS_GP_NET_DIST D3 WHERE G1.CURRENCY_CD = 'SGD' AND G1.EMPLID = $PrevEmplid 
+AND G1.EMPL_RCD = (SELECT  DISTINCT JJ1.EMPL_RCD FROM PS_JOB JJ1 WHERE JJ1.EMPLID = G1.EMPLID AND JJ1.JOB_INDICATOR = 'P' AND JJ1.EFFDT =  (SELECT MAX(J2.EFFDT)
+                    FROM PS_JOB J2
+                   WHERE J2.EMPLID = JJ1.EMPLID
+                     AND J2.JOB_INDICATOR = 'P'
+                     AND J2.EFFDT <= $Year_End))  
+AND G1.PAYMENT_MTHD = 'T'
+AND G1.PRIMARY_ACCT_IND = 'Y' 
+AND D3.EMPLID = G1.EMPLID  AND D3.DEFAULT_IND = 'Y' AND D3.RUN_TYPE = G1.RUN_TYPE 
+AND G1.EFFDT = (SELECT MAX (N1.EFFDT) FROM PS_GP_NET_DIST_DTL N1 , PS_GP_NET_DIST D4 WHERE G1.EMPLID = N1.EMPLID AND G1.EMPL_RCD = N1.EMPL_RCD AND N1.CURRENCY_CD = 'SGD' AND N1.PAYMENT_MTHD = 'T' 
+AND D4.DEFAULT_IND = 'Y' AND D4.RUN_TYPE = N1.RUN_TYPE AND D4.EMPLID = N1.EMPLID AND N1.EFFDT <=$Year_End))
+END-SELECT
+
+End-procedure
+
+!***************************************************************************
+! Procedure: GET-BANK-INDICATOR
+!***************************************************************************
+
+Begin-procedure GET-BANK-INDICATOR
+
+Begin-Select
+
+BN.GPSG_BANK_IND    &BN.GPSG_BANK_IND
+
+  Let $Bank = &BN.GPSG_BANK_IND 
+
+FROM PS_GPSG_BANK_IND BN
+WHERE BN.BANK_CD = $BANK_CD
+
+End-Select
+End-procedure
+
+
+!***************************************************************************
+! Procedure: get-creation-date
+!***************************************************************************
+begin-procedure get-creation-date
+
+Do format-Datetime(&RC.GPSG_CREATE_DATE, $Date_Created_Out, {DEFCMP},'','')
+
+!
+end-procedure
+!***********************************************************************
+! Procedure: get-cessation-date                            !
+!***********************************************************************
+begin-procedure get-cessation-date
+
+  Do format-Datetime(&I.TERMINATION_DT, $CessationDate, {DEFCMP}, '', '')
+
+end-procedure
+
+!************************************************************************
+! Procedure: get-payroll-date
+!***********************************************************************
+begin-procedure get-payroll-date
+
+   Do format-Datetime(&PR.PYMT_DT, $Payroll_Dt, {DEFCMP}, '', '')
+   let $Payroll_Dt = ''
+
+end-procedure
+!
+!***********************************************************************
+!  Procedure: Check-IR8S-Applicable                                    *
+!             Checks for the IR8S data                                 *
+!             $IR8SApplInd = 'Y' if applicable                         *
+!***********************************************************************
+begin-procedure Check-IR8S-Applicable
+  let $irasAlias = 'I1'
+  DO iras_form_where_clause
+  let #Found = 0
+
+begin-select distinct
+I1.EMPLID
+
+ let #Found = 1
+
+FROM [$iras_form_where2] I1
+ WHERE I1.EMPLID          = $PrevEmplid
+   AND I1.BALANCE_GRP_NUM = $PrevBalance_Grp_Num
+   AND I1.GPSG_CPY_TAX_REF = $Company_Tax_Ref
+   AND I1.GPSG_TAX_YEAR          = #Tax_Year
+  [$prcs_inst]
+end-select
+  let $irasAlias = 'I2'
+  DO iras_form_where_clause
+  if #Found
+    let $IR8SApplInd = 'Y'
+  else
+begin-select distinct
+I2.EMPLID
+
+ let $IR8SApplInd = 'Y'
+
+FROM [$iras_form_where3] I2
+ WHERE I2.EMPLID          = $PrevEmplid
+   AND I2.BALANCE_GRP_NUM = $PrevBalance_Grp_Num
+   AND I2.GPSG_CPY_TAX_REF           = $Company_Tax_Ref
+   AND I2.GPSG_TAX_YEAR          = #Tax_Year
+   [$prcs_inst]
+end-select
+  end-if
+
+end-procedure
+
+
+!***********************************************************************
+! Procedure: close-file                                                *
+!            Write trailer & footer recordS and close file.            *
+!***********************************************************************
+begin-procedure close-file
+!RFF Trailer Information - Indicators
+!Record Type
+  do Write-Entry-Detail(4,'AWJ','2','','','','','','','','')        !Segment 4 - RFF
+!No Of Employees being submitted
+  do Write-Entry-Detail(4,'AWY',$EmplOcc,'','','','','','','','')   !Segment 4 - RFF
+
+!MOA Trailer Information Total Monetary Amounts
+
+!Total amount of Payment
+  let $TotTotalAmount = ltrim(edit(to_char(#TotTotalAmount),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'353',$TotTotalAmount ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+!Total amount of salary
+  let $TotSalary = ltrim(edit(to_char(#TotSalary),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'354',$TotSalary ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+!Total amount of bonus
+  let $TotBonus = ltrim(edit(to_char(#TotBonus),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'355',$TotBonus ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+!Total amount of director's fee
+  let $TotDirFee = ltrim(edit(to_char(#TotDirFee),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'356',$TotDirFee ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+!Total amount of others
+  let $TotOthers = ltrim(edit(to_char(#TotOthers),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'357',$TotOthers,'','','','','','','','')
+                                                          !Segment 11 - MOA
+!Total amount of donation
+  let $TotDonation = ltrim(edit(to_char(#TotDonation),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'358',$TotDonation ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+!Total amount of CPF
+  let $TotCPFDesig = ltrim(edit(to_char(#TotCPFDesig),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'359',$TotCPFDesig ,'','','','','','','','')
+                                                          !Segment 11 - MOA
+!Total amount of Insurance
+  let $TotInsurance  = ltrim(edit(to_char(#TotInsurance ),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'360',$TotInsurance  ,'','','','','','','','')
+
+  !366 Total amount of contributions for mosque building fund
+
+  !changed
+  let $Total_Mbf = ltrim(edit(to_char(#Total_Mbf ),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'361',$Total_Mbf  ,'','','','','','','','')
+
+!Total amount of exempt income.
+  let $TotalExemptIncome = ltrim(edit(to_char(#TotalExemptIncome ),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'362',$TotalExemptIncome ,'','','','','','','','')
+
+!Total amount of employment income for which tax is borne by the employer
+  let $TotalIncome_Empr = ltrim(edit(to_char(#TotalIncome_Empr ),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'363',$TotalIncome_Empr ,'','','','','','','','')
+
+!Total amount of income tax liability for which the tax is borne by the employee
+  let $TotalIncome_Employee = ltrim(edit(to_char(#TotalIncome_Employee ),'9999999999999'),' ')
+  do Write-Entry-Detail(11,'364',$TotalIncome_Employee ,'','','','','','','','')
+
+
+!write 'res  zz' segment and close
+  do Write-Entry-Detail(17,'','','','','','','','','','')       !Segment 17 - RES
+
+  close #filenum
+
+  let #TotTotalAmount = 0
+  let #TotSalary = 0
+  let #TotBonus = 0
+  let #TotDirFee = 0
+  let #TotOthers = 0
+  let #TotDonation = 0
+  let #TotCPFDesig = 0
+  let #TotInsurance  = 0
+  let #Total_Mbf = 0
+  let #TotalExemptIncome = 0
+  let #TotalIncome_Empr = 0
+  let #TotalIncome_Employee = 0
+
+end-procedure
+!
+!***********************************************************************
+! Procedure: Move-To-Var                                               *
+!            Move Field values to Variables                            *
+!***********************************************************************
+!
+Begin-procedure Move-To-Var
+  Move ''                     to $CessationDate
+  Move ''                     to $JobCommenceDate
+  Move &PN.NATIONAL_ID        to $PDTaxRefSgp
+  Move &PD.BIRTHDATE          to $PDBirthdate
+!  Move &PA.ADDRESS1           to $PDAddress1
+!  Move &PA.ADDRESS2           to $PDAddress2
+!  Move &PA.ADDRESS3           to $PDAddress3
+
+!  Move &PA.ADDRESS4           to $PDAddress4
+!  Move &PA.CITY               to $PDCity
+!  Move &PA.COUNTY             to $PDCounty
+!  Move &PA.STATE              to $PDState
+!  Move &PA.POSTAL             to $PDZip
+!  Move &CO.DESCR              to $PDCountry
+  Move &I.GPSG_8A_ALLOW_ENT   to #IAllowEntYtd
+  Move &I.GPSG_8A_ALLOW_OTH   to #IAllowOtherYtd
+  Move &I.GPSG_8A_ALLOW_TOT   to #IAllowTotalYtd
+  Move &I.GPSG_8A_ALLOW_TRAN  to #IAllowTransYtd
+  Move &I.GPSG_8A_BIK         to #IBikYtd
+  Move &I.GPSG_BONUS_DT       to $IBonusDeclaredDt
+  Move &I.GPSG_8A_NC_BONUS    to #IBonusYtd
+  Move &I.GPSG_8A_CNT_BONUS   to #IContrctBonusYtd
+  Move &I.GPSG_CPY_TAX_REF    to $ICompany
+  Move &I.GPSG_COMMSN_FROM    to $IComssnFromDt
+  Move &I.GPSG_COMMSN_REG     to $IComssnRegular
+  Move &I.GPSG_COMMSN_TO      to $IComssnToDt
+  Move &I.GPSG_8A_COMMSN      to #IComssnYtd
+  Move &I.GPSG_CPF_COMP_EE    to #ICpfCompYtd
+  Move &I.GPSG_CPF_VOL_REAS   to $ICpfVolContType
+  Let #ICpfVolYtd = &I.GPSG_CPF_VOL_EE
+  Move &I.GPSG_DIR_FEE_DT     to $IDirfeeAprvdDt
+  Move &I.GPSG_8A_DIR_FEE     to #IDirfeeYtd
+  Move &I.GPSG_8A_DONATIONS   to #IDonationYtd
+  Move &I.GPSG_ER_PAYS_TAX    to $IEmplrBearsTax
+  Move &I.GPSG_GRAT_DESCR     to $IGraCompDescr
+  Move &I.GPSG_8S_REMARKS     to $IRemarksText
+  Move &I.GPSG_8A_GRATUITY    to #IGratuityYtd
+  move &I.GPSG_8A_EXGRATIA to #IGPSG_8A_EXGRATIA
+  move &I.GPSG_8A_NOTICE to #IGPSG_8A_NOTICE
+move &I.GPSG_8A_GRAT_OTH to #IGPSG_8A_GRAT_OTH
+  Add  #IGPSG_8A_EXGRATIA     to #IGratuityYtd
+  Add  #IGPSG_8A_NOTICE       to #IGratuityYtd
+  Add #IGPSG_8A_GRAT_OTH     to #IGratuityYtd
+  Move &I.GPSG_8A_LOSS_OFFIC  to #ILossOfficeYtd
+  Move &I.GPSG_8A_GROSS       to #IGrsYtd
+  Move &I.GPSG_8A_INSURANCE   to #IInsuranceYtd
+  move &I.GPSG_8A_INSUR_ADJ  to #IGPSG_8A_INSUR_ADJ
+  Add  #IGPSG_8A_INSUR_ADJ   to #IInsuranceYtd
+  Move &I.GPSG_JOB_DESCR1     to $IJobDescr1
+  Move &I.GPSG_JOB_DESCR2     to $IJobDescr2
+  Move &I.NAME                to $IName
+  Move &I.GPSG_COMMSN_1TM     to $IOneTimePayment
+  Move &I.GPSG_8A_OS_PENSION  to #IOsPensionYtd
+  Move &I.GPSG_PENS_FUND      to $IPensionFundName
+  Move &I.GPSG_8A_PENSION     to #IPensionYtd
+  Move &I.GPSG_RETIRE_FUND    to $IRetireFund
+  Move &I.GPSG_8A_RET_POST    to #IRetirePost93Accr
+  Move &I.GPSG_8A_RET_PRE93   to #IRetirePre93Accr
+  Move &I.GPSG_8A_RETIRE      to #IRetireYtd
+  Move &I.GPSG_SECTION45_IND  to $ISection45Ind
+  Move &I.SEX                 to $ISex
+  Move &I.GPSG_8A_SHARE_GAIN  to #IShareGainsYtd
+  Move &I.GPSG_8A_GAIN_BFR    to #IGainBfrYtd
+  Move &I.GPSG_SHR_OPT_DESCR  to $IShareOptDescr
+  Move &I.NATIONAL_ID         to $ITaxRefSgp
+  let  $ITaxRefTypeSgp        =  RTrim(&I.NATIONAL_ID_TYPE, ' ')
+  Move &I.GPSG_TAX_YEAR       to #ITaxYear
+  Move &I.GPSG_CPF_VOL_ER     to #IVolEmplrCpfYtd
+  Move &I.GPSG_APP_IRAS       to $Approval
+  Move &I.GPSG_APP_IRAS_DT    to $App_Dt 'YYYYMMDD'
+  Move &I.GPSG_EXM_IND        to $Exmpt_Indicator
+  Move &I.GPSG_INCOM_TAX_EE   to #Income_Employee
+  Move &I.GPSG_INCOM_TAX_ER   to #Income_Empr
+  Move &I.GPSG_INCOM_TAX_REM  to #ExemptIncome
+  Move &I.GPSG_TOTAL_MBMF     to #Empl_Tot_Mbf
+
+
+
+  if rtrim($IGraCompDescr,' ') <> ''
+     Let $IGraCompDescr = translate($IGraCompDescr, $Char13, ' ')
+     Let $IGraCompDescr = translate($IGraCompDescr, $Char10, '')
+
+  end-if
+  if rtrim($IRemarksText,' ') <> ''
+     Let $IRemarksText = translate($IRemarksText, $Char13, ' ')
+     Let $IRemarksText = translate($IRemarksText, $Char10, '')
+  end-if
+  if rtrim($IShareOptDescr,' ') <> ''
+     Let $IShareOptDescr = translate($IShareOptDescr, $Char13, ' ')
+     Let $IShareOptDescr = translate($IShareOptDescr, $Char10, '')
+  end-if
+
+! retrieve dates in format dtu without delimiters eg. 19990101
+
+  do get-cessation-date
+
+  if RTrim(&I.HIRE_DT, ' ') <> ''
+     Do format-Datetime(&I.HIRE_DT, $JobCommenceDate, {DEFCMP}, '', '')
+     Let $EmplStartDate = $JobCommenceDate
+  else
+     Do Get-Hire-Date
+  end-if
+
+end-Procedure
+!
+!***********************************************************************
+! Procedure: Add-Var-Values                                            *
+!            Sum Variables for the same Emplid                         *
+!***********************************************************************
+!
+Begin-procedure Add-Var-Values
+
+move &I.GPSG_8A_ALLOW_ENT  to #ASM_GPSG_8A_ALLOW_ENT  
+move &I.GPSG_8A_ALLOW_OTH  to #ASM_GPSG_8A_ALLOW_OTH 
+move &I.GPSG_8A_ALLOW_TOT  to #ASM_GPSG_8A_ALLOW_TOT 
+move &I.GPSG_8A_ALLOW_TRAN to #ASM_GPSG_8A_ALLOW_TRAN
+move &I.GPSG_8A_BIK        to #ASM_GPSG_8A_BIK       
+move &I.GPSG_8A_NC_BONUS   to #ASM_GPSG_8A_NC_BONUS  
+move &I.GPSG_8A_CNT_BONUS  to #ASM_GPSG_8A_CNT_BONUS 
+move &I.GPSG_8A_COMMSN     to #ASM_GPSG_8A_COMMSN    
+move &I.GPSG_CPF_COMP_EE   to #ASM_GPSG_CPF_COMP_EE  
+move &I.GPSG_CPF_VOL_EE    to #ASM_GPSG_CPF_VOL_EE   
+move &I.GPSG_8A_DIR_FEE    to #ASM_GPSG_8A_DIR_FEE   
+move &I.GPSG_8A_DONATIONS  to #ASM_GPSG_8A_DONATIONS 
+move &I.GPSG_8A_GRATUITY   to #ASM_GPSG_8A_GRATUITY  
+move &I.GPSG_8A_EXGRATIA   to #ASM_GPSG_8A_EXGRATIA  
+move &I.GPSG_8A_NOTICE     to #ASM_GPSG_8A_NOTICE    
+move &I.GPSG_8A_GRAT_OTH   to #ASM_GPSG_8A_GRAT_OTH  
+move &I.GPSG_8A_LOSS_OFFIC to #ASM_GPSG_8A_LOSS_OFFIC
+move &I.GPSG_8A_GROSS      to #ASM_GPSG_8A_GROSS     
+move &I.GPSG_8A_INSURANCE  to #ASM_GPSG_8A_INSURANCE 
+move &I.GPSG_8A_INSUR_ADJ  to #ASM_GPSG_8A_INSUR_ADJ 
+move &I.GPSG_8A_OS_PENSION to #ASM_GPSG_8A_OS_PENSION
+move &I.GPSG_8A_PENSION    to #ASM_GPSG_8A_PENSION   
+move &I.GPSG_8A_RET_POST   to #ASM_GPSG_8A_RET_POST  
+move &I.GPSG_8A_RET_PRE93  to #ASM_GPSG_8A_RET_PRE93 
+move &I.GPSG_8A_RETIRE     to #ASM_GPSG_8A_RETIRE    
+move &I.GPSG_8A_SHARE_GAIN to #ASM_GPSG_8A_SHARE_GAIN
+move &I.GPSG_8a_GAIN_BFR   to #ASM_GPSG_8a_GAIN_BFR  
+move &I.GPSG_TAX_YEAR      to #ASM_GPSG_TAX_YEAR     
+move &I.GPSG_CPF_VOL_ER    to #ASM_GPSG_CPF_VOL_ER   
+move &I.GPSG_INCOM_TAX_EE  to #ASM_GPSG_INCOM_TAX_EE 
+move &I.GPSG_INCOM_TAX_ER  to #ASM_GPSG_INCOM_TAX_ER 
+move &I.GPSG_INCOM_TAX_REM to #ASM_GPSG_INCOM_TAX_REM
+move &I.GPSG_TOTAL_MBMF    to #ASM_GPSG_TOTAL_MBMF 
+
+  Add #ASM_GPSG_8A_ALLOW_ENT   to #IAllowEntYtd
+  Add #ASM_GPSG_8A_ALLOW_OTH  to #IAllowOtherYtd
+  Add #ASM_GPSG_8A_ALLOW_TOT  to #IAllowTotalYtd
+  Add #ASM_GPSG_8A_ALLOW_TRAN to #IAllowTransYtd
+  Add #ASM_GPSG_8A_BIK        to #IBikYtd
+  Add #ASM_GPSG_8A_NC_BONUS   to #IBonusYtd
+  Add #ASM_GPSG_8A_CNT_BONUS  to #IContrctBonusYtd
+  Add #ASM_GPSG_8A_COMMSN     to #IComssnYtd
+  Add #ASM_GPSG_CPF_COMP_EE   to #ICpfCompYtd
+  Add #ASM_GPSG_CPF_VOL_EE    to #ICpfVolYtd
+  Add #ASM_GPSG_8A_DIR_FEE    to #IDirfeeYtd
+  Add #ASM_GPSG_8A_DONATIONS  to #IDonationYtd
+  Add #ASM_GPSG_8A_GRATUITY   to #IGratuityYtd
+  Add #ASM_GPSG_8A_EXGRATIA   TO #IGratuityYtd
+  Add #ASM_GPSG_8A_NOTICE     to #IGratuityYtd
+  Add #ASM_GPSG_8A_GRAT_OTH   to #IGratuityYtd
+  Add #ASM_GPSG_8A_LOSS_OFFIC to #ILossOfficeYtd
+  Add #ASM_GPSG_8A_GROSS      to #IGrsYtd
+  Add #ASM_GPSG_8A_INSURANCE  to #IInsuranceYtd
+  Add #ASM_GPSG_8A_INSUR_ADJ  to #IInsuranceYtd
+  Add #ASM_GPSG_8A_OS_PENSION to #IOsPensionYtd
+  Add #ASM_GPSG_8A_PENSION    to #IPensionYtd
+  Add #ASM_GPSG_8A_RET_POST   to #IRetirePost93Accr
+  Add #ASM_GPSG_8A_RET_PRE93  to #IRetirePre93Accr
+  Add #ASM_GPSG_8A_RETIRE     to #IRetireYtd
+  Add #ASM_GPSG_8A_SHARE_GAIN to #IShareGainsYtd
+  Add #ASM_GPSG_8a_GAIN_BFR   to #IGainBfrYtd
+  Add #ASM_GPSG_TAX_YEAR      to #ITaxYear
+  Add #ASM_GPSG_CPF_VOL_ER    to #IVolEmplrCpfYtd
+  Add #ASM_GPSG_INCOM_TAX_EE   to #Income_Employee
+  Add #ASM_GPSG_INCOM_TAX_ER   to #Income_Empr
+  Add #ASM_GPSG_INCOM_TAX_REM  to #ExemptIncome
+  Add #ASM_GPSG_TOTAL_MBMF   to #Empl_Tot_Mbf
+
+
+  if RTrim(&I.GPSG_BONUS_DT, ' ') <> ''
+     Move &I.GPSG_BONUS_DT       to $IBonusDeclaredDt
+  end-if
+
+  if RTrim(&I.GPSG_COMMSN_FROM, ' ') <> ''
+     Move &I.GPSG_COMMSN_FROM    to $IComssnFromDt
+     Move &I.GPSG_COMMSN_TO      to $IComssnToDt
+  end-if
+
+  if &I.GPSG_COMMSN_REG = 'Y'
+     Move &I.GPSG_COMMSN_REG     to $IComssnRegular
+  end-if
+
+  if RTrim(&I.GPSG_CPF_VOL_REAS, ' ') <> ''
+     Move &I.GPSG_CPF_VOL_REAS   to $ICpfVolContType
+  end-if
+
+  if RTrim(&I.GPSG_DIR_FEE_DT, ' ') <> ''
+     Move &I.GPSG_DIR_FEE_DT     to $IDirfeeAprvdDt
+  end-if
+
+  if RTrim(&I.GPSG_8S_REMARKS, ' ') <> ''
+     Move &I.GPSG_8S_REMARKS     to $IRemarksText
+  end-if
+
+  if &I.GPSG_COMMSN_1TM = 'Y'
+     Move &I.GPSG_COMMSN_1TM     to $IOneTimePayment
+  end-if
+
+  if RTrim(&I.GPSG_PENS_FUND, ' ') <> ''
+     Move &I.GPSG_PENS_FUND      to $IPensionFundName
+  end-if
+
+  if RTrim(&I.GPSG_RETIRE_FUND, ' ') <> ''
+     Move &I.GPSG_RETIRE_FUND    to $IRetireFund
+  end-if
+
+  if &I.GPSG_SECTION45_IND = 'Y'
+     Move &I.GPSG_SECTION45_IND  to $ISection45Ind
+  end-if
+
+  if RTrim(&I.GPSG_SHR_OPT_DESCR, '') <> ''
+     Move &I.GPSG_SHR_OPT_DESCR  to $IShareOptDescr
+  end-if
+
+  Do format-Datetime(&I.TERMINATION_DT, $Term_Date, {DEFCMP}, '', '')
+  if RTrim(&I.TERMINATION_DT, ' ') = '' or $Term_Date > $CessationDate
+     let $CessationDate = $Term_Date
+  end-if
+
+  if RTrim(&I.HIRE_DT, ' ') <> ''
+     Do format-Datetime(&I.HIRE_DT, $Hired_Date, {DEFCMP}, '', '')
+     if $Hired_Date < $EmplStartDate
+        Let $EmplStartDate = $Hired_Date
+        Let $JobCommenceDate = $Hired_Date
+     end-if
+  end-if
+
+End-Procedure
+!
+!***********************************************************************
+! Procedure: Get-Hire-Date                                             *
+!            Get the Hire Date from Employment Table                   *
+!***********************************************************************
+!
+begin-Procedure Get-Hire-Date
+begin-SELECT
+MIN(GHD.HIRE_DT) &GHDHireDt
+
+  Do format-Datetime(&GHDHireDt,$JobCommenceDate,{DEFCMP},'','')
+  Let $JobStartYear = substr($JobCommenceDate,1,4)
+  Let $EmplStartDate = $JobCommenceDate
+  if $JobStartYear <> $TaxYear
+     Let $JobCommenceDate = ''
+  end-if
+
+  FROM PS_EMPLOYMENT GHD
+ WHERE GHD.EMPLID = $Emplid
+
+end-SELECT
+End-Procedure
+
+begin-Procedure DEL_STG_IRAS
+begin-sql
+DELETE 
+FROM PS_GPSG_IR8A_A_STG
+WHERE PROCESS_INSTANCE = [$iras_prcs_instance]
+end-sql
+begin-sql
+DELETE 
+FROM PS_GPSG_IR8S_A_STG
+WHERE PROCESS_INSTANCE = [$iras_prcs_instance]
+end-sql
+begin-sql
+DELETE 
+FROM PS_GPSG_IR8R_A_STG
+WHERE PROCESS_INSTANCE = [$iras_prcs_instance]
+end-sql
+end-procedure
+
+
+#Include 'reset.sqc'     !Reset printer procedure
+#Include 'curdttim.sqc'  !Get-Current-DateTime procedure
+#Include 'datetime.sqc'  !Routines for date and time formatting
+#Include 'datemath.sqc'  !Routines for Date Arithmetic
+#Include 'number.sqc'    !Routines to format numbers
+#Include 'stdapi.sqc'    !Routines to Update Run Status
+#Include 'gpsgirrc.sqc'  !Select-Parameters procedure
+#Include 'readmsgc.sqc'  !Read Message Catalog 
