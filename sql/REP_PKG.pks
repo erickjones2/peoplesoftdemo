@@ -1,5 +1,4 @@
 CREATE OR REPLACE PACKAGE XXPS.rep_pkg AS
-AS
   
   gv_vcPackageName VARCHAR2(30) := 'REP_PKG';
 
