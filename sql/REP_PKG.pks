@@ -1,3 +1,4 @@
+-- 10/17/2024 chg 1
 CREATE OR REPLACE PACKAGE XXPS.rep_pkg AS
   
   gv_vcPackageName VARCHAR2(30) := 'REP_PKG';
